@@ -41,6 +41,13 @@ describe('能力意图路由器', () => {
     expect(createFilePlanningHint('创建 result.txt 并写入正文')).toEqual({ operation: 'create_file' });
   });
 
+  test('封闭的文件内容问句规划为 read_file，并进入显式文件任务', () => {
+    const text = '请告诉我目录下的 test 文件内容是什么';
+
+    expect(createFilePlanningHint(text)).toEqual({ operation: 'read_file' });
+    expectIntentKind(text, 'file_task');
+  });
+
   test('明确声明目标路径缺失时规划只允许请求结构化澄清', () => {
     expect(createFilePlanningHint(
       '删除一个文件，但我还没有提供目标路径。请先询问缺少的信息。'

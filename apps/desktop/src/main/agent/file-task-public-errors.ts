@@ -6,7 +6,6 @@ export type PublicFileTaskErrorDetails = Readonly<{
 /** 文件能力跨 Service 与 Adapter 只使用这一份脱敏公开错误定义。 */
 const 公开文件错误 = Object.freeze({
   FILE_AUTHORIZATION_REQUIRED: { message: '请先在设置中授权文件目录。' },
-  FILE_DISCLOSURE_DENIED: { message: '文件数据类别未授权。' },
   ACTION_EXPIRED: { message: '待确认操作已失效，请重新发起任务。' },
   PATH_INVALID: { message: '文件路径无效。' },
   PATH_OUTSIDE_ROOT: { message: '文件路径超出授权目录。' },

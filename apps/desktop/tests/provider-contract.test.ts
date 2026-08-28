@@ -2516,6 +2516,22 @@ describe('ProviderRegistry', () => {
     expect(serialized).not.toContain('{"raw":"provider response"}');
   });
 
+  test('诊断包装器的 sink 抛错时仍原样抛出 ProviderResponseError', async () => {
+    const error = new ProviderResponseError('HTTP_BODY_NOT_JSON', 'transport');
+    const sink = vi.fn(() => {
+      throw new Error('sink failed');
+    });
+    const registry = new ProviderRegistry(
+      providerCatalog,
+      () => ({ respond: vi.fn(async () => { throw error; }) }),
+      { sink, createCorrelationId: () => 'diagnostic-sink-throw' }
+    );
+    const provider = registry.create(builtinLocalProfile, async () => '不得读取');
+
+    await expect(provider.respond(request, new AbortController().signal)).rejects.toBe(error);
+    expect(sink).toHaveBeenCalledOnce();
+  });
+
   test('聊天控制修复使用同一私有 reporter 且每次 respond 使用新 correlation id', async () => {
     const rawProvider: ModelProvider = {
       respond: vi.fn()

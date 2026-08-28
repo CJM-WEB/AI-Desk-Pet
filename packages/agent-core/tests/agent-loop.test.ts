@@ -205,8 +205,7 @@ describe('AgentLoop', () => {
             'content',
             'patch',
             'command',
-            'working_directory',
-            'file_data_authorization'
+            'working_directory'
           ]
         }
       }
@@ -355,6 +354,64 @@ describe('AgentLoop', () => {
     expect(prepare).toHaveBeenCalledOnce();
     expect(executeRead).toHaveBeenCalledExactlyOnceWith(prepared.executionRequest);
     expect(events).toContainEqual({ type: 'message', text: '读取完成' });
+  });
+
+  test('期望 move_file 时只读成功后口头完成视为协议违约', async () => {
+    const provider = new ScriptedProvider([
+      readRequest('read-before-move'),
+      { type: 'text', text: 'order.txt 已移动完成。' }
+    ]);
+    const loop = new AgentLoop();
+    const runContext = {
+      ...context(provider),
+      protocol: 'capability_planner' as const,
+      capabilityPlanning: {
+        allowClarification: true,
+        planningTools: tools,
+        expectedOperation: 'move_file'
+      } as unknown as RunContext['capabilityPlanning']
+    };
+
+    await expect(collectEvents(runContext)).rejects.toMatchObject({
+      code: 'CAPABILITY_PLAN_PROTOCOL_INVALID'
+    });
+  });
+
+  test('期望 create_file 时确认后的真实创建成功可以继续总结', async () => {
+    const provider = new ScriptedProvider([
+      {
+        type: 'tool_request',
+        request: {
+          requestId: 'create-after-confirm',
+          toolName: 'builtin.files.create_file',
+          arguments: { relativePath: 'result.txt' }
+        }
+      },
+      { type: 'text', text: 'result.txt 已创建。' }
+    ]);
+    const loop = new AgentLoop();
+    const runContext = {
+      ...context(provider),
+      protocol: 'capability_planner' as const,
+      capabilityPlanning: {
+        allowClarification: true,
+        planningTools: tools,
+        expectedOperation: 'create_file'
+      } as unknown as RunContext['capabilityPlanning']
+    };
+
+    const first = await collect(loop.run('创建 result.txt', runContext));
+    const request = first.find(event => event.type === 'write_request');
+    if (!request || request.type !== 'write_request') throw new Error('缺少创建确认');
+
+    const resumed = await collect(loop.resume(request.continuationToken, {
+      ok: true,
+      toolName: 'create_file',
+      targetRelativePath: 'result.txt'
+    }, runContext));
+
+    expect(resumed).toContainEqual({ type: 'message', text: 'result.txt 已创建。' });
+    expect(resumed.at(-1)).toEqual({ type: 'phase', phase: 'success' });
   });
 
   test('可恢复请求确认前不执行并携带 Main 私有执行信息', async () => {
@@ -825,8 +882,7 @@ describe('AgentLoop', () => {
     ['content', '请提供要写入的文件内容。'],
     ['patch', '请提供要应用的补丁内容。'],
     ['command', '请提供要执行的 PowerShell 命令。'],
-    ['working_directory', '请提供要使用的工作目录。'],
-    ['file_data_authorization', '请先开启文件数据授权。']
+    ['working_directory', '请提供要使用的工作目录。']
   ] as const)('文件规划按缺失字段 %s 公开宿主固定文案', async (missingField, message) => {
     const provider = new ScriptedProvider([{
       type: 'tool_request',

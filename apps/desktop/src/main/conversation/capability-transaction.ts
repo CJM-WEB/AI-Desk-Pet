@@ -1,9 +1,11 @@
 import { isRootRelativePathInput } from '@myself/file-tools';
+import type { FilePlanningOperation } from '@myself/agent-core';
 import type { TaskEvent } from '@myself/shared-types';
 import type { AgentTrustedToolResult } from '../agent/agent-service';
 
 const 最大可信引用数 = 16;
 const 最大可信转录数 = 32;
+const 事务滑动过期毫秒 = 10 * 60 * 1_000;
 
 export type CapabilityTransactionPhase =
   | 'planning'
@@ -22,9 +24,11 @@ export type CapabilityTransactionIdentity = Readonly<{
   id: string;
   generation: string;
   kind: 'file' | 'powershell';
-  providerId: string;
-  authorizationRootId: string;
+  profileId: string;
+  capabilityRevision: string;
 }>;
+
+type CapabilityTransactionExpectedOperation = FilePlanningOperation | 'powershell';
 
 export type CapabilityTransactionInvalidation =
   | 'new_task'
@@ -56,54 +60,89 @@ type MutableTransaction = CapabilityTransactionIdentity & {
   references: TrustedFileReference[];
   warningCodes: string[];
   lastTrustedResultOk: boolean | null;
+  expectedOperation: CapabilityTransactionExpectedOperation | null;
+  expectedOperationSatisfied: boolean;
+  lastUpdatedAtMs: number;
 };
+
+interface CapabilityTransactionStoreOptions {
+  now?: () => number;
+}
 
 /** Main 私有短生命周期事务；公开模型文字从不产生本地文件事实。 */
 export class CapabilityTransactionStore {
+  private readonly now: () => number;
   private current: MutableTransaction | null = null;
 
-  begin(input: CapabilityTransactionIdentity): void {
+  constructor(options: CapabilityTransactionStoreOptions = {}) {
+    this.now = options.now ?? Date.now;
+  }
+
+  begin(
+    input: CapabilityTransactionIdentity,
+    options: Readonly<{ expectedOperation?: CapabilityTransactionExpectedOperation }> = {}
+  ): void {
     this.current = {
       ...input,
       phase: 'planning',
       toolTranscript: [],
       references: [],
       warningCodes: [],
-      lastTrustedResultOk: null
+      lastTrustedResultOk: null,
+      expectedOperation: options.expectedOperation ?? null,
+      expectedOperationSatisfied: options.expectedOperation === undefined,
+      lastUpdatedAtMs: this.now()
     };
   }
 
   /** 新能力回合保留短期引用，但不继承上一回合的成败事实。 */
-  beginTurn(): void {
+  beginTurn(
+    options: Readonly<{ expectedOperation?: CapabilityTransactionExpectedOperation }> = {}
+  ): void {
+    this.expireIfNeeded();
     const current = this.current;
     if (current === null) return;
     current.phase = 'planning';
     current.warningCodes = [];
     current.lastTrustedResultOk = null;
+    current.expectedOperation = options.expectedOperation ?? null;
+    current.expectedOperationSatisfied = options.expectedOperation === undefined;
+    current.lastUpdatedAtMs = this.now();
   }
 
-  apply(event: TaskEvent | AgentTrustedToolResult | Readonly<{ type: 'clarification' }>): void {
+  apply(
+    event: TaskEvent | AgentTrustedToolResult | Readonly<{ type: 'clarification' }>
+  ): void {
+    this.expireIfNeeded();
     const current = this.current;
     if (current === null) return;
     if ('toolName' in event) {
       this.applyTrustedToolResult(current, event);
+      current.lastUpdatedAtMs = this.now();
       return;
     }
     if (event.type === 'clarification') {
       current.phase = 'awaiting_clarification';
+      current.lastUpdatedAtMs = this.now();
       return;
     }
     if (event.type === 'pending_action') {
       current.phase = 'awaiting_confirmation';
+      current.lastUpdatedAtMs = this.now();
       return;
     }
     if (event.type === 'error') {
-      if (isSummaryWarning(event.code) && current.lastTrustedResultOk === true) {
+      if (
+        isSummaryWarning(event.code)
+        && current.lastTrustedResultOk === true
+        && current.expectedOperationSatisfied
+      ) {
         if (!current.warningCodes.includes(event.code)) current.warningCodes.push(event.code);
         current.phase = 'completed';
       } else {
         current.phase = 'failed';
       }
+      current.lastUpdatedAtMs = this.now();
       return;
     }
     if (event.type !== 'phase') return;
@@ -113,60 +152,82 @@ export class CapabilityTransactionStore {
         if (current.phase !== 'failed' && current.phase !== 'completed') {
           current.phase = 'planning';
         }
+        current.lastUpdatedAtMs = this.now();
         return;
       case 'awaiting_confirmation':
         current.phase = 'awaiting_confirmation';
+        current.lastUpdatedAtMs = this.now();
         return;
       case 'acting':
         current.phase = 'running';
+        current.lastUpdatedAtMs = this.now();
         return;
       case 'success':
-        if (current.lastTrustedResultOk === true && current.phase !== 'failed') {
+        if (current.lastTrustedResultOk === true
+          && current.phase !== 'failed'
+          && current.expectedOperationSatisfied) {
           current.phase = 'completed';
+        } else if (current.lastTrustedResultOk === true && current.phase !== 'failed') {
+          current.phase = 'failed';
         }
+        current.lastUpdatedAtMs = this.now();
         return;
       case 'error':
-        if (current.warningCodes.length > 0 && current.lastTrustedResultOk === true) {
+        if (
+          current.warningCodes.length > 0
+          && current.lastTrustedResultOk === true
+          && current.expectedOperationSatisfied
+        ) {
           current.phase = 'completed';
+          current.lastUpdatedAtMs = this.now();
           return;
         }
         current.phase = 'failed';
+        current.lastUpdatedAtMs = this.now();
         return;
       case 'cancelled':
         current.phase = 'failed';
+        current.lastUpdatedAtMs = this.now();
         return;
       case 'idle':
         return;
     }
   }
 
-  classifyFollowUp(text: string): 'continue' | 'status' | 'new_task' | 'none' {
+  classifyFollowUp(text: string): 'continue' | 'retry' | 'status' | 'new_task' | 'none' {
+    this.expireIfNeeded();
+    if (this.current === null) return 'none';
     const normalized = text.normalize('NFKC').trim().toLocaleLowerCase();
     if (/^(?:继续(?:执行)?|接着(?:执行)?|continue|go on)[。！!]?$/u.test(normalized)) {
       return 'continue';
     }
+    if (/^(?:重试|retry)[。！!]?$/u.test(normalized)) {
+      return 'retry';
+    }
     if (/^(?:成功了吗|完成了吗|执行成功了吗|成功没|did it succeed|is it done)[？?。]?$/.test(normalized)) {
       return 'status';
     }
-    if (/(?:刚(?:创建|读取|移动|修改|删除)的|那个文件|这个文件|它)/u.test(normalized)
-      && /(?:读取|修改|编辑|移动|删除|内容|read|edit|move|delete)/u.test(normalized)) {
+    if (blocksFollowUpByShape(normalized)) return 'none';
+    if (/(?:刚(?:创建|读取|移动|修改|删除)的|刚才(?:那个)?文件|那个文件|这个文件|该文件|它)/u.test(normalized)
+      && /(?:读取|修改|编辑|改为|写入|替换|移动|删除|搜索|查找|列出|read|edit|write|replace|move|delete|search|grep|glob|list|(?:内容|正文)(?:是|是什么|是啥)|(?:content|text)\s+is|\bwhat\s+is\b.{0,40}(?:content|text))/u.test(normalized)) {
       return 'continue';
     }
-    if (/(?:创建|新建|读取|列出|修改|编辑|移动|删除|搜索|create|read|list|edit|move|delete)/u.test(normalized)) {
+    if (/(?:创建|新建|读取|列出|修改|编辑|改为|写入|替换|移动|删除|搜索|create|read|list|edit|write|replace|move|delete)/u.test(normalized)) {
       return 'new_task';
     }
     return 'none';
   }
 
   snapshot(): CapabilityTransactionSnapshot | null {
+    this.expireIfNeeded();
     const current = this.current;
     if (current === null) return null;
     return Object.freeze({
       id: current.id,
       generation: current.generation,
       kind: current.kind,
-      providerId: current.providerId,
-      authorizationRootId: current.authorizationRootId,
+      profileId: current.profileId,
+      capabilityRevision: current.capabilityRevision,
       phase: current.phase,
       warningCodes: Object.freeze([...current.warningCodes]),
       toolTranscript: Object.freeze(current.toolTranscript.map(item => Object.freeze({ ...item }))),
@@ -194,14 +255,27 @@ export class CapabilityTransactionStore {
       return;
     }
     current.lastTrustedResultOk = true;
+    if (
+      current.expectedOperation === null
+      || matchesExpectedOperation(current.expectedOperation, result.toolName)
+    ) current.expectedOperationSatisfied = true;
     current.warningCodes = [];
     current.phase = 'running';
     for (const reference of referencesForResult(result)) {
       const existingIndex = current.references.findIndex(existing =>
-        existing.relativePath === reference.relativePath);
+        existing.relativePath === reference.relativePath
+        && existing.role === reference.role);
       if (existingIndex >= 0) current.references.splice(existingIndex, 1);
       current.references.push(reference);
       if (current.references.length > 最大可信引用数) current.references.shift();
+    }
+  }
+
+  private expireIfNeeded(): void {
+    const current = this.current;
+    if (current === null) return;
+    if (this.now() - current.lastUpdatedAtMs > 事务滑动过期毫秒) {
+      this.current = null;
     }
   }
 }
@@ -226,4 +300,24 @@ function referencesForResult(result: AgentTrustedToolResult): readonly TrustedFi
       ? 'deleted'
       : 'read';
   return paths.map(relativePath => ({ role, relativePath }));
+}
+
+function blocksFollowUpByShape(text: string): boolean {
+  return /^(?:>|[`'"“‘’]|~~~|引用)/u.test(text)
+    || /(?:^|\n)[ \t]*(?:```|~~~)/u.test(text)
+    || /^(?:不要|不用|不必|无需|不需要|别|never\b|do\s+not\b|don't\b)/u.test(text);
+}
+
+function matchesExpectedOperation(
+  expectedOperation: CapabilityTransactionExpectedOperation,
+  toolName: string
+): boolean {
+  return normalizeOperationName(toolName) === expectedOperation;
+}
+
+function normalizeOperationName(toolName: string): string {
+  const leaf = toolName.split('.').at(-1) ?? toolName;
+  if (leaf === 'read_text' || leaf === 'read_text_file') return 'read_file';
+  if (leaf === 'list_directory') return 'list_files';
+  return leaf;
 }

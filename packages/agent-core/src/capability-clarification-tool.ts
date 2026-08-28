@@ -8,8 +8,7 @@ export const CAPABILITY_CLARIFICATION_MISSING_FIELDS = [
   'content',
   'patch',
   'command',
-  'working_directory',
-  'file_data_authorization'
+  'working_directory'
 ] as const;
 
 export type CapabilityClarificationMissingField =
@@ -25,8 +24,7 @@ const CAPABILITY_CLARIFICATION_MESSAGES = Object.freeze({
   content: '请提供要写入的文件内容。',
   patch: '请提供要应用的补丁内容。',
   command: '请提供要执行的 PowerShell 命令。',
-  working_directory: '请提供要使用的工作目录。',
-  file_data_authorization: '请先开启文件数据授权。'
+  working_directory: '请提供要使用的工作目录。'
 } satisfies Readonly<Record<CapabilityClarificationMissingField, string>>);
 
 /** 能力规划仅可通过这个无副作用工具声明一个缺失的执行必需字段。 */

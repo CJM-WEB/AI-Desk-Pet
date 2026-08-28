@@ -162,6 +162,13 @@ interface ActiveCapabilityTurn {
   outcomeReady: boolean;
 }
 
+type ReplayableFileTurn = Readonly<{
+  generation: string;
+  capabilityText: string;
+  target: PreparedCapabilityTarget;
+  planningHint?: FilePlanningHint;
+}>;
+
 export class ConversationCoordinator {
   private assistantTurnSequence = 0;
   private state: ConversationState = { kind: 'idle' };
@@ -173,6 +180,7 @@ export class ConversationCoordinator {
   private capabilityTransactionTarget: PreparedCapabilityTarget | null = null;
   private pendingDisclosure: PendingHistoryDisclosure | null = null;
   private activeCapabilityTurn: ActiveCapabilityTurn | null = null;
+  private replayableFileTurn: ReplayableFileTurn | null = null;
   private pendingFileContinuation: PendingFileContinuation | null = null;
   private pendingCapabilityAuthorization: PendingCapabilityAuthorization | null = null;
   private closePromise: Promise<void> | null = null;
@@ -207,14 +215,14 @@ export class ConversationCoordinator {
     }
 
     const existingTransaction = this.capabilityTransaction.snapshot();
+    if (existingTransaction === null) this.clearCapabilityTransactionState();
     if (existingTransaction?.generation === this.generation) {
       const followUp = this.capabilityTransaction.classifyFollowUp(normalized);
       const earlyIntent = capabilityIntentRouter.route(normalized);
       const beginsNewCapabilityTask = earlyIntent.kind === 'powershell_task'
         || (followUp === 'new_task' && earlyIntent.kind === 'file_task');
       if (beginsNewCapabilityTask) {
-        this.capabilityTransaction.invalidate('new_task');
-        this.capabilityTransactionTarget = null;
+        this.invalidateCapabilityTransaction('new_task');
       }
     }
 
@@ -244,32 +252,55 @@ export class ConversationCoordinator {
       context.explicitDirective = prepared.explicitDirective;
 
       const transactionSnapshot = this.capabilityTransaction.snapshot();
+      if (transactionSnapshot === null) this.clearCapabilityTransactionState();
       const transactionFollowUp = transactionSnapshot?.generation === context.generation
         ? this.capabilityTransaction.classifyFollowUp(context.capabilityText)
         : 'none';
-      if (transactionSnapshot !== null && transactionFollowUp === 'status'
-        && (transactionSnapshot.phase === 'completed' || transactionSnapshot.phase === 'failed')) {
-        this.finishTransactionStatusFollowUp(transactionSnapshot);
-        return;
-      }
-      if (transactionSnapshot !== null && transactionFollowUp === 'continue'
-        && this.capabilityTransactionTarget !== null
-        && transactionSnapshot.kind === 'file') {
-        context.transactionContinuation = true;
-        context.continuationTarget = this.capabilityTransactionTarget;
-        this.capabilityTransaction.beginTurn();
-        context.privatePlanningContext = serializePrivatePlanningContext(transactionSnapshot);
-      }
 
       const continuation = this.pendingFileContinuation;
       const continuationIntent = capabilityIntentRouter.route(context.capabilityText);
       const trustedContinuationIntent = continuation === null
         ? null
         : capabilityIntentRouter.routeTrustedFileContinuation(context.capabilityText);
-      const transactionContinuationIntent: CapabilityIntent | null = context.transactionContinuation
-        ? { kind: 'file_task', evidence: { kind: 'explicit_file_operation' } }
-        : null;
-      let effectiveIntent = transactionContinuationIntent ?? continuationIntent;
+      if (
+        transactionSnapshot !== null
+        && isTerminalTransactionPhase(transactionSnapshot.phase)
+        && (
+          transactionFollowUp === 'status'
+          || (transactionFollowUp === 'continue' && isBareContinueFollowUp(context.capabilityText))
+        )
+      ) {
+        this.finishTransactionStatusFollowUp(transactionSnapshot);
+        return;
+      }
+      if (
+        transactionSnapshot !== null
+        && transactionFollowUp === 'retry'
+        && isTerminalTransactionPhase(transactionSnapshot.phase)
+      ) {
+        if (!this.prepareFailedFileRetry(context, transactionSnapshot)) {
+          this.finishTransactionStatusFollowUp(transactionSnapshot);
+          return;
+        }
+      } else if (
+        transactionSnapshot !== null
+        && transactionFollowUp === 'continue'
+        && this.capabilityTransactionTarget !== null
+        && transactionSnapshot.kind === 'file'
+        && continuationIntent.kind !== 'powershell_task'
+        && !isBlockedChatIntent(continuationIntent)
+      ) {
+        context.transactionContinuation = true;
+        context.continuationTarget = this.capabilityTransactionTarget;
+        context.privatePlanningContext = serializePrivatePlanningContext(transactionSnapshot);
+      }
+      const transactionContinuationIntent: CapabilityIntent = {
+        kind: 'file_task',
+        evidence: { kind: 'explicit_file_operation' }
+      };
+      let effectiveIntent: CapabilityIntent = context.transactionContinuation
+        ? transactionContinuationIntent
+        : continuationIntent;
       if (
         continuation?.generation === context.generation
         && context.capabilityText.trim().length > 0
@@ -294,9 +325,11 @@ export class ConversationCoordinator {
       }
 
       // Router 是唯一分流权威；能力任务在创建聊天 Provider 前处理。
-      const intent = context.continuationTarget === undefined
+      const intent: CapabilityIntent = context.continuationTarget === undefined
         ? effectiveIntent
-        : transactionContinuationIntent ?? trustedContinuationIntent ?? continuationIntent;
+        : context.transactionContinuation
+          ? transactionContinuationIntent
+          : trustedContinuationIntent ?? continuationIntent;
       if (intent.kind === 'chat') context.modelEscalation = intent.modelEscalation;
       if (intent.kind === 'file_task' || intent.kind === 'powershell_task') {
         if (intent.kind === 'powershell_task' && intent.evidence.requestedRunMode === 'background') {
@@ -305,10 +338,9 @@ export class ConversationCoordinator {
         const taskKind: CapabilityTaskKind = intent.kind === 'file_task' ? 'file' : 'powershell';
         if (transactionSnapshot !== null && !context.transactionContinuation
           && context.continuationTarget === undefined) {
-          this.capabilityTransaction.invalidate('new_task');
-          this.capabilityTransactionTarget = null;
+          this.invalidateCapabilityTransaction('new_task');
         }
-        if (taskKind === 'file') {
+        if (taskKind === 'file' && !context.transactionContinuation) {
           // Router 提示不携带工具授权，Agent 仍从完整受控文件工具集中接受真实 tool_call。
           const planningHint = createFilePlanningHint(context.capabilityText);
           if (planningHint !== null) context.planningHint = planningHint;
@@ -584,10 +616,10 @@ export class ConversationCoordinator {
     this.state = resettingState;
     this.pendingDisclosure = null;
     this.activeCapabilityTurn = null;
+    this.replayableFileTurn = null;
     this.pendingFileContinuation = null;
     this.pendingCapabilityAuthorization = null;
-    this.capabilityTransaction.invalidate('generation_changed');
-    this.capabilityTransactionTarget = null;
+    this.invalidateCapabilityTransaction('generation_changed');
 
     const failures: unknown[] = [];
     try {
@@ -638,10 +670,10 @@ export class ConversationCoordinator {
     this.state = { kind: 'closed' };
     this.pendingDisclosure = null;
     this.activeCapabilityTurn = null;
+    this.replayableFileTurn = null;
     this.pendingFileContinuation = null;
     this.pendingCapabilityAuthorization = null;
-    this.capabilityTransaction.invalidate('closed');
-    this.capabilityTransactionTarget = null;
+    this.invalidateCapabilityTransaction('closed');
     const closing = Promise.resolve().then(async () => {
       const failures: unknown[] = [];
       for (const cleanup of [
@@ -904,15 +936,30 @@ export class ConversationCoordinator {
     visibleHistory: readonly ModelMessage[]
   ): Promise<void> {
     if (context.generation !== this.generation) return;
-    if (!context.transactionContinuation) {
+    const expectedOperation = expectedOperationForTask(taskKind, context.planningHint);
+    if (context.transactionContinuation) {
+      this.capabilityTransaction.beginTurn(
+        expectedOperation === undefined ? undefined : { expectedOperation }
+      );
+    } else {
       this.capabilityTransaction.begin({
         id: `${context.generation}:${taskKind}`,
         generation: context.generation,
         kind: taskKind,
-        providerId: target.profileId,
-        authorizationRootId: target.capabilityRevision
-      });
+        profileId: target.profileId,
+        capabilityRevision: target.capabilityRevision
+      }, expectedOperation === undefined ? undefined : { expectedOperation });
       this.capabilityTransactionTarget = target;
+    }
+    if (taskKind === 'file') {
+      this.replayableFileTurn = Object.freeze({
+        generation: context.generation,
+        capabilityText: context.capabilityText,
+        target,
+        ...(context.planningHint === undefined ? {} : { planningHint: context.planningHint })
+      });
+    } else {
+      this.replayableFileTurn = null;
     }
     const active: ActiveCapabilityTurn = {
       generation: context.generation,
@@ -1025,8 +1072,8 @@ export class ConversationCoordinator {
     const transaction = this.capabilityTransaction.snapshot();
     if (transaction === null || generation !== this.generation
       || transaction.generation !== generation
-      || transaction.providerId !== target.profileId
-      || transaction.authorizationRootId !== target.capabilityRevision) return;
+      || transaction.profileId !== target.profileId
+      || transaction.capabilityRevision !== target.capabilityRevision) return;
     this.capabilityTransaction.apply(result);
   }
 
@@ -1056,6 +1103,37 @@ export class ConversationCoordinator {
     this.options.emit({ type: 'message', role: 'assistant', text });
     this.state = { kind: 'idle' };
     this.options.emit({ type: 'phase', phase: 'success' });
+  }
+
+  private clearCapabilityTransactionState(): void {
+    this.capabilityTransactionTarget = null;
+    this.pendingFileContinuation = null;
+  }
+
+  private invalidateCapabilityTransaction(
+    reason: Parameters<CapabilityTransactionStore['invalidate']>[0]
+  ): void {
+    this.capabilityTransaction.invalidate(reason);
+    this.clearCapabilityTransactionState();
+  }
+
+  private prepareFailedFileRetry(
+    context: TurnContext,
+    transaction: CapabilityTransactionSnapshot
+  ): boolean {
+    const replay = this.replayableFileTurn;
+    if (
+      transaction.phase !== 'failed'
+      || transaction.kind !== 'file'
+      || replay === null
+      || replay.generation !== context.generation
+    ) return false;
+    context.transactionContinuation = true;
+    context.capabilityText = replay.capabilityText;
+    context.continuationTarget = replay.target;
+    context.privatePlanningContext = serializePrivatePlanningContext(transaction);
+    if (replay.planningHint !== undefined) context.planningHint = replay.planningHint;
+    return true;
   }
 
   private assertIdle(): void {
@@ -1118,6 +1196,28 @@ function normalizeUserText(input: unknown): string {
 
 function summarizeCapabilityRequest(text: string): string {
   return Array.from(text.replace(/\s+/gu, ' ').trim()).slice(0, 240).join('');
+}
+
+function isTerminalTransactionPhase(
+  phase: CapabilityTransactionSnapshot['phase']
+): phase is 'completed' | 'failed' {
+  return phase === 'completed' || phase === 'failed';
+}
+
+function expectedOperationForTask(
+  taskKind: CapabilityTaskKind,
+  planningHint?: FilePlanningHint
+): import('@myself/agent-core').FilePlanningOperation | 'powershell' | undefined {
+  return planningHint?.operation ?? (taskKind === 'powershell' ? 'powershell' : undefined);
+}
+
+function isBlockedChatIntent(intent: CapabilityIntent): boolean {
+  return intent.kind === 'chat' && intent.modelEscalation === 'blocked';
+}
+
+function isBareContinueFollowUp(text: string): boolean {
+  return /^(?:继续(?:执行)?|接着(?:执行)?|continue|go on)[。！!]?$/iu
+    .test(text.normalize('NFKC').trim());
 }
 
 function preferredToolPlanningHint(

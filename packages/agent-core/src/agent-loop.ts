@@ -28,7 +28,13 @@ type ContinuationState = {
   lastToolSignature: string | null;
   repeatedToolCalls: number;
   correctionUsed: boolean;
+  expectedOperation: ExpectedCapabilityOperation | undefined;
+  expectedOperationSatisfied: boolean;
 };
+
+type ExpectedCapabilityOperation = NonNullable<
+  NonNullable<RunContext['capabilityPlanning']>['expectedOperation']
+>;
 
 const MAX_AGENT_TURNS = 4;
 const MAX_IDENTICAL_TOOL_EXECUTIONS = 3;
@@ -130,6 +136,7 @@ export class AgentLoop {
       ...context.messages,
       { role: 'user' as const, content: userText }
     ];
+    const expectedOperation = context.capabilityPlanning?.expectedOperation;
     return yield* this.continueRun(
       messages,
       0,
@@ -140,7 +147,9 @@ export class AgentLoop {
       null,
       null,
       0,
-      false
+      false,
+      expectedOperation,
+      expectedOperation === undefined
     );
   }
 
@@ -166,6 +175,11 @@ export class AgentLoop {
       toolResult
     );
     const latestTrustedResultOk = trustedState.latestOk;
+    const expectedOperationSatisfied = continuation.expectedOperationSatisfied || (
+      continuation.expectedOperation !== undefined
+      && matchesExpectedOperation(continuation.expectedOperation, continuation.toolName)
+      && trustedResultSatisfied(continuation.toolName, toolResult)
+    );
     if (continuation.nextTurn >= MAX_AGENT_TURNS) {
       yield { type: 'message', text: '本地能力操作已结束；已达到模型响应轮次上限。' };
       yield { type: 'phase', phase: latestTrustedResultOk === false ? 'error' : 'success' };
@@ -181,7 +195,9 @@ export class AgentLoop {
       trustedState.mutationFailureToolName,
       continuation.lastToolSignature,
       continuation.repeatedToolCalls,
-      continuation.correctionUsed
+      continuation.correctionUsed,
+      continuation.expectedOperation,
+      expectedOperationSatisfied
     );
   }
 
@@ -199,7 +215,9 @@ export class AgentLoop {
     mutationFailureToolName: string | null,
     lastToolSignature: string | null,
     repeatedToolCalls: number,
-    correctionUsed: boolean
+    correctionUsed: boolean,
+    expectedOperation: ExpectedCapabilityOperation | undefined,
+    expectedOperationSatisfied: boolean
   ): AsyncGenerator<AgentEvent, AgentRunOutcome> {
     if (context.signal.aborted) {
       yield { type: 'phase', phase: 'cancelled' };
@@ -256,6 +274,13 @@ export class AgentLoop {
           });
           continue;
         }
+        if (
+          context.protocol === 'capability_planner'
+          && hasTrustedToolResult
+          && latestTrustedResultOk !== false
+          && expectedOperation !== undefined
+          && !expectedOperationSatisfied
+        ) throw capabilityPlanProtocolError();
         if (response.emotion !== undefined) {
           const emotion = characterEmotionLabelSchema.safeParse(response.emotion);
           if (!emotion.success) throw new Error('AGENT_INVALID_EMOTION');
@@ -363,7 +388,9 @@ export class AgentLoop {
           mutationFailureToolName,
           lastToolSignature,
           repeatedToolCalls,
-          correctionUsed
+          correctionUsed,
+          expectedOperation,
+          expectedOperationSatisfied
         });
         yield { type: 'phase', phase: 'awaiting_confirmation' };
         yield {
@@ -400,10 +427,35 @@ export class AgentLoop {
       latestTrustedResultOk = trustedState.latestOk;
       mutationFailurePending = trustedState.mutationFailurePending;
       mutationFailureToolName = trustedState.mutationFailureToolName;
+      if (
+        expectedOperation !== undefined
+        && matchesExpectedOperation(expectedOperation, prepared.executionRequest.toolName)
+        && trustedResultSatisfied(prepared.executionRequest.toolName, result)
+      ) expectedOperationSatisfied = true;
     }
 
     throw new Error('AGENT_MAX_TURNS');
   }
+}
+
+function normalizeOperationName(toolName: string): string {
+  const leaf = toolName.split('.').at(-1) ?? toolName;
+  if (leaf === 'read_text' || leaf === 'read_text_file') return 'read_file';
+  if (leaf === 'list_directory') return 'list_files';
+  return leaf;
+}
+
+function matchesExpectedOperation(
+  expectedOperation: ExpectedCapabilityOperation,
+  toolName: string
+): boolean {
+  return normalizeOperationName(toolName) === expectedOperation;
+}
+
+function trustedResultSatisfied(toolName: string, result: unknown): boolean {
+  const normalizedOperation = normalizeOperationName(toolName);
+  if (MUTATION_TOOL_NAMES.has(normalizedOperation)) return trustedResultOk(result) === true;
+  return trustedResultOk(result) !== false;
 }
 
 /** 本地执行结果是终态的唯一事实；没有 ok 字段时保持既有兼容语义。 */

@@ -636,7 +636,7 @@ describe('AgentService', () => {
     ]));
   });
 
-  test('错误创建提示不隐藏模型选择的移动工具，确认后只以 Main 结果恢复总结', async () => {
+  test('错误创建提示不隐藏模型选择的移动工具，但错误预期操作会阻断伪总结', async () => {
     const provider = new ScriptedProvider([
       moveResponse(),
       { type: 'text', text: 'source.txt 已移动' }
@@ -663,10 +663,19 @@ describe('AgentService', () => {
       targetRelativePath: 'archive/source.txt'
     });
 
-    await service.confirm(pending.action.actionId);
+    await expect(service.confirm(pending.action.actionId))
+      .rejects.toMatchObject({ code: 'CAPABILITY_PLAN_PROTOCOL_INVALID' });
 
     expect(fileTools.executeWrite).toHaveBeenCalledExactlyOnceWith(moveAction());
-    expect(events).toContainEqual({ type: 'message', role: 'assistant', text: 'source.txt 已移动' });
+    expect(provider.requests).toHaveLength(2);
+    expect(events.at(-2)).toEqual({
+      type: 'error',
+      code: 'PROVIDER_SUMMARY_FAILED_AFTER_WRITE',
+      message: '本地文件操作已成功，但模型总结失败。',
+      nextAction: '可以查看文件结果，或稍后重新请求总结。'
+    });
+    expect(events.at(-1)).toEqual({ type: 'phase', phase: 'error' });
+    expect(events).not.toContainEqual({ type: 'message', role: 'assistant', text: 'source.txt 已移动' });
   });
 
   test('reset 等待前台 PowerShell 执行收敛且丢弃迟到结果', async () => {

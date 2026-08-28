@@ -133,14 +133,14 @@ export class ConversationChatAdapter {
         'RESPONSE_FORMAT_UNSUPPORTED',
         'chat_control'
       );
-      this.reportResponseError(formatError, correlationId);
+      this.reportResponseErrorSafely(formatError, correlationId);
       throw formatError;
     }
     const controls = 解析聊天控制字段(response);
     if (controls !== null) return { text: response.text, ...controls };
 
     const controlError = new ProviderResponseError('CONTROL_SCHEMA_INVALID', 'chat_control');
-    this.reportResponseError(controlError, correlationId);
+    this.reportResponseErrorSafely(controlError, correlationId);
     try {
       const repaired = await this.provider.respond(构建控制字段修复请求(request), input.signal);
       if (repaired.type === 'text' && repaired.structured_output !== undefined) {
@@ -152,6 +152,17 @@ export class ConversationChatAdapter {
     }
     // 首次正文已通过可见边界；修复失败只丢弃控制副作用，不用错误替换正文。
     return { text: response.text };
+  }
+
+  private reportResponseErrorSafely(
+    error: ProviderResponseError,
+    correlationId?: string
+  ): void {
+    try {
+      this.reportResponseError(error, correlationId);
+    } catch {
+      // 诊断上报仅尽力执行，不能替换正文回退或原始格式错误。
+    }
   }
 }
 

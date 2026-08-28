@@ -89,6 +89,14 @@ export type FilePlanningHint = Readonly<{
   missingField?: 'target_path';
 }>;
 
+type CapabilityPlanningState = Readonly<{
+  allowClarification: boolean;
+  /** 只收窄首个能力规划轮次；真实工具结果后恢复 RunContext.tools。 */
+  planningTools?: readonly ToolDefinition[];
+  /** 当前回合期望完成的受控操作；不允许用其他成功结果口头冒充完成。 */
+  expectedOperation?: FilePlanningOperation | 'powershell';
+}>;
+
 export interface ModelProvider {
   respond(request: ModelRequest, signal: AbortSignal): Promise<ModelResponse>;
 }
@@ -116,11 +124,7 @@ export interface RunContext {
   toolRuntime: ToolRuntime;
   signal: AbortSignal;
   protocol?: AgentRunProtocol;
-  capabilityPlanning?: Readonly<{
-    allowClarification: boolean;
-    /** 只收窄首个能力规划轮次；真实工具结果后恢复 RunContext.tools。 */
-    planningTools?: readonly ToolDefinition[];
-  }>;
+  capabilityPlanning?: CapabilityPlanningState | undefined;
 }
 
 /** 仅 Main 消费的运行终态，不作为 Renderer 事件公开。 */

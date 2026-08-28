@@ -69,6 +69,8 @@ const clarifiedTargetMarker = '补充信息(覆盖此前缺失字段):';
 const explicitTargetPathReplyPattern = /^(?:目标)?(?:相对)?路径\s*(?:是|为|[:：])\s*(.+?)[。！]?$/u;
 const naturalNestedPathReplyPattern = /^([^\s“”"'（）()<>，,。！？!?；;]{1,160})(?:下|中|里)的([^\s“”"'（）()<>，,。！？!?；;]{1,160})(?:文件夹|目录|文件)[。！]?$/u;
 const directPathReplyPattern = /^(?:\.{1,2}[\\/][^\s“”"'（）()<>，,。！？!?；;]+|[^\s“”"'（）()<>，,。！？!?；;]+[\\/][^\s“”"'（）()<>，,。！？!?；;]+|[^\s“”"'（）()<>，,。！？!?；;]*\.[a-z\d_-]+(?:\.[a-z\d_-]+)*)[。！]?$/iu;
+const closedFileContentQuestionPattern = /(?:文件)?(?:内容|正文)(?:是什么|是啥|内容是什么|正文是什么|是什么内容)(?:呢)?[？?。！]?$/u;
+const trustedReferenceOnlyPattern = /(?:刚(?:创建|读取|移动|修改|删除)的文件?|刚才(?:那个)?文件|这个文件|那个文件|该文件|它)(?![\\/.\w-])/u;
 
 const chineseExplicitPowerShellPattern = /^(?:(?:请|请你|帮我|麻烦(?:你|给我)?)\s*)?(?:运行|执行)\s+powershell\s+([\s\S]+)$/iu;
 const englishExplicitPowerShellPattern = /^(?:(?:please\s+)|(?:(?:can|could|would)\s+you\s+(?:please\s+)?))?(?:run|execute)\s+powershell\s+([\s\S]+)$/iu;
@@ -208,6 +210,20 @@ function hasClosedEnglishShape(text: string, objects: readonly TextRange[]): boo
     && hasClosedTermination(text, objects);
 }
 
+function hasClosedFileContentQuestion(text: string): boolean {
+  if (!text || text.includes('\n')) return false;
+  const unquotedText = maskQuotedText(text);
+  if (
+    blocksModelEscalation(unquotedText)
+    || !closedFileContentQuestionPattern.test(unquotedText)
+  ) return false;
+  return scanLocalObjects(unquotedText).length > 0
+    || /(?:目录下|当前(?:文件夹|目录)|授权目录)[^。！？!?\n]{0,40}(?:文件)?(?:内容|正文)/u
+      .test(unquotedText)
+    || /(?:这个文件|那个文件|该文件|刚(?:创建|读取|移动|修改|删除)的文件)[^。！？!?\n]{0,40}(?:内容|正文)/u
+      .test(unquotedText);
+}
+
 /**
  * Main 只识别封闭直接命令形状；未命中的开放式语义交给模型控制计划，
  * 不再维护知识、咨询或可行性词表来模拟自然语言理解。
@@ -217,6 +233,8 @@ function hasExplicitFileIntent(text: string): boolean {
     || explicitReferencePrefixPattern.test(text)
     || explicitNegationPrefixPattern.test(text)) return false;
   const unquotedText = maskQuotedText(text);
+  if (hasTrustedReferenceOnly(unquotedText)) return false;
+  if (hasClosedFileContentQuestion(unquotedText)) return true;
   const closedSourceTarget = /^(?:(?:请你?帮我|请你?|帮我|麻烦你?帮我)\s*)?(?:把|将)\s*\S+\s*(?:重命名为|移动到|复制到)\s*\S+[。！]?$/u.test(unquotedText);
   if (closedSourceTarget) return true;
   const operations = scanRanges(unquotedText, fileOperationPattern)
@@ -228,6 +246,12 @@ function hasExplicitFileIntent(text: string): boolean {
   }
   return hasClosedChineseShape(unquotedText, objects)
     || hasClosedEnglishShape(unquotedText, objects);
+}
+
+function hasTrustedReferenceOnly(text: string): boolean {
+  return trustedReferenceOnlyPattern.test(text)
+    && !/(?:\.{1,2}[\\/]|[\\/]|当前(?:文件夹|目录)|授权目录|目录下|\.[a-z\d_-]+(?:\.[a-z\d_-]+)*)/iu
+      .test(text);
 }
 
 /**
@@ -306,6 +330,7 @@ function blocksModelEscalation(text: string): boolean {
 }
 
 function filePlanningOperation(text: string): FilePlanningOperation | null {
+  if (hasClosedFileContentQuestion(text)) return 'read_file';
   if (/(?:创建|新建).{0,24}(?:文件夹|目录)|\b(?:create|make)\b.{0,24}\b(?:folder|directory)\b/iu.test(text)) return 'create_directory';
   if (/(?:回收站|recycle\s+bin)/iu.test(text) && /(?:删除|移动|移入|\b(?:delete|move)\b)/iu.test(text)) return 'delete_file';
   if (/(?:删除|\bdelete\b)/iu.test(text)) return 'delete_file';

@@ -185,6 +185,25 @@ describe('ConversationChatAdapter', () => {
     expect(diagnostics.mock.calls[0]?.[0]).toMatchObject({ code: 'CONTROL_SCHEMA_INVALID' });
   });
 
+  test('CONTROL_SCHEMA_INVALID reporter 抛错时仍保留正文回退', async () => {
+    const provider = 响应为({
+      type: 'text',
+      text: '正文仍然保留。',
+      emotion: 'happy'
+    });
+    const diagnostics = vi.fn(() => {
+      throw new Error('sink failed');
+    });
+
+    await expect(new ConversationChatAdapter(provider, diagnostics).respond({
+      history: [], text: '普通聊天', behaviorContext,
+      signal: new AbortController().signal
+    })).resolves.toEqual({ text: '正文仍然保留。' });
+
+    expect(provider.respond).toHaveBeenCalledTimes(2);
+    expect(diagnostics).toHaveBeenCalledOnce();
+  });
+
   test('用固定系统消息、历史和当前用户文本发起无工具聊天请求', async () => {
     const provider = 响应为({ type: 'text', text: '你好！' });
     const adapter = new ConversationChatAdapter(provider);

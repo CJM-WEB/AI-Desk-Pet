@@ -56,11 +56,15 @@ export class ProviderResponseDiagnostics {
   }
 
   report(error: ProviderResponseError, correlationId = this.createCorrelationId()): void {
-    this.options.sink(Object.freeze({
-      providerType: this.options.providerType,
-      stage: error.stage,
-      code: error.code,
-      correlationId
-    }));
+    try {
+      this.options.sink(Object.freeze({
+        providerType: this.options.providerType,
+        stage: error.stage,
+        code: error.code,
+        correlationId
+      }));
+    } catch {
+      // 诊断仅尽力执行，不能覆盖原始 Provider 错误路径。
+    }
   }
 }

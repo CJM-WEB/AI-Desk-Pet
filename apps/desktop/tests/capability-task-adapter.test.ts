@@ -497,34 +497,6 @@ describe('CapabilityTaskAdapter', () => {
     expect(agent.submitFileTask).not.toHaveBeenCalled();
   });
 
-  test('文件数据类别拒绝原样失败关闭并允许后续新任务', async () => {
-    let attempt = 0;
-    const agent = createAgentDouble(async () => {
-      attempt += 1;
-      if (attempt === 1) throw codedError('FILE_DISCLOSURE_DENIED');
-    });
-    const adapter = createAdapter({
-      getAuthorizedRootPath: vi.fn(async () => 'D:\\authorized'),
-      createAgentTarget: () => preparedAgent(agent)
-    });
-
-    await adapter.prepareTarget({ generation: 'g-denied', taskKind: 'file' });
-    await expect(adapter.submit({
-      text: '读取私有文件',
-      visibleHistory: [],
-      generation: 'g-denied',
-      taskKind: 'file'
-    })).rejects.toMatchObject({ code: 'FILE_DISCLOSURE_DENIED' });
-    await expect(submitPrepared(adapter, {
-      text: '列出公开目录',
-      visibleHistory: [],
-      generation: 'g-next',
-      taskKind: 'file'
-    })).resolves.toBeUndefined();
-
-    expect(agent.submitFileTask).toHaveBeenCalledTimes(2);
-  });
-
   test('活动任务拒绝并发，reset 清理 Agent、订阅和迟到事件', async () => {
     const pending = deferred();
     let emitAgentEvent!: (event: TaskEvent) => void;

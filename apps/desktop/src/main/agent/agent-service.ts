@@ -679,6 +679,9 @@ export class AgentService {
         : fileTools;
     // 普通文件任务始终排除 PowerShell；显式 PowerShell 只有真实命令结果后才恢复受控组合工具面。
     const tools = session.initialCapability === 'file' ? fileTools : session.tools;
+    const expectedOperation = planningHint?.operation ?? (
+      session.initialCapability === 'powershell' ? 'powershell' : undefined
+    );
     return {
       // 文件系统提示始终在前；获准历史只作为本轮模型输入，不回写 Agent 私有轨迹。
       messages: [
@@ -727,7 +730,8 @@ export class AgentService {
       protocol: 'capability_planner',
       capabilityPlanning: {
         allowClarification: session.initialCapability === 'file',
-        planningTools
+        planningTools,
+        ...(expectedOperation === undefined ? {} : { expectedOperation })
       }
     };
   }

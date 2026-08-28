@@ -1255,110 +1255,196 @@ describe('桌面会话分流纵向集成', () => {
     await fixture.composition.close();
   });
 
-  test('生产会话链以可信结果续接后续指代并复用同一 Agent 写入临时授权根', async () => {
-    const authorized = await createAuthorizedRoot();
-    roots.push(authorized);
-    await mkdir(join(authorized.root, 'a'));
-    const responses = [
-      compatibleToolCall('follow-up-create', 'builtin__files__create_file', {
-        relativePath: 'test.txt', content: '初始内容'
-      }),
-      compatibleText('已创建文件'),
-      compatibleToolCall('follow-up-edit', 'builtin__files__edit_file', {
-        relativePath: 'test.txt', oldString: '初始内容', newString: 'hello'
-      }),
-      compatibleText('已编辑文件'),
-      compatibleToolCall('follow-up-move', 'builtin__files__move_file', {
-        sourceRelativePath: 'test.txt', targetDirectoryRelativePath: 'a'
-      }),
-      compatibleText('已移动文件')
-    ];
-    const requestBodies: Array<Record<string, unknown>> = [];
-    const createSession = vi.fn(() => createMainAgentSession({
-      initialCapability: 'file',
-      authorizedRootPath: authorized.root,
-      generation: 'follow-up-reference-generation',
-      provider: new OpenAICompatibleProvider({
-        baseUrl: 'https://deepseek.example/v1', modelId: 'deepseek-test', providerId: 'deepseek'
-      }, async () => 'vertical-secret', vi.fn(async (_url, init) => {
-        requestBodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
-        const response = responses.shift();
-        if (!response) throw new Error('后续指代 Provider 响应耗尽');
-        return new Response(JSON.stringify(response), {
-          status: 200, headers: { 'content-type': 'application/json' }
-        });
-      })),
-      fallbackProviders: [],
-      createFileTools: async () => authorized.fileTools,
-      createPowerShellTool: () => new PowerShellTool()
-    }));
-    const fixture = conversationIntegrationHarness({
-      responses: [],
-      authorizedRootPath: authorized.root,
-      createAgentService: factoryInput => new AgentService({
-        loop: new AgentLoop(),
-        pending: new PendingActionStore(),
-        createSession,
-        emit: factoryInput.emit,
-        createConversationId: () => 'follow-up-reference-conversation',
-        emitTrustedToolResult: factoryInput.emitTrustedToolResult
-      })
-    });
-    const source = join(authorized.root, 'test.txt');
-    const destination = join(authorized.root, 'a', 'test.txt');
-    const privateReference = (requestIndex: number) => {
-      const messages = requestBodies[requestIndex]?.messages;
-      if (!Array.isArray(messages)) throw new Error('缺少正式 Provider 请求消息');
-      const message = messages.find(candidate => (
-        typeof candidate === 'object'
-        && candidate !== null
-        && 'role' in candidate
-        && candidate.role === 'system'
-        && 'content' in candidate
-        && typeof candidate.content === 'string'
-        && candidate.content.startsWith('任务内私有规划上下文：')
-      ));
-      if (!message || typeof message.content !== 'string') throw new Error('缺少可信工具结果引用');
-      return JSON.parse(message.content.slice('任务内私有规划上下文：'.length)) as {
-        references: Array<{ role: string; relativePath: string }>;
-        toolTranscript: Array<{ toolName: string; ok: boolean; resultCode: string }>;
+  test.each(['OpenAI Compatible', '内置本地模型'] as const)(
+    '%s 生产会话链以可信结果续接后续指代并复用同一 Agent 写入临时授权根',
+    async providerKind => {
+      const authorized = await createAuthorizedRoot();
+      roots.push(authorized);
+      await mkdir(join(authorized.root, 'a'));
+      const responses = [
+        compatibleToolCall('follow-up-create', 'builtin__files__create_file', {
+          relativePath: 'test.txt', content: '初始内容'
+        }),
+        compatibleText('已创建文件'),
+        compatibleToolCall('follow-up-edit', 'builtin__files__edit_file', {
+          relativePath: 'test.txt', oldString: '初始内容', newString: 'hello'
+        }),
+        compatibleText('已编辑文件'),
+        compatibleToolCall('follow-up-move', 'builtin__files__move_file', {
+          sourceRelativePath: 'test.txt', targetDirectoryRelativePath: 'a'
+        }),
+        compatibleText('已移动文件')
+      ];
+      const providerMessages: Array<Array<{ role: string; content?: string }>> = [];
+      const captureMessages = (messages: readonly ModelMessage[]) => {
+        providerMessages.push(messages.map(message => ({
+          role: message.role,
+          ...(typeof message.content === 'string' ? { content: message.content } : {})
+        })));
       };
-    };
+      let provider: ModelProvider;
+      let assertProviderComplete = (): void => undefined;
+      if (providerKind === 'OpenAI Compatible') {
+        provider = new OpenAICompatibleProvider({
+          baseUrl: 'https://deepseek.example/v1',
+          modelId: 'deepseek-test',
+          providerId: 'deepseek'
+        }, async () => 'vertical-secret', vi.fn(async (_url, init) => {
+          const requestBody = JSON.parse(String(init?.body)) as { messages?: ModelMessage[] };
+          if (!Array.isArray(requestBody.messages)) {
+            throw new Error('缺少正式 Provider 请求消息');
+          }
+          captureMessages(requestBody.messages);
+          const response = responses.shift();
+          if (!response) throw new Error('后续指代 Provider 响应耗尽');
+          return new Response(JSON.stringify(response), {
+            status: 200, headers: { 'content-type': 'application/json' }
+          });
+        }));
+        assertProviderComplete = () => {
+          expect(responses).toEqual([]);
+        };
+      } else {
+        const localServer = await startLocalModelServer([
+          {
+            response: toolCall('follow-up-local-create', 'builtin.files.create_file', {
+              relativePath: 'test.txt',
+              content: '初始内容'
+            }),
+            inspect: request => captureMessages(request.messages)
+          },
+          {
+            response: { type: 'text', text: '已创建文件' },
+            inspect: request => captureMessages(request.messages)
+          },
+          {
+            response: toolCall('follow-up-local-edit', 'builtin.files.edit_file', {
+              relativePath: 'test.txt',
+              oldString: '初始内容',
+              newString: 'hello'
+            }),
+            inspect: request => captureMessages(request.messages)
+          },
+          {
+            response: { type: 'text', text: '已编辑文件' },
+            inspect: request => captureMessages(request.messages)
+          },
+          {
+            response: toolCall('follow-up-local-move', 'builtin.files.move_file', {
+              sourceRelativePath: 'test.txt',
+              targetDirectoryRelativePath: 'a'
+            }),
+            inspect: request => captureMessages(request.messages)
+          },
+          {
+            response: { type: 'text', text: '已移动文件' },
+            inspect: request => captureMessages(request.messages)
+          }
+        ] satisfies ProviderStep[]);
+        servers.push(localServer);
+        provider = new LocalModelProvider(localServer.connectionPort);
+        assertProviderComplete = () => localServer.assertComplete();
+      }
+      const capabilitySubmissions: Array<Parameters<AgentService['submitFileTask']>[0]> = [];
+      const createSession = vi.fn(() => createMainAgentSession({
+        initialCapability: 'file',
+        authorizedRootPath: authorized.root,
+        generation: 'follow-up-reference-generation',
+        provider,
+        fallbackProviders: [],
+        createFileTools: async () => authorized.fileTools,
+        createPowerShellTool: () => new PowerShellTool()
+      }));
+      const fixture = conversationIntegrationHarness({
+        responses: [],
+        authorizedRootPath: authorized.root,
+        createAgentService: factoryInput => {
+          const service = new AgentService({
+            loop: new AgentLoop(),
+            pending: new PendingActionStore(),
+            createSession,
+            emit: factoryInput.emit,
+            createConversationId: () => 'follow-up-reference-conversation',
+            emitTrustedToolResult: factoryInput.emitTrustedToolResult
+          });
+          return {
+            submitFileTask: async submission => {
+              capabilitySubmissions.push(submission);
+              return service.submitFileTask(submission);
+            },
+            cancelActive: () => service.cancelActive(),
+            confirm: actionId => service.confirm(actionId),
+            cancelAction: actionId => service.cancelAction(actionId),
+            resetForNewConversation: () => service.resetForNewConversation(),
+            close: () => service.close()
+          };
+        }
+      });
+      const source = join(authorized.root, 'test.txt');
+      const destination = join(authorized.root, 'a', 'test.txt');
+      const privateReference = (requestIndex: number) => {
+        const messages = providerMessages[requestIndex];
+        if (!Array.isArray(messages)) throw new Error('缺少正式 Provider 请求消息');
+        const message = messages.find(candidate => (
+          candidate.role === 'system'
+          && typeof candidate.content === 'string'
+          && candidate.content.startsWith('任务内私有规划上下文：')
+        ));
+        if (!message || typeof message.content !== 'string') throw new Error('缺少可信工具结果引用');
+        return JSON.parse(message.content.slice('任务内私有规划上下文：'.length)) as {
+          references: Array<{ role: string; relativePath: string }>;
+          toolTranscript: Array<{ toolName: string; ok: boolean; resultCode: string }>;
+        };
+      };
 
-    await fixture.composition.coordinator.submit('创建 test.txt');
-    const create = pendingAction(fixture.events);
-    await fixture.composition.coordinator.resolveFileAction(create.actionId, 'confirm');
-    await expect(readFile(source, 'utf8')).resolves.toBe('初始内容');
+      await fixture.composition.coordinator.submit('创建 test.txt');
+      const create = pendingAction(fixture.events);
+      await fixture.composition.coordinator.resolveFileAction(create.actionId, 'confirm');
+      await expect(readFile(source, 'utf8')).resolves.toBe('初始内容');
 
-    await fixture.composition.coordinator.submit('把刚创建的文件内容改为 hello');
-    const edit = fixture.events.filter(event => event.type === 'pending_action').at(-1);
-    if (!edit || edit.type !== 'pending_action') throw new Error('缺少编辑确认卡');
-    await fixture.composition.coordinator.resolveFileAction(edit.action.actionId, 'confirm');
-    await expect(readFile(source, 'utf8')).resolves.toBe('hello');
+      await fixture.composition.coordinator.submit('把刚创建的文件内容改为 hello');
+      const edit = fixture.events.filter(event => event.type === 'pending_action').at(-1);
+      if (!edit || edit.type !== 'pending_action') throw new Error('缺少编辑确认卡');
+      await fixture.composition.coordinator.resolveFileAction(edit.action.actionId, 'confirm');
+      await expect(readFile(source, 'utf8')).resolves.toBe('hello');
 
-    await fixture.composition.coordinator.submit('把刚才那个文件移动到 a 文件夹');
-    const move = fixture.events.filter(event => event.type === 'pending_action').at(-1);
-    if (!move || move.type !== 'pending_action') throw new Error('缺少移动确认卡');
-    await fixture.composition.coordinator.resolveFileAction(move.action.actionId, 'confirm');
+      await fixture.composition.coordinator.submit('把刚才那个文件移动到 a 文件夹');
+      const move = fixture.events.filter(event => event.type === 'pending_action').at(-1);
+      if (!move || move.type !== 'pending_action') throw new Error('缺少移动确认卡');
+      await fixture.composition.coordinator.resolveFileAction(move.action.actionId, 'confirm');
 
-    await expect(lstat(source)).rejects.toMatchObject({ code: 'ENOENT' });
-    await expect(readFile(destination, 'utf8')).resolves.toBe('hello');
-    expect(fixture.createAgentService).toHaveBeenCalledOnce();
-    expect(fixture.agentFactoryInputs).toHaveLength(1);
-    expect(createSession).toHaveBeenCalledOnce();
-    expect(privateReference(2)).toEqual(expect.objectContaining({
-      references: [{ role: 'created', relativePath: 'test.txt' }],
-      toolTranscript: [{ toolName: 'create_file', ok: true, resultCode: 'OK' }]
-    }));
-    expect(privateReference(4)).toEqual(expect.objectContaining({
-      references: [{ role: 'read', relativePath: 'test.txt' }],
-      toolTranscript: expect.arrayContaining([
-        { toolName: 'create_file', ok: true, resultCode: 'OK' },
-        { toolName: 'edit_file', ok: true, resultCode: 'OK' }
-      ])
-    }));
-    await fixture.composition.close();
-  });
+      await expect(lstat(source)).rejects.toMatchObject({ code: 'ENOENT' });
+      await expect(readFile(destination, 'utf8')).resolves.toBe('hello');
+      expect(capabilitySubmissions).toHaveLength(3);
+      expect(capabilitySubmissions[0]).toMatchObject({
+        text: '创建 test.txt',
+        planningHint: { operation: 'create_file' }
+      });
+      expect(capabilitySubmissions[1]).toMatchObject({ text: '把刚创建的文件内容改为 hello' });
+      expect(capabilitySubmissions[1]?.planningHint).toBeUndefined();
+      expect(capabilitySubmissions[2]).toMatchObject({ text: '把刚才那个文件移动到 a 文件夹' });
+      expect(capabilitySubmissions[2]?.planningHint).toBeUndefined();
+      expect(fixture.createAgentService).toHaveBeenCalledOnce();
+      expect(fixture.agentFactoryInputs).toHaveLength(1);
+      expect(createSession).toHaveBeenCalledOnce();
+      expect(privateReference(2)).toEqual(expect.objectContaining({
+        references: expect.arrayContaining([{ role: 'created', relativePath: 'test.txt' }]),
+        toolTranscript: [{ toolName: 'create_file', ok: true, resultCode: 'OK' }]
+      }));
+      expect(privateReference(4)).toEqual(expect.objectContaining({
+        references: expect.arrayContaining([
+          { role: 'created', relativePath: 'test.txt' },
+          { role: 'read', relativePath: 'test.txt' }
+        ]),
+        toolTranscript: expect.arrayContaining([
+          { toolName: 'create_file', ok: true, resultCode: 'OK' },
+          { toolName: 'edit_file', ok: true, resultCode: 'OK' }
+        ])
+      }));
+      assertProviderComplete();
+      await fixture.composition.close();
+    }
+  );
 
   test('跨 Provider 仅发送当前消息时历史为空且当前消息继续执行', async () => {
     const fixture = conversationIntegrationHarness({
@@ -2057,7 +2143,7 @@ describe('桌面 Agent 真实服务集成', () => {
     }
   );
 
-  test('错误创建提示仍公告移动工具，逐次确认后产生真实移动副作用', async () => {
+  test('错误创建提示仍公告移动工具，但错误期望 operation 会阻断伪总结', async () => {
     const fixture = await harness([
       {
         response: toolCall('move-despite-create-hint', 'builtin.files.move_file', {
@@ -2085,11 +2171,24 @@ describe('桌面 Agent 真实服务集成', () => {
     await expect(readFile(sourcePath, 'utf8')).resolves.toBe('真实内容');
     await expect(lstat(targetPath)).rejects.toMatchObject({ code: 'ENOENT' });
 
-    await fixture.service.confirm(pendingAction(fixture.events).actionId);
+    await expect(fixture.service.confirm(pendingAction(fixture.events).actionId))
+      .rejects.toMatchObject({ code: 'CAPABILITY_PLAN_PROTOCOL_INVALID' });
 
     await expect(lstat(sourcePath)).rejects.toMatchObject({ code: 'ENOENT' });
     await expect(readFile(targetPath, 'utf8')).resolves.toBe('真实内容');
     expectProviderExchange(fixture.providerServer, 2);
+    expect(fixture.events.at(-2)).toEqual({
+      type: 'error',
+      code: 'PROVIDER_SUMMARY_FAILED_AFTER_WRITE',
+      message: '本地文件操作已成功，但模型总结失败。',
+      nextAction: '可以查看文件结果，或稍后重新请求总结。'
+    });
+    expect(fixture.events.at(-1)).toEqual({ type: 'phase', phase: 'error' });
+    expect(fixture.events).not.toContainEqual({
+      type: 'message',
+      role: 'assistant',
+      text: '文件已移动'
+    });
   });
 
   test('显式 PowerShell 经真实确认后可在同一会话续接文件移动并再次确认', async () => {

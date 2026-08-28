@@ -15,14 +15,17 @@
 
 ### 实际运行结果
 
-- `pnpm.cmd test:integration`：退出码 `0`，4 个测试文件、88 项通过。参数化事务在两种 Provider 下均依次完成：创建 `test.txt` 后确认、读取、编辑为字面 `hello` 后确认、移动到 `a/test.txt` 后确认；确认前后均直接断言临时磁盘副作用，最终源文件不存在且目标内容为 `hello`。
+- `pnpm.cmd test:integration`：退出码 `0`，4 个测试文件、89 项通过。参数化事务在两种 Provider 下均依次完成：创建 `test.txt` 后确认、读取、编辑为字面 `hello` 后确认、移动到 `a/test.txt` 后确认；确认前后均直接断言临时磁盘副作用，最终源文件不存在且目标内容为 `hello`。
 - 新增正式会话链事务复用 `MainConversationComposition`、`ConversationCoordinator`、`CapabilityTaskAdapter`、`AgentService` 与临时授权根。用户依次说“创建 test.txt”“把刚创建的文件内容改为 hello”“把刚才那个文件移动到 a 文件夹”，后两轮未直接传入路径或 `planningHint`；同一 Agent target/session 只创建一次，后续 Provider 请求只接收来自真实工具结果的私有 `create_file`、`edit_file` 引用，最终 `a/test.txt` 为 `hello` 且源不存在。
-- `pnpm.cmd test:security -- permission-boundary.test.ts`：退出码 `0`，1 个测试文件、28 项通过。普通聊天保持无工具请求且不触达文件或 PowerShell 能力；`..`、绝对路径、UNC 与授权根前缀碰撞继续被拒绝。
-- `pnpm.cmd --dir apps/desktop exec vitest run --config vitest.config.ts tests/conversation-coordinator.test.ts`：退出码 `0`，1 个测试文件、99 项通过。普通聊天不会借用文件任务或旧澄清提权，已确认文件结果仅作为下一轮私有规划上下文。
+- `pnpm.cmd test:security`：退出码 `0`，1 个测试文件、28 项通过。普通聊天保持无工具请求且不触达文件或 PowerShell 能力；`..`、绝对路径、UNC 与授权根前缀碰撞继续被拒绝。
+- `pnpm.cmd exec vitest run --config vitest.config.ts tests/capability-transaction.test.ts tests/capability-intent-router.test.ts tests/conversation-chat-adapter.test.ts tests/conversation-coordinator.test.ts tests/provider-contract.test.ts`（目录 `apps/desktop`）：退出码 `0`，5 个测试文件、599 项通过。普通聊天不会借用文件任务或旧澄清提权；已确认文件结果只作为下一轮私有规划上下文；诊断 sink 自身抛错时仍保留 Provider 原错误与聊天正文回退。
 - 本任务最初的双 Provider 直接文件纵向测试首次为绿，说明它是对 Tasks 1–4 已完成接线的验收，不作为本任务的 RED 证据；本轮没有为了制造失败而修改生产实现、权限策略或测试夹具协议。
 - 两条 Provider 会话 E2E 均先以 `assertComplete` 的“脚本化 Provider 收到 1 个额外请求”稳定 RED；根因是该场景的非故障聊天步骤返回裸文本，未遵守同文件完整控制对象契约。替换为既有 `characterChatResponse()` 后，两条精确用例均 GREEN，未放宽 Provider server 的 `assertComplete`。
 - 文件工具 `glob_files` 预算用例与角色 V2 导出用例的隔离、所属 package suite 均通过。V2 导出在首次根级并行实际耗时 15.042 秒，超过原 15 秒局部预算；隔离约 1.4 秒、Desktop suite 约 2.7 秒，最终全量门禁为 7.836 秒。因此只将两条用例的局部预算分别设为 45 秒和 20 秒，未调整全局预算、产品逻辑、授权或 Provider 协议。
-- 最终 `pnpm.cmd verify:desktop`：退出码 `0`。全仓类型检查、单元测试 3505/3505、安全测试 28/28、集成测试 88/88、生产构建和 preload 外部依赖校验均通过；Electron E2E 为 77 通过、1 条既有长时场景跳过、0 失败。
+- `pnpm.cmd --filter @myself/desktop test`：退出码 `0`，107 个测试文件、2809 项通过。
+- `pnpm.cmd --filter @myself/desktop typecheck`：退出码 `0`。
+- 最终 `pnpm.cmd verify:desktop`：退出码 `0`。全仓类型检查、单元测试 3525/3525、安全测试 28/28、集成测试 89/89、生产构建和 preload 外部依赖校验均通过；Electron E2E 为 77 通过、1 条既有长时场景跳过、0 失败。
+- `git diff --check`：退出码 `0`；只有 Windows 工作区的 LF/CRLF 提示，没有 whitespace error。
 
 ### 未覆盖项
 
