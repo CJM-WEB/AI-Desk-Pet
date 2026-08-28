@@ -76,9 +76,11 @@ git commit -m "fix: 统一显式文件任务工具权限"
 
 **文件：**
 - 新增：`apps/desktop/src/main/conversation/capability-transaction.ts`
+- 修改：`apps/desktop/src/main/agent/agent-service.ts`
 - 修改：`apps/desktop/src/main/conversation/conversation-coordinator.ts`
 - 修改：`apps/desktop/src/main/conversation/capability-task-adapter.ts`
 - 修改：`apps/desktop/src/main/conversation/capability-intent-router.ts`
+- 测试：`apps/desktop/tests/agent-service.test.ts`
 - 测试：`apps/desktop/tests/capability-transaction.test.ts`
 - 测试：`apps/desktop/tests/conversation-coordinator.test.ts`
 - 测试：`apps/desktop/tests/capability-intent-router.test.ts`
@@ -104,9 +106,25 @@ export class CapabilityTransactionStore {
 }
 ```
 
+`AgentService` 新增仅限 Main 内部的结果端口；不得加入 `@myself/shared-types` 的公开 `TaskEvent`，也不得投影到 Renderer：
+
+```ts
+export type AgentTrustedToolResult = Readonly<{
+  toolName: string;
+  ok: boolean;
+  relativePaths: readonly string[];
+}>;
+
+export interface AgentServiceOptions {
+  emitTrustedToolResult?: (result: AgentTrustedToolResult) => void;
+}
+```
+
+`ConversationCapabilityTaskPort` 与 `CapabilityTaskAdapter` 增加独立的 `onTrustedToolResult(listener)` 私有订阅；Adapter 绑定当前 owner、generation 和 target 后才转发，旧 owner 或失效 generation 的迟到结果直接丢弃。
+
 - [ ] **步骤 1：写事务状态机失败测试**
 
-在新测试中以字面事件验证：只有成功 `tool_result` 能建立引用；assistant 文本“已经移动”不能建立引用或成功；`awaiting_confirmation` 下“继续”返回等待确认而不执行；`completed/failed` 下“成功了吗”返回真实终态；generation、Provider、授权根变化会清空事务。
+在新测试中以字面私有结果验证：只有 `AgentTrustedToolResult.ok=true` 能建立引用；assistant 文本“已经移动”不能建立引用或成功；`awaiting_confirmation` 下“继续”返回等待确认而不执行；`completed/failed` 下“成功了吗”返回真实终态；generation、Provider、授权根变化会清空事务。`agent-service.test.ts` 还必须验证只读工具成功与确认后的写工具成功各发出一次私有结果，失败/取消/过期不发成功结果，且公共 `TaskEvent` 不含该 payload。
 
 - [ ] **步骤 2：验证 RED**
 
@@ -120,7 +138,7 @@ pnpm.cmd --filter @myself/desktop test -- capability-transaction.test.ts
 
 - [ ] **步骤 3：实现最小状态机**
 
-新增纯 Main 内存状态机。只保存任务内相对路径与稳定结果码；通过结构化 `TaskEvent` 迁移 phase，禁止从 assistant 自由文本推导成功和引用。
+新增纯 Main 内存状态机。只保存任务内相对路径与稳定结果码；公共 `TaskEvent` 只迁移 phase，私有 `AgentTrustedToolResult` 建立真实引用，禁止从 assistant 自由文本推导成功和引用。`AgentService` 在受控只读工具真实返回后、以及确认写真实完成后调用私有端口；只使用通过工具/verified action 得到的根内相对路径，不转发正文、绝对路径或 PowerShell 输出。
 
 - [ ] **步骤 4：写 Coordinator 失败测试**
 
@@ -149,7 +167,7 @@ pnpm.cmd --filter @myself/desktop test -- capability-transaction.test.ts convers
 - [ ] **步骤 7：提交**
 
 ```powershell
-git add apps/desktop/src/main/conversation apps/desktop/tests/capability-transaction.test.ts apps/desktop/tests/conversation-coordinator.test.ts apps/desktop/tests/capability-intent-router.test.ts
+git add apps/desktop/src/main/agent/agent-service.ts apps/desktop/src/main/conversation apps/desktop/tests/agent-service.test.ts apps/desktop/tests/capability-transaction.test.ts apps/desktop/tests/conversation-coordinator.test.ts apps/desktop/tests/capability-intent-router.test.ts
 git commit -m "feat: 增加会话级文件能力事务"
 ```
 
