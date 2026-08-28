@@ -12,7 +12,7 @@
 - 本节记录 `2026-08-28-ai-pet-file-transaction-correction` Task 4 的最终收口，只覆盖旧测试夹具字段清理、门禁复跑与验收事实同步。
 - `apps/desktop/tests/main-agent-session-factory.test.ts` 与 `apps/desktop/tests/agent-service.test.ts` 已删除只服务旧文件披露 gate 的 `fileDisclosureAllowed` 夹具字段与分支；`apps/desktop/tests/capability-transaction.test.ts` 本轮未发现 `providerId`、`authorizationRootId` 或 `fileDisclosureAllowed` 旧字段，无需改动。
 - `apps/desktop/tests/agent-service.test.ts` 仍保留 1 处 `ProviderProfileV2.providerId`。这是现行共享契约 `providerProfileV2Schema` 的必填字段，用于构造内置本地模型 profile，不属于旧测试夹具字段，故未删除。
-- 本节在“旧文件披露值为 false”相关描述范围内，覆盖上文 `2026-08-28 文件事务稳定性纵向自动验收` 的同类旧夹具表述；其余真实文件事务、安全边界和人工待验范围保持不变。
+- 自本节起，本文关于文件事务的现行事实统一为：显式文件任务使用受控完整文件工具，普通聊天保持 `tools=[]`，旧 `fileDisclosureAllowed`/“文件数据授权关闭”披露 gate 已移除。下文保留相关旧口径时，均只作为历史证据，不再代表现行验收结论。
 
 ### 实际运行结果
 
@@ -26,7 +26,7 @@
 - `pnpm.cmd test:integration`：退出码 `0`，4 个测试文件、92 项通过。
 - `pnpm.cmd verify:desktop`：退出码 `0`。workspace typecheck 覆盖 10/11 个存在脚本的项目；单元测试 136 个测试文件、3546 项通过；安全测试 28/28，通过集成测试 92/92；生产构建、preload 外部依赖校验与正式边界校验通过；Electron E2E 为 77 通过、1 条既有长时场景跳过、0 失败。
 - 本轮 `desktop test`、`verify:desktop` 与相关角色/工作台测试输出中继续出现 `CHARACTER_IMPORT_RECOVERY_*`、角色运行失败码、`HTMLCanvasElement.getContext()` 未实现等既有受控 stderr；对应 suite 最终均为退出码 `0`，本节不把这些已断言的受控诊断误记为失败。
-- `git diff --check`：见本节提交前最终差异检查，退出码 `0`；仅有 Windows 工作区 LF/CRLF 提示，没有 whitespace error。
+- `git diff --check`：见本节提交前最终差异检查，退出码 `0`，且无 whitespace error。
 
 ### 未覆盖项
 
@@ -37,7 +37,8 @@
 
 ### 替代范围与环境
 
-- 本节替代旧“文件数据授权关闭时，显式文件任务只公告结构化澄清工具”的描述。显式文件任务的受控工具面不再由文件披露开关阻断；授权根、相对路径、逐次确认、真实执行和公开脱敏边界保持不变。
+- 本节记录的是当时实现提交上的自动化结果。其中文件披露 gate 相关表述现已退役，仅作为历史证据保留，不再代表当前正式路径。
+- 当前现行结论以上文“2026-08-28 文件事务纠偏最终收口验收”为准：显式文件任务使用受控完整文件工具，普通聊天保持 `tools=[]`，旧 `fileDisclosureAllowed`/“文件数据授权关闭”披露 gate 已移除；授权根、相对路径、逐次确认、真实执行和公开脱敏边界保持不变。
 - 环境：Windows 隔离 worktree `C:\Users\Administrator\.codex\worktrees\e43f\myself`，起始提交 `c9615798d0ac8a12f3bb8c5a4838f8748c91ad2e`。文件副作用仅写入测试以 `mkdtemp` 创建的临时授权根，清理后不保留用户目录文件。
 - 两个 Provider fixture 分别覆盖 OpenAI-compatible 外部工具别名与内置本地模型环回协议；HTTP 服务、模型响应和回收站端口均为隔离夹具，`AgentLoop`、`AgentService`、`FileToolService`、路径策略与确认执行链均为正式实现。
 
@@ -53,7 +54,7 @@
 - `pnpm.cmd --filter @myself/desktop test`：退出码 `0`，107 个测试文件、2809 项通过。
 - `pnpm.cmd --filter @myself/desktop typecheck`：退出码 `0`。
 - 最终 `pnpm.cmd verify:desktop`：退出码 `0`。全仓类型检查、单元测试 3525/3525、安全测试 28/28、集成测试 89/89、生产构建和 preload 外部依赖校验均通过；Electron E2E 为 77 通过、1 条既有长时场景跳过、0 失败。
-- `git diff --check`：退出码 `0`；只有 Windows 工作区的 LF/CRLF 提示，没有 whitespace error。
+- `git diff --check`：退出码 `0`，且无 whitespace error。
 
 ### 未覆盖项
 
@@ -115,7 +116,7 @@
 - 删除空目录：第一个确认相关公开事件为 `pending_action`；确认前目录存在，确认后隔离回收站端口只调用一次；真实工具结果续传后只生成文字总结，第二轮为 `tools=[]`、`tool_choice:'none'`。
 - 创建文件：确认前不落盘，确认后正文真实落盘；再次创建同名目标返回 `TARGET_EXISTS`，原正文不被覆盖。
 - 缺少目标：DeepSeek 结构化澄清工具只公开一条问题，不产生确认卡或文件副作用。
-- 普通聊天：“你好呀”请求为 `tools=[]`、`toolChoice:'none'`；未选择授权根时不创建 Agent，文件数据授权关闭时 Provider 只收到结构化澄清工具，不收到文件工具。
+- 普通聊天：“你好呀”请求为 `tools=[]`、`toolChoice:'none'`；未选择授权根时不创建 Agent。当时实现仍带有已退役的 `fileDisclosureAllowed`/“文件数据授权关闭”历史机制，因此该旧夹具只收到结构化澄清工具；这一句只说明当时版本，不代表当前现行验收结论。
 
 ### 未验证与后续安全项
 

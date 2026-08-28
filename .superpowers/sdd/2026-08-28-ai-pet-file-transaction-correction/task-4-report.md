@@ -28,7 +28,7 @@
 - `pnpm.cmd test:security`：退出码 `0`，1 个测试文件、28 项通过。
 - `pnpm.cmd test:integration`：退出码 `0`，4 个测试文件、92 项通过。
 - `pnpm.cmd verify:desktop`：退出码 `0`；workspace typecheck 覆盖 10/11 个存在脚本的项目，单元测试 136 个测试文件、3546 项通过，安全测试 28/28，集成测试 92/92，生产构建与边界校验通过，Electron E2E 77 通过、1 跳过、0 失败。
-- `git diff --check`：提交前最终执行，退出码 `0`；仅有 LF/CRLF 提示，没有 whitespace error。
+- `git diff --check`：提交前最终执行，退出码 `0`，且无 whitespace error。
 
 ## 自审
 
@@ -40,3 +40,18 @@
 
 - 无功能性阻塞。
 - 待用户人工确认：真实外部 Provider 网络、真实本地 GGUF/CPU/Vulkan 模型、真实 Windows 窗口交互/观感、真实回收站恢复与用户目录人工文件操作。
+
+## 复审修正第 1 轮
+
+### 修正范围
+
+- `docs/operations/lightweight-agent-acceptance.md`：把仍像现行事实的旧 `fileDisclosureAllowed`/“文件数据授权关闭”口径全部降级为历史机制说明，并显式声明现行单一事实是“显式文件任务使用受控完整文件工具，普通聊天零工具；旧披露 gate 已移除”。
+- `docs/operations/lightweight-agent-acceptance.md` 与本报告：把 `git diff --check` 记录收紧为本轮可证明事实，仅保留退出码 `0` 与“无 whitespace error”。
+
+### 验证结果
+
+- 本轮只改文档与报告，不改生产代码。
+- 链接检查：校验 `docs/operations/lightweight-agent-acceptance.md` 与本报告中的相对 Markdown 链接，结果 `LINK_CHECK_OK`。
+- 术语检查：复查冲突短语与“LF/CRLF 提示”描述的精确匹配，`rg` 无命中，退出码 `1`。
+- 定向测试：`pnpm.cmd --dir apps/desktop exec vitest run --config vitest.config.ts tests/main-agent-session-factory.test.ts tests/agent-service.test.ts tests/capability-transaction.test.ts` 退出码 `0`，3 个测试文件、133 项通过。
+- `git diff --check --cached`：退出码 `0`，且无 whitespace error。
