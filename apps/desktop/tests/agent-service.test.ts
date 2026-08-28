@@ -20,6 +20,7 @@ import {
 import { PermissionPolicy } from '../src/main/agent/permission-policy';
 import { PendingActionStore } from '../src/main/agent/pending-action-store';
 import { OpenAICompatibleProvider } from '../src/main/providers/openai-provider';
+import { ProviderResponseError } from '../src/main/providers/provider-response-error';
 import { createBuiltinAgentToolRegistry } from '../src/main/agent/tool-registry';
 import type { PowerShellTool, VerifiedPowerShellAction } from '../src/main/agent/powershell-tool';
 import { createTaskStore } from '../src/renderer/src/stores/task-store';
@@ -2044,6 +2045,21 @@ describe('AgentService', () => {
     }));
     expect(events.at(-1)).toEqual({ type: 'phase', phase: 'error' });
     expect(JSON.stringify(events)).not.toContain('private details');
+  });
+
+  test('Provider 格式子码在能力任务公开事件中收敛为通用错误', async () => {
+    const providerError = new ProviderResponseError('HTTP_BODY_NOT_JSON', 'transport');
+    const { events, service } = createHarness(new ScriptedProvider([providerError]));
+
+    await expect(service.submitFileTask({ text: '调用模型', visibleHistory: [] }))
+      .rejects.toBe(providerError);
+
+    expect(events.at(-2)).toEqual({
+      type: 'error',
+      code: 'PROVIDER_MALFORMED_RESPONSE',
+      message: '任务执行失败，请重试。'
+    });
+    expect(JSON.stringify(events)).not.toContain('HTTP_BODY_NOT_JSON');
   });
 
   test('可重试的 Provider 错误只自动重试一次', async () => {

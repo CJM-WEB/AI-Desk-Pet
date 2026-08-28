@@ -23,6 +23,7 @@ import {
   shouldStreamStructuredText
 } from './structured-text-stream';
 import { TopLevelTextProjector } from './top-level-text-projector';
+import { ProviderResponseError } from './provider-response-error';
 
 export type FetchLike = (
   input: string | URL | Request,
@@ -61,7 +62,7 @@ const compatibleResponseSchema = z.object({
         type: z.literal('function'),
         function: z.object({
           name: z.string().min(1),
-          arguments: z.string()
+          arguments: z.unknown()
         })
       })).optional()
     })
@@ -121,7 +122,7 @@ export async function readProviderJson(response: Response): Promise<unknown> {
   try {
     return await response.json();
   } catch {
-    throw new ProviderError('PROVIDER_MALFORMED_RESPONSE', false);
+    throw new ProviderResponseError('HTTP_BODY_NOT_JSON', 'transport');
   }
 }
 
@@ -159,23 +160,26 @@ function normalizeResponse(
   responseContract: ModelResponseContract | undefined
 ): ModelResponse {
   const parsed = compatibleResponseSchema.safeParse(raw);
-  if (!parsed.success) throw new ProviderError('PROVIDER_MALFORMED_RESPONSE', false);
+  if (!parsed.success) throw new ProviderResponseError('RESPONSE_SHAPE_INVALID', 'transport');
 
   const message = parsed.data.choices[0]?.message;
-  if (!message) throw new ProviderError('PROVIDER_MALFORMED_RESPONSE', false);
+  if (!message) throw new ProviderResponseError('RESPONSE_SHAPE_INVALID', 'transport');
   const toolCalls = message.tool_calls ?? [];
-  if (toolCalls.length > 1) throw new ProviderError('PROVIDER_MALFORMED_RESPONSE', false);
+  if (toolCalls.length > 1) throw new ProviderResponseError('RESPONSE_SHAPE_INVALID', 'transport');
   if (
     toolCalls.length === 1
     && typeof message.content === 'string'
     && message.content.length > 0
   ) {
-    throw new ProviderError('PROVIDER_MALFORMED_RESPONSE', false);
+    throw new ProviderResponseError('RESPONSE_SHAPE_INVALID', 'transport');
   }
 
   const toolCall = toolCalls[0];
   if (toolCall) {
     try {
+      if (typeof toolCall.function.arguments !== 'string') {
+        throw new ProviderResponseError('TOOL_ARGUMENTS_INVALID', 'tool_call');
+      }
       const argumentsValue = toolArgumentsSchema.parse(JSON.parse(toolCall.function.arguments));
       let toolName: string;
       try {
@@ -192,13 +196,13 @@ function normalizeResponse(
         }
       };
     } catch (error) {
-      if (error instanceof ProviderError) throw error;
-      throw new ProviderError('PROVIDER_MALFORMED_RESPONSE', false);
+      if (error instanceof ProviderError || error instanceof ProviderResponseError) throw error;
+      throw new ProviderResponseError('TOOL_ARGUMENTS_INVALID', 'tool_call');
     }
   }
 
   if (typeof message.content !== 'string') {
-    throw new ProviderError('PROVIDER_MALFORMED_RESPONSE', false);
+    throw new ProviderResponseError('RESPONSE_SHAPE_INVALID', 'transport');
   }
   const response = responseContract === undefined
     ? { type: 'text' as const, text: message.content }
@@ -207,7 +211,7 @@ function normalizeResponse(
     if (message.metadata?.emotion !== undefined) {
       const emotion = characterEmotionLabelSchema.safeParse(message.metadata.emotion);
       if (!emotion.success) {
-        throw new ProviderError('PROVIDER_MALFORMED_RESPONSE', false);
+        throw new ProviderResponseError('CONTROL_SCHEMA_INVALID', 'chat_control');
       }
       response.emotion = emotion.data;
     }
@@ -260,7 +264,7 @@ async function readProviderSse(
   validateProjectedText: ((text: string) => void) | undefined
 ): Promise<unknown> {
   if (!response.ok) throw normalizeHttpError(response.status);
-  if (response.body === null) throw new ProviderError('PROVIDER_MALFORMED_RESPONSE', false);
+  if (response.body === null) throw new ProviderResponseError('RESPONSE_SHAPE_INVALID', 'stream');
 
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
@@ -278,7 +282,7 @@ async function readProviderSse(
     : new TopLevelTextProjector({
         field: request.responseContract.textField,
         allowPlainTextFallback: request.responseContract.allowPlainTextFallback,
-        malformed: () => { throw new ProviderError('PROVIDER_MALFORMED_RESPONSE', false); }
+        malformed: () => { throw new ProviderResponseError('RESPONSE_SHAPE_INVALID', 'stream'); }
       });
 
   const dispatch = (): void => {
@@ -294,10 +298,10 @@ async function readProviderSse(
     try {
       raw = JSON.parse(data);
     } catch {
-      throw new ProviderError('PROVIDER_MALFORMED_RESPONSE', false);
+      throw new ProviderResponseError('RESPONSE_SHAPE_INVALID', 'stream');
     }
     if (typeof raw !== 'object' || raw === null) {
-      throw new ProviderError('PROVIDER_MALFORMED_RESPONSE', false);
+      throw new ProviderResponseError('RESPONSE_SHAPE_INVALID', 'stream');
     }
     const choices = Reflect.get(raw, 'choices');
     const choice = Array.isArray(choices) ? choices[0] : undefined;
@@ -305,27 +309,27 @@ async function readProviderSse(
       ? Reflect.get(choice, 'delta')
       : undefined;
     if (typeof delta !== 'object' || delta === null) {
-      throw new ProviderError('PROVIDER_MALFORMED_RESPONSE', false);
+      throw new ProviderResponseError('RESPONSE_SHAPE_INVALID', 'stream');
     }
     if (Object.prototype.hasOwnProperty.call(delta, 'reasoning_content')) {
       throw new ProviderError('LOCAL_MODEL_REASONING_LEAK', false);
     }
     if (Object.prototype.hasOwnProperty.call(delta, 'tool_calls')) {
-      throw new ProviderError('PROVIDER_MALFORMED_RESPONSE', false);
+      throw new ProviderResponseError('RESPONSE_SHAPE_INVALID', 'stream');
     }
     const fragment = Reflect.get(delta, 'content');
     if (fragment !== undefined && fragment !== null && typeof fragment !== 'string') {
-      throw new ProviderError('PROVIDER_MALFORMED_RESPONSE', false);
+      throw new ProviderResponseError('RESPONSE_SHAPE_INVALID', 'stream');
     }
     if (typeof fragment !== 'string' || fragment.length === 0) return;
     if (content.length + fragment.length > MAX_STREAM_CONTENT_CHARACTERS) {
-      throw new ProviderError('PROVIDER_MALFORMED_RESPONSE', false);
+      throw new ProviderResponseError('RESPONSE_SHAPE_INVALID', 'stream');
     }
     content += fragment;
     const projectionDelta = projector === null ? fragment : projector.project(content);
     projectedCharacters += projectionDelta.length;
     if (projectedCharacters > ASSISTANT_STREAM_TEXT_MAX_CHARACTERS) {
-      throw new ProviderError('PROVIDER_MALFORMED_RESPONSE', false);
+      throw new ProviderResponseError('RESPONSE_SHAPE_INVALID', 'stream');
     }
     validateProjectedText?.(projectionDelta);
     // 只暂存可能组成 think 标签的固定长度后缀；普通正文不做累计重扫。
@@ -348,7 +352,7 @@ async function readProviderSse(
         eventData.length >= MAX_SSE_EVENT_DATA_LINES
         || eventCharacters + value.length > MAX_SSE_EVENT_CHARACTERS
       ) {
-        throw new ProviderError('PROVIDER_MALFORMED_RESPONSE', false);
+        throw new ProviderResponseError('RESPONSE_SHAPE_INVALID', 'stream');
       }
       eventData.push(value);
       eventCharacters += value.length;
@@ -367,7 +371,7 @@ async function readProviderSse(
         transportCharacters > MAX_SSE_TRANSPORT_CHARACTERS
         || lineBuffer.length + fragment.length > MAX_SSE_EVENT_CHARACTERS
       ) {
-        throw new ProviderError('PROVIDER_MALFORMED_RESPONSE', false);
+        throw new ProviderResponseError('RESPONSE_SHAPE_INVALID', 'stream');
       }
       lineBuffer += fragment;
       if (newline < 0) return;
@@ -410,7 +414,7 @@ async function readProviderSse(
       }
       dispatch();
     }
-    if (!streamDone) throw new ProviderError('PROVIDER_MALFORMED_RESPONSE', false);
+    if (!streamDone) throw new ProviderResponseError('STREAM_TERMINAL_MISSING', 'stream');
   } catch (error) {
     await reader.cancel().catch(() => undefined);
     throw error;
@@ -436,29 +440,32 @@ async function readCloudOpenAISse(
   return readStructuredTextSse(response, {
     request,
     signal,
-    malformed: () => { throw new ProviderError('PROVIDER_MALFORMED_RESPONSE', false); },
+    malformed: () => { throw new ProviderResponseError('RESPONSE_SHAPE_INVALID', 'stream'); },
+    terminalMissing: () => { throw new ProviderResponseError('STREAM_TERMINAL_MISSING', 'stream'); },
     normalizeReadError: error => normalizeFetchError(error, signal),
     decodeEvent: (_eventName, data) => {
       if (data === '[DONE]') return { done: true };
       let raw: unknown;
-      try { raw = JSON.parse(data); } catch { throw new ProviderError('PROVIDER_MALFORMED_RESPONSE', false); }
+      try { raw = JSON.parse(data); } catch {
+        throw new ProviderResponseError('RESPONSE_SHAPE_INVALID', 'stream');
+      }
       if (typeof raw !== 'object' || raw === null) {
-        throw new ProviderError('PROVIDER_MALFORMED_RESPONSE', false);
+        throw new ProviderResponseError('RESPONSE_SHAPE_INVALID', 'stream');
       }
       const choices = Reflect.get(raw, 'choices');
       const choice = Array.isArray(choices) ? choices[0] : undefined;
       const delta = typeof choice === 'object' && choice !== null ? Reflect.get(choice, 'delta') : undefined;
       if (typeof delta !== 'object' || delta === null) {
-        throw new ProviderError('PROVIDER_MALFORMED_RESPONSE', false);
+        throw new ProviderResponseError('RESPONSE_SHAPE_INVALID', 'stream');
       }
       const toolCalls = Reflect.get(delta, 'tool_calls');
       if (toolCalls !== undefined && (!Array.isArray(toolCalls) || toolCalls.length > 0)) {
-        throw new ProviderError('PROVIDER_MALFORMED_RESPONSE', false);
+        throw new ProviderResponseError('RESPONSE_SHAPE_INVALID', 'stream');
       }
       // 云端推理字段既不公开也不作为本地模型泄漏处理；只消费可见 content。
       const content = Reflect.get(delta, 'content');
       if (content !== undefined && content !== null && typeof content !== 'string') {
-        throw new ProviderError('PROVIDER_MALFORMED_RESPONSE', false);
+        throw new ProviderResponseError('RESPONSE_SHAPE_INVALID', 'stream');
       }
       return typeof content === 'string' ? { fragment: content } : {};
     },
@@ -473,7 +480,7 @@ export function normalizeResponseContractText(
 ): Extract<ModelResponse, { type: 'text' }> {
   const decoded = decodeResponseContractText(raw, contract);
   if (decoded.kind === 'invalid') {
-    throw new ProviderError('PROVIDER_MALFORMED_RESPONSE', false);
+    throw new ProviderResponseError('RESPONSE_FORMAT_UNSUPPORTED', 'chat_control');
   }
   if (decoded.kind === 'plain_text') {
     return { type: 'text', text: decoded.text };
@@ -487,7 +494,7 @@ export function normalizeResponseContractText(
       || !Object.prototype.hasOwnProperty.call(decoded.structured_output, field)
     ))
   ) {
-    throw new ProviderError('PROVIDER_MALFORMED_RESPONSE', false);
+    throw new ProviderResponseError('RESPONSE_FORMAT_UNSUPPORTED', 'chat_control');
   }
   return {
     type: 'text',
@@ -601,7 +608,7 @@ export class OpenAICompatibleProvider implements ModelProvider {
       );
     }
 
-    throw new ProviderError('PROVIDER_MALFORMED_RESPONSE', false);
+    throw new ProviderResponseError('RESPONSE_FORMAT_UNSUPPORTED', 'chat_control');
   }
 }
 

@@ -464,8 +464,8 @@ describe('OpenAICompatibleProvider', () => {
   });
 
   test.each([
-    ['not-json', 'PROVIDER_MALFORMED_RESPONSE'],
-    [JSON.stringify({ choices: [] }), 'PROVIDER_MALFORMED_RESPONSE']
+    ['not-json', 'HTTP_BODY_NOT_JSON'],
+    [JSON.stringify({ choices: [] }), 'RESPONSE_SHAPE_INVALID']
   ])('拒绝畸形响应', async (body, code) => {
     const fetchMock = vi.fn<FetchLike>(async () => new Response(body, { status: 200 }));
     const provider = new OpenAICompatibleProvider(profile, async () => 'secret', fetchMock);

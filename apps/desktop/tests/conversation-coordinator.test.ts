@@ -20,6 +20,7 @@ import type {
   AgentTrustedToolResult
 } from '../src/main/agent/agent-service';
 import { conversationIntentCases } from '../../../tests/fixtures/natural-intent-matrix';
+import { ProviderResponseError } from '../src/main/providers/provider-response-error';
 
 const behaviorContext = {
   character: {
@@ -167,7 +168,7 @@ class CapturingCapabilityTasks implements ConversationCapabilityTaskPort {
   }
 }
 
-function scriptedProvider(response: ModelResponse | Error): ProviderScript {
+function scriptedProvider(response: ModelResponse | Error, preservePlainText = false): ProviderScript {
   const requests: ModelRequest[] = [];
   const signals: AbortSignal[] = [];
   return {
@@ -178,9 +179,27 @@ function scriptedProvider(response: ModelResponse | Error): ProviderScript {
         requests.push(request);
         signals.push(signal);
         if (response instanceof Error) throw response;
+        if (
+          !preservePlainText
+          && response.type === 'text'
+          && response.structured_output === undefined
+        ) {
+          return { ...response, structured_output: 完整聊天控制() };
+        }
         return response;
       }
     }
+  };
+}
+
+function 完整聊天控制(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    activity: '安静陪伴',
+    status: 'idle',
+    movementControl: { kind: 'keep' },
+    behaviorPlan: { kind: 'none' },
+    capabilityPlan: { kind: 'chat' },
+    ...overrides
   };
 }
 
@@ -314,9 +333,9 @@ describe('ConversationCoordinator', () => {
           return {
             type: 'text',
             text: '文件已经创建完成。',
-            structured_output: {
+            structured_output: 完整聊天控制({
               capabilityPlan: { kind: 'agent_task', preferredTool: 'create_file' }
-            }
+            })
           };
         }
       }
@@ -352,9 +371,9 @@ describe('ConversationCoordinator', () => {
       const script = scriptedProvider({
         type: 'text',
         text: '需要进入本地任务。',
-        structured_output: {
+        structured_output: 完整聊天控制({
           capabilityPlan: { kind: 'agent_task', preferredTool: 'powershell' }
-        }
+        })
       });
       const harness = createHarness([{
         profileId: 'chat-profile', providerIdentity: 'openai', providerName: 'Chat', script
@@ -381,9 +400,9 @@ describe('ConversationCoordinator', () => {
     const script = scriptedProvider({
       type: 'text',
       text: '文件已经成功删除。',
-      structured_output: {
+      structured_output: 完整聊天控制({
         capabilityPlan: { kind: 'agent_task', preferredTool: 'delete_file' }
-      }
+      })
     });
     const harness = createHarness([{
       profileId: 'chat-profile', providerIdentity: 'openai', providerName: 'Chat', script
@@ -507,9 +526,9 @@ describe('ConversationCoordinator', () => {
     const chat = scriptedProvider({
       type: 'text',
       text: '这个路径不在授权根内。',
-      structured_output: {
+      structured_output: 完整聊天控制({
         capabilityPlan: { kind: 'agent_task', preferredTool: 'delete_file' }
-      }
+      })
     });
     const harness = createHarness([{
       profileId: 'chat-profile', providerIdentity: 'openai', providerName: 'Chat', script: chat
@@ -583,13 +602,14 @@ describe('ConversationCoordinator', () => {
     const second = scriptedProvider({
       type: 'text',
       text: '开始散步',
-      structured_output: {
+      structured_output: 完整聊天控制({
         text: '开始散步',
         activity: '轻快走动',
         status: 'move',
         behaviorPlan: { kind: 'play_state', state: '运动' },
-        movementControl: { kind: 'move_once', target: 'right', distance: 'near' }
-      }
+        movementControl: { kind: 'move_once', target: 'right', distance: 'near' },
+        capabilityPlan: { kind: 'chat' }
+      })
     });
     let mode: 'assistive' | 'autonomous' = 'assistive';
     const behavior = behaviorPortDouble({
@@ -795,7 +815,9 @@ describe('ConversationCoordinator', () => {
           script.signals.push(signal);
           request.onTextDelta?.('你');
           request.onTextDelta?.('好');
-          return { type: 'text', text: '你好' };
+          return {
+            type: 'text', text: '你好', structured_output: 完整聊天控制()
+          };
         }
       }
     };
@@ -840,7 +862,9 @@ describe('ConversationCoordinator', () => {
 
     coordinator.cancelActive();
     emitLateDelta?.();
-    script.resolve({ type: 'text', text: '草稿迟到' });
+    script.resolve({
+      type: 'text', text: '草稿迟到', structured_output: 完整聊天控制()
+    });
     await pending;
 
     expect(events.filter(event => event.type.startsWith('assistant_message_'))).toEqual([]);
@@ -929,6 +953,25 @@ describe('ConversationCoordinator', () => {
     expect(history.turns()).toEqual([]);
   });
 
+  test('Provider 格式子码只在 Main 内诊断且公开为既有通用格式错误', async () => {
+    const providerError = new ProviderResponseError('HTTP_BODY_NOT_JSON', 'transport');
+    const { coordinator, events } = createHarness([{
+      profileId: 'profile-openai',
+      providerIdentity: 'openai',
+      providerName: 'OpenAI',
+      script: scriptedProvider(providerError)
+    }]);
+
+    const rejection = await coordinator.submit('你好').catch(error => error);
+
+    expect(errorCode(rejection)).toBe('PROVIDER_MALFORMED_RESPONSE');
+    expect((rejection as Error).message).toBe('模型响应格式不兼容，请重试。');
+    expect(events).toContainEqual(expect.objectContaining({
+      type: 'error',
+      code: 'PROVIDER_MALFORMED_RESPONSE'
+    }));
+  });
+
   test.each<[string, ModelResponse]>([
     ['纯文本', { type: 'text', text: '普通纯文本' }],
     ['只有正文', { type: 'text', text: '只有正文', structured_output: { text: '只有正文' } }],
@@ -950,7 +993,7 @@ describe('ConversationCoordinator', () => {
       profileId: 'profile-openai',
       providerIdentity: 'openai',
       providerName: 'OpenAI',
-      script: scriptedProvider(response)
+      script: scriptedProvider(response, _shape === '纯文本')
     }]);
 
     await expect(harness.coordinator.submit('你好')).resolves.toBeUndefined();

@@ -20,6 +20,7 @@ import {
   readStructuredTextSse,
   shouldStreamStructuredText
 } from './structured-text-stream';
+import { ProviderResponseError } from './provider-response-error';
 
 const anthropicContentBlockSchema = z.discriminatedUnion('type', [
   z.object({
@@ -30,7 +31,7 @@ const anthropicContentBlockSchema = z.discriminatedUnion('type', [
     type: z.literal('tool_use'),
     id: z.string().min(1),
     name: z.string().min(1),
-    input: z.record(z.unknown())
+    input: z.unknown()
   })
 ]);
 
@@ -168,7 +169,7 @@ function normalizeResponse(
   responseContract: ModelRequest['responseContract']
 ): ModelResponse {
   const parsed = anthropicResponseSchema.safeParse(raw);
-  if (!parsed.success) throw new ProviderError('PROVIDER_MALFORMED_RESPONSE', false);
+  if (!parsed.success) throw new ProviderResponseError('RESPONSE_SHAPE_INVALID', 'transport');
 
   const blocks = parsed.data.content;
   const textBlocks = blocks.filter(block => block.type === 'text');
@@ -182,17 +183,19 @@ function normalizeResponse(
   }
   if (toolBlocks.length === 1 && blocks.length === 1) {
     const tool = toolBlocks[0];
-    if (!tool) throw new ProviderError('PROVIDER_MALFORMED_RESPONSE', false);
+    if (!tool) throw new ProviderResponseError('RESPONSE_SHAPE_INVALID', 'transport');
+    const input = z.record(z.unknown()).safeParse(tool.input);
+    if (!input.success) throw new ProviderResponseError('TOOL_ARGUMENTS_INVALID', 'tool_call');
     return {
       type: 'tool_request',
       request: {
         requestId: tool.id,
         toolName: tool.name,
-        arguments: tool.input
+        arguments: input.data
       }
     };
   }
-  throw new ProviderError('PROVIDER_MALFORMED_RESPONSE', false);
+  throw new ProviderResponseError('RESPONSE_SHAPE_INVALID', 'transport');
 }
 
 export class AnthropicProvider implements ModelProvider {
@@ -261,27 +264,34 @@ async function readAnthropicStructuredSse(
   return readStructuredTextSse(response, {
     request,
     signal,
-    malformed: () => { throw new ProviderError('PROVIDER_MALFORMED_RESPONSE', false); },
+    malformed: () => { throw new ProviderResponseError('RESPONSE_SHAPE_INVALID', 'stream'); },
+    terminalMissing: () => { throw new ProviderResponseError('STREAM_TERMINAL_MISSING', 'stream'); },
     normalizeReadError: error => normalizeFetchError(error, signal),
     decodeEvent: (eventName, data) => {
       let raw: unknown;
-      try { raw = JSON.parse(data); } catch { throw new ProviderError('PROVIDER_MALFORMED_RESPONSE', false); }
+      try { raw = JSON.parse(data); } catch {
+        throw new ProviderResponseError('RESPONSE_SHAPE_INVALID', 'stream');
+      }
       if (typeof raw !== 'object' || raw === null) {
-        throw new ProviderError('PROVIDER_MALFORMED_RESPONSE', false);
+        throw new ProviderResponseError('RESPONSE_SHAPE_INVALID', 'stream');
       }
       const type = Reflect.get(raw, 'type');
       if (eventName === 'message_stop' || type === 'message_stop') return { done: true };
       if (eventName !== 'content_block_delta' && type !== 'content_block_delta') return {};
       const delta = Reflect.get(raw, 'delta');
       if (typeof delta !== 'object' || delta === null) {
-        throw new ProviderError('PROVIDER_MALFORMED_RESPONSE', false);
+        throw new ProviderResponseError('RESPONSE_SHAPE_INVALID', 'stream');
       }
       const deltaType = Reflect.get(delta, 'type');
       // 私有推理仍经过共享 SSE 预算统计，但绝不能进入可见正文或中断正常文本流。
       if (deltaType === 'thinking_delta' || deltaType === 'signature_delta') return {};
-      if (deltaType !== 'text_delta') throw new ProviderError('PROVIDER_MALFORMED_RESPONSE', false);
+      if (deltaType !== 'text_delta') {
+        throw new ProviderResponseError('RESPONSE_SHAPE_INVALID', 'stream');
+      }
       const text = Reflect.get(delta, 'text');
-      if (typeof text !== 'string') throw new ProviderError('PROVIDER_MALFORMED_RESPONSE', false);
+      if (typeof text !== 'string') {
+        throw new ProviderResponseError('RESPONSE_SHAPE_INVALID', 'stream');
+      }
       return { fragment: text };
     },
     toRaw: content => ({ content: [{ type: 'text', text: content }] })

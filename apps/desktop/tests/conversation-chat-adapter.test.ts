@@ -59,6 +59,17 @@ function 响应为(response: ModelResponse): ModelProvider {
   };
 }
 
+function 完整控制字段(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    activity: '安静陪伴',
+    status: 'idle',
+    movementControl: { kind: 'keep' },
+    behaviorPlan: { kind: 'none' },
+    capabilityPlan: { kind: 'chat' },
+    ...overrides
+  };
+}
+
 function 取得请求(provider: ModelProvider): ModelRequest {
   const 调用 = vi.mocked(provider.respond).mock.calls[0];
   if (!调用) throw new Error('未收到模型请求');
@@ -66,6 +77,114 @@ function 取得请求(provider: ModelProvider): ModelRequest {
 }
 
 describe('ConversationChatAdapter', () => {
+  test('控制字段损坏时保留首次正文、只记录稳定子码并以无工具请求修复一次', async () => {
+    const sensitiveValues = [
+      'sk-private-chat-key',
+      'C:\\Users\\Alice\\Documents\\secret.txt',
+      '绝密文件正文',
+      '{"raw":"provider response"}'
+    ];
+    const responses: ModelResponse[] = [{
+      type: 'text',
+      text: '首次正文保持可见。',
+      structured_output: {
+        text: '首次正文保持可见。',
+        activity: '安静陪伴',
+        rawProviderResponse: sensitiveValues.join('|')
+      }
+    }, {
+      type: 'text',
+      text: '修复回合不得替换首次正文。',
+      structured_output: {
+        text: '修复回合不得替换首次正文。',
+        activity: '安静陪伴',
+        status: 'idle',
+        movementControl: { kind: 'keep' },
+        behaviorPlan: { kind: 'none' },
+        capabilityPlan: { kind: 'chat' }
+      }
+    }];
+    const provider: ModelProvider = {
+      respond: vi.fn(async () => responses.shift()!)
+    };
+    const diagnostics = vi.fn();
+
+    await expect(new ConversationChatAdapter(provider, diagnostics).respond({
+      history: [], text: '普通聊天', behaviorContext,
+      signal: new AbortController().signal
+    })).resolves.toEqual({
+      text: '首次正文保持可见。',
+      activity: '安静陪伴',
+      status: 'idle',
+      movementControl: { kind: 'keep' },
+      behaviorPlan: { kind: 'none' },
+      capabilityPlan: { kind: 'chat' }
+    });
+
+    expect(provider.respond).toHaveBeenCalledTimes(2);
+    for (const [repairRequest] of vi.mocked(provider.respond).mock.calls) {
+      expect(repairRequest).toMatchObject({ tools: [], toolChoice: 'none' });
+    }
+    expect(diagnostics).toHaveBeenCalledOnce();
+    expect(diagnostics.mock.calls[0]?.[0]).toMatchObject({
+      code: 'CONTROL_SCHEMA_INVALID',
+      stage: 'chat_control'
+    });
+    const serializedDiagnostics = JSON.stringify(diagnostics.mock.calls);
+    for (const sensitiveValue of sensitiveValues) {
+      expect(serializedDiagnostics).not.toContain(sensitiveValue);
+    }
+  });
+
+  test('控制字段连续损坏时正文仍成功且丢弃所有控制副作用', async () => {
+    const responses: ModelResponse[] = [{
+      type: 'text',
+      text: '正文仍然成功。',
+      emotion: 'happy',
+      structured_output: {
+        activity: '不得执行',
+        status: 'move',
+        movementControl: { kind: 'move_once', target: 'random_work_area', distance: 'far' },
+        behaviorPlan: { kind: 'play_state', state: '开心', action: '挥手' }
+      }
+    }, {
+      type: 'text',
+      text: '修复回合仍未返回控制计划。',
+      emotion: 'happy'
+    }];
+    const provider: ModelProvider = {
+      respond: vi.fn(async () => responses.shift()!)
+    };
+    const diagnostics = vi.fn();
+
+    await expect(new ConversationChatAdapter(provider, diagnostics).respond({
+      history: [], text: '普通聊天', behaviorContext,
+      signal: new AbortController().signal
+    })).resolves.toEqual({ text: '正文仍然成功。' });
+
+    expect(provider.respond).toHaveBeenCalledTimes(2);
+    expect(diagnostics).toHaveBeenCalledOnce();
+    expect(diagnostics.mock.calls[0]?.[0]).toMatchObject({ code: 'CONTROL_SCHEMA_INVALID' });
+  });
+
+  test('纯文本缺少控制计划时保留正文、记录一次并丢弃旧情绪副作用', async () => {
+    const provider = 响应为({
+      type: 'text',
+      text: '纯文本仍然可见。',
+      emotion: 'happy'
+    });
+    const diagnostics = vi.fn();
+
+    await expect(new ConversationChatAdapter(provider, diagnostics).respond({
+      history: [], text: '普通聊天', behaviorContext,
+      signal: new AbortController().signal
+    })).resolves.toEqual({ text: '纯文本仍然可见。' });
+
+    expect(provider.respond).toHaveBeenCalledTimes(2);
+    expect(diagnostics).toHaveBeenCalledOnce();
+    expect(diagnostics.mock.calls[0]?.[0]).toMatchObject({ code: 'CONTROL_SCHEMA_INVALID' });
+  });
+
   test('用固定系统消息、历史和当前用户文本发起无工具聊天请求', async () => {
     const provider = 响应为({ type: 'text', text: '你好！' });
     const adapter = new ConversationChatAdapter(provider);
@@ -126,9 +245,9 @@ describe('ConversationChatAdapter', () => {
     const provider = 响应为({
       type: 'text',
       text: '需要进入本地任务。',
-      structured_output: {
+      structured_output: 完整控制字段({
         capabilityPlan: { kind: 'agent_task', preferredTool: 'create_file' }
-      }
+      })
     });
 
     await expect(new ConversationChatAdapter(provider).respond({
@@ -162,7 +281,8 @@ describe('ConversationChatAdapter', () => {
     const provider = 响应为({
       type: 'text',
       text: '  当然可以。\n\n```ts\nconst 宠物 = "你好";\n```\n',
-      emotion: 'happy'
+      emotion: 'happy',
+      structured_output: 完整控制字段()
     });
     const adapter = new ConversationChatAdapter(provider);
 
@@ -171,7 +291,7 @@ describe('ConversationChatAdapter', () => {
       text: '给我一个例子',
       behaviorContext,
       signal: new AbortController().signal
-    })).resolves.toEqual({
+    })).resolves.toMatchObject({
       text: '  当然可以。\n\n```ts\nconst 宠物 = "你好";\n```\n',
       emotion: 'happy'
     });
@@ -205,16 +325,16 @@ describe('ConversationChatAdapter', () => {
     const provider = 响应为({
       type: 'text',
       text: '好的。',
-      structured_output: {
+      structured_output: 完整控制字段({
         text: '好的。',
         movementControl,
         behaviorPlan: { kind: 'none' }
-      }
+      })
     });
 
     await expect(new ConversationChatAdapter(provider).respond({
       history: [], text, behaviorContext, signal: new AbortController().signal
-    })).resolves.toEqual({
+    })).resolves.toMatchObject({
       text: '好的。',
       movementControl,
       behaviorPlan: { kind: 'none' }
@@ -240,21 +360,21 @@ describe('ConversationChatAdapter', () => {
     const provider = 响应为({
       type: 'text',
       text: '我来活动一下。',
-      structured_output: {
+      structured_output: 完整控制字段({
         text: '我来活动一下。',
         activity: '轻快移动',
         status: 'move'
-      }
+      })
     });
 
     await expect(new ConversationChatAdapter(provider).respond({
       history: [], text: '请你移动', behaviorContext, signal: new AbortController().signal
-    })).resolves.toEqual({
+    })).resolves.toMatchObject({
       text: '我来活动一下。', activity: '轻快移动', status: 'move'
     });
   });
 
-  test('隐藏 activity/status 在本地裁剪空白并丢弃空值或超长值', async () => {
+  test('隐藏 activity/status 任一无效时丢弃整组控制副作用', async () => {
     const provider = 响应为({
       type: 'text',
       text: '正文保持可用。',
@@ -266,7 +386,7 @@ describe('ConversationChatAdapter', () => {
 
     await expect(new ConversationChatAdapter(provider).respond({
       history: [], text: '请你移动', behaviorContext, signal: new AbortController().signal
-    })).resolves.toEqual({ text: '正文保持可用。', activity: '轻快移动' });
+    })).resolves.toEqual({ text: '正文保持可用。' });
   });
 
   test('JSON 契约要求隐藏 activity/status，且不把它们作为可见文本字段', () => {
@@ -343,10 +463,10 @@ describe('ConversationChatAdapter', () => {
     const provider = 响应为({
       type: 'text',
       text: '今天真开心。',
-      structured_output: {
+      structured_output: 完整控制字段({
         text: '今天真开心。',
         behaviorPlan: { kind: 'none', emotion: 'happy' }
-      }
+      })
     });
     const adapter = new ConversationChatAdapter(provider);
 
@@ -355,7 +475,7 @@ describe('ConversationChatAdapter', () => {
       text: '我今天很开心',
       behaviorContext,
       signal: new AbortController().signal
-    })).resolves.toEqual({
+    })).resolves.toMatchObject({
       text: '今天真开心。',
       emotion: 'happy',
       behaviorPlan: { kind: 'none', emotion: 'happy' }
@@ -366,18 +486,18 @@ describe('ConversationChatAdapter', () => {
     const provider = 响应为({
       type: 'text',
       text: '我来挥挥手。',
-      structured_output: {
+      structured_output: 完整控制字段({
         text: '我来挥挥手。',
         behaviorPlan: {
           kind: 'play_state', state: '开心', action: '挥手', duration: 'brief', emotion: 'happy'
         }
-      }
+      })
     });
 
     await expect(new ConversationChatAdapter(provider).respond({
       history: [], text: '开心地挥挥手', behaviorContext,
       signal: new AbortController().signal
-    })).resolves.toEqual({
+    })).resolves.toMatchObject({
       text: '我来挥挥手。',
       emotion: 'happy',
       behaviorPlan: {
@@ -397,7 +517,7 @@ describe('ConversationChatAdapter', () => {
     })).resolves.toEqual({ text: '正文保留。' });
   });
 
-  test('丢弃非法行为计划并保留正文与既有合法情绪', async () => {
+  test('丢弃非法行为计划及同组情绪并保留正文', async () => {
     const provider = 响应为({
       type: 'text',
       text: '正文仍然可见。',
@@ -414,7 +534,7 @@ describe('ConversationChatAdapter', () => {
       text: '测试非法计划',
       behaviorContext,
       signal: new AbortController().signal
-    })).resolves.toEqual({ text: '正文仍然可见。', emotion: 'calm' });
+    })).resolves.toEqual({ text: '正文仍然可见。' });
   });
 
   test('普通聊天忽略旧 behaviorIntent 元数据', async () => {
@@ -453,7 +573,7 @@ describe('ConversationChatAdapter', () => {
     }).catch(reason => reason);
 
     expect(error).toMatchObject({
-      code: 'PROVIDER_MALFORMED_RESPONSE',
+      code: 'RESPONSE_FORMAT_UNSUPPORTED',
       retryable: false
     });
     expect(String(error)).not.toContain(text);
@@ -478,7 +598,7 @@ describe('ConversationChatAdapter', () => {
     }).catch(reason => reason);
 
     expect(error).toMatchObject({
-      code: 'PROVIDER_MALFORMED_RESPONSE',
+      code: 'RESPONSE_FORMAT_UNSUPPORTED',
       retryable: false
     });
     expect(String(error)).not.toContain('private-content');

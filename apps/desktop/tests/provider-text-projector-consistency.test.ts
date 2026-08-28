@@ -97,7 +97,7 @@ describe('云端与本地 Provider 的顶层正文投影一致性', () => {
       ...structuredRequest,
       onTextDelta: delta => deltas.push(delta)
     }, new AbortController().signal)).rejects.toMatchObject({
-      code: 'PROVIDER_MALFORMED_RESPONSE',
+      code: 'RESPONSE_SHAPE_INVALID',
       retryable: false
     });
     expect(deltas).toEqual(['第一段']);

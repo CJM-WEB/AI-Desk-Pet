@@ -994,7 +994,7 @@ async function createApplicationWindows(
     readAuthorizedRootPath: () => settingsStore.getAuthorizedRootPath(),
     readPrivacySettings: () => settingsStore.getPrivacySettings(),
     behavior: characterBehaviorDirector,
-    createChatAdapter: profile => new ConversationChatAdapter(createChatProvider(profile)),
+    createChatAdapter: profile => new ConversationChatAdapter(createChatProvider(profile), error => console.warn('模型响应控制字段无效。', error.code, error.stage)),
     createAgentService: ({
       snapshot,
       generation,

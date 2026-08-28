@@ -122,6 +122,31 @@ function readyPort(getReadyConnection = () => connection): LocalModelConnectionP
 }
 
 describe('LocalModelProvider', () => {
+  test('本地模型工具参数损坏时返回稳定子码且绝不重放已开始的工具协议回合', async () => {
+    const fetchClient = vi.fn<FetchLike>(async () => jsonResponse({
+      choices: [{
+        message: {
+          content: null,
+          tool_calls: [{
+            id: 'local-invalid-call',
+            type: 'function',
+            function: {
+              name: 'builtin_files_read_text',
+              arguments: '{"relativePath":"C:\\\\private.txt","content":"私密正文"'
+            }
+          }]
+        }
+      }]
+    }));
+    const provider = new LocalModelProvider(readyPort(), fetchClient);
+
+    await expect(provider.respond(request, new AbortController().signal)).rejects.toMatchObject({
+      code: 'TOOL_ARGUMENTS_INVALID',
+      stage: 'tool_call'
+    });
+    expect(fetchClient).toHaveBeenCalledOnce();
+  });
+
   test.each(characterChatProtocolCases)(
     '解码“$name”线协议且保留与云 Provider 相同的控制字段',
     async ({ wireJson, decoded }) => {
@@ -611,7 +636,7 @@ describe('LocalModelProvider', () => {
       ...structuredRequest,
       onTextDelta: vi.fn()
     }, new AbortController().signal)).rejects.toMatchObject({
-      code: 'PROVIDER_MALFORMED_RESPONSE', retryable: false
+      code: 'STREAM_TERMINAL_MISSING', retryable: false
     });
   });
 
@@ -655,7 +680,7 @@ describe('LocalModelProvider', () => {
       ...structuredRequest,
       onTextDelta: delta => deltas.push(delta)
     }, new AbortController().signal)).rejects.toMatchObject({
-      code: 'PROVIDER_MALFORMED_RESPONSE', retryable: false
+      code: 'RESPONSE_SHAPE_INVALID', retryable: false
     });
     expect(deltas).toEqual([]);
   });
@@ -674,7 +699,7 @@ describe('LocalModelProvider', () => {
       ...structuredRequest,
       onTextDelta: vi.fn()
     }, new AbortController().signal)).rejects.toMatchObject({
-      code: 'PROVIDER_MALFORMED_RESPONSE', retryable: false
+      code: 'RESPONSE_SHAPE_INVALID', retryable: false
     });
   });
 
@@ -689,7 +714,7 @@ describe('LocalModelProvider', () => {
       ...structuredRequest,
       onTextDelta: vi.fn()
     }, new AbortController().signal)).rejects.toMatchObject({
-      code: 'PROVIDER_MALFORMED_RESPONSE', retryable: false
+      code: 'RESPONSE_SHAPE_INVALID', retryable: false
     });
   });
 
@@ -710,7 +735,7 @@ describe('LocalModelProvider', () => {
       ...structuredRequest,
       onTextDelta: vi.fn()
     }, new AbortController().signal)).rejects.toMatchObject({
-      code: 'PROVIDER_MALFORMED_RESPONSE', retryable: false
+      code: 'RESPONSE_SHAPE_INVALID', retryable: false
     });
   });
 
@@ -730,7 +755,7 @@ describe('LocalModelProvider', () => {
       ...structuredRequest,
       onTextDelta: vi.fn()
     }, new AbortController().signal)).rejects.toMatchObject({
-      code: 'PROVIDER_MALFORMED_RESPONSE', retryable: false
+      code: 'RESPONSE_SHAPE_INVALID', retryable: false
     });
   });
 
@@ -781,7 +806,7 @@ describe('LocalModelProvider', () => {
       { ...structuredRequest, onTextDelta },
       new AbortController().signal
     )).rejects.toMatchObject({
-      code: 'PROVIDER_MALFORMED_RESPONSE',
+      code: 'RESPONSE_FORMAT_UNSUPPORTED',
       retryable: false
     });
     expect(onTextDelta).not.toHaveBeenCalled();

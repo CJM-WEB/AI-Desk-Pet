@@ -82,7 +82,9 @@ describe('Main 通用生命周期', () => {
     expect(source).toContain('characterProactivityRuntime.start();');
     expect(source).toContain('startupCleanup.add(() => characterProactivityRuntime.close());');
     expect(source).not.toContain('BEHAVIOR_REFLECTION');
-    expect(source).toContain('new ConversationChatAdapter(createChatProvider(profile))');
+    expect(source).toContain(
+      "new ConversationChatAdapter(createChatProvider(profile), error => console.warn('模型响应控制字段无效。', error.code, error.stage))"
+    );
   });
 
   test('生产启动先读取完整行为快照初始化唯一 Director 并接通设置 sink', async () => {

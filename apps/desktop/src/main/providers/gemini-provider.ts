@@ -20,6 +20,7 @@ import {
   readStructuredTextSse,
   shouldStreamStructuredText
 } from './structured-text-stream';
+import { ProviderResponseError } from './provider-response-error';
 
 const geminiPartSchema = z.union([
   z.object({
@@ -29,7 +30,7 @@ const geminiPartSchema = z.union([
     functionCall: z.object({
       id: z.string().min(1).optional(),
       name: z.string().min(1),
-      args: z.record(z.unknown())
+      args: z.unknown()
     }).strict(),
     thoughtSignature: z.string().optional()
   }).strict()
@@ -214,10 +215,10 @@ function normalizeResponse(
   responseContract: ModelRequest['responseContract']
 ): NormalizedGeminiResponse {
   const parsed = geminiResponseSchema.safeParse(raw);
-  if (!parsed.success) throw new ProviderError('PROVIDER_MALFORMED_RESPONSE', false);
+  if (!parsed.success) throw new ProviderResponseError('RESPONSE_SHAPE_INVALID', 'transport');
 
   const parts = parsed.data.candidates[0]?.content.parts;
-  if (!parts) throw new ProviderError('PROVIDER_MALFORMED_RESPONSE', false);
+  if (!parts) throw new ProviderResponseError('RESPONSE_SHAPE_INVALID', 'transport');
   const textParts = parts.filter(part => 'text' in part);
   const functionParts = parts.filter(part => 'functionCall' in part);
 
@@ -232,14 +233,16 @@ function normalizeResponse(
   if (functionParts.length === 1 && parts.length === 1) {
     const functionPart = functionParts[0];
     const call = functionPart?.functionCall;
-    if (!call) throw new ProviderError('PROVIDER_MALFORMED_RESPONSE', false);
+    if (!call) throw new ProviderResponseError('RESPONSE_SHAPE_INVALID', 'transport');
+    const args = z.record(z.unknown()).safeParse(call.args);
+    if (!args.success) throw new ProviderResponseError('TOOL_ARGUMENTS_INVALID', 'tool_call');
     const requestId = call.id ?? createFallbackRequestId(call.name);
     const response: ModelResponse = {
       type: 'tool_request',
       request: {
         requestId,
         toolName: call.name,
-        arguments: call.args
+        arguments: args.data
       }
     };
     if (functionPart.thoughtSignature === undefined) return { response };
@@ -251,7 +254,7 @@ function normalizeResponse(
       }
     };
   }
-  throw new ProviderError('PROVIDER_MALFORMED_RESPONSE', false);
+  throw new ProviderResponseError('RESPONSE_SHAPE_INVALID', 'transport');
 }
 
 export class GeminiProvider implements ModelProvider {
@@ -335,22 +338,27 @@ async function readGeminiStructuredSse(
   return readStructuredTextSse(response, {
     request,
     signal,
-    malformed: () => { throw new ProviderError('PROVIDER_MALFORMED_RESPONSE', false); },
+    malformed: () => { throw new ProviderResponseError('RESPONSE_SHAPE_INVALID', 'stream'); },
+    terminalMissing: () => { throw new ProviderResponseError('STREAM_TERMINAL_MISSING', 'stream'); },
     normalizeReadError: error => normalizeFetchError(error, signal),
     decodeEvent: (_eventName, data) => {
       let raw: unknown;
-      try { raw = JSON.parse(data); } catch { throw new ProviderError('PROVIDER_MALFORMED_RESPONSE', false); }
+      try { raw = JSON.parse(data); } catch {
+        throw new ProviderResponseError('RESPONSE_SHAPE_INVALID', 'stream');
+      }
       if (typeof raw !== 'object' || raw === null) {
-        throw new ProviderError('PROVIDER_MALFORMED_RESPONSE', false);
+        throw new ProviderResponseError('RESPONSE_SHAPE_INVALID', 'stream');
       }
       const candidates = Reflect.get(raw, 'candidates');
       const candidate = Array.isArray(candidates) ? candidates[0] : undefined;
       if (typeof candidate !== 'object' || candidate === null) {
-        throw new ProviderError('PROVIDER_MALFORMED_RESPONSE', false);
+        throw new ProviderResponseError('RESPONSE_SHAPE_INVALID', 'stream');
       }
       const content = Reflect.get(candidate, 'content');
       const parts = typeof content === 'object' && content !== null ? Reflect.get(content, 'parts') : undefined;
-      if (!Array.isArray(parts)) throw new ProviderError('PROVIDER_MALFORMED_RESPONSE', false);
+      if (!Array.isArray(parts)) {
+        throw new ProviderResponseError('RESPONSE_SHAPE_INVALID', 'stream');
+      }
       let fragment = '';
       for (const part of parts) {
         if (typeof part !== 'object' || part === null) continue;
@@ -362,7 +370,7 @@ async function readGeminiStructuredSse(
           'inlineData', 'functionCall', 'functionResponse', 'fileData',
           'executableCode', 'codeExecutionResult', 'toolCall', 'toolResponse'
         ].some(field => Reflect.has(part, field))) {
-          throw new ProviderError('PROVIDER_MALFORMED_RESPONSE', false);
+          throw new ProviderResponseError('RESPONSE_SHAPE_INVALID', 'stream');
         }
         fragment += text;
       }
@@ -370,7 +378,7 @@ async function readGeminiStructuredSse(
       const finishReason = Reflect.get(candidate, 'finishReason');
       // 只有 STOP 表示完整生成；安全拦截、长度截断或未知终态都不能提交部分 JSON。
       if (hasFinishReason && finishReason !== 'STOP') {
-        throw new ProviderError('PROVIDER_MALFORMED_RESPONSE', false);
+        throw new ProviderResponseError('RESPONSE_SHAPE_INVALID', 'stream');
       }
       return {
         fragment,

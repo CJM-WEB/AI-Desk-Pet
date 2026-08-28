@@ -28,6 +28,7 @@ import {
   isPublicFileTaskErrorCode,
   publicFileTaskErrorDetails
 } from './file-task-public-errors';
+import { ProviderResponseError } from '../providers/provider-response-error';
 
 const MAX_USER_TEXT_LENGTH = 4_000;
 const MAX_PRIVATE_PLANNING_CONTEXT_LENGTH = 1_200;
@@ -99,7 +100,10 @@ function errorCode(error: unknown): string {
 }
 
 function publicErrorEvent(error: unknown): Extract<TaskEvent, { type: 'error' }> {
-  const code = errorCode(error);
+  // Provider 内部子码只用于 Main 诊断，公开事件继续使用既有通用契约。
+  const code = error instanceof ProviderResponseError
+    ? 'PROVIDER_MALFORMED_RESPONSE'
+    : errorCode(error);
   const fileError = publicFileTaskErrorDetails(code);
   if (fileError !== null) {
     return { type: 'error', code, ...fileError };

@@ -18,6 +18,7 @@ export type StructuredSseOptions = Readonly<{
   request: ModelRequest;
   signal: AbortSignal;
   malformed(): never;
+  terminalMissing(): never;
   normalizeReadError(error: unknown): never;
   decodeEvent(eventName: string, data: string): StructuredSseEventResult;
   toRaw(content: string): unknown;
@@ -133,7 +134,7 @@ export async function readStructuredTextSse(
       if (lineBuffer.length > 0) acceptLine(lineBuffer.replace(/\r$/u, ''));
       dispatch();
     }
-    if (!done) options.malformed();
+    if (!done) options.terminalMissing();
   } catch (error) {
     await reader.cancel().catch(() => undefined);
     throw error;

@@ -10,6 +10,7 @@ import {
   OpenAICompatibleProvider,
   ProviderError
 } from '../src/main/providers/openai-provider';
+import { ProviderResponseError } from '../src/main/providers/provider-response-error';
 import {
   AnthropicProvider,
   toAnthropicResponseJsonSchema
@@ -197,6 +198,97 @@ function characterChatSseResponse(providerName: string, content: string): Respon
     '[DONE]'
   ]);
 }
+
+describe('Provider 响应格式故障分类', () => {
+  test('HTTP 200 正文不是 JSON 时返回 HTTP_BODY_NOT_JSON 且不携带原始响应', async () => {
+    const apiKey = 'sk-private-contract-key';
+    const privateBody = '私密文件正文 C:\\Users\\Alice\\Documents\\secret.txt';
+    const provider = new OpenAICompatibleProvider(
+      adapterProfile,
+      async () => apiKey,
+      vi.fn(async () => new Response(privateBody, { status: 200 }))
+    );
+
+    const error = await captureError(provider.respond(request, new AbortController().signal));
+
+    expect(error).toMatchObject({ code: 'HTTP_BODY_NOT_JSON', stage: 'transport' });
+    expectObservableErrorTextHidden(error, [apiKey, privateBody, 'C:\\Users\\Alice\\Documents\\secret.txt']);
+  });
+
+  test('完整 Anthropic 包络缺少 content 时返回 RESPONSE_SHAPE_INVALID', async () => {
+    const provider = new AnthropicProvider(
+      adapterProfile,
+      async () => 'anthropic-private-key',
+      vi.fn(async () => jsonResponse({ id: 'message-private', type: 'message', role: 'assistant' }))
+    );
+
+    await expect(provider.respond(request, new AbortController().signal)).rejects.toMatchObject({
+      code: 'RESPONSE_SHAPE_INVALID',
+      stage: 'transport'
+    });
+  });
+
+  test('OpenAI 工具参数不是对象 JSON 时返回 TOOL_ARGUMENTS_INVALID 且不自动重放', async () => {
+    const sensitiveArguments = '{"path":"C:\\\\Users\\\\Alice\\\\secret.txt","content":"私密正文"';
+    const fetchClient = vi.fn<FetchLike>(async () => jsonResponse({
+      choices: [{
+        message: {
+          content: null,
+          tool_calls: [{
+            id: 'call-private',
+            type: 'function',
+            function: { name: 'read_text_file', arguments: sensitiveArguments }
+          }]
+        }
+      }]
+    }));
+    const provider = new OpenAICompatibleProvider(
+      adapterProfile,
+      async () => 'tool-private-key',
+      fetchClient
+    );
+
+    const error = await captureError(provider.respond(request, new AbortController().signal));
+
+    expect(error).toMatchObject({ code: 'TOOL_ARGUMENTS_INVALID', stage: 'tool_call' });
+    expect(fetchClient).toHaveBeenCalledOnce();
+    expectObservableErrorTextHidden(error, [sensitiveArguments, 'C:\\Users\\Alice\\secret.txt', '私密正文']);
+  });
+
+  test('结构化 SSE 到 EOF 仍缺少协议终态时返回 STREAM_TERMINAL_MISSING', async () => {
+    const provider = new OpenAICompatibleProvider(
+      adapterProfile,
+      async () => 'stream-private-key',
+      vi.fn(async () => sseResponse([
+        JSON.stringify({ choices: [{ delta: { content: '{"text":"仍在生成"}' } }] })
+      ]))
+    );
+
+    await expect(provider.respond({
+      ...structuredChatRequest,
+      onTextDelta: vi.fn()
+    }, new AbortController().signal)).rejects.toMatchObject({
+      code: 'STREAM_TERMINAL_MISSING',
+      stage: 'stream'
+    });
+  });
+
+  test('响应契约对象缺少可见 text 时返回 RESPONSE_FORMAT_UNSUPPORTED', async () => {
+    const provider = new GeminiProvider(
+      adapterProfile,
+      async () => 'gemini-private-key',
+      vi.fn(async () => jsonResponse({
+        candidates: [{ content: { parts: [{ text: '{"status":"idle"}' }] } }]
+      }))
+    );
+
+    await expect(provider.respond(structuredChatRequest, new AbortController().signal))
+      .rejects.toMatchObject({
+        code: 'RESPONSE_FORMAT_UNSUPPORTED',
+        stage: 'chat_control'
+      });
+  });
+});
 
 interface ChatProviderContractCase {
   name: string;
@@ -469,7 +561,7 @@ describe('三协议云端普通聊天流式契约', () => {
       ...structuredChatRequest,
       onTextDelta: delta => deltas.push(delta)
     }, new AbortController().signal)).rejects.toMatchObject({
-      code: 'PROVIDER_MALFORMED_RESPONSE'
+      code: 'STREAM_TERMINAL_MISSING'
     });
 
     expect(deltas.join('')).toBe('未完成');
@@ -491,7 +583,7 @@ describe('三协议云端普通聊天流式契约', () => {
         ...structuredChatRequest,
         onTextDelta: vi.fn()
       }, new AbortController().signal)).rejects.toMatchObject({
-        code: 'PROVIDER_MALFORMED_RESPONSE',
+        code: 'RESPONSE_SHAPE_INVALID',
         retryable: false
       });
     }
@@ -510,7 +602,7 @@ describe('三协议云端普通聊天流式契约', () => {
       ...structuredChatRequest,
       onTextDelta: vi.fn()
     }, new AbortController().signal)).rejects.toMatchObject({
-      code: 'PROVIDER_MALFORMED_RESPONSE'
+      code: 'RESPONSE_FORMAT_UNSUPPORTED'
     });
   });
 
@@ -526,7 +618,7 @@ describe('三协议云端普通聊天流式契约', () => {
       ...structuredChatRequest,
       onTextDelta: delta => deltas.push(delta)
     }, new AbortController().signal)).rejects.toMatchObject({
-      code: 'PROVIDER_MALFORMED_RESPONSE',
+      code: 'RESPONSE_SHAPE_INVALID',
       retryable: false
     });
 
@@ -581,7 +673,7 @@ describe('三协议云端普通聊天流式契约', () => {
       ...structuredChatRequest,
       onTextDelta
     }, new AbortController().signal)).rejects.toMatchObject({
-      code: 'PROVIDER_MALFORMED_RESPONSE',
+      code: 'RESPONSE_SHAPE_INVALID',
       retryable: false
     });
 
@@ -614,7 +706,7 @@ describe('三协议云端普通聊天流式契约', () => {
       ...structuredChatRequest,
       onTextDelta
     }, new AbortController().signal)).rejects.toMatchObject({
-      code: 'PROVIDER_MALFORMED_RESPONSE',
+      code: 'RESPONSE_SHAPE_INVALID',
       retryable: false
     });
 
@@ -727,7 +819,7 @@ describe('三协议云端普通聊天流式契约', () => {
       ...structuredChatRequest,
       onTextDelta: vi.fn()
     }, new AbortController().signal)).rejects.toMatchObject({
-      code: 'PROVIDER_MALFORMED_RESPONSE'
+      code: 'RESPONSE_SHAPE_INVALID'
     });
   });
 
@@ -762,7 +854,7 @@ describe('三协议云端普通聊天流式契约', () => {
       ...structuredChatRequest,
       onTextDelta: delta => deltas.push(delta)
     }, new AbortController().signal)).rejects.toMatchObject({
-      code: 'PROVIDER_MALFORMED_RESPONSE'
+      code: 'RESPONSE_SHAPE_INVALID'
     });
 
     expect(deltas.join('')).toBe('可见但未提交');
@@ -798,7 +890,7 @@ describe('三协议云端普通聊天流式契约', () => {
       ...structuredChatRequest,
       onTextDelta: vi.fn()
     }, new AbortController().signal)).rejects.toMatchObject({
-      code: 'PROVIDER_MALFORMED_RESPONSE'
+      code: 'RESPONSE_SHAPE_INVALID'
     });
   }, 20_000);
 });
@@ -959,7 +1051,7 @@ describe('ConversationChatAdapter 三类 Provider 协议契约', () => {
       }).catch(reason => reason);
 
       expect(error).toMatchObject({
-        code: 'PROVIDER_MALFORMED_RESPONSE',
+        code: 'RESPONSE_FORMAT_UNSUPPORTED',
         retryable: false
       });
       expectObservableErrorTextHidden(error, ['private', '不得泄露']);
@@ -979,7 +1071,7 @@ describe('ConversationChatAdapter 三类 Provider 协议契约', () => {
         behaviorContext: providerBehaviorContext,
         signal: new AbortController().signal
       })).rejects.toMatchObject({
-        code: contract.expectedToolResponseErrorCode ?? 'PROVIDER_MALFORMED_RESPONSE',
+        code: contract.expectedToolResponseErrorCode ?? 'RESPONSE_FORMAT_UNSUPPORTED',
         retryable: false
       });
     }
@@ -1406,30 +1498,30 @@ function verifyProviderContract(contract: ProviderContractCase): void {
       await expect(
         provider.respond(request, new AbortController().signal)
       ).rejects.toMatchObject({
-        code: 'PROVIDER_MALFORMED_RESPONSE',
+        code: 'RESPONSE_SHAPE_INVALID',
         retryable: false
       });
     });
 
     test.each([
-      ['非 JSON 响应', () => new Response('not-json', { status: 200 })],
+      ['非 JSON 响应', () => new Response('not-json', { status: 200 }), 'HTTP_BODY_NOT_JSON'],
       ['缺少必要字段', (contractCase: ProviderContractCase) => (
         jsonResponse(contractCase.missingFieldsResponse)
-      )],
+      ), 'RESPONSE_SHAPE_INVALID'],
       ['包含多个工具调用', (contractCase: ProviderContractCase) => (
         jsonResponse(contractCase.multipleToolsResponse)
-      )]
-    ])('拒绝%s并隐藏原始响应', async (_caseName, createResponse) => {
+      ), 'RESPONSE_SHAPE_INVALID']
+    ])('拒绝%s并隐藏原始响应', async (_caseName, createResponse, expectedCode) => {
       const provider = contract.createProvider(vi.fn(async () => createResponse(contract)));
 
       const error = await captureError(provider.respond(request, new AbortController().signal));
 
       expect(error).toMatchObject({
-        code: 'PROVIDER_MALFORMED_RESPONSE',
+        code: expectedCode,
         retryable: false
       });
-      expect(error).toBeInstanceOf(ProviderError);
-      expect(Object.keys(error as object)).toEqual(['code', 'retryable', 'status', 'name']);
+      expect(error).toBeInstanceOf(ProviderResponseError);
+      expect(Object.keys(error as object)).toEqual(['code', 'stage', 'name', 'retryable']);
     });
   });
 }
@@ -1592,7 +1684,7 @@ describe('OpenAI Compatible 结构化情绪元数据', () => {
       }))
     );
     await expect(invalid.respond(request, new AbortController().signal)).rejects.toMatchObject({
-      code: 'PROVIDER_MALFORMED_RESPONSE'
+      code: 'CONTROL_SCHEMA_INVALID'
     });
   });
 });
@@ -2370,7 +2462,7 @@ describe('协议请求映射', () => {
     await expect(
       provider.respond(request, new AbortController().signal)
     ).rejects.toMatchObject({
-      code: 'PROVIDER_MALFORMED_RESPONSE',
+      code: 'RESPONSE_SHAPE_INVALID',
       retryable: false
     });
   });
@@ -2565,7 +2657,7 @@ describe('ProviderRegistry', () => {
     });
   });
 
-  test('DeepSeek 桌宠聊天空 content 仅在 Provider 内重试一次并复用同一配置', async () => {
+  test('DeepSeek 空 content 在 Provider 重试后仅允许一次无工具控制修复', async () => {
     const profile: ProviderProfileV2 = {
       id: 'deepseek-empty-chat-profile',
       displayName: 'DeepSeek',
@@ -2597,7 +2689,7 @@ describe('ProviderRegistry', () => {
       onTextDelta: vi.fn()
     })).resolves.toEqual({ text: '重试后正文' });
 
-    expect(fetchClient).toHaveBeenCalledTimes(2);
+    expect(fetchClient).toHaveBeenCalledTimes(3);
     const firstBody = JSON.parse(String(fetchClient.mock.calls[0]?.[1]?.body));
     const secondBody = JSON.parse(String(fetchClient.mock.calls[1]?.[1]?.body));
     expect(secondBody).toEqual(firstBody);
@@ -2635,7 +2727,7 @@ describe('ProviderRegistry', () => {
       behaviorContext: providerBehaviorContext,
       signal: new AbortController().signal
     })).rejects.toMatchObject({
-      code: 'PROVIDER_MALFORMED_RESPONSE',
+      code: 'RESPONSE_SHAPE_INVALID',
       retryable: false
     });
     expect(fetchClient).toHaveBeenCalledTimes(2);

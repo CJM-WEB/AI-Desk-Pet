@@ -25,6 +25,7 @@ import {
   CapabilityTransactionStore,
   type CapabilityTransactionSnapshot
 } from './capability-transaction';
+import { ProviderResponseError } from '../providers/provider-response-error';
 
 const 最大用户消息字符数 = 4_000;
 const 任务级授权有效期毫秒 = 2 * 60 * 1_000;
@@ -1151,6 +1152,9 @@ const 可信文件端口错误 = Symbol('trusted-file-task-error');
 const 已公开文件错误 = Symbol('reported-file-task-error');
 
 function publicError(error: unknown): Error & { code: string } {
+  if (error instanceof ProviderResponseError) {
+    return publicErrorForCode('PROVIDER_MALFORMED_RESPONSE');
+  }
   const candidate = error instanceof Error
     && 'code' in error
     && typeof error.code === 'string'

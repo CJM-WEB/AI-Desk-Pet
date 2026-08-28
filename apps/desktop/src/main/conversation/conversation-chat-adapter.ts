@@ -15,7 +15,7 @@ import {
   type CharacterBehaviorPlan,
   type MovementControlPlan
 } from '@myself/character-runtime';
-import { ProviderError } from '../providers/openai-provider';
+import { ProviderResponseError } from '../providers/provider-response-error';
 import type { ConversationBehaviorContext } from
   '../characters/character-behavior-director';
 
@@ -100,13 +100,16 @@ export type ConversationChatReply = Readonly<{
 }>;
 
 export class ConversationChatAdapter {
-  constructor(private readonly provider: ModelProvider) {}
+  constructor(
+    private readonly provider: ModelProvider,
+    private readonly reportResponseError: (error: ProviderResponseError) => void = () => undefined
+  ) {}
 
   /**
    * 聊天层只负责受限请求与文本响应，不参与文件任务的决策或回退。
    */
   async respond(input: ConversationChatInput): Promise<ConversationChatReply> {
-    const response = await this.provider.respond({
+    const request = {
       messages: [
         { role: 'system', content: 构建聊天系统消息(input.behaviorContext) },
         ...input.history,
@@ -117,67 +120,93 @@ export class ConversationChatAdapter {
       reasoningMode: 'provider_default',
       responseContract: characterChatResponseContract,
       ...(input.onTextDelta === undefined ? {} : { onTextDelta: input.onTextDelta })
-    }, input.signal);
+    } satisfies Parameters<ModelProvider['respond']>[0];
+    const response = await this.provider.respond(request, input.signal);
 
     if (response.type !== 'text' || !是合法正文(response.text)) {
-      throw new ProviderError('PROVIDER_MALFORMED_RESPONSE', false);
+      throw new ProviderResponseError('RESPONSE_FORMAT_UNSUPPORTED', 'chat_control');
     }
+    const controls = 解析聊天控制字段(response);
+    if (controls !== null) return { text: response.text, ...controls };
 
-    const reply: {
-      text: string;
-      emotion?: CharacterEmotionLabel;
-      behaviorPlan?: CharacterBehaviorPlan;
-      movementControl?: MovementControlPlan;
-      activity?: string;
-      status?: string;
-      capabilityPlan?: CapabilityControlPlan;
-    } = { text: response.text };
-    if (response.emotion !== undefined) reply.emotion = response.emotion;
-    const activity = characterBehaviorDescriptorSchema.safeParse(
-      response.structured_output?.activity
-    );
-    const status = characterBehaviorDescriptorSchema.safeParse(
-      response.structured_output?.status
-    );
-    if (activity.success) reply.activity = activity.data;
-    if (status.success) reply.status = status.data;
-    const capabilityPlan = capabilityControlPlanSchema.safeParse(
-      response.structured_output?.capabilityPlan
-    );
-    if (capabilityPlan.success) reply.capabilityPlan = capabilityPlan.data;
-    const movementControl = movementControlPlanSchema.safeParse(
-      response.structured_output?.movementControl
-    );
-    if (movementControl.success) reply.movementControl = movementControl.data;
-
-    // Provider 只恢复正文；行为计划必须再次经过本地角色契约校验。
-    const behaviorPlan = characterChatBehaviorPlanSchema.safeParse(
-      response.structured_output?.behaviorPlan
-    );
-    if (behaviorPlan.success) {
-      // JSON Output 把情绪收敛在行为计划内；继续投影既有情绪事件以兼容角色扩展状态。
-      if (reply.emotion === undefined
-        && (behaviorPlan.data.kind === 'none' || behaviorPlan.data.kind === 'play_state')
-        && behaviorPlan.data.emotion !== undefined) {
-        reply.emotion = behaviorPlan.data.emotion;
+    const controlError = new ProviderResponseError('CONTROL_SCHEMA_INVALID', 'chat_control');
+    this.reportResponseError(controlError);
+    try {
+      const repaired = await this.provider.respond(构建控制字段修复请求(request), input.signal);
+      if (repaired.type === 'text' && repaired.structured_output !== undefined) {
+        const repairedControls = 解析聊天控制字段(repaired);
+        if (repairedControls !== null) return { text: response.text, ...repairedControls };
       }
-      // Zod 可选字段类型包含显式 undefined；这里重建两类可选分支以保持公共契约不变量。
-      if (behaviorPlan.data.kind === 'none') {
-        reply.behaviorPlan = behaviorPlan.data.emotion === undefined
-          ? { kind: 'none' }
-          : { kind: 'none', emotion: behaviorPlan.data.emotion };
-      } else if (behaviorPlan.data.kind === 'play_state') {
-        reply.behaviorPlan = {
-          kind: 'play_state',
-          state: behaviorPlan.data.state,
-          ...(behaviorPlan.data.action === undefined ? {} : { action: behaviorPlan.data.action }),
-          ...(behaviorPlan.data.duration === undefined ? {} : { duration: behaviorPlan.data.duration }),
-          ...(behaviorPlan.data.emotion === undefined ? {} : { emotion: behaviorPlan.data.emotion })
-        };
-      }
+    } catch (error) {
+      if (input.signal.aborted || (error instanceof Error && error.name === 'AbortError')) throw error;
     }
-    return reply;
+    // 首次正文已通过可见边界；修复失败只丢弃控制副作用，不用错误替换正文。
+    return { text: response.text };
   }
+}
+
+type ChatControls = Omit<ConversationChatReply, 'text'>;
+
+/** 控制字段按一个原子计划校验；任一字段失败都不能提交其余副作用。 */
+function 解析聊天控制字段(
+  response: Extract<Awaited<ReturnType<ModelProvider['respond']>>, { type: 'text' }>
+): ChatControls | null {
+  if (response.structured_output === undefined) return null;
+  const activity = characterBehaviorDescriptorSchema.safeParse(response.structured_output.activity);
+  const status = characterBehaviorDescriptorSchema.safeParse(response.structured_output.status);
+  const capabilityPlan = capabilityControlPlanSchema.safeParse(
+    response.structured_output.capabilityPlan
+  );
+  const movementControl = movementControlPlanSchema.safeParse(
+    response.structured_output.movementControl
+  );
+  const behaviorPlan = characterChatBehaviorPlanSchema.safeParse(
+    response.structured_output.behaviorPlan
+  );
+  if (
+    !activity.success
+    || !status.success
+    || !capabilityPlan.success
+    || !movementControl.success
+    || !behaviorPlan.success
+  ) return null;
+
+  const normalizedBehavior = behaviorPlan.data.kind === 'none'
+    ? behaviorPlan.data.emotion === undefined
+      ? { kind: 'none' as const }
+      : { kind: 'none' as const, emotion: behaviorPlan.data.emotion }
+    : {
+        kind: 'play_state' as const,
+        state: behaviorPlan.data.state,
+        ...(behaviorPlan.data.action === undefined ? {} : { action: behaviorPlan.data.action }),
+        ...(behaviorPlan.data.duration === undefined ? {} : { duration: behaviorPlan.data.duration }),
+        ...(behaviorPlan.data.emotion === undefined ? {} : { emotion: behaviorPlan.data.emotion })
+      };
+  const emotion = response.emotion ?? behaviorPlan.data.emotion;
+  return {
+    activity: activity.data,
+    status: status.data,
+    capabilityPlan: capabilityPlan.data,
+    movementControl: movementControl.data,
+    behaviorPlan: normalizedBehavior,
+    ...(emotion === undefined ? {} : { emotion })
+  };
+}
+
+function 构建控制字段修复请求(
+  request: Parameters<ModelProvider['respond']>[0]
+): Parameters<ModelProvider['respond']>[0] {
+  const { onTextDelta: _onTextDelta, ...bufferedRequest } = request;
+  const [system, ...messages] = request.messages;
+  const repairInstruction = '上次响应的控制字段不符合契约。请重新返回完整 JSON；此请求没有工具能力，不得声称执行了本地操作。';
+  return {
+    ...bufferedRequest,
+    messages: system?.role === 'system'
+      ? [{ ...system, content: `${system.content}${repairInstruction}` }, ...messages]
+      : [{ role: 'system', content: repairInstruction }, ...request.messages],
+    tools: [],
+    toolChoice: 'none'
+  };
 }
 
 function 构建聊天系统消息(context: ConversationBehaviorContext): string {
