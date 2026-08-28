@@ -1439,7 +1439,6 @@ describe('Main 角色运动服务', () => {
     vi.useFakeTimers();
     try {
       let now = 0;
-      let destroyed = false;
       const bounds = { x: 0, y: 0, width: 180, height: 220 };
       const setPosition = vi.fn(() => {
         throw new Error('NATIVE_POSITION_PRIVATE_DETAIL');
@@ -1450,12 +1449,13 @@ describe('Main 角色运动服务', () => {
         now: () => now
       });
       const reportError = vi.fn();
+      const poll = vi.fn();
       service.moveTo({ x: 10, y: 0 }, 100);
       now = 100;
       const runtime = startCharacterMotionTimers({
         tick: () => { service.tick(); },
-        poll: vi.fn(),
-        isDestroyed: () => destroyed,
+        poll,
+        isDestroyed: () => false,
         tickIntervalMs: 10,
         idleIntervalMs: 20,
         reportError
@@ -1465,8 +1465,12 @@ describe('Main 角色运动服务', () => {
       expect(setPosition).toHaveBeenCalledOnce();
       expect(reportError).toHaveBeenCalledWith('CHARACTER_MOTION_TIMER_FAILED');
 
-      destroyed = true;
+      // 窗口保持存活，确认冻结来自 timer 清理而非销毁 guard 短路。
       vi.advanceTimersByTime(50);
+      expect(setPosition).toHaveBeenCalledOnce();
+      expect(poll).not.toHaveBeenCalled();
+      expect(reportError).toHaveBeenCalledOnce();
+
       runtime.destroy();
       vi.advanceTimersByTime(50);
       expect(setPosition).toHaveBeenCalledOnce();
