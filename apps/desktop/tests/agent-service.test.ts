@@ -173,7 +173,7 @@ function patchAction(targetRelativePath = 'result.txt'): VerifiedWriteAction {
 function createHarness(
   provider: ModelProvider,
   fileOverrides: Partial<AgentFileTools> = {},
-  fileDisclosureAllowed = true,
+  legacyFileDisclosureAllowed = true,
   fallbackProviders: ModelProvider[] = [],
   onEmit?: (event: TaskEvent) => void,
   emitBehaviorIntent?: (intent: CharacterAgentBehaviorIntent) => void,
@@ -189,13 +189,12 @@ function createHarness(
   };
   const registry = createBuiltinAgentToolRegistry();
   const permissionPolicy = new PermissionPolicy({ highRiskEnabled: false });
-  const session: AgentSession = {
+  const session: AgentSession & { fileDisclosureAllowed?: boolean } = {
     taskKind: 'agent',
     initialCapability: 'file',
     provider,
     fallbackProviders,
     fileTools,
-    fileDisclosureAllowed,
     powershell: { close: vi.fn(async () => undefined) } as unknown as PowerShellTool,
     workingDirectory: 'C:\\workspace',
     workingDirectoryLabel: '工作区',
@@ -210,6 +209,7 @@ function createHarness(
   const pending = new PendingActionStore({
     onDiscard: execution => loop.discard(execution.continuationToken)
   });
+  if (!legacyFileDisclosureAllowed) session.fileDisclosureAllowed = false;
   const createSession = vi.fn(async () => (
     createSessionOverride ? createSessionOverride(session) : session
   ));
@@ -284,16 +284,6 @@ const allFilePlanningToolNames = [
   CAPABILITY_CLARIFICATION_TOOL_NAME
 ] as const;
 
-const mutationPlanningToolNames = [
-  'builtin.files.create_file',
-  'builtin.files.move_file',
-  'builtin.files.create_directory',
-  'builtin.files.apply_patch',
-  'builtin.files.edit_file',
-  'builtin.files.delete_file',
-  CAPABILITY_CLARIFICATION_TOOL_NAME
-] as const;
-
 function powerShellResult(ok: boolean) {
   return {
     ok,
@@ -311,8 +301,7 @@ function powerShellResult(ok: boolean) {
 
 function createPowerShellHarness(
   provider: ModelProvider,
-  powershell: Pick<PowerShellTool, 'preview' | 'execute'> & Partial<Pick<PowerShellTool, 'close'>>,
-  fileDisclosureAllowed = true
+  powershell: Pick<PowerShellTool, 'preview' | 'execute'> & Partial<Pick<PowerShellTool, 'close'>>
 ) {
   const events: TaskEvent[] = [];
   const loop = new AgentLoop();
@@ -330,7 +319,6 @@ function createPowerShellHarness(
     initialCapability: 'powershell',
     provider,
     fileTools,
-    fileDisclosureAllowed,
     powershell: { close: vi.fn(async () => undefined), ...powershell } as PowerShellTool,
     workingDirectory: 'C:\\workspace',
     workingDirectoryLabel: '工作区',
@@ -353,6 +341,29 @@ function createPowerShellHarness(
 }
 
 describe('AgentService', () => {
+  test('旧文件披露值为 false 时创建文件确认后的续跑仍公告完整文件工具', async () => {
+    const provider = new ScriptedProvider([
+      writeResponse(),
+      { type: 'text', text: '文件已创建' }
+    ]);
+    const { events, service } = createHarness(provider, {}, false);
+
+    await service.submitFileTask({
+      text: '创建 result.txt',
+      visibleHistory: [],
+      planningHint: { operation: 'create_file' }
+    });
+    const pendingEvent = events.find(event => event.type === 'pending_action');
+    if (!pendingEvent || pendingEvent.type !== 'pending_action') throw new Error('缺少文件确认');
+    await service.confirm(pendingEvent.action.actionId);
+
+    expect(provider.requests[1]?.tools.map(tool => tool.function.name)).toEqual(expect.arrayContaining([
+      'builtin.files.read_file',
+      'builtin.files.edit_file',
+      'builtin.files.move_file'
+    ]));
+  });
+
   test('PowerShell 首轮仅公告命令工具，首个可信结果后恢复完整组合工具面', async () => {
     const provider = new ScriptedProvider([
       shellRequest(),
@@ -379,7 +390,7 @@ describe('AgentService', () => {
     ]));
   });
 
-  test('默认隐私下 PowerShell 可信结果后开放文件 mutation 并继续隐藏读取检索', async () => {
+  test('PowerShell 可信结果后恢复完整组合工具面', async () => {
     const provider = new ScriptedProvider([
       shellRequest(),
       { type: 'text', text: '命令执行完毕' }
@@ -387,7 +398,7 @@ describe('AgentService', () => {
     const { events, service } = createPowerShellHarness(provider, {
       preview: vi.fn(() => powerShellAction()),
       execute: vi.fn(async () => powerShellResult(true))
-    }, false);
+    });
 
     await service.submitFileTask({ text: '运行命令后整理文件', visibleHistory: [] });
     const pending = events.find(event => event.type === 'pending_action');
@@ -400,18 +411,16 @@ describe('AgentService', () => {
     const continuationTools = provider.requests[1]?.tools.map(tool => tool.function.name) ?? [];
     expect(continuationTools).toEqual(expect.arrayContaining([
       'builtin.powershell.run',
+      'builtin.files.list_files',
+      'builtin.files.read_file',
+      'builtin.files.glob_files',
+      'builtin.files.grep_files',
       'builtin.files.create_file',
       'builtin.files.create_directory',
       'builtin.files.apply_patch',
       'builtin.files.edit_file',
       'builtin.files.delete_file',
       'builtin.files.move_file'
-    ]));
-    expect(continuationTools).not.toEqual(expect.arrayContaining([
-      'builtin.files.list_files',
-      'builtin.files.read_file',
-      'builtin.files.glob_files',
-      'builtin.files.grep_files'
     ]));
   });
 
@@ -659,7 +668,6 @@ describe('AgentService', () => {
       initialCapability: 'powershell',
       provider,
       fileTools,
-      fileDisclosureAllowed: true,
       powershell: { preview, execute } as unknown as PowerShellTool,
       workingDirectory: 'C:\\workspace',
       workingDirectoryLabel: '工作区',
@@ -1170,108 +1178,6 @@ describe('AgentService', () => {
     expect(fallback.requests).toEqual([]);
   });
 
-  test('文件分类未授权时创建目录仍经过预览、确认和本地写入', async () => {
-    const directoryAction = Object.freeze({
-      operation: 'create_directory' as const,
-      authorizationGeneration: 0,
-      targetRelativePath: 'private-directory'
-    });
-    const provider = new ScriptedProvider([
-      {
-        type: 'tool_request',
-        request: {
-          requestId: 'private-directory-create',
-          toolName: 'builtin.files.create_directory',
-          arguments: { relativePath: 'private-directory' }
-        }
-      },
-      { type: 'text', text: '目录已创建' }
-    ]);
-    const { events, fileTools, service } = createHarness(provider, {
-      preview: vi.fn(async () => directoryAction)
-    }, false);
-
-    await service.submitFileTask({
-      text: '创建 private-directory 目录',
-      visibleHistory: [],
-      planningHint: {
-        operation: 'create_directory'
-      }
-    });
-
-    expect(provider.requests[0]?.tools.map(tool => tool.function.name))
-      .toEqual(mutationPlanningToolNames);
-    expect(fileTools.preview).toHaveBeenCalledWith({
-      requestId: 'private-directory-create',
-      toolName: 'create_directory',
-      arguments: { relativePath: 'private-directory' }
-    });
-    const action = events.find(event => event.type === 'pending_action');
-    if (!action || action.type !== 'pending_action') throw new Error('缺少目录确认卡');
-
-    await service.confirm(action.action.actionId);
-
-    expect(fileTools.executeWrite).toHaveBeenCalledWith(directoryAction);
-    expect(events).toContainEqual({ type: 'message', role: 'assistant', text: '目录已创建' });
-  });
-
-  test.each([
-    ['只读操作', {
-      operation: 'list_files'
-    }, readResponse()],
-    ['读取工具', { operation: 'list_files' }, readResponse()]
-  ] as const)('文件分类未授权时%s保持失败关闭', async (_name, planningHint, response) => {
-    const provider = new ScriptedProvider([response, response]);
-    const { fileTools, service } = createHarness(provider, {}, false);
-
-    await expect(service.submitFileTask({
-      text: '执行受限文件操作',
-      visibleHistory: [],
-      ...(planningHint === undefined ? {} : { planningHint })
-    })).rejects.toThrow('AGENT_INVALID_TOOL_REQUEST');
-
-    expect(fileTools.preview).not.toHaveBeenCalled();
-    expect(fileTools.executeWrite).not.toHaveBeenCalled();
-    expect(provider.requests[0]?.tools.map(tool => tool.function.name)).not.toContain(
-      'builtin.files.list_files'
-    );
-    expect(provider.requests[0]?.tools.map(tool => tool.function.name))
-      .toEqual(mutationPlanningToolNames);
-  });
-
-  test.each([
-    ['list_files', { operation: 'list_files' }],
-    ['read_file', { operation: 'read_file' }],
-    ['glob_files', { operation: 'glob_files' }],
-    ['grep_files', { operation: 'grep_files' }]
-  ] as const)('文件分类未授权时 %s 返回宿主固定设置提示', async (_toolName, planningHint) => {
-    const provider = new ScriptedProvider([{
-      type: 'tool_request',
-      request: {
-        requestId: `disclosure-${_toolName}`,
-        toolName: CAPABILITY_CLARIFICATION_TOOL_NAME,
-        arguments: { missingField: 'file_data_authorization' }
-      }
-    }]);
-    const { events, fileTools, service } = createHarness(provider, {}, false);
-
-    await service.submitFileTask({
-      text: '执行需要读取文件数据的操作',
-      visibleHistory: [],
-      planningHint
-    });
-
-    expect(events).toEqual([
-      { type: 'phase', phase: 'thinking' },
-      { type: 'message', role: 'assistant', text: '请先开启文件数据授权。' },
-      { type: 'phase', phase: 'success' }
-    ]);
-    expect(provider.requests[0]?.tools.map(tool => tool.function.name))
-      .toEqual(mutationPlanningToolNames);
-    expect(fileTools.executeRead).not.toHaveBeenCalled();
-    expect(fileTools.preview).not.toHaveBeenCalled();
-  });
-
   test.each([
     {
       operation: 'create_file' as const,
@@ -1318,7 +1224,7 @@ describe('AgentService', () => {
       arguments: { relativePath: 'archive/old.txt' },
       action: recycleAction()
     }
-  ])('文件分类未授权时 $operation 仍产生逐次确认并回注真实工具名', async testCase => {
+  ])('$operation 仍产生逐次确认并回注真实工具名', async testCase => {
     const provider = new ScriptedProvider([{
       type: 'tool_request',
       request: {
@@ -1329,7 +1235,7 @@ describe('AgentService', () => {
     }, { type: 'text', text: `${testCase.operation} 已完成` }]);
     const { events, fileTools, service } = createHarness(provider, {
       preview: vi.fn(async () => testCase.action)
-    }, false);
+    });
 
     await service.submitFileTask({
       text: `执行 ${testCase.operation}`,
@@ -1507,7 +1413,7 @@ describe('AgentService', () => {
     expect(events.at(-1)).toEqual({ type: 'phase', phase: 'error' });
   });
 
-  test('文件分类未授权时下一任务取消旧确认后可使用新的结构化写请求', async () => {
+  test('下一任务取消旧确认后可使用新的结构化写请求', async () => {
     const provider = new ScriptedProvider([
       {
         type: 'tool_request',
@@ -1540,7 +1446,7 @@ describe('AgentService', () => {
         authorizationGeneration: 0,
         targetRelativePath: 'first-directory'
       }))
-    }, false);
+    });
 
     await service.submitFileTask({
       text: '创建 first-directory',
@@ -1563,9 +1469,9 @@ describe('AgentService', () => {
     expect(fileTools.executeWrite).not.toHaveBeenCalled();
   });
 
-  test('文件分类未授权时取消会隔离迟到的明确创建响应', async () => {
+  test('取消会隔离迟到的明确创建响应', async () => {
     const provider = new DeferredProvider();
-    const { fileTools, service } = createHarness(provider, {}, false);
+    const { fileTools, service } = createHarness(provider);
     const submitting = service.submitFileTask({
       text: '创建 private-directory', visibleHistory: [],
       planningHint: {
@@ -2112,7 +2018,7 @@ describe('AgentService', () => {
     expect(events.at(-1)).toEqual({ type: 'phase', phase: 'success' });
   });
 
-  test('未授权文件正文披露时仍允许纯写多步任务逐次确认，但不恢复读取工具', async () => {
+  test('纯写多步任务逐次确认后恢复完整文件工具', async () => {
     const provider = new ScriptedProvider([
       writeResponse(),
       moveResponse(),
@@ -2122,7 +2028,7 @@ describe('AgentService', () => {
       preview: vi.fn()
         .mockResolvedValueOnce(verifiedAction())
         .mockResolvedValueOnce(moveAction())
-    }, false);
+    });
 
     await service.submitFileTask({
       text: '创建 result.txt 后移动到 archive 文件夹',
@@ -2136,15 +2042,13 @@ describe('AgentService', () => {
     const pendingEvents = events.filter(event => event.type === 'pending_action');
     expect(pendingEvents).toHaveLength(2);
     expect(provider.requests[1]?.tools.map(tool => tool.function.name)).toEqual(expect.arrayContaining([
-      'builtin.files.create_file',
-      'builtin.files.move_file',
-      'builtin.files.edit_file'
-    ]));
-    expect(provider.requests[1]?.tools.map(tool => tool.function.name)).not.toEqual(expect.arrayContaining([
       'builtin.files.list_files',
       'builtin.files.read_file',
       'builtin.files.glob_files',
-      'builtin.files.grep_files'
+      'builtin.files.grep_files',
+      'builtin.files.create_file',
+      'builtin.files.move_file',
+      'builtin.files.edit_file'
     ]));
     const secondPending = pendingEvents[1];
     if (!secondPending || secondPending.type !== 'pending_action') throw new Error('缺少第二张确认卡');

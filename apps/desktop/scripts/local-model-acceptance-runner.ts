@@ -375,7 +375,7 @@ export async function runLocalModelAcceptance(input: AcceptanceInput) {
     readProviderSettings: () => localModelService.providerSettingsSnapshot(),
     assertProviderReady: profile => assertProviderReady(profile, runtime.getStatus()),
     readAuthorizedRootPath: async () => authorizedRoot,
-    readPrivacySettings: async () => ({ dataCategories: { file: true } }),
+    readPrivacySettings: async () => ({ dataCategories: { memory: false } }),
     createChatAdapter: profile => new ConversationChatAdapter(createProvider(profile)),
     createAgentService: ({ snapshot, generation, primaryProfile, fallbackProfiles, emit }) => {
       const loop = new AgentLoop();
@@ -389,7 +389,6 @@ export async function runLocalModelAcceptance(input: AcceptanceInput) {
           initialCapability: snapshot.taskKind,
           authorizedRootPath: snapshot.authorizedRootPath,
           generation,
-          fileDisclosureAllowed: snapshot.privacySettings.dataCategories.file,
           provider: createProvider(primaryProfile),
           fallbackProviders: fallbackProfiles.map(createProvider),
           createFileTools: async () => {

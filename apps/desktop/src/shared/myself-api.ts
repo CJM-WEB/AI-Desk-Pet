@@ -47,7 +47,6 @@ export interface SaveProviderInput {
 
 export interface PrivacySettingsDto {
   dataCategories: {
-    file: boolean;
     memory: boolean;
   };
   longTermMemory: boolean;
@@ -56,7 +55,6 @@ export interface PrivacySettingsDto {
 
 export interface PrivacyRuntimeSupportDto {
   dataCategories: {
-    file: boolean;
     memory: boolean;
   };
   longTermMemory: boolean;

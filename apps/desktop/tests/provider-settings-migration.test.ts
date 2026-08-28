@@ -188,7 +188,7 @@ describe('模型目录与设置迁移', () => {
       modelRoute: unknown;
     };
     expect(migrated).toMatchObject({
-      version: 5,
+      version: 6,
       providerProfiles: [{
         id: 'legacy-provider',
         displayName: '旧服务',
@@ -239,7 +239,7 @@ describe('模型目录与设置迁移', () => {
 
     expect(first.provider).toEqual(expect.objectContaining({ id: 'legacy-provider' }));
     expect(second.provider).toEqual(expect.objectContaining({ id: 'legacy-provider' }));
-    await expect(readFile(file, 'utf8')).resolves.toContain('"version": 5');
+    await expect(readFile(file, 'utf8')).resolves.toContain('"version": 6');
   });
 
   test('迁移写入失败时保留原 v1 文件', async () => {

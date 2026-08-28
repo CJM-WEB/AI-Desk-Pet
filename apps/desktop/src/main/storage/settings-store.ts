@@ -98,13 +98,22 @@ const petPlacementMigrationCommitSchema = z.object({
 
 export const privacySettingsSchema = z.object({
   dataCategories: z.object({
-    file: z.boolean(),
     memory: z.boolean()
   }).strict(),
   longTermMemory: z.boolean(),
   proactivityMode: z.enum(['passive', 'assistive', 'autonomous'])
 }).strict();
 export type PrivacySettings = z.infer<typeof privacySettingsSchema>;
+
+/** 仅用于读取旧设置；文件披露 Gate 已退役，迁移后绝不再持久化。 */
+const legacyPrivacySettingsSchema = z.object({
+  dataCategories: z.object({
+    file: z.boolean(),
+    memory: z.boolean()
+  }).strict(),
+  longTermMemory: z.boolean(),
+  proactivityMode: z.enum(['passive', 'assistive', 'autonomous'])
+}).strict();
 
 const mcpToolSettingsSchema = z.object({
   enabled: z.boolean(),
@@ -152,7 +161,7 @@ const storedSettingsV2Schema = z.object({
   petPosition: petPositionSchema.nullable(),
   fileDisclosureAccepted: z.boolean(),
   petAlwaysOnTop: z.boolean().optional(),
-  privacy: privacySettingsSchema.optional(),
+  privacy: legacyPrivacySettingsSchema.optional(),
   movementStopped: z.boolean().optional(),
   mcpServers: z.array(mcpServerSettingsSchema).optional()
 }).strict();
@@ -165,7 +174,7 @@ const storedSettingsV3Shape = {
   petPlacementState: petPlacementStateSchema,
   fileDisclosureAccepted: z.boolean(),
   petAlwaysOnTop: z.boolean(),
-  privacy: privacySettingsSchema,
+  privacy: legacyPrivacySettingsSchema,
   movementStopped: z.boolean(),
   mcpServers: z.array(mcpServerSettingsSchema)
 };
@@ -191,6 +200,13 @@ const storedSettingsV5Shape = {
 };
 
 const storedSettingsV5Schema = z.object(storedSettingsV5Shape).strict();
+const { fileDisclosureAccepted: _legacyFileDisclosureAccepted, ...storedSettingsV5WithoutDisclosure } = storedSettingsV5Shape;
+const storedSettingsV6Shape = {
+  ...storedSettingsV5WithoutDisclosure,
+  version: z.literal(6),
+  privacy: privacySettingsSchema
+};
+const storedSettingsV6Schema = z.object(storedSettingsV6Shape).strict();
 
 // 只放宽 ready 集合的单条内容，用于隔离损坏 placement 后保住其余设置。
 const recoverableStoredSettingsV3Schema = z.object({
@@ -235,7 +251,7 @@ type PetPositionInput = z.input<typeof petPositionSchema>;
 type StoredSettingsV1 = z.infer<typeof storedSettingsV1Schema>;
 type StoredSettingsV2 = z.infer<typeof storedSettingsV2Schema>;
 type StoredSettingsV3 = z.infer<typeof storedSettingsV3Schema>;
-type StoredSettings = z.infer<typeof storedSettingsV5Schema>;
+type StoredSettings = z.infer<typeof storedSettingsV6Schema>;
 
 export interface ProviderSettingsSnapshot {
   profiles: ProviderProfileV2[];
@@ -263,12 +279,11 @@ function emptyModelRoute(): ModelRouteConfig {
 
 function defaultSettings(): StoredSettings {
   return {
-    version: 5,
+    version: 6,
     providerProfiles: [],
     modelRoute: emptyModelRoute(),
     authorizedRoot: null,
     petPlacementState: { kind: 'ready', placements: [] },
-    fileDisclosureAccepted: false,
     petAlwaysOnTop: false,
     privacy: defaultPrivacySettings(),
     movementMode: 2,
@@ -280,7 +295,6 @@ function defaultSettings(): StoredSettings {
 function defaultPrivacySettings(): PrivacySettings {
   return {
     dataCategories: {
-      file: false,
       memory: false
     },
     longTermMemory: false,
@@ -365,6 +379,13 @@ function legacyPrivacySettings(): PrivacySettings {
   };
 }
 
+function migratePrivacySettings(settings: z.infer<typeof legacyPrivacySettingsSchema>): PrivacySettings {
+  return privacySettingsSchema.parse({
+    ...settings,
+    dataCategories: { memory: settings.dataCategories.memory }
+  });
+}
+
 function behaviorSettingsSnapshot(settings: StoredSettings): CharacterBehaviorSettingsSnapshot {
   return Object.freeze({
     movementMode: settings.movementMode,
@@ -378,7 +399,6 @@ function migrateV1Settings(settings: StoredSettingsV1): StoredSettings {
       ...defaultSettings(),
       authorizedRoot: settings.authorizedRoot,
       petPlacementState: legacyPetPlacementState(settings.petPosition),
-      fileDisclosureAccepted: settings.fileDisclosureAccepted,
       privacy: legacyPrivacySettings()
     };
   }
@@ -401,7 +421,6 @@ function migrateV1Settings(settings: StoredSettingsV1): StoredSettings {
     },
     authorizedRoot: settings.authorizedRoot,
     petPlacementState: legacyPetPlacementState(settings.petPosition),
-    fileDisclosureAccepted: settings.fileDisclosureAccepted,
     petAlwaysOnTop: false,
     privacy: legacyPrivacySettings(),
     movementMode: 2,
@@ -416,32 +435,29 @@ function legacyPetPlacementState(position: PetPositionInput | null): StoredSetti
 }
 
 function migrateV2Settings(settings: StoredSettingsV2): StoredSettings {
-  return storedSettingsV5Schema.parse({
+  return storedSettingsV6Schema.parse({
     ...defaultSettings(),
     providerProfiles: settings.providerProfiles,
     modelRoute: settings.modelRoute,
     authorizedRoot: settings.authorizedRoot,
     petPlacementState: legacyPetPlacementState(settings.petPosition),
-    fileDisclosureAccepted: settings.fileDisclosureAccepted,
     petAlwaysOnTop: settings.petAlwaysOnTop ?? false,
-    privacy: settings.privacy ?? legacyPrivacySettings(),
+    privacy: settings.privacy ? migratePrivacySettings(settings.privacy) : legacyPrivacySettings(),
     movementMode: settings.movementStopped === true ? 0 : 2,
     mcpServers: settings.mcpServers ?? []
   });
 }
 
 function migrateV3Settings(settings: StoredSettingsV3): StoredSettings {
-  const { movementStopped, ...retained } = settings;
-  return storedSettingsV5Schema.parse({
-    ...retained,
+  const { movementStopped } = settings;
+  return storedSettingsV6Schema.parse({
     ...defaultSettings(),
     providerProfiles: settings.providerProfiles,
     modelRoute: settings.modelRoute,
     authorizedRoot: settings.authorizedRoot,
     petPlacementState: settings.petPlacementState,
-    fileDisclosureAccepted: settings.fileDisclosureAccepted,
     petAlwaysOnTop: settings.petAlwaysOnTop,
-    privacy: settings.privacy,
+    privacy: migratePrivacySettings(settings.privacy),
     movementMode: movementStopped ? 0 : 2,
     mcpServers: settings.mcpServers
   });
@@ -450,11 +466,33 @@ function migrateV3Settings(settings: StoredSettingsV3): StoredSettings {
 function migrateV4Settings(
   settings: z.infer<typeof storedSettingsV4Schema>
 ): StoredSettings {
-  const { movementStopped, ...retained } = settings;
-  return storedSettingsV5Schema.parse({
-    ...retained,
-    version: 5,
-    movementMode: movementStopped ? 0 : 2
+  const { movementStopped } = settings;
+  return storedSettingsV6Schema.parse({
+    ...defaultSettings(),
+    providerProfiles: settings.providerProfiles,
+    modelRoute: settings.modelRoute,
+    authorizedRoot: settings.authorizedRoot,
+    petPlacementState: settings.petPlacementState,
+    petAlwaysOnTop: settings.petAlwaysOnTop,
+    privacy: migratePrivacySettings(settings.privacy),
+    movementMode: movementStopped ? 0 : 2,
+    mcpServers: settings.mcpServers,
+    localModel: settings.localModel
+  });
+}
+
+function migrateV5Settings(settings: z.infer<typeof storedSettingsV5Schema>): StoredSettings {
+  return storedSettingsV6Schema.parse({
+    ...defaultSettings(),
+    providerProfiles: settings.providerProfiles,
+    modelRoute: settings.modelRoute,
+    authorizedRoot: settings.authorizedRoot,
+    petPlacementState: settings.petPlacementState,
+    petAlwaysOnTop: settings.petAlwaysOnTop,
+    privacy: migratePrivacySettings(settings.privacy),
+    movementMode: settings.movementMode,
+    mcpServers: settings.mcpServers,
+    localModel: settings.localModel
   });
 }
 
@@ -590,9 +628,13 @@ function recoverOversizedReadyPlacements(raw: unknown): OversizedReadyPlacementR
     ...(raw as Record<string, unknown>),
     petPlacementState: { kind: 'ready', placements: [] }
   };
-  const sanitized = storedSettingsV5Schema.safeParse(candidate);
-  if (sanitized.success) {
-    return { detected: true, settings: sanitized.data };
+  const current = storedSettingsV6Schema.safeParse(candidate);
+  if (current.success) {
+    return { detected: true, settings: current.data };
+  }
+  const v5 = storedSettingsV5Schema.safeParse(candidate);
+  if (v5.success) {
+    return { detected: true, settings: migrateV5Settings(v5.data) };
   }
   const v4 = storedSettingsV4Schema.safeParse(candidate);
   if (v4.success) {
@@ -620,10 +662,10 @@ function sanitizeRecoverableV5(raw: unknown): StoredSettings | null {
   const recoverable = recoverableStoredSettingsV5Schema.safeParse(raw);
   if (!recoverable.success) return null;
   if (recoverable.data.petPlacementState.kind === 'pending-legacy') {
-    return storedSettingsV5Schema.parse({
+    return migrateV5Settings(storedSettingsV5Schema.parse({
       ...recoverable.data,
       petPlacementState: { kind: 'ready', placements: [] }
-    });
+    }));
   }
   const placements = new Map<string, StoredPetPlacement>();
   for (const candidate of recoverable.data.petPlacementState.placements) {
@@ -633,10 +675,10 @@ function sanitizeRecoverableV5(raw: unknown): StoredSettings | null {
     placements.set(parsed.data.characterId, parsed.data);
     if (placements.size >= PET_PLACEMENT_LIMIT) break;
   }
-  return storedSettingsV5Schema.parse({
+  return migrateV5Settings(storedSettingsV5Schema.parse({
     ...recoverable.data,
     petPlacementState: { kind: 'ready', placements: [...placements.values()] }
-  });
+  }));
 }
 
 function sanitizeRecoverableV4(raw: unknown): StoredSettings | null {
@@ -768,12 +810,19 @@ export class SettingsStore {
       return oversizedReady.settings;
     }
 
+    const v6 = storedSettingsV6Schema.safeParse(raw);
+    if (v6.success) {
+      if (retiredZen.changed || retiredPrivacy.changed || JSON.stringify(v6.data) !== JSON.stringify(raw)) {
+        await atomicWrite(this.file, v6.data);
+      }
+      return v6.data;
+    }
+
     const v5 = storedSettingsV5Schema.safeParse(raw);
     if (v5.success) {
-      if (retiredZen.changed || retiredPrivacy.changed || JSON.stringify(v5.data) !== JSON.stringify(raw)) {
-        await atomicWrite(this.file, v5.data);
-      }
-      return v5.data;
+      const migrated = migrateV5Settings(v5.data);
+      await atomicWrite(this.file, migrated);
+      return migrated;
     }
 
     const v4 = storedSettingsV4Schema.safeParse(raw);
@@ -1013,8 +1062,7 @@ export class SettingsStore {
           id: settings.authorizedRoot.id,
           displayName: settings.authorizedRoot.displayName,
           pathHint: settings.authorizedRoot.pathHint
-        },
-        fileDisclosureAccepted: settings.fileDisclosureAccepted
+        }
       };
     });
   }

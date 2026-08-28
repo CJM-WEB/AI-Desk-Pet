@@ -268,8 +268,7 @@ export const publicSettingsSchema = z.object({
     id: z.string().min(1),
     displayName: z.string().min(1),
     pathHint: z.string().min(1)
-  }).strict().nullable(),
-  fileDisclosureAccepted: z.boolean()
+  }).strict().nullable()
 }).strict();
 export type PublicSettings = z.infer<typeof publicSettingsSchema>;
 

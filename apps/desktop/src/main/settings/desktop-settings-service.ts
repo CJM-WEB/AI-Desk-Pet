@@ -97,7 +97,6 @@ export class DesktopSettingsService {
       privacy,
       privacyRuntimeSupport: {
         dataCategories: {
-          file: true,
           memory: false
         },
         longTermMemory: false,

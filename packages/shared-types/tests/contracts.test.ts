@@ -13,8 +13,7 @@ describe('publicSettingsSchema', () => {
     const settings = {
       version: 1 as const,
       provider: null,
-      authorizedRoot: null,
-      fileDisclosureAccepted: false
+      authorizedRoot: null
     };
     expect(publicSettingsSchema.parse(settings)).toEqual(settings);
     expect(() => publicSettingsSchema.parse({

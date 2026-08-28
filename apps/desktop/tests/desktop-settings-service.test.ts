@@ -41,9 +41,6 @@ function createFixture() {
     saveModelRoute: vi.fn(async () => undefined),
     getPrivacySettings: vi.fn(async () => ({
       dataCategories: {
-        file: false,
-        screenshot: false,
-        clipboard: false,
         memory: false
       },
       longTermMemory: false,
@@ -67,8 +64,7 @@ function createFixture() {
       version: 1 as const,
       provider: null,
       authorizedRoot: null,
-      petPosition: null,
-      fileDisclosureAccepted: false
+      petPosition: null
     })),
     revokeAuthorizedRoot: vi.fn(async () => undefined)
   };
@@ -183,7 +179,7 @@ describe('DesktopSettingsService', () => {
     const fixture = createFixture();
 
     await fixture.service.savePrivacySettings({
-      dataCategories: { file: false, memory: false },
+      dataCategories: { memory: false },
       longTermMemory: false,
       proactivityMode: 'passive'
     });
@@ -236,7 +232,7 @@ describe('DesktopSettingsService', () => {
     fixture.settings.savePrivacySettings.mockRejectedValueOnce(new Error('WRITE_FAILED'));
 
     await expect(fixture.service.savePrivacySettings({
-      dataCategories: { file: false, memory: false },
+      dataCategories: { memory: false },
       longTermMemory: false,
       proactivityMode: 'autonomous'
     })).rejects.toThrow('WRITE_FAILED');
@@ -368,7 +364,6 @@ describe('DesktopSettingsService', () => {
 
     expect((await fixture.service.getDashboard()).privacyRuntimeSupport).toEqual({
       dataCategories: {
-        file: true,
         memory: false
       },
       longTermMemory: false,

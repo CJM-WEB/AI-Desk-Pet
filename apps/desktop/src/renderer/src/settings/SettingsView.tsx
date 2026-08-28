@@ -32,7 +32,6 @@ const emptyDashboard: SettingsDashboardDto = {
   },
   privacy: {
     dataCategories: {
-      file: false,
       memory: false
     },
     longTermMemory: false,
@@ -40,7 +39,6 @@ const emptyDashboard: SettingsDashboardDto = {
   },
   privacyRuntimeSupport: {
     dataCategories: {
-      file: true,
       memory: false
     },
     longTermMemory: false,

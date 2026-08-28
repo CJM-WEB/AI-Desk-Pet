@@ -45,7 +45,6 @@ interface AgentSessionBase {
   toolRuntime: ToolRuntime;
   messages: ModelMessage[];
   fileTools: AgentFileTools;
-  fileDisclosureAllowed: boolean;
   powershell: PowerShellTool;
   workingDirectory: string;
   workingDirectoryLabel: string;
@@ -64,16 +63,6 @@ export interface AgentFileTaskSubmission {
   planningHint?: FilePlanningHint;
 }
 
-const mutationPlanningToolNames = new Set<string>([
-  'builtin.files.create_file',
-  'builtin.files.create_directory',
-  'builtin.files.apply_patch',
-  'builtin.files.edit_file',
-  'builtin.files.delete_file',
-  'builtin.files.move_file',
-  'builtin.powershell.run'
-]);
-
 export type AgentFileTaskOutcome =
   | Readonly<{ kind: 'clarification'; missingField: NonNullable<AgentRunOutcome>['missingField']; acted: false }>
   | Readonly<{ kind: 'completed'; acted: boolean }>;
@@ -88,10 +77,6 @@ export interface AgentServiceOptions {
 }
 
 type CapabilityExecution = import('./pending-action-store').PendingExecution;
-
-function fileDisclosureDenied(): Error & { code: 'FILE_DISCLOSURE_DENIED' } {
-  return Object.assign(new Error('FILE_DISCLOSURE_DENIED'), { code: 'FILE_DISCLOSURE_DENIED' as const });
-}
 
 function errorCode(error: unknown): string {
   if (error instanceof Error && 'code' in error && typeof error.code === 'string') {
@@ -567,20 +552,13 @@ export class AgentService {
     planningHint?: FilePlanningHint
   ): RunContext {
     const fileTools = session.tools.filter(tool => tool.function.name.startsWith('builtin.files.'));
-    const availableFileTools = session.fileDisclosureAllowed
-      ? fileTools
-      : fileTools.filter(tool => mutationPlanningToolNames.has(tool.function.name));
     const planningTools = planningHint?.missingField === 'target_path'
       ? []
       : session.initialCapability === 'powershell'
         ? session.tools.filter(tool => tool.function.name === 'builtin.powershell.run')
-        : availableFileTools;
+        : fileTools;
     // 普通文件任务始终排除 PowerShell；显式 PowerShell 只有真实命令结果后才恢复受控组合工具面。
-    const tools = session.initialCapability === 'file'
-      ? availableFileTools
-      : session.fileDisclosureAllowed
-        ? session.tools
-        : session.tools.filter(tool => mutationPlanningToolNames.has(tool.function.name));
+    const tools = session.initialCapability === 'file' ? fileTools : session.tools;
     return {
       // 文件系统提示始终在前；获准历史只作为本轮模型输入，不回写 Agent 私有轨迹。
       messages: [...session.messages, ...visibleHistory],
@@ -596,12 +574,7 @@ export class AgentService {
           }
           return prepared;
         },
-        executeRead: request => {
-          if (!session.fileDisclosureAllowed && request.toolName !== 'powershell') {
-            return Promise.reject(fileDisclosureDenied());
-          }
-          return session.toolRuntime.executeRead(request);
-        }
+        executeRead: request => session.toolRuntime.executeRead(request)
       },
       signal,
       // 能力任务显式启用首个真实工具结果前的受限规划协议；聊天默认不受影响。

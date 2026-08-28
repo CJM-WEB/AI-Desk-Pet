@@ -21,7 +21,6 @@ export interface PrivacySettingsProps {
 }
 
 const categoryLabels = {
-  file: ['文件', '仅在明确任务中发送所需文件内容'],
   memory: ['长期记忆', '允许模型请求使用本地长期记忆']
 } as const;
 

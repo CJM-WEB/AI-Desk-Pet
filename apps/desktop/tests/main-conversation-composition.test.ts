@@ -112,7 +112,7 @@ function baseOptions(input: {
   assertProviderReady?: (profile: ProviderProfileV2) => void;
   catalog?: typeof providerCatalog;
   createAgent?: (factory: MainConversationAgentFactoryInput<
-    { dataCategories: { file: boolean } }
+    { dataCategories: { memory: boolean } }
   >) => ReturnType<typeof agentDouble>;
 } = {}) {
   const privacySessions = new PrivacySessionRegistry();
@@ -130,7 +130,7 @@ function baseOptions(input: {
   };
   const readProviderSettings = vi.fn(async () => providerSettings);
   const readAuthorizedRootPath = vi.fn(async () => 'D:\\authorized');
-  const privacySettings = { dataCategories: { file: true } };
+  const privacySettings = { dataCategories: { memory: false } };
   const readPrivacySettings = vi.fn(async () => privacySettings);
   const factoryInputs: Array<MainConversationAgentFactoryInput<
     typeof privacySettings

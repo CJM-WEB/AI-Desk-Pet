@@ -9,7 +9,7 @@ const provider: ModelProvider = {
 };
 
 const fileTools: AgentFileTools = {
-  executeRead: vi.fn(),
+  executeRead: vi.fn(async () => undefined),
   preview: vi.fn(),
   executeWrite: vi.fn()
 };
@@ -79,7 +79,7 @@ describe('Main 能力会话工厂', () => {
     expect(options.createPowerShellTool).toHaveBeenCalledOnce();
   });
 
-  test('文件数据未授权时仍保留 Main 内部文件注册表，但拒绝读取文件数据', async () => {
+  test('旧文件披露值为 false 时显式文件会话仍调用受控读取端口', async () => {
     const options = { ...input('file'), fileDisclosureAllowed: false };
 
     const session = await createMainAgentSession(options);
@@ -101,8 +101,12 @@ describe('Main 能力会话工厂', () => {
       requestId: 'read-private-file',
       toolName: 'read_file',
       arguments: { relativePath: 'private.txt' }
-    })).rejects.toMatchObject({ code: 'FILE_DISCLOSURE_DENIED' });
-    expect(fileTools.executeRead).not.toHaveBeenCalled();
+    })).resolves.toEqual(undefined);
+    expect(fileTools.executeRead).toHaveBeenCalledWith({
+      requestId: 'read-private-file',
+      toolName: 'read_file',
+      arguments: { relativePath: 'private.txt' }
+    });
   });
 
   test('文件会话保持仅可确认的可恢复写入策略', async () => {

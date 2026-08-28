@@ -310,13 +310,16 @@ describe('多 Provider 设置持久化', () => {
       kind: 'ready',
       placement
     });
-    await expect(store.getPrivacySettings()).resolves.toEqual(privacy);
+    await expect(store.getPrivacySettings()).resolves.toEqual({
+      ...privacy,
+      dataCategories: { memory: false }
+    });
     await expect(store.getCharacterBehaviorSettings()).resolves.toEqual({
       movementMode: 0,
       proactivityMode: 'passive'
     });
     await expect(store.getMcpServerSettings()).resolves.toEqual(mcpServers);
-    await expect(readFile(file, 'utf8')).resolves.toContain('"version": 5');
+    await expect(readFile(file, 'utf8')).resolves.toContain('"version": 6');
   });
 
   test('旧 V1 与缺失 privacy 的 V2 保留辅助模式并补齐未停止', async () => {
@@ -435,19 +438,13 @@ describe('多 Provider 设置持久化', () => {
     const store = await createStore();
 
     const snapshot = await store.savePrivacySettings({
-      dataCategories: {
-        file: true,
-        memory: false
-      },
+      dataCategories: { memory: false },
       longTermMemory: true,
       proactivityMode: 'passive'
     });
 
     await expect(store.getPrivacySettings()).resolves.toEqual({
-      dataCategories: {
-        file: true,
-        memory: false
-      },
+      dataCategories: { memory: false },
       longTermMemory: true,
       proactivityMode: 'passive'
     });

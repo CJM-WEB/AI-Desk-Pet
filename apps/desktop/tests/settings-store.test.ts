@@ -194,7 +194,6 @@ const nonMcpMutationCases: readonly NonMcpMutationCase[] = [
     methodName: 'savePrivacySettings',
     mutate: store => store.savePrivacySettings({
       dataCategories: {
-        file: true,
         memory: false
       },
       longTermMemory: false,
@@ -380,8 +379,7 @@ export class SettingsStore {
     await expect(store.getPublic()).resolves.toEqual({
       version: 1,
       provider: null,
-      authorizedRoot: null,
-      fileDisclosureAccepted: false
+      authorizedRoot: null
     });
   });
 
@@ -398,7 +396,7 @@ export class SettingsStore {
     });
 
     const serialized = await readFile(file, 'utf8');
-    expect(serialized).toContain('"version": 5');
+    expect(serialized).toContain('"version": 6');
     expect(serialized).not.toContain(fixtureSecret);
     await expect(store.getPublic()).resolves.toEqual(expect.objectContaining({
       provider: {
@@ -446,8 +444,7 @@ export class SettingsStore {
     await expect(store.getPublic()).resolves.toEqual({
       version: 1,
       provider: null,
-      authorizedRoot: null,
-      fileDisclosureAccepted: false
+      authorizedRoot: null
     });
   });
 
@@ -563,8 +560,7 @@ export class SettingsStore {
     await expect(store.getPublic()).resolves.toEqual({
       version: 1,
       provider: null,
-      authorizedRoot: null,
-      fileDisclosureAccepted: false
+      authorizedRoot: null
     });
     await expect(store.getAuthorizedRootPath()).resolves.toBeNull();
     await expect(store.getMcpServerSettings()).resolves.toEqual([]);
@@ -623,6 +619,26 @@ export class SettingsStore {
     await expect(
       new SettingsStore(file, async () => false).getLocalModelSettings()
     ).resolves.toEqual({ enabled: false });
+  });
+
+  test('迁移旧文件披露值时丢弃已退役 Gate 并保留其他隐私设置', async () => {
+    const { file, store } = await createStore();
+    await store.savePetAlwaysOnTop(true);
+    const legacy = JSON.parse(await readFile(file, 'utf8'));
+    legacy.version = 5;
+    legacy.fileDisclosureAccepted = false;
+    legacy.privacy.dataCategories.file = false;
+    await writeFile(file, JSON.stringify(legacy), 'utf8');
+
+    await expect(store.getPrivacySettings()).resolves.toEqual({
+      dataCategories: { memory: false },
+      longTermMemory: false,
+      proactivityMode: 'autonomous'
+    });
+    const persisted = JSON.parse(await readFile(file, 'utf8'));
+    expect(persisted).not.toHaveProperty('fileDisclosureAccepted');
+    expect(persisted.privacy.dataCategories).toEqual({ memory: false });
+    expect(persisted.petAlwaysOnTop).toBe(true);
   });
 
   test.each([
@@ -785,12 +801,11 @@ export class SettingsStore {
     await expect(store.getMcpServerSettings()).resolves.toEqual(expected.mcpServers);
     await expect(store.getPetAlwaysOnTop()).resolves.toBe(stored.version === 1 ? false : true);
     await expect(store.getPublic()).resolves.toMatchObject({
-      fileDisclosureAccepted: true,
       authorizedRoot: stored.version === 1
         ? { id: 'legacy-root', displayName: '旧目录', pathHint: 'D:\\…\\legacy' }
         : null
     });
-    await expect(readFile(file, 'utf8')).resolves.toContain('"version": 5');
+    await expect(readFile(file, 'utf8')).resolves.toContain('"version": 6');
   });
 
   test('V2 旧位置只解析一次并原子迁移为不含 windowPosition 的 ready V3', async () => {
@@ -846,17 +861,17 @@ export class SettingsStore {
 
     const persisted = JSON.parse(await readFile(file, 'utf8')) as Record<string, unknown>;
     expect(persisted).toMatchObject({
-      version: 5,
+      version: 6,
       petPlacementState: {
         kind: 'ready',
         placements: [{ characterId: 'pet-a', scale: 1 }]
       },
-      fileDisclosureAccepted: true,
       petAlwaysOnTop: true,
       privacy: { proactivityMode: 'passive' },
       movementMode: 0,
       mcpServers: mcpSettingsFixture
     });
+    expect(persisted).not.toHaveProperty('fileDisclosureAccepted');
     expect(JSON.stringify(persisted)).not.toContain('windowPosition');
     expect(persisted).not.toHaveProperty('petPosition');
   });
@@ -887,7 +902,7 @@ export class SettingsStore {
       }
     })).rejects.toMatchObject({ code: 'PET_PLACEMENT_MIGRATION_STALE' });
     expect(JSON.parse(await readFile(file, 'utf8'))).toMatchObject({
-      version: 5,
+      version: 6,
       petPlacementState: {
         kind: 'pending-legacy',
         windowPosition: { x: 20, y: 30 }
@@ -1187,7 +1202,7 @@ export class SettingsStore {
       kind: 'pending-legacy', windowPosition: { x: -500, y: 120 }
     });
     expect(JSON.parse(await readFile(file, 'utf8'))).toMatchObject({
-      version: 5,
+      version: 6,
       petPlacementState: {
         kind: 'pending-legacy',
         windowPosition: { x: -500, y: 120 }
@@ -1221,7 +1236,7 @@ export class SettingsStore {
     });
     const persisted = JSON.parse(await readFile(file, 'utf8'));
     expect(persisted).toMatchObject({
-      version: 5,
+      version: 6,
       providerProfiles: [expect.objectContaining({ id: 'provider-main' })],
       petPlacementState: { kind: 'ready', placements: [] },
       petAlwaysOnTop: false,
@@ -1236,6 +1251,8 @@ test('加载旧设置时移除截图与剪贴板隐私占位并保留其余设�
   const { file, store } = await createStore();
   await store.savePetAlwaysOnTop(true);
   const legacy = JSON.parse(await readFile(file, 'utf8'));
+  legacy.version = 5;
+  legacy.fileDisclosureAccepted = true;
   legacy.privacy.dataCategories.file = true;
   legacy.privacy.dataCategories.memory = false;
   legacy.privacy.dataCategories.screenshot = true;
@@ -1243,11 +1260,11 @@ test('加载旧设置时移除截图与剪贴板隐私占位并保留其余设�
   await writeFile(file, JSON.stringify(legacy), 'utf8');
 
   await expect(store.getPrivacySettings()).resolves.toMatchObject({
-    dataCategories: { file: true, memory: false },
+    dataCategories: { memory: false },
     longTermMemory: false,
     proactivityMode: 'autonomous'
   });
   const persisted = JSON.parse(await readFile(file, 'utf8'));
   expect(persisted.petAlwaysOnTop).toBe(true);
-  expect(persisted.privacy.dataCategories).toEqual({ file: true, memory: false });
+  expect(persisted.privacy.dataCategories).toEqual({ memory: false });
 });

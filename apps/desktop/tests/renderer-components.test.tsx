@@ -703,7 +703,6 @@ describe('Renderer 可见组件', () => {
           },
           privacy: {
             dataCategories: {
-              file: false,
               memory: false
             },
             longTermMemory: false,
@@ -711,7 +710,6 @@ describe('Renderer 可见组件', () => {
           },
           privacyRuntimeSupport: {
             dataCategories: {
-              file: true,
               memory: false
             },
             longTermMemory: false,
@@ -759,7 +757,7 @@ describe('Renderer 可见组件', () => {
     expect(availableSettingsTabs()).not.toContain('tools');
   });
 
-  test('隐私设置不再展示尚未接入的截图与剪贴板授权占位', () => {
+  test('隐私设置不展示已退役文件、截图与剪贴板授权开关', () => {
     const markup = renderToStaticMarkup(
       <PrivacySettings
         privacy={{
@@ -786,7 +784,7 @@ describe('Renderer 可见组件', () => {
 
     expect(markup).not.toContain('截图数据授权');
     expect(markup).not.toContain('剪贴板数据授权');
-    expect(markup).toContain('文件数据授权');
+    expect(markup).not.toContain('文件数据授权');
   });
 });
 

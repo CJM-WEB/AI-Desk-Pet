@@ -1013,7 +1013,6 @@ async function createApplicationWindows(
           initialCapability: snapshot.taskKind,
           authorizedRootPath: snapshot.authorizedRootPath,
           generation,
-          fileDisclosureAllowed: snapshot.privacySettings.dataCategories.file,
           provider: providerRegistry.create(
             primaryProfile,
             () => secrets.readForProviderCall(primaryProfile.id)

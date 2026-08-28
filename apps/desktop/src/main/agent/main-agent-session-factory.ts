@@ -9,7 +9,6 @@ export interface MainAgentSessionFactoryInput {
   initialCapability: 'file' | 'powershell';
   authorizedRootPath: string;
   generation: string;
-  fileDisclosureAllowed: boolean;
   provider: ModelProvider;
   fallbackProviders: ModelProvider[];
   createFileTools(): Promise<AgentFileTools>;
@@ -37,22 +36,17 @@ export async function createMainAgentSession(
   const unified = {
     ...base,
     fileTools,
-    fileDisclosureAllowed: input.fileDisclosureAllowed,
     powershell: input.createPowerShellTool(),
     workingDirectory: input.authorizedRootPath,
     workingDirectoryLabel: '已授权工作目录',
     generation: input.generation,
     toolRuntime: {
       prepare: (raw: unknown) => registry.prepare(raw, permissionPolicy),
-      executeRead: (request: ToolRequest) => input.fileDisclosureAllowed
-        ? request.toolName === 'powershell'
-          ? Promise.reject(Object.assign(new Error('TOOL_CONFIRMATION_REQUIRED'), {
-              code: 'TOOL_CONFIRMATION_REQUIRED'
-            }))
-          : fileTools.executeRead(request)
-        : Promise.reject(Object.assign(new Error('FILE_DISCLOSURE_DENIED'), {
-            code: 'FILE_DISCLOSURE_DENIED'
+      executeRead: (request: ToolRequest) => request.toolName === 'powershell'
+        ? Promise.reject(Object.assign(new Error('TOOL_CONFIRMATION_REQUIRED'), {
+            code: 'TOOL_CONFIRMATION_REQUIRED'
           }))
+        : fileTools.executeRead(request)
     }
   };
   return {
