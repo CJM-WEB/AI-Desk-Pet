@@ -209,8 +209,9 @@ export class ConversationCoordinator {
     if (existingTransaction?.generation === this.generation) {
       const followUp = this.capabilityTransaction.classifyFollowUp(normalized);
       const earlyIntent = capabilityIntentRouter.route(normalized);
-      if (followUp === 'new_task'
-        && (earlyIntent.kind === 'file_task' || earlyIntent.kind === 'powershell_task')) {
+      const beginsNewCapabilityTask = earlyIntent.kind === 'powershell_task'
+        || (followUp === 'new_task' && earlyIntent.kind === 'file_task');
+      if (beginsNewCapabilityTask) {
         this.capabilityTransaction.invalidate('new_task');
         this.capabilityTransactionTarget = null;
       }
@@ -255,6 +256,7 @@ export class ConversationCoordinator {
         && transactionSnapshot.kind === 'file') {
         context.transactionContinuation = true;
         context.continuationTarget = this.capabilityTransactionTarget;
+        this.capabilityTransaction.beginTurn();
         context.privatePlanningContext = serializePrivatePlanningContext(transactionSnapshot);
       }
 

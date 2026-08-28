@@ -1,8 +1,11 @@
 import { describe, expect, test, vi } from 'vitest';
 import type { ModelMessage } from '@myself/agent-core';
 import type { TaskEvent } from '@myself/shared-types';
-import type { AgentService } from '../src/main/agent/agent-service';
-import type { AgentTrustedToolResult } from '../src/main/agent/agent-service';
+import type {
+  AgentFileTaskSubmission,
+  AgentService,
+  AgentTrustedToolResult
+} from '../src/main/agent/agent-service';
 import { CapabilityTaskAdapter } from '../src/main/conversation/capability-task-adapter';
 import type { CapabilityTaskAdapterOptions } from '../src/main/conversation/capability-task-adapter';
 
@@ -36,10 +39,7 @@ async function flushMicrotasks(): Promise<void> {
 }
 
 function createAgentDouble(
-  submitFileTask: (input: {
-    text: string;
-    visibleHistory: readonly ModelMessage[];
-  }) => Promise<void> = async () => undefined
+  submitFileTask: (input: AgentFileTaskSubmission) => Promise<void> = async () => undefined
 ): AgentDouble {
   return {
     submitFileTask: vi.fn(submitFileTask),
@@ -169,11 +169,15 @@ describe('CapabilityTaskAdapter', () => {
 
   test('私有工具结果只在当前 owner 内绑定 generation 与目标转发并丢弃迟到结果', async () => {
     let emitTrustedToolResult!: (result: AgentTrustedToolResult) => void;
-    const agent = createAgentDouble(async () => {
+    let submissionOwner: symbol | undefined;
+    const agent = createAgentDouble(async input => {
+      if (input.submissionOwner === undefined) throw new Error('缺少 submission owner');
+      submissionOwner = input.submissionOwner;
       emitTrustedToolResult({
         toolName: 'create_file',
         ok: true,
-        relativePaths: ['result.txt']
+        relativePaths: ['result.txt'],
+        submissionOwner: input.submissionOwner
       });
     });
     const adapter = createAdapter({
@@ -198,11 +202,13 @@ describe('CapabilityTaskAdapter', () => {
       generation: 'generation-current',
       taskKind: 'file'
     });
+    expect(submissionOwner).toBeTypeOf('symbol');
     expect(forwarded).toEqual([{
       result: {
         toolName: 'create_file',
         ok: true,
-        relativePaths: ['result.txt']
+        relativePaths: ['result.txt'],
+        submissionOwner
       },
       generation: 'generation-current',
       target: defaultTargetSnapshot
@@ -214,6 +220,73 @@ describe('CapabilityTaskAdapter', () => {
       relativePaths: ['late.txt']
     });
     expect(forwarded).toHaveLength(1);
+  });
+
+  test('旧 submission abort 后的迟到读取结果不污染同 generation 与 target 的新一轮', async () => {
+    const firstSubmission = deferred();
+    const secondSubmission = deferred();
+    const delayedRead = deferred();
+    let emitTrustedToolResult!: (result: AgentTrustedToolResult) => void;
+    let callCount = 0;
+    const agent = createAgentDouble(async input => {
+      callCount += 1;
+      if (callCount === 1) {
+        if (input.submissionOwner === undefined) throw new Error('缺少 submission owner');
+        const submissionOwner = input.submissionOwner;
+        void delayedRead.promise.then(() => {
+          emitTrustedToolResult({
+            toolName: 'read_file',
+            ok: true,
+            relativePaths: ['late.txt'],
+            submissionOwner
+          });
+        });
+        await firstSubmission.promise;
+        return;
+      }
+      await secondSubmission.promise;
+    });
+    const adapter = createAdapter({
+      getAuthorizedRootPath: async () => 'C:\\workspace',
+      createAgentTarget: input => {
+        emitTrustedToolResult = input.emitTrustedToolResult;
+        return preparedAgent(agent);
+      }
+    });
+    const forwarded: AgentTrustedToolResult[] = [];
+    adapter.onTrustedToolResult(result => forwarded.push(result));
+
+    const target = await adapter.prepareTarget({ generation: 'g1', taskKind: 'file' });
+    const first = adapter.submit({
+      text: '读取 late.txt',
+      visibleHistory: [],
+      generation: 'g1',
+      taskKind: 'file'
+    });
+    await vi.waitFor(() => expect(agent.submitFileTask).toHaveBeenCalledTimes(1));
+    adapter.cancelActive();
+    firstSubmission.resolve();
+    await first;
+
+    await adapter.prepareTarget({
+      generation: 'g1',
+      taskKind: 'file',
+      continuationTarget: target
+    });
+    const second = adapter.submit({
+      text: '读取新文件',
+      visibleHistory: [],
+      generation: 'g1',
+      taskKind: 'file'
+    });
+    await vi.waitFor(() => expect(agent.submitFileTask).toHaveBeenCalledTimes(2));
+
+    delayedRead.resolve();
+    await flushMicrotasks();
+    expect(forwarded).toEqual([]);
+
+    secondSubmission.resolve();
+    await second;
   });
 
   test('能力快照不创建 Agent，只有显式激活后才构造执行端口', async () => {
@@ -382,7 +455,8 @@ describe('CapabilityTaskAdapter', () => {
 
     expect(agent.submitFileTask).toHaveBeenCalledExactlyOnceWith({
       text: '列出目录',
-      visibleHistory
+      visibleHistory,
+      submissionOwner: expect.any(Symbol)
     });
     expect(received).toEqual([
       { event: { type: 'phase', phase: 'thinking' }, generation: 'g-visible' },

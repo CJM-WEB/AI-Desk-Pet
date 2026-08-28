@@ -134,3 +134,41 @@
 ### 提交
 
 提交消息：`fix: 稳定会话级能力事务`。最终提交哈希以任务返回为准。
+
+## Fix round 2/5（2026-08-28）
+
+### RED 证据
+
+1. 四文件定向首跑共观察到 7 项预期失败：`CapabilityTransactionStore.beginTurn` 尚不存在；16 条引用满额后创建/移动新路径被丢弃；Adapter 没有向 AgentService 传入 submission owner；旧 submission abort 后的迟到读取结果污染了同 generation/target 新回合；AgentService 没有原样回传 owner；新一轮未调用工具的文件续接借用历史成功终态；明确 PowerShell 新任务在行为预处理抛错后仍保留旧事务。
+2. 这些测试各自捕获错误分支、迟到副作用或可观察终态；迟到结果用例使用可控 Promise 屏障，不依赖墙钟竞态。
+
+### GREEN 与修改
+
+- `CapabilityTransactionStore.beginTurn()` 在每个实际文件能力续接开始时重置当前回合的 `lastTrustedResultOk`、warning 和终态，但保留有界 references 与 transcript。因此公开 `phase:success` 只能由当前回合的 trusted ok 结果进入 completed。
+- Coordinator 在 normalize 后使用无副作 `capabilityIntentRouter.route` 识别明确 PowerShell 新任务，并在 `behavior.prepareUserPrompt` 前清除旧事务；该阶段不签发权限或创建 Agent。
+- Adapter 每次 `submit` 独立创建 Main 私有 symbol owner，通过 `AgentFileTaskSubmission` 传入 AgentService；AgentService 只在内部 task owner 仍有效时原样附到 `AgentTrustedToolResult`。Adapter 转发前同时比对 Agent owner、submission owner、generation 与 target。
+- submission symbol 没有进入共享 `TaskEvent`、日志、Preload 或 Renderer；等待写确认时保留原 submission owner，确认结束、取消、reset 或 close 后清理。
+- references 改为“最近且去重”的 16 条：新可信路径先删除旧同路径，再追加到队尾；超过 16 时淘汰最旧条目，不再用 `break` 丢弃最新创建/移动事实。
+- 本轮未修改 Provider Adapter 格式错误分类，未增加共享公开事件或 Renderer 能力。
+
+### 验证结果
+
+- 四文件 GREEN：4 个文件、225 项通过。
+- Task 2 六文件定向：6 个文件、483 项通过。
+- `pnpm.cmd --filter @myself/desktop test`：107 个文件、2768 项通过。
+- `pnpm.cmd test:security`：1 个文件、28 项通过。
+- `pnpm.cmd test:integration`：最终单独全套复跑 4 个文件、87 项通过。
+- `pnpm.cmd --filter @myself/desktop typecheck`：通过。
+- `pnpm.cmd typecheck`：10 个 workspace 的可用 typecheck 全部通过。
+- `git diff --check`：通过；只有仓库行尾转换提示，无空白错误。
+
+### 自审与疑虑
+
+- 逐项对照本轮 4 条 Important：回合事实、PowerShell 早期失效、submission 所有权与引用淘汰均有会在旧实现上失败的回归测试。
+- symbol 扫描只命中 `apps/desktop/src/main` 与测试，未命中 `packages/shared-types`、Preload 或 Renderer。
+- 集成门禁与安全/typecheck 并行首跑时，无文件重叠的角色素材夹具在固定 5 秒上限超时，其余 86 项通过；该夹具隔离复跑 1/1 通过（2.23 秒），随后单独完整集成套件 87/87 通过。本轮未修改角色代码，记录为并行资源竞争时序，未调整无关超时。
+- 未执行新的人工 Windows UI 验收；本轮仍仅改 Main 会话/事务链路。
+
+### 提交
+
+计划提交消息：`fix: 隔离能力事务回合结果`。最终提交哈希以任务返回为准。

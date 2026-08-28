@@ -73,6 +73,15 @@ export class CapabilityTransactionStore {
     };
   }
 
+  /** 新能力回合保留短期引用，但不继承上一回合的成败事实。 */
+  beginTurn(): void {
+    const current = this.current;
+    if (current === null) return;
+    current.phase = 'planning';
+    current.warningCodes = [];
+    current.lastTrustedResultOk = null;
+  }
+
   apply(event: TaskEvent | AgentTrustedToolResult | Readonly<{ type: 'clarification' }>): void {
     const current = this.current;
     if (current === null) return;
@@ -188,11 +197,11 @@ export class CapabilityTransactionStore {
     current.warningCodes = [];
     current.phase = 'running';
     for (const reference of referencesForResult(result)) {
-      if (current.references.length >= 最大可信引用数) break;
-      if (!current.references.some(existing => existing.role === reference.role
-        && existing.relativePath === reference.relativePath)) {
-        current.references.push(reference);
-      }
+      const existingIndex = current.references.findIndex(existing =>
+        existing.relativePath === reference.relativePath);
+      if (existingIndex >= 0) current.references.splice(existingIndex, 1);
+      current.references.push(reference);
+      if (current.references.length > 最大可信引用数) current.references.shift();
     }
   }
 }

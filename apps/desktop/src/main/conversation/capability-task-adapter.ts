@@ -45,6 +45,7 @@ type ActiveSubmission = {
   owner: symbol;
   awaitingConfirmation: boolean;
   target: PreparedCapabilityTarget | null;
+  submissionOwner: symbol | null;
 };
 
 type OwnedAgent = {
@@ -121,7 +122,8 @@ export class CapabilityTaskAdapter implements ConversationCapabilityTaskPort {
       taskKind: input.taskKind,
       owner,
       awaitingConfirmation: false,
-      target: null
+      target: null,
+      submissionOwner: null
     };
     try {
       const pendingCleanup = this.prepareCleanupPromise;
@@ -230,9 +232,12 @@ export class CapabilityTaskAdapter implements ConversationCapabilityTaskPort {
         throw adapterError('FILE_TARGET_MISMATCH');
       }
       this.assertOwned(owner);
+      const submissionOwner = Symbol('capability-task-submission');
+      prepared.submissionOwner = submissionOwner;
       const submission: AgentFileTaskSubmission = {
         text: input.text,
         visibleHistory: input.visibleHistory,
+        submissionOwner,
         ...(input.planningHint === undefined ? {} : { planningHint: input.planningHint }),
         ...(input.privatePlanningContext === undefined
           ? {}
@@ -243,6 +248,7 @@ export class CapabilityTaskAdapter implements ConversationCapabilityTaskPort {
       if (this.inFlightOwner === owner) this.inFlightOwner = null;
       const active = this.active;
       if (active?.owner === owner && !active.awaitingConfirmation) {
+        active.submissionOwner = null;
         this.active = null;
       }
     }
@@ -424,7 +430,8 @@ export class CapabilityTaskAdapter implements ConversationCapabilityTaskPort {
     const active = this.active;
     const owned = this.agent;
     if (!active || !owned || this.closed || owned.owner !== agentOwner
-      || active.target !== owned.target) return;
+      || active.target !== owned.target || active.submissionOwner === null
+      || result.submissionOwner !== active.submissionOwner) return;
     for (const listener of [...this.trustedResultListeners]) {
       listener(result, active.generation, owned.target);
     }

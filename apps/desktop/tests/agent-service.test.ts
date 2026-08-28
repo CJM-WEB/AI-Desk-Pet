@@ -423,6 +423,7 @@ describe('AgentService', () => {
 
   test('只读真实成功只向 Main 私有端口发布一次脱敏相对路径结果', async () => {
     const trustedResults: import('../src/main/agent/agent-service').AgentTrustedToolResult[] = [];
+    const submissionOwner = Symbol('submission-owner');
     const provider = new ScriptedProvider([
       readResponse(),
       { type: 'text', text: '读取完成' }
@@ -447,12 +448,17 @@ describe('AgentService', () => {
       result => trustedResults.push(result)
     );
 
-    await harness.service.submitFileTask({ text: '列出文件', visibleHistory: [] });
+    await harness.service.submitFileTask({
+      text: '列出文件',
+      visibleHistory: [],
+      submissionOwner
+    });
 
     expect(trustedResults).toEqual([{
       toolName: 'list_files',
       ok: true,
-      relativePaths: ['.', 'docs/test.txt']
+      relativePaths: ['.', 'docs/test.txt'],
+      submissionOwner
     }]);
     expect(JSON.stringify(harness.events)).not.toContain('relativePaths');
     expect(JSON.stringify(harness.events)).not.toContain('docs/test.txt');

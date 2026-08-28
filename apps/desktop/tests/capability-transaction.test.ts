@@ -104,6 +104,31 @@ describe('CapabilityTransactionStore', () => {
     });
   });
 
+  test('新一轮能力续接不能借用历史成功结果进入 completed', () => {
+    const store = new CapabilityTransactionStore();
+    store.begin(identity);
+    store.apply({
+      toolName: 'builtin.files.read_file',
+      ok: true,
+      relativePaths: ['test.txt']
+    });
+    store.apply({ type: 'phase', phase: 'success' });
+
+    store.beginTurn();
+    store.apply({ type: 'phase', phase: 'success' });
+
+    expect(store.snapshot()).toMatchObject({
+      phase: 'planning',
+      warningCodes: [],
+      references: [{ role: 'read', relativePath: 'test.txt' }],
+      toolTranscript: [{
+        toolName: 'builtin.files.read_file',
+        ok: true,
+        resultCode: 'OK'
+      }]
+    });
+  });
+
   test('真实写提交后的模型总结失败保持 completed 并记录稳定 warning', () => {
     const store = new CapabilityTransactionStore();
     store.begin(identity);
@@ -202,5 +227,35 @@ describe('CapabilityTransactionStore', () => {
     expect(snapshot?.toolTranscript).toHaveLength(32);
     expect(snapshot?.toolTranscript[0]?.toolName).toBe('read_file_8');
     expect(snapshot?.toolTranscript.at(-1)?.toolName).toBe('read_file_39');
+  });
+
+  test('引用满额后仍保留最新创建与移动路径并淘汰最旧路径', () => {
+    const store = new CapabilityTransactionStore();
+    store.begin(identity);
+    store.apply({
+      toolName: 'builtin.files.list_files',
+      ok: true,
+      relativePaths: Array.from({ length: 16 }, (_, index) => `docs/file-${index}.txt`)
+    });
+
+    store.apply({
+      toolName: 'builtin.files.create_file',
+      ok: true,
+      relativePaths: ['created.txt']
+    });
+    store.apply({
+      toolName: 'builtin.files.move_file',
+      ok: true,
+      relativePaths: ['docs/file-15.txt', 'archive/file-15.txt']
+    });
+
+    const references = store.snapshot()?.references ?? [];
+    expect(references).toHaveLength(16);
+    expect(references.slice(-3)).toEqual([
+      { role: 'created', relativePath: 'created.txt' },
+      { role: 'moved_source', relativePath: 'docs/file-15.txt' },
+      { role: 'moved_target', relativePath: 'archive/file-15.txt' }
+    ]);
+    expect(references.some(reference => reference.relativePath === 'docs/file-0.txt')).toBe(false);
   });
 });

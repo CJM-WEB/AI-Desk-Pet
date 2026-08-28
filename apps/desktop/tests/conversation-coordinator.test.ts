@@ -1694,6 +1694,37 @@ describe('ConversationCoordinator', () => {
     expect(harness.factoryCallCount()).toBe(0);
   });
 
+  test('新一轮文件续接未调用工具时不借用历史成功终态', async () => {
+    const fileTasks = new CapturingCapabilityTasks();
+    fileTasks.submit = async input => {
+      fileTasks.submissions.push(input);
+      if (fileTasks.submissions.length === 1) {
+        fileTasks.publishTrustedToolResult({
+          toolName: 'read_file', ok: true, relativePaths: ['test.txt']
+        }, input.generation);
+      }
+      fileTasks.publish({ type: 'phase', phase: 'success' }, input.generation);
+      return { kind: 'completed', acted: fileTasks.submissions.length === 1 };
+    };
+    const chat = scriptedProvider({ type: 'text', text: '本轮没有可信工具结果。' });
+    const harness = createHarness([{
+      profileId: 'profile-openai',
+      providerIdentity: 'openai',
+      providerName: 'OpenAI',
+      script: chat
+    }], { fileTasks });
+
+    await harness.coordinator.submit('读取 test.txt');
+    await harness.coordinator.submit('修改那个文件');
+    await harness.coordinator.submit('成功了吗');
+
+    expect(fileTasks.submissions).toHaveLength(2);
+    expect(chat.requests).toHaveLength(1);
+    expect(harness.events).toContainEqual({
+      type: 'message', role: 'assistant', text: '本轮没有可信工具结果。'
+    });
+  });
+
   test('明确新文件任务替换旧引用，后续指代只携带新任务可信路径', async () => {
     const fileTasks = new CapturingCapabilityTasks();
     fileTasks.submit = async input => {
@@ -1782,6 +1813,39 @@ describe('ConversationCoordinator', () => {
     await harness.coordinator.submit('读取 old.txt');
 
     await expect(harness.coordinator.submit('读取 new.txt')).rejects.toThrow();
+    await harness.coordinator.submit('成功了吗');
+
+    expect(chat.requests).toHaveLength(1);
+    expect(harness.events).not.toContainEqual({
+      type: 'message', role: 'assistant', text: '上一个本地任务已成功完成。'
+    });
+  });
+
+  test('明确 PowerShell 新任务在行为预处理抛错前已经清空旧事务', async () => {
+    const fileTasks = new CapturingCapabilityTasks();
+    fileTasks.submit = async input => {
+      fileTasks.submissions.push(input);
+      fileTasks.publishTrustedToolResult({
+        toolName: 'read_file', ok: true, relativePaths: ['old.txt']
+      }, input.generation);
+      fileTasks.publish({ type: 'phase', phase: 'success' }, input.generation);
+      return { kind: 'completed', acted: true };
+    };
+    const powerShellText = '执行 PowerShell npm test';
+    const prepareUserPrompt = vi.fn(async (text: string) => {
+      if (text === powerShellText) throw new Error('BEHAVIOR_PREPARE_FAILED');
+      return { originalText: text, capabilityText: text, explicitDirective: null };
+    });
+    const chat = scriptedProvider({ type: 'text', text: '没有旧事务。' });
+    const harness = createHarness([{
+      profileId: 'profile-openai',
+      providerIdentity: 'openai',
+      providerName: 'OpenAI',
+      script: chat
+    }], { fileTasks, behavior: behaviorPortDouble({ prepareUserPrompt }) });
+    await harness.coordinator.submit('读取 old.txt');
+
+    await expect(harness.coordinator.submit(powerShellText)).rejects.toThrow();
     await harness.coordinator.submit('成功了吗');
 
     expect(chat.requests).toHaveLength(1);

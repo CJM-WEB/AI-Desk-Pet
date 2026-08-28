@@ -63,6 +63,7 @@ export interface AgentFileTaskSubmission {
   visibleHistory: readonly ModelMessage[];
   planningHint?: FilePlanningHint;
   privatePlanningContext?: string;
+  submissionOwner?: symbol;
 }
 
 export type AgentFileTaskOutcome =
@@ -74,6 +75,7 @@ export type AgentTrustedToolResult = Readonly<{
   toolName: string;
   ok: boolean;
   relativePaths: readonly string[];
+  submissionOwner?: symbol;
 }>;
 
 export interface AgentServiceOptions {
@@ -277,6 +279,7 @@ export class AgentService {
   private transactionSession: AgentSession | null = null;
   private activePlanningHint: FilePlanningHint | undefined;
   private activePrivatePlanningContext: string | undefined;
+  private activeSubmissionOwner: symbol | undefined;
   private taskOwner: symbol | null = null;
   private irreversibleExecution: {
     promise: Promise<void>;
@@ -311,11 +314,13 @@ export class AgentService {
         && input.privatePlanningContext.length <= MAX_PRIVATE_PLANNING_CONTEXT_LENGTH
         ? input.privatePlanningContext
         : null;
+    const submissionOwner = input?.submissionOwner;
     if (
       normalized.length === 0
       || normalized.length > MAX_USER_TEXT_LENGTH
       || visibleHistory === null
       || privatePlanningContext === null
+      || (submissionOwner !== undefined && typeof submissionOwner !== 'symbol')
     ) {
       const error = Object.assign(new Error('INPUT_INVALID'), { code: 'INPUT_INVALID' });
       this.emitFailure(error);
@@ -328,6 +333,7 @@ export class AgentService {
     this.taskOwner = owner;
     this.activePlanningHint = input.planningHint;
     this.activePrivatePlanningContext = privatePlanningContext;
+    this.activeSubmissionOwner = submissionOwner;
     const controller = new AbortController();
     this.activeController = controller;
     try {
@@ -343,7 +349,8 @@ export class AgentService {
             controller.signal,
             visibleHistory,
             input.planningHint,
-            privatePlanningContext
+            privatePlanningContext,
+            owner
           )
         ),
         session,
@@ -359,6 +366,7 @@ export class AgentService {
         this.activeSession = null;
         this.activePlanningHint = undefined;
         this.activePrivatePlanningContext = undefined;
+        this.activeSubmissionOwner = undefined;
       }
     }
   }
@@ -468,7 +476,8 @@ export class AgentService {
             controller.signal,
             [],
             this.activePlanningHint,
-            this.activePrivatePlanningContext
+            this.activePrivatePlanningContext,
+            owner
           )
         ),
         session,
@@ -502,6 +511,7 @@ export class AgentService {
         this.activeSession = null;
         this.activePlanningHint = undefined;
         this.activePrivatePlanningContext = undefined;
+        this.activeSubmissionOwner = undefined;
       }
     }
   }
@@ -522,6 +532,7 @@ export class AgentService {
       if (this.taskOwner === owner && this.pendingSession === null) this.taskOwner = null;
       if (this.taskOwner === null) this.activePlanningHint = undefined;
       if (this.taskOwner === null) this.activePrivatePlanningContext = undefined;
+      if (this.taskOwner === null) this.activeSubmissionOwner = undefined;
     } catch (error) {
       this.emitFailure(error);
       throw error;
@@ -534,6 +545,7 @@ export class AgentService {
     this.activeSession = null;
     this.activePlanningHint = undefined;
     this.activePrivatePlanningContext = undefined;
+    this.activeSubmissionOwner = undefined;
   }
 
   /**
@@ -549,6 +561,7 @@ export class AgentService {
     this.transactionSession = null;
     this.activePlanningHint = undefined;
     this.activePrivatePlanningContext = undefined;
+    this.activeSubmissionOwner = undefined;
     const failures: unknown[] = [];
     for (const cleanup of [
       () => this.pending.clear('task_cancelled'),
@@ -577,6 +590,7 @@ export class AgentService {
     this.transactionSession = null;
     this.activePlanningHint = undefined;
     this.activePrivatePlanningContext = undefined;
+    this.activeSubmissionOwner = undefined;
     this.activeController?.abort();
     if (irreversible) await irreversible;
     if (session?.powershell) await session.powershell.close();
@@ -606,14 +620,14 @@ export class AgentService {
             toolName: execution.resultToolName,
             ok: result.ok,
             relativePaths: []
-          });
+          }, owner);
           return result;
         } catch (error) {
           this.publishTrustedToolResult({
             toolName: execution.resultToolName,
             ok: false,
             relativePaths: []
-          });
+          }, owner);
           throw error;
         }
       }
@@ -628,14 +642,14 @@ export class AgentService {
             toolName: execution.resultToolName,
             ok: false,
             relativePaths: []
-          });
+          }, owner);
           throw error;
         }
         this.publishTrustedToolResult({
           toolName: execution.resultToolName,
           ok: true,
           relativePaths: trustedWriteRelativePaths(execution.verifiedAction.action)
-        });
+        }, owner);
       } finally {
         this.publishFileFeedback({ type: 'character_carrying', carrying: false }, owner);
       }
@@ -650,7 +664,8 @@ export class AgentService {
     signal: AbortSignal,
     visibleHistory: readonly ModelMessage[] = [],
     planningHint?: FilePlanningHint,
-    privatePlanningContext?: string
+    privatePlanningContext?: string,
+    owner?: symbol
   ): RunContext {
     const fileTools = session.tools.filter(tool => tool.function.name.startsWith('builtin.files.'));
     const planningTools = planningHint?.missingField === 'target_path'
@@ -691,14 +706,14 @@ export class AgentService {
               toolName: request.toolName,
               ok: true,
               relativePaths: trustedReadRelativePaths(result)
-            });
+            }, owner);
             return result;
           } catch (error) {
             this.publishTrustedToolResult({
               toolName: request.toolName,
               ok: false,
               relativePaths: []
-            });
+            }, owner);
             throw error;
           }
         }
@@ -828,12 +843,15 @@ export class AgentService {
     this.emit(event);
   }
 
-  private publishTrustedToolResult(result: AgentTrustedToolResult): void {
+  private publishTrustedToolResult(result: AgentTrustedToolResult, owner?: symbol): void {
+    if (owner !== undefined && this.taskOwner !== owner) return;
+    const submissionOwner = this.activeSubmissionOwner;
     try {
       this.emitTrustedToolResult?.(Object.freeze({
         toolName: result.toolName,
         ok: result.ok,
-        relativePaths: Object.freeze([...result.relativePaths])
+        relativePaths: Object.freeze([...result.relativePaths]),
+        ...(submissionOwner === undefined ? {} : { submissionOwner })
       }));
     } catch {
       // 事务记录失败不得改写已经发生的本地工具事实。
