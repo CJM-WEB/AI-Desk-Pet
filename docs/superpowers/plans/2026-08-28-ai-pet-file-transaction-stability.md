@@ -19,7 +19,7 @@
 
 ---
 
-### 任务 1：显式文件事务统一公告完整受控工具
+### Task 1：显式文件事务统一公告完整受控工具
 
 **文件：**
 - 修改：`apps/desktop/src/main/agent/agent-service.ts`
@@ -72,7 +72,7 @@ git add apps/desktop/src/main/agent apps/desktop/src/main/index.ts apps/desktop/
 git commit -m "fix: 统一显式文件任务工具权限"
 ```
 
-### 任务 2：建立可信文件引用与会话级能力事务
+### Task 2：建立可信文件引用与会话级能力事务
 
 **文件：**
 - 新增：`apps/desktop/src/main/conversation/capability-transaction.ts`
@@ -153,7 +153,7 @@ git add apps/desktop/src/main/conversation apps/desktop/tests/capability-transac
 git commit -m "feat: 增加会话级文件能力事务"
 ```
 
-### 任务 3：工具协议修复与真实结果权威
+### Task 3：工具协议修复与真实结果权威
 
 **文件：**
 - 修改：`packages/agent-core/src/agent-loop.ts`
@@ -198,7 +198,7 @@ git add packages/agent-core/src packages/agent-core/tests/agent-loop.test.ts app
 git commit -m "fix: 阻止文件任务口头伪成功"
 ```
 
-### 任务 4：细分 Provider 格式故障且保护普通聊天
+### Task 4：细分 Provider 格式故障且保护普通聊天
 
 **文件：**
 - 新增：`apps/desktop/src/main/providers/provider-response-error.ts`
@@ -253,7 +253,7 @@ git commit -m "fix: 细分模型响应协议错误"
 
 预期：测试和类型检查通过后提交。
 
-### 任务 5：真实文件纵向验收与文档收口
+### Task 5：真实文件纵向验收与文档收口
 
 **文件：**
 - 修改：`tests/integration/desktop-agent.test.ts`
@@ -296,4 +296,3 @@ git commit -m "test: 验证多步文件事务真实副作用"
 ```
 
 预期：全部自动门禁通过；真实模型网络质量和用户目录不写为已验收。
-

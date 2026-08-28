@@ -18,7 +18,7 @@
 
 ---
 
-### 任务 1：让问题弹窗进入浏览器原生顶层
+### Task 1：让问题弹窗进入浏览器原生顶层
 
 **文件：**
 - 新增：`apps/desktop/src/renderer/src/characters/workshop/use-modal-dialog.ts`
@@ -63,7 +63,7 @@ git add apps/desktop/src/renderer/src/characters/workshop apps/desktop/tests/cha
 git commit -m "fix: 提升工作台模态弹窗层级"
 ```
 
-### 任务 2：建立工作台布局设置契约与持久化
+### Task 2：建立工作台布局设置契约与持久化
 
 **文件：**
 - 新增：`apps/desktop/src/shared/workshop-layout-ipc.ts`
@@ -121,7 +121,7 @@ git add apps/desktop/src/shared apps/desktop/src/preload/index.ts apps/desktop/s
 git commit -m "feat: 持久化角色工作台布局"
 ```
 
-### 任务 3：实现四条可访问分隔器
+### Task 3：实现四条可访问分隔器
 
 **文件：**
 - 新增：`apps/desktop/src/renderer/src/characters/workshop/WorkshopSplitter.tsx`
@@ -175,7 +175,7 @@ git add apps/desktop/src/renderer/src/characters/workshop apps/desktop/tests/cha
 git commit -m "feat: 增加工作台可调分隔器"
 ```
 
-### 任务 4：删除皮肤编辑界面并验证包兼容
+### Task 4：删除皮肤编辑界面并验证包兼容
 
 **文件：**
 - 修改：`apps/desktop/src/renderer/src/characters/workshop/CharacterWorkshopView.tsx`
@@ -220,7 +220,7 @@ git add -A apps/desktop/src/renderer/src/characters/workshop apps/desktop/tests 
 git commit -m "refactor: 移除工作台皮肤编辑界面"
 ```
 
-### 任务 5：工作台验收记录与总门禁
+### Task 5：工作台验收记录与总门禁
 
 **文件：**
 - 修改：`docs/operations/character-workshop-acceptance.md`

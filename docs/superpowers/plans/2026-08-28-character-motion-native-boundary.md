@@ -17,7 +17,7 @@
 
 ---
 
-### 任务 1：规范化原生坐标并增加 timer 错误边界
+### Task 1：规范化原生坐标并增加 timer 错误边界
 
 **文件：**
 - 修改：`apps/desktop/src/main/characters/character-motion-service.ts`
@@ -76,7 +76,7 @@ git add apps/desktop/src/main/characters/character-motion-service.ts apps/deskto
 git commit -m "fix: 收口角色运动原生坐标异常"
 ```
 
-### 任务 2：行为与桌面门禁及验收记录
+### Task 2：行为与桌面门禁及验收记录
 
 **文件：**
 - 新增：`docs/operations/character-motion-native-boundary-acceptance.md`
