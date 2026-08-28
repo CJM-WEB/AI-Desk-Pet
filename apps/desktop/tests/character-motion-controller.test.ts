@@ -1434,4 +1434,45 @@ describe('Main 角色运动服务', () => {
     runtime.destroy();
     vi.useRealTimers();
   });
+
+  test('原生 setPosition 抛错时 timer 收口异常并停止后续原生调用', () => {
+    vi.useFakeTimers();
+    try {
+      let now = 0;
+      let destroyed = false;
+      const bounds = { x: 0, y: 0, width: 180, height: 220 };
+      const setPosition = vi.fn(() => {
+        throw new Error('NATIVE_POSITION_PRIVATE_DETAIL');
+      });
+      const service = createMotionService({
+        window: { getBounds: () => bounds, setPosition },
+        getWorkAreas: () => [{ x: 0, y: 0, width: 800, height: 600 }],
+        now: () => now
+      });
+      const reportError = vi.fn();
+      service.moveTo({ x: 10, y: 0 }, 100);
+      now = 100;
+      const runtime = startCharacterMotionTimers({
+        tick: () => { service.tick(); },
+        poll: vi.fn(),
+        isDestroyed: () => destroyed,
+        tickIntervalMs: 10,
+        idleIntervalMs: 20,
+        reportError
+      });
+
+      expect(() => vi.advanceTimersByTime(10)).not.toThrow();
+      expect(setPosition).toHaveBeenCalledOnce();
+      expect(reportError).toHaveBeenCalledWith('CHARACTER_MOTION_TIMER_FAILED');
+
+      destroyed = true;
+      vi.advanceTimersByTime(50);
+      runtime.destroy();
+      vi.advanceTimersByTime(50);
+      expect(setPosition).toHaveBeenCalledOnce();
+      expect(reportError).toHaveBeenCalledOnce();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });

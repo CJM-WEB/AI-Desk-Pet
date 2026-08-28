@@ -567,6 +567,11 @@ async function createApplicationWindows(
   ): void => {
     console.error('更新角色行为失败。', code);
   };
+  const reportCharacterMotionTimerError = (
+    code: 'CHARACTER_MOTION_TIMER_FAILED'
+  ): void => {
+    console.error('角色运动定时器异常，已停止。', code);
+  };
   const characterBehavior = new CharacterBehaviorService({
     store: characterStore,
     motion: characterMotion,
@@ -753,7 +758,8 @@ async function createApplicationWindows(
     poll: () => characterProactivityRuntime.poll(),
     isDestroyed: () => pet.isDestroyed(),
     tickIntervalMs: 50,
-    idleIntervalMs: 500
+    idleIntervalMs: 500,
+    reportError: reportCharacterMotionTimerError
   });
   const conversationClose = createDetachedCloseController({
     onError: () => console.error(

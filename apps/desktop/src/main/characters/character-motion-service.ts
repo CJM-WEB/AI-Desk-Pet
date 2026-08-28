@@ -11,6 +11,10 @@ import { clampIntegerWindowPositionToVisualWorkArea } from '../windows/window-ma
 
 type WindowBounds = Rectangle;
 
+type NativePositionResult =
+  | { ok: true; position: CharacterMotionPoint }
+  | { ok: false; code: 'CHARACTER_POSITION_INVALID' };
+
 export type CharacterMotionWindow = {
   getBounds(): WindowBounds;
   setPosition(x: number, y: number): void;
@@ -31,6 +35,8 @@ const PROGRAMMATIC_POSITION_TOLERANCE_DIP = 2;
 const RANDOM_WANDER_ARRIVAL_TOLERANCE_DIP = 24;
 const FAR_WANDER_MINIMUM_RATIO = 0.6;
 const FAR_WANDER_SAMPLE_ATTEMPTS = 3;
+const INT32_MIN = -2_147_483_648;
+const INT32_MAX = 2_147_483_647;
 const RELATIVE_DISTANCE_FACTOR = Object.freeze({
   near: 0.5,
   medium: 1,
@@ -38,7 +44,28 @@ const RELATIVE_DISTANCE_FACTOR = Object.freeze({
 } as const);
 
 function integerPosition(point: CharacterMotionPoint): CharacterMotionPoint {
-  return { x: Math.round(point.x), y: Math.round(point.y) };
+  const normalize = (value: number): number => {
+    const rounded = Math.round(value);
+    return Object.is(rounded, -0) ? 0 : rounded;
+  };
+  return { x: normalize(point.x), y: normalize(point.y) };
+}
+
+/** Electron 原生边界只接收可安全表示的 Int32 整数，拒绝值不携带底层异常细节。 */
+function nativePosition(point: CharacterMotionPoint): NativePositionResult {
+  if (
+    !Number.isFinite(point.x)
+    || !Number.isFinite(point.y)
+    || !Number.isInteger(point.x)
+    || !Number.isInteger(point.y)
+    || point.x < INT32_MIN
+    || point.x > INT32_MAX
+    || point.y < INT32_MIN
+    || point.y > INT32_MAX
+  ) {
+    return { ok: false, code: 'CHARACTER_POSITION_INVALID' };
+  }
+  return { ok: true, position: point };
 }
 
 function sameProgrammaticPosition(
@@ -240,11 +267,13 @@ export class CharacterMotionService {
     });
     const position = integerPosition(next.position);
     if (position.x !== bounds.x || position.y !== bounds.y) {
+      const native = nativePosition(position);
+      if (!native.ok) throw new Error(native.code);
       this.expectedProgrammaticPositions.push(position);
       if (this.expectedProgrammaticPositions.length > 64) {
         this.expectedProgrammaticPositions.shift();
       }
-      this.options.window.setPosition(position.x, position.y);
+      this.options.window.setPosition(native.position.x, native.position.y);
     }
     this.lastTickMs = now;
     this.latestSnapshot = {
@@ -624,26 +653,46 @@ export function bindCharacterMotionWindow(
 }
 
 export function startCharacterMotionTimers(options: {
-  tick(): void;
-  poll(): void;
+  tick(): void | Promise<void>;
+  poll(): void | Promise<void>;
   isDestroyed(): boolean;
   tickIntervalMs: number;
   idleIntervalMs: number;
+  reportError?(code: 'CHARACTER_MOTION_TIMER_FAILED'): void;
 }): { destroy(): void } {
   let stopped = false;
+  let failureReported = false;
   const stop = (): void => {
     if (stopped) return;
     stopped = true;
     clearInterval(tickTimer);
     clearInterval(idleTimer);
   };
-  const guard = (operation: () => void): void => {
-    if (stopped) return;
-    if (options.isDestroyed()) {
-      stop();
-      return;
+  const reportFailure = (): void => {
+    if (failureReported) return;
+    failureReported = true;
+    try {
+      options.reportError?.('CHARACTER_MOTION_TIMER_FAILED');
+    } catch {
+      // 错误端口不能重新把异常抛回原生 timer 回调。
     }
-    operation();
+  };
+  const guard = (operation: () => void | Promise<void>): void => {
+    void (async () => {
+      try {
+        if (stopped) return;
+        if (options.isDestroyed()) {
+          stop();
+          return;
+        }
+        await operation();
+      } catch {
+        stop();
+        reportFailure();
+      } finally {
+        if (!stopped && options.isDestroyed()) stop();
+      }
+    })();
   };
   const tickTimer = setInterval(() => guard(options.tick), options.tickIntervalMs);
   const idleTimer = setInterval(() => guard(options.poll), options.idleIntervalMs);

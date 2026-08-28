@@ -154,6 +154,61 @@ function fixture(options: {
 }
 
 describe('Main 桌宠几何原子协调器', () => {
+  test('运动服务只把规范化后的 Int32 整数坐标交给原生窗口', () => {
+    let now = 0;
+    const bounds = { x: 0, y: 0, width: 180, height: 220 };
+    const setPosition = vi.fn();
+    const service = new CharacterMotionService({
+      window: { getBounds: () => bounds, setPosition },
+      getDisplays: () => [{
+        id: 'display-1',
+        workAreaDip: { x: -3_000_000_000, y: -3_000_000_000, width: 6_000_000_000, height: 6_000_000_000 }
+      }],
+      getGeometrySnapshot: () => ({
+        revision: 1,
+        characterId: 'pet-a',
+        scale: 1,
+        footAnchorDip: { x: 90, y: 220 },
+        visualBoundsInWindowDip: { x: 0, y: 0, width: 180, height: 220 },
+        windowBoundsDip: bounds,
+        displayId: 'display-1'
+      }),
+      now: () => now,
+      maxDeltaMs: 1_000
+    });
+    const moveAndTick = (target: { x: number; y: number }, speed = 10_000): void => {
+      service.moveTo(target, speed);
+      now += 1_000;
+      service.tick();
+    };
+
+    moveAndTick({ x: -0.1, y: 2 });
+    const [negativeZeroX, positiveY] = setPosition.mock.calls[0] ?? [];
+    expect(Object.is(negativeZeroX, 0)).toBe(true);
+    expect(positiveY).toBe(2);
+
+    moveAndTick({ x: 2, y: -0.1 });
+    const [positiveX, negativeZeroY] = setPosition.mock.calls[1] ?? [];
+    expect(positiveX).toBe(2);
+    expect(Object.is(negativeZeroY, 0)).toBe(true);
+
+    moveAndTick({ x: -1, y: -200 });
+    expect(setPosition).toHaveBeenNthCalledWith(3, -1, -200);
+
+    expect(() => service.moveTo({ x: Number.NaN, y: 2 })).toThrow(
+      'CHARACTER_MOTION_INPUT_INVALID'
+    );
+    expect(() => service.moveTo({ x: Number.POSITIVE_INFINITY, y: 2 })).toThrow(
+      'CHARACTER_MOTION_INPUT_INVALID'
+    );
+    expect(setPosition).toHaveBeenCalledTimes(3);
+
+    service.moveTo({ x: 2_147_483_648, y: 2 }, 3_000_000_000);
+    now += 1_000;
+    expect(() => service.tick()).toThrow('CHARACTER_POSITION_INVALID');
+    expect(setPosition).toHaveBeenCalledTimes(3);
+  });
+
   test.each([0.5, 2])('旧持久尺寸 %s 启动时统一归一为默认 100%%', async savedScale => {
     const value = fixture({ savedScale });
 
