@@ -234,6 +234,17 @@ describe('能力意图路由器', () => {
     });
   });
 
+  test('可信文件引用续接只把显式动作恢复为文件任务，普通评价仍保持聊天', () => {
+    expect(capabilityIntentRouter.routeTrustedFileContinuation('这个文件内容是好的').kind).toBe('chat');
+    expect(createFilePlanningHint('把刚创建的文件内容改为 hello'))
+      .toEqual({ operation: 'edit_file' });
+    expect(capabilityIntentRouter.routeTrustedFileContinuation('把刚创建的文件内容改为 hello'))
+      .toEqual({
+        kind: 'file_task',
+        evidence: { kind: 'explicit_file_operation' }
+      });
+  });
+
   test.each([
     '你好呀',
     '真的哦',

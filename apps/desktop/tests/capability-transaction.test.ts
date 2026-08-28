@@ -7,9 +7,7 @@ const identity = Object.freeze({
   generation: 'generation-1',
   kind: 'file' as const,
   profileId: 'provider-1',
-  capabilityRevision: 'root-1',
-  providerId: 'provider-1',
-  authorizationRootId: 'root-1'
+  capabilityRevision: 'root-1'
 });
 
 function createStore(now?: () => number): CapabilityTransactionStore {
@@ -280,7 +278,7 @@ describe('CapabilityTransactionStore', () => {
     expect(store.classifyFollowUp(text)).toBe('none');
   });
 
-  test('可信引用后的改写表达会被识别为 continue 续接', () => {
+  test('事务层 follow-up 只保留控制词，不再自行判定可信引用改写任务', () => {
     const store = createStore();
     store.begin(identity);
     store.apply({
@@ -290,7 +288,8 @@ describe('CapabilityTransactionStore', () => {
     });
     store.apply({ type: 'phase', phase: 'success' });
 
-    expect(store.classifyFollowUp('把刚创建的文件内容改为 hello')).toBe('continue');
+    expect(store.classifyFollowUp('把刚创建的文件内容改为 hello')).toBe('none');
+    expect(store.classifyFollowUp('读取 new.txt')).toBe('none');
   });
 
   test('同一路径的后续读取不会覆盖已有创建引用', () => {

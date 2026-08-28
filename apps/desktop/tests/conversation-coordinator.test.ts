@@ -1651,13 +1651,14 @@ describe('ConversationCoordinator', () => {
       taskKind: 'file'
     });
     expect(fileTasks.submissions[1]?.text).toBe('把刚创建的文件内容改为 hello');
-    expect(fileTasks.submissions[1]?.planningHint).toBeUndefined();
+    expect(fileTasks.submissions[1]?.planningHint).toEqual({ operation: 'edit_file' });
     expect(fileTasks.submissions[1]?.privatePlanningContext).toContain('"role":"created"');
     expect(fileTasks.submissions[1]?.privatePlanningContext).toContain('"relativePath":"test.txt"');
     expect(harness.factoryCallCount()).toBe(0);
   });
 
   test.each([
+    '这个文件内容是好的',
     '这个文件内容很好',
     '不要把这个文件内容发给模型',
     '“读取这个文件内容”只是引用',
@@ -1887,7 +1888,7 @@ describe('ConversationCoordinator', () => {
       text: '把刚创建的文件内容改为 hello',
       taskKind: 'file'
     });
-    expect(fileTasks.submissions[2]?.planningHint).toBeUndefined();
+    expect(fileTasks.submissions[2]?.planningHint).toEqual({ operation: 'edit_file' });
     expect(fileTasks.submissions[2]?.privatePlanningContext).toContain('"role":"created"');
     expect(fileTasks.submissions[2]?.privatePlanningContext).toContain('"toolName":"read_file"');
   });

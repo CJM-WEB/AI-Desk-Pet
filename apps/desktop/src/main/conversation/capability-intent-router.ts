@@ -254,6 +254,15 @@ function hasTrustedReferenceOnly(text: string): boolean {
       .test(text);
 }
 
+function hasTrustedReferenceFileContinuation(text: string): boolean {
+  const normalized = text.normalize('NFKC').trim();
+  if (!normalized || containsDeterministicCodeStructure(normalized)) return false;
+  const unquotedText = maskQuotedText(normalized.toLocaleLowerCase());
+  return !blocksModelEscalation(unquotedText)
+    && hasTrustedReferenceOnly(unquotedText)
+    && createFilePlanningHint(unquotedText) !== null;
+}
+
 /**
  * 澄清续接只提取三类封闭路径形状；最终文件工具仍会按授权根、链接和保护区完整复核。
  * 普通自然语言不能仅凭“允许模型升级”借用上一轮文件权限。
@@ -338,6 +347,10 @@ function filePlanningOperation(text: string): FilePlanningOperation | null {
   if (/(?:按文件名|文件名匹配)|\bglob\b/iu.test(text)) return 'glob_files';
   if (/(?:列出|\blist\b)/iu.test(text)) return 'list_files';
   if (/(?:读取|\bread\b)/iu.test(text)) return 'read_file';
+  if (
+    hasTrustedReferenceOnly(text)
+    && /(?:修改|编辑|改为|替换|写入|\b(?:modify|replace|write|edit)\b)/iu.test(text)
+  ) return 'edit_file';
   if (/(?:创建|新建|\bcreate\b)/iu.test(text)) return 'create_file';
   if (/(?:修改|编辑|改为|替换|写入|\b(?:modify|replace|write|edit)\b)/iu.test(text)) return 'edit_file';
   if (/(?:移动|放入|\bmove\b)/iu.test(text)) return 'move_file';
@@ -378,10 +391,14 @@ export class DefaultCapabilityIntentRouter implements CapabilityIntentRouter {
   /** 仅供 Coordinator 在持有同代澄清状态时复核路径形状并恢复文件任务。 */
   routeTrustedFileContinuation(prompt: string): CapabilityIntent {
     const candidate = targetPathContinuationCandidate(prompt);
-    if (candidate === null) return this.route(prompt);
-    return relativePathSchema.safeParse(candidate).success && isRootRelativePathInput(candidate)
+    if (candidate !== null) {
+      return relativePathSchema.safeParse(candidate).success && isRootRelativePathInput(candidate)
+        ? fileTaskIntent
+        : blockedChatIntent;
+    }
+    return hasTrustedReferenceFileContinuation(prompt)
       ? fileTaskIntent
-      : blockedChatIntent;
+      : this.route(prompt);
   }
 }
 

@@ -1420,10 +1420,14 @@ describe('桌面会话分流纵向集成', () => {
         text: '创建 test.txt',
         planningHint: { operation: 'create_file' }
       });
-      expect(capabilitySubmissions[1]).toMatchObject({ text: '把刚创建的文件内容改为 hello' });
-      expect(capabilitySubmissions[1]?.planningHint).toBeUndefined();
-      expect(capabilitySubmissions[2]).toMatchObject({ text: '把刚才那个文件移动到 a 文件夹' });
-      expect(capabilitySubmissions[2]?.planningHint).toBeUndefined();
+      expect(capabilitySubmissions[1]).toMatchObject({
+        text: '把刚创建的文件内容改为 hello',
+        planningHint: { operation: 'edit_file' }
+      });
+      expect(capabilitySubmissions[2]).toMatchObject({
+        text: '把刚才那个文件移动到 a 文件夹',
+        planningHint: { operation: 'move_file' }
+      });
       expect(fixture.createAgentService).toHaveBeenCalledOnce();
       expect(fixture.agentFactoryInputs).toHaveLength(1);
       expect(createSession).toHaveBeenCalledOnce();

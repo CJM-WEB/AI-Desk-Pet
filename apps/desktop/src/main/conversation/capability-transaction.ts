@@ -194,7 +194,7 @@ export class CapabilityTransactionStore {
     }
   }
 
-  classifyFollowUp(text: string): 'continue' | 'retry' | 'status' | 'new_task' | 'none' {
+  classifyFollowUp(text: string): 'continue' | 'retry' | 'status' | 'none' {
     this.expireIfNeeded();
     if (this.current === null) return 'none';
     const normalized = text.normalize('NFKC').trim().toLocaleLowerCase();
@@ -208,13 +208,6 @@ export class CapabilityTransactionStore {
       return 'status';
     }
     if (blocksFollowUpByShape(normalized)) return 'none';
-    if (/(?:刚(?:创建|读取|移动|修改|删除)的|刚才(?:那个)?文件|那个文件|这个文件|该文件|它)/u.test(normalized)
-      && /(?:读取|修改|编辑|改为|写入|替换|移动|删除|搜索|查找|列出|read|edit|write|replace|move|delete|search|grep|glob|list|(?:内容|正文)(?:是|是什么|是啥)|(?:content|text)\s+is|\bwhat\s+is\b.{0,40}(?:content|text))/u.test(normalized)) {
-      return 'continue';
-    }
-    if (/(?:创建|新建|读取|列出|修改|编辑|改为|写入|替换|移动|删除|搜索|create|read|list|edit|write|replace|move|delete)/u.test(normalized)) {
-      return 'new_task';
-    }
     return 'none';
   }
 

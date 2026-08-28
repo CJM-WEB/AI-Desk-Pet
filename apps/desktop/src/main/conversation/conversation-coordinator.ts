@@ -217,10 +217,9 @@ export class ConversationCoordinator {
     const existingTransaction = this.capabilityTransaction.snapshot();
     if (existingTransaction === null) this.clearCapabilityTransactionState();
     if (existingTransaction?.generation === this.generation) {
-      const followUp = this.capabilityTransaction.classifyFollowUp(normalized);
       const earlyIntent = capabilityIntentRouter.route(normalized);
       const beginsNewCapabilityTask = earlyIntent.kind === 'powershell_task'
-        || (followUp === 'new_task' && earlyIntent.kind === 'file_task');
+        || earlyIntent.kind === 'file_task';
       if (beginsNewCapabilityTask) {
         this.invalidateCapabilityTransaction('new_task');
       }
@@ -259,9 +258,24 @@ export class ConversationCoordinator {
 
       const continuation = this.pendingFileContinuation;
       const continuationIntent = capabilityIntentRouter.route(context.capabilityText);
-      const trustedContinuationIntent = continuation === null
-        ? null
-        : capabilityIntentRouter.routeTrustedFileContinuation(context.capabilityText);
+      const canUseTrustedFileContinuation = (
+        continuation?.generation === context.generation
+        || (
+          transactionSnapshot?.generation === context.generation
+          && transactionSnapshot.kind === 'file'
+          && this.capabilityTransactionTarget !== null
+        )
+      );
+      const trustedContinuationIntent = canUseTrustedFileContinuation
+        ? capabilityIntentRouter.routeTrustedFileContinuation(context.capabilityText)
+        : null;
+      const trustedReferenceContinuation = continuationIntent.kind === 'chat'
+        && continuationIntent.modelEscalation === 'allowed'
+        && trustedContinuationIntent?.kind === 'file_task'
+        && createFilePlanningHint(context.capabilityText) !== null;
+      const trustedPendingContinuation = continuationIntent.kind === 'chat'
+        && continuationIntent.modelEscalation === 'allowed'
+        && trustedContinuationIntent?.kind === 'file_task';
       if (
         transactionSnapshot !== null
         && isTerminalTransactionPhase(transactionSnapshot.phase)
@@ -284,11 +298,11 @@ export class ConversationCoordinator {
         }
       } else if (
         transactionSnapshot !== null
-        && transactionFollowUp === 'continue'
         && this.capabilityTransactionTarget !== null
         && transactionSnapshot.kind === 'file'
         && continuationIntent.kind !== 'powershell_task'
         && !isBlockedChatIntent(continuationIntent)
+        && (transactionFollowUp === 'continue' || trustedReferenceContinuation)
       ) {
         context.transactionContinuation = true;
         context.continuationTarget = this.capabilityTransactionTarget;
@@ -304,9 +318,7 @@ export class ConversationCoordinator {
       if (
         continuation?.generation === context.generation
         && context.capabilityText.trim().length > 0
-        && continuationIntent.kind === 'chat'
-        && continuationIntent.modelEscalation === 'allowed'
-        && trustedContinuationIntent?.kind === 'file_task'
+        && trustedPendingContinuation
       ) {
         this.pendingFileContinuation = null;
         // 小模型需要明确后续路径覆盖先前缺失字段，避免把两轮文本误判为互相矛盾。
@@ -340,7 +352,7 @@ export class ConversationCoordinator {
           && context.continuationTarget === undefined) {
           this.invalidateCapabilityTransaction('new_task');
         }
-        if (taskKind === 'file' && !context.transactionContinuation) {
+        if (taskKind === 'file') {
           // Router 提示不携带工具授权，Agent 仍从完整受控文件工具集中接受真实 tool_call。
           const planningHint = createFilePlanningHint(context.capabilityText);
           if (planningHint !== null) context.planningHint = planningHint;

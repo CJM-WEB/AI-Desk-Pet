@@ -356,10 +356,10 @@ describe('AgentLoop', () => {
     expect(events).toContainEqual({ type: 'message', text: '读取完成' });
   });
 
-  test('期望 move_file 时只读成功后口头完成视为协议违约', async () => {
+  test('期望 edit_file 时只读成功后口头完成视为协议违约', async () => {
     const provider = new ScriptedProvider([
-      readRequest('read-before-move'),
-      { type: 'text', text: 'order.txt 已移动完成。' }
+      readRequest('read-before-edit'),
+      { type: 'text', text: 'notes.txt 已修改完成。' }
     ]);
     const loop = new AgentLoop();
     const runContext = {
@@ -368,7 +368,7 @@ describe('AgentLoop', () => {
       capabilityPlanning: {
         allowClarification: true,
         planningTools: tools,
-        expectedOperation: 'move_file'
+        expectedOperation: 'edit_file'
       } as unknown as RunContext['capabilityPlanning']
     };
 
