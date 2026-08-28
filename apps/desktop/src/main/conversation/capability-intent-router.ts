@@ -51,7 +51,7 @@ type TextRange = readonly [number, number];
 const quotePairs = new Map<string, string>([
   ['"', '"'], ["'", "'"], ['“', '”'], ['‘', '’']
 ]);
-const fileOperationPattern = /(?:按文件名匹配|读取|列出|创建|新建|写入|修改|替换|重命名|复制|移动|删除|搜索|查找|匹配|整理|\b(?:read|list|create|write|modify|replace|rename|copy|move|delete|search|match|glob|grep|organize)\b)/giu;
+const fileOperationPattern = /(?:按文件名匹配|读取|列出|创建|新建|写入|修改|替换|重命名|复制|移动|放入|删除|搜索|查找|匹配|整理|\b(?:read|list|create|write|modify|replace|rename|copy|move|delete|search|match|glob|grep|organize)\b)/giu;
 const localObjectPattern = /(?:\.{1,2}[\\/][^\s“”"'（）()<>，,。！？!?；;]+|(?:[^\s“”"'（）()<>\\/，,。！？!?；;]+[\\/])+[^\s“”"'（）()<>\\/，,。！？!?；;]+|[^\s“”"'（）()<>\\/，,。！？!?；;]*\.[a-z\d_-]+(?:\.[a-z\d_-]+)*|\b(?:readme|license|makefile|dockerfile|file|files|folder|folders|directory|directories)\b|当前(?:文件夹|文件|目录)|授权目录|回收站|文件夹|文件|目录)/giu;
 const quotedOrCodePrefixPattern = /^(?:>|[`'"“”‘’]|~~~)/u;
 const explicitReferencePrefixPattern = /^(?:引用|翻译|read\s+the\s+phrase\b)/iu;
@@ -179,12 +179,12 @@ function hasClosedChineseShape(text: string, objects: readonly TextRange[]): boo
     && locationOperation?.index === 0
     && /[\u3400-\u9fff]/u.test(locationOperation[0]);
   const startsWithSourceMarker = /^(?:把|将)/u.test(core)
-    && /(?:重命名|复制|移动|删除|修改|替换)/u.test(core);
+    && /(?:重命名|复制|移动|放入|删除|修改|替换)/u.test(core);
   const targetFirst = /^[^。！？!?\n]{1,80}(?:在)?(?:当前(?:文件夹|文件|目录)|授权目录)(?:中|里|下)?帮我(?:读取|列出|创建|新建|写入|修改|替换|重命名|复制|移动|删除|搜索|匹配|整理)[了！。]?$/u.test(core);
   if (!startsWithOperation && !startsWithLocation && !startsWithSourceMarker && !targetFirst) return false;
   if (targetFirst) return true;
   if (startsWithSourceMarker) {
-    return /^(?:把|将)[^。！？!?\n]{1,120}(?:重命名|复制|移动|删除|修改|替换)(?:为|到|至)?[^。！？!?\n]{0,120}[。！]?$/u.test(core)
+    return /^(?:把|将)[^。！？!?\n]{1,120}(?:重命名|复制|移动|放入|删除|修改|替换)(?:为|到|至)?[^。！？!?\n]{0,120}[。！]?$/u.test(core)
       && hasClosedTermination(text, objects);
   }
   if (/[？?]/u.test(core)) {
@@ -314,8 +314,8 @@ function filePlanningOperation(text: string): FilePlanningOperation | null {
   if (/(?:列出|\blist\b)/iu.test(text)) return 'list_files';
   if (/(?:读取|\bread\b)/iu.test(text)) return 'read_file';
   if (/(?:创建|新建|\bcreate\b)/iu.test(text)) return 'create_file';
-  if (/(?:修改|替换|写入|\b(?:modify|replace|write)\b)/iu.test(text)) return 'edit_file';
-  if (/(?:移动|\bmove\b)/iu.test(text)) return 'move_file';
+  if (/(?:修改|编辑|改为|替换|写入|\b(?:modify|replace|write|edit)\b)/iu.test(text)) return 'edit_file';
+  if (/(?:移动|放入|\bmove\b)/iu.test(text)) return 'move_file';
   return null;
 }
 

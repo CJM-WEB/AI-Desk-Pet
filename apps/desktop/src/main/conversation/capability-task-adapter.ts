@@ -1,6 +1,10 @@
 import type { FilePlanningHint, ModelMessage } from '@myself/agent-core';
 import type { TaskEvent } from '@myself/shared-types';
-import type { AgentFileTaskOutcome, AgentFileTaskSubmission } from '../agent/agent-service';
+import type {
+  AgentFileTaskOutcome,
+  AgentFileTaskSubmission,
+  AgentTrustedToolResult
+} from '../agent/agent-service';
 import type {
   CapabilityTaskKind,
   ConversationCapabilityTaskPort,
@@ -26,6 +30,7 @@ export interface CapabilityTaskAdapterOptions {
     generation: string;
     taskKind: CapabilityTaskKind;
     emit: (event: TaskEvent) => void;
+    emitTrustedToolResult: (result: AgentTrustedToolResult) => void;
   }): PreparedAgentTarget;
   /** 仅创建 Provider/授权根指纹，不得构造 Agent 或公告工具。 */
   createTargetSnapshot(input: {
@@ -50,6 +55,11 @@ type OwnedAgent = {
 
 export class CapabilityTaskAdapter implements ConversationCapabilityTaskPort {
   private readonly listeners = new Set<(event: TaskEvent, generation: string) => void>();
+  private readonly trustedResultListeners = new Set<(
+    result: AgentTrustedToolResult,
+    generation: string,
+    target: PreparedCapabilityTarget
+  ) => void>();
   private active: ActiveSubmission | null = null;
   private inFlightOwner: symbol | null = null;
   private preparingOwner: symbol | null = null;
@@ -65,6 +75,16 @@ export class CapabilityTaskAdapter implements ConversationCapabilityTaskPort {
     if (this.closed) return () => undefined;
     this.listeners.add(listener);
     return () => this.listeners.delete(listener);
+  }
+
+  onTrustedToolResult(listener: (
+    result: AgentTrustedToolResult,
+    generation: string,
+    target: PreparedCapabilityTarget
+  ) => void): () => void {
+    if (this.closed) return () => undefined;
+    this.trustedResultListeners.add(listener);
+    return () => this.trustedResultListeners.delete(listener);
   }
 
   async prepareTarget(input: {
@@ -272,6 +292,7 @@ export class CapabilityTaskAdapter implements ConversationCapabilityTaskPort {
     this.preparingOwner = null;
     this.agent = null;
     this.listeners.clear();
+    this.trustedResultListeners.clear();
     const closing = Promise.resolve().then(async () => {
       const failures: unknown[] = [];
       try {
@@ -301,7 +322,8 @@ export class CapabilityTaskAdapter implements ConversationCapabilityTaskPort {
     const prepared = this.options.createAgentTarget({
       generation,
       taskKind,
-      emit: event => this.publishAgentEvent(event, owner)
+      emit: event => this.publishAgentEvent(event, owner),
+      emitTrustedToolResult: result => this.publishTrustedToolResult(result, owner)
     });
     const service = prepared?.service;
     try {
@@ -366,6 +388,16 @@ export class CapabilityTaskAdapter implements ConversationCapabilityTaskPort {
       && this.active === active
     ) {
       this.active = null;
+    }
+  }
+
+  private publishTrustedToolResult(result: AgentTrustedToolResult, agentOwner: symbol): void {
+    const active = this.active;
+    const owned = this.agent;
+    if (!active || !owned || this.closed || owned.owner !== agentOwner
+      || active.target !== owned.target) return;
+    for (const listener of [...this.trustedResultListeners]) {
+      listener(result, active.generation, owned.target);
     }
   }
 

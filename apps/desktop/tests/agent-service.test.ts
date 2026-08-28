@@ -177,7 +177,10 @@ function createHarness(
   fallbackProviders: ModelProvider[] = [],
   onEmit?: (event: TaskEvent) => void,
   emitBehaviorIntent?: (intent: CharacterAgentBehaviorIntent) => void,
-  createSessionOverride?: (session: AgentSession) => Promise<AgentSession>
+  createSessionOverride?: (session: AgentSession) => Promise<AgentSession>,
+  emitTrustedToolResult?: import('../src/main/agent/agent-service').AgentServiceOptions[
+    'emitTrustedToolResult'
+  ]
 ) {
   const events: TaskEvent[] = [];
   const loop = new AgentLoop();
@@ -222,6 +225,7 @@ function createHarness(
       onEmit?.(event);
     },
     ...(emitBehaviorIntent === undefined ? {} : { emitBehaviorIntent }),
+    ...(emitTrustedToolResult === undefined ? {} : { emitTrustedToolResult }),
     createConversationId: () => 'conversation-1'
   });
   return {
@@ -341,6 +345,104 @@ function createPowerShellHarness(
 }
 
 describe('AgentService', () => {
+  test('只读真实成功只向 Main 私有端口发布一次脱敏相对路径结果', async () => {
+    const trustedResults: import('../src/main/agent/agent-service').AgentTrustedToolResult[] = [];
+    const provider = new ScriptedProvider([
+      readResponse(),
+      { type: 'text', text: '读取完成' }
+    ]);
+    const harness = createHarness(
+      provider,
+      { executeRead: vi.fn(async () => ({
+        toolName: 'list_files',
+        relativePath: '.',
+        entries: [
+          { relativePath: 'docs/test.txt', type: 'file' },
+          { relativePath: 'C:\\private.txt', type: 'file' }
+        ],
+        content: '不得进入私有结果端口的正文',
+        truncated: false
+      })) },
+      true,
+      [],
+      undefined,
+      undefined,
+      undefined,
+      result => trustedResults.push(result)
+    );
+
+    await harness.service.submitFileTask({ text: '列出文件', visibleHistory: [] });
+
+    expect(trustedResults).toEqual([{
+      toolName: 'list_files',
+      ok: true,
+      relativePaths: ['.', 'docs/test.txt']
+    }]);
+    expect(JSON.stringify(harness.events)).not.toContain('relativePaths');
+    expect(JSON.stringify(harness.events)).not.toContain('docs/test.txt');
+  });
+
+  test('确认写真实成功只向 Main 私有端口发布一次目标相对路径', async () => {
+    const trustedResults: import('../src/main/agent/agent-service').AgentTrustedToolResult[] = [];
+    const provider = new ScriptedProvider([
+      writeResponse(),
+      { type: 'text', text: '创建完成' }
+    ]);
+    const harness = createHarness(
+      provider,
+      {},
+      true,
+      [],
+      undefined,
+      undefined,
+      undefined,
+      result => trustedResults.push(result)
+    );
+
+    await harness.service.submitFileTask({ text: '创建 result.txt', visibleHistory: [] });
+    const pending = harness.events.find(event => event.type === 'pending_action');
+    if (!pending || pending.type !== 'pending_action') throw new Error('缺少创建确认卡');
+    await harness.service.confirm(pending.action.actionId);
+
+    expect(trustedResults).toEqual([{
+      toolName: 'create_file',
+      ok: true,
+      relativePaths: ['result.txt']
+    }]);
+    expect(JSON.stringify(harness.events)).not.toContain('relativePaths');
+  });
+
+  test('失败、取消和过期写动作都不向私有端口发布成功结果', async () => {
+    const trustedResults: import('../src/main/agent/agent-service').AgentTrustedToolResult[] = [];
+    const failed = createHarness(
+      new ScriptedProvider([writeResponse(), { type: 'text', text: '失败已处理' }]),
+      { executeWrite: vi.fn(async () => { throw new FileToolError('TARGET_EXISTS', 'private'); }) },
+      true,
+      [],
+      undefined,
+      undefined,
+      undefined,
+      result => trustedResults.push(result)
+    );
+    await failed.service.submitFileTask({ text: '创建 result.txt', visibleHistory: [] });
+    const failedPending = failed.events.find(event => event.type === 'pending_action');
+    if (!failedPending || failedPending.type !== 'pending_action') throw new Error('缺少失败确认卡');
+    await failed.service.confirm(failedPending.action.actionId);
+
+    const cancelled = createHarness(
+      new ScriptedProvider([writeResponse()]),
+      {}, true, [], undefined, undefined, undefined,
+      result => trustedResults.push(result)
+    );
+    await cancelled.service.submitFileTask({ text: '创建 result.txt', visibleHistory: [] });
+    const cancelledPending = cancelled.events.find(event => event.type === 'pending_action');
+    if (!cancelledPending || cancelledPending.type !== 'pending_action') throw new Error('缺少取消确认卡');
+    cancelled.service.cancelAction(cancelledPending.action.actionId);
+
+    await expect(cancelled.service.confirm(cancelledPending.action.actionId))
+      .rejects.toThrow('ACTION_EXPIRED');
+    expect(trustedResults.filter(result => result.ok)).toEqual([]);
+  });
   test('旧文件披露值为 false 时创建文件确认后的续跑仍公告完整文件工具', async () => {
     const provider = new ScriptedProvider([
       writeResponse(),

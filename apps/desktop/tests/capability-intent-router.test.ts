@@ -27,7 +27,8 @@ describe('能力意图路由器', () => {
     ['按文件名匹配 **/*.ts', 'glob_files'],
     ['把 notes.txt 中的旧文本替换为新文本', 'edit_file'],
     ['把 success.txt 移动到回收站', 'delete_file'],
-    ['把 docs/source.txt 移动到 archive 文件夹', 'move_file']
+    ['把 docs/source.txt 移动到 archive 文件夹', 'move_file'],
+    ['把 order 文件放入 a 文件夹', 'move_file']
   ] as const)('文件 Router 只生成非约束操作提示，不解释文件名：%s', (text, operation) => {
     expect(createFilePlanningHint(text)).toEqual({ operation });
   });
@@ -403,6 +404,10 @@ describe('能力意图路由器', () => {
     '后台运行构建'
   ])('明确请求运行命令时将“%s”归为 PowerShell 任务', text => {
     expectIntentKind(text, 'powershell_task');
+  });
+
+  test('文件放入目录的自然表达进入受控文件任务而不是普通聊天', () => {
+    expectIntentKind('把 order 文件放入 a 文件夹', 'file_task');
   });
 
   test('显式 PowerShell 脚本载荷不得超过 16 KiB', () => {

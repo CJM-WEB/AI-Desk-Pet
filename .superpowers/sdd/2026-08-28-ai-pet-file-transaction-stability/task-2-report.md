@@ -1,0 +1,94 @@
+# Task 2 实施报告：可信文件引用与会话级能力事务
+
+日期：2026-08-28
+
+基线：`862b7b0563b0af6902352117d22c98739a383b8d`
+
+范围：仅实施 Task 2；未修改 Provider Adapter 的格式错误分类，未新增共享 `TaskEvent`，未向 Preload 或 Renderer 投影私有结果。
+
+## RED 证据
+
+1. 首个事务测试按 brief 命令运行时失败：`capability-transaction.test.ts` 找不到目标模块；同轮既有 Desktop 测试 106 个文件、2724 项通过，证明失败来自新需求而非既有回归。
+2. 精确定向运行 `capability-transaction.test.ts` 与 `agent-service.test.ts`：事务模块缺失；只读与确认写的私有结果数组为空。
+3. Adapter 私有订阅测试失败：`onTrustedToolResult` 不存在。
+4. Coordinator 与 Router 新用例共 5 项失败：确认前“继续”触发 `TASK_ALREADY_ACTIVE`；“成功了吗”和事务指代进入普通聊天；“把 order 文件放入 a 文件夹”未生成移动提示。
+5. 追加失败终态测试后，失败工具结果会被后续 `thinking` 覆盖；追加澄清测试后，结构化澄清仍停留在 planning。
+6. 自审追加两项 RED：目标快照变化时未释放新 owner；明确新任务预检失败后仍保留旧成功终态。
+
+以上 RED 均先观察到预期失败，再进入实现；没有通过先写完整实现后补形式测试来制造 RED。
+
+## GREEN 与实现
+
+### Main 私有事实端口
+
+- 在 `AgentService` 增加仅限 Main 的 `AgentTrustedToolResult` 和可选 `emitTrustedToolResult`。
+- 受控只读工具真实返回后发布一次；确认写真实完成后发布一次。
+- 工具失败只发布 `ok=false`，取消与过期不发布成功结果。
+- 私有载荷只保留工具名、真假结果和再次校验过的根内相对路径；正文、绝对路径、PowerShell 输出均不进入载荷。
+- 私有观察者异常不会改写已经发生的本地工具事实。
+
+### 会话级能力事务
+
+- 新增纯 Main 内存 `CapabilityTransactionStore`，保存 identity、phase、稳定工具结果码和可信相对路径引用。
+- 公开 `TaskEvent` 只迁移阶段；assistant 自由文本不能建立引用，也不能把失败改写成成功。
+- 只有 `AgentTrustedToolResult.ok=true` 建立引用；失败终态对后续模型口头成功保持稳定。
+- 支持创建、读取、移动源/目标和删除引用；快照及内部数组对外冻结。
+- generation、Provider、授权能力修订、明确新任务、重置/新会话和关闭均清空旧事务。
+
+### 所有权绑定与续跑
+
+- `ConversationCapabilityTaskPort`/`CapabilityTaskAdapter` 增加独立 `onTrustedToolResult` 订阅。
+- Adapter 仅在当前 owner、active submission、generation 和同一 target 均成立时转发；提交结束后的迟到结果被丢弃。
+- Coordinator 在 Provider 之前识别事务续接与终态询问；可信引用只作为私有规划上下文交回原文件 Agent 链，不进入公开用户消息。
+- 等待确认时收到“继续”只返回宿主固定等待文案，执行次数保持为零。
+- Provider 或能力修订变化时拒绝续接、清空事务并释放刚准备的 owner；明确新任务从开始预检时即替换旧事务。
+- Router 只增加“放入”移动表达及编辑同义词识别，未扩大否定/引用 Gate。
+
+### 必要生产接线
+
+- `main-conversation-composition.ts` 与 `main/index.ts` 只透传 Main 私有回调到 `AgentService`。
+- 没有修改 `packages/shared-types`、Preload 或 Renderer。
+
+## 修改文件
+
+- `apps/desktop/src/main/agent/agent-service.ts`
+- `apps/desktop/src/main/conversation/capability-transaction.ts`（新增）
+- `apps/desktop/src/main/conversation/capability-task-adapter.ts`
+- `apps/desktop/src/main/conversation/conversation-coordinator.ts`
+- `apps/desktop/src/main/conversation/capability-intent-router.ts`
+- `apps/desktop/src/main/conversation/main-conversation-composition.ts`（必要生产接线）
+- `apps/desktop/src/main/index.ts`（必要生产接线）
+- `apps/desktop/tests/agent-service.test.ts`
+- `apps/desktop/tests/capability-transaction.test.ts`（新增）
+- `apps/desktop/tests/capability-task-adapter.test.ts`（所有权与迟到结果边界）
+- `apps/desktop/tests/conversation-coordinator.test.ts`
+- `apps/desktop/tests/capability-intent-router.test.ts`
+
+## 验证结果
+
+- 六文件精确定向：6 个文件、466 项通过。
+- `pnpm.cmd --filter @myself/desktop typecheck`：通过。
+- brief 原样 GREEN 命令：因 Desktop 脚本参数转发语义实际运行全套 Desktop 测试，107 个文件、2751 项通过。
+- `pnpm.cmd test:security`：1 个文件、28 项通过。
+- `pnpm.cmd test:integration`：4 个文件、87 项通过。
+- `pnpm.cmd test:e2e:desktop`：构建与边界校验通过；Playwright 首跑 76 项通过、1 项跳过、1 项失败。失败为无关角色工作室用例等待“运行版本已编译并发布。”提示 10 秒超时。
+- 失败角色工作室用例精确重跑：1 项通过，耗时 51 秒。
+- `git diff --check`：通过；仅显示仓库现有行尾转换提示，没有空白错误。
+- 私有端口符号扫描：仅位于 `apps/desktop/src/main`，未出现在 `packages/shared-types`、Preload 或 Renderer。
+
+## 自审
+
+- 规格一致性：可信引用只来自真实工具端口；assistant 口头成功、公开事件和 Renderer 均不能建立引用。
+- 生命周期：reset/close 先失效事务；Adapter 关闭清空私有监听；旧 owner 和迟到结果均被丢弃。
+- 隐私：测试向只读结果注入正文和绝对路径，私有结果仍只包含允许的相对路径；公共事件不含 `relativePaths`。
+- 最小修改：复用既有 Agent、Adapter、Coordinator、目标快照与 Router；没有创建第二套执行器或修改 Provider 格式错误分类。
+- 自审中发现并修复：目标变化只报错但未失效/清理、明确新任务预检失败仍保留旧事务，两项均先补 RED 再修复。
+
+## 提交
+
+提交消息：`feat: 增加会话级文件能力事务`。本报告与实现一同提交；最终提交哈希以任务返回为准。
+
+## 疑虑与未覆盖项
+
+- 全套 Desktop E2E 的角色工作室用例在并发负载下发生一次 10 秒提示等待超时，隔离重跑通过；这是与本任务无文件重叠的时序波动，本次未修改角色代码。其余 Task 2 定向、Desktop 全套单测、安全、集成与类型检查均稳定通过。
+- 未执行人工 Windows UI 验收；本任务新增链路没有 Renderer 变更，自动化证据覆盖 Main 事务、真实工具集成和既有 Electron E2E。

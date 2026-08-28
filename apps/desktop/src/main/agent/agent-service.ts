@@ -13,7 +13,7 @@ import type {
 import { createToolFailureResult } from '@myself/agent-core';
 import type { CharacterAgentBehaviorIntent } from '@myself/character-runtime';
 import type { ToolRequest, TaskEvent } from '@myself/shared-types';
-import { type VerifiedWriteAction } from '@myself/file-tools';
+import { isRootRelativePathInput, type VerifiedWriteAction } from '@myself/file-tools';
 import type {
   PowerShellRunResult,
   PowerShellTool,
@@ -67,11 +67,19 @@ export type AgentFileTaskOutcome =
   | Readonly<{ kind: 'clarification'; missingField: NonNullable<AgentRunOutcome>['missingField']; acted: false }>
   | Readonly<{ kind: 'completed'; acted: boolean }>;
 
+/** 仅供 Main 会话事务消费；不得进入公开 TaskEvent 或 Renderer。 */
+export type AgentTrustedToolResult = Readonly<{
+  toolName: string;
+  ok: boolean;
+  relativePaths: readonly string[];
+}>;
+
 export interface AgentServiceOptions {
   loop: AgentLoop;
   pending: PendingActionStore;
   createSession(signal?: AbortSignal): Promise<AgentSession>;
   emit(event: TaskEvent): void;
+  emitTrustedToolResult?: (result: AgentTrustedToolResult) => void;
   emitBehaviorIntent?(intent: CharacterAgentBehaviorIntent): void;
   createConversationId?: () => string;
 }
@@ -191,6 +199,33 @@ function writeResult(action: VerifiedWriteAction, resultToolName: string): Recor
   };
 }
 
+function trustedReadRelativePaths(result: unknown): readonly string[] {
+  if (typeof result !== 'object' || result === null || Array.isArray(result)) return [];
+  const record = result as Record<string, unknown>;
+  const candidates: unknown[] = [record['relativePath']];
+  if (Array.isArray(record['paths'])) candidates.push(...record['paths']);
+  for (const collectionName of ['entries', 'matches'] as const) {
+    const collection = record[collectionName];
+    if (!Array.isArray(collection)) continue;
+    for (const item of collection) {
+      if (typeof item === 'object' && item !== null && !Array.isArray(item)) {
+        candidates.push((item as Record<string, unknown>)['relativePath']);
+      }
+    }
+  }
+  return Object.freeze(Array.from(new Set(candidates.filter(
+    (candidate): candidate is string => typeof candidate === 'string'
+      && isRootRelativePathInput(candidate)
+  ))));
+}
+
+function trustedWriteRelativePaths(action: VerifiedWriteAction): readonly string[] {
+  const candidates = action.operation === 'move_file'
+    ? [action.sourceRelativePath, action.targetRelativePath]
+    : [action.targetRelativePath];
+  return Object.freeze(candidates.filter(isRootRelativePathInput));
+}
+
 /** 执行端口的 ok 字段是确认续跑后的本地能力事实。 */
 function capabilityResultOk(result: unknown): boolean {
   return typeof result === 'object'
@@ -229,6 +264,7 @@ export class AgentService {
   private readonly pending: PendingActionStore;
   private readonly createSession: (signal?: AbortSignal) => Promise<AgentSession>;
   private readonly emit: (event: TaskEvent) => void;
+  private readonly emitTrustedToolResult: ((result: AgentTrustedToolResult) => void) | undefined;
   private readonly emitBehaviorIntent:
     | ((intent: CharacterAgentBehaviorIntent) => void)
     | undefined;
@@ -256,6 +292,7 @@ export class AgentService {
     this.pending = options.pending;
     this.createSession = options.createSession;
     this.emit = options.emit;
+    this.emitTrustedToolResult = options.emitTrustedToolResult;
     this.emitBehaviorIntent = options.emitBehaviorIntent;
     this.createConversationId = options.createConversationId ?? randomUUID;
   }
@@ -535,7 +572,21 @@ export class AgentService {
       this.publishFileFeedback({ type: 'character_carrying', carrying: true }, owner);
       try {
         this.assertTaskOwned(owner, signal);
-        await session.fileTools.executeWrite(execution.verifiedAction.action);
+        try {
+          await session.fileTools.executeWrite(execution.verifiedAction.action);
+        } catch (error) {
+          this.publishTrustedToolResult({
+            toolName: execution.resultToolName,
+            ok: false,
+            relativePaths: []
+          });
+          throw error;
+        }
+        this.publishTrustedToolResult({
+          toolName: execution.resultToolName,
+          ok: true,
+          relativePaths: trustedWriteRelativePaths(execution.verifiedAction.action)
+        });
       } finally {
         this.publishFileFeedback({ type: 'character_carrying', carrying: false }, owner);
       }
@@ -574,7 +625,24 @@ export class AgentService {
           }
           return prepared;
         },
-        executeRead: request => session.toolRuntime.executeRead(request)
+        executeRead: async request => {
+          try {
+            const result = await session.toolRuntime.executeRead(request);
+            this.publishTrustedToolResult({
+              toolName: request.toolName,
+              ok: true,
+              relativePaths: trustedReadRelativePaths(result)
+            });
+            return result;
+          } catch (error) {
+            this.publishTrustedToolResult({
+              toolName: request.toolName,
+              ok: false,
+              relativePaths: []
+            });
+            throw error;
+          }
+        }
       },
       signal,
       // 能力任务显式启用首个真实工具结果前的受限规划协议；聊天默认不受影响。
@@ -699,6 +767,18 @@ export class AgentService {
   private publish(event: TaskEvent, owner?: symbol | null): void {
     if (owner !== undefined && owner !== null && this.taskOwner !== owner) return;
     this.emit(event);
+  }
+
+  private publishTrustedToolResult(result: AgentTrustedToolResult): void {
+    try {
+      this.emitTrustedToolResult?.(Object.freeze({
+        toolName: result.toolName,
+        ok: result.ok,
+        relativePaths: Object.freeze([...result.relativePaths])
+      }));
+    } catch {
+      // 事务记录失败不得改写已经发生的本地工具事实。
+    }
   }
 
   private beginIrreversibleExecution(): NonNullable<AgentService['irreversibleExecution']> {

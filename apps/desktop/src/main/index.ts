@@ -1000,7 +1000,8 @@ async function createApplicationWindows(
       generation,
       primaryProfile,
       fallbackProfiles,
-      emit
+      emit,
+      emitTrustedToolResult
     }) => {
       const loop = new AgentLoop();
       const pendingActions = new PendingActionStore({
@@ -1034,6 +1035,7 @@ async function createApplicationWindows(
           createPowerShellTool: () => new PowerShellTool()
         }),
         emit,
+        emitTrustedToolResult,
         emitBehaviorIntent: intent => characterBehaviorDirector.handleAgentBehaviorIntent(intent)
       });
     },

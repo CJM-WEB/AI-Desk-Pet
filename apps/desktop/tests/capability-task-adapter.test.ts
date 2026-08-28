@@ -2,6 +2,7 @@ import { describe, expect, test, vi } from 'vitest';
 import type { ModelMessage } from '@myself/agent-core';
 import type { TaskEvent } from '@myself/shared-types';
 import type { AgentService } from '../src/main/agent/agent-service';
+import type { AgentTrustedToolResult } from '../src/main/agent/agent-service';
 import { CapabilityTaskAdapter } from '../src/main/conversation/capability-task-adapter';
 import type { CapabilityTaskAdapterOptions } from '../src/main/conversation/capability-task-adapter';
 
@@ -127,6 +128,55 @@ async function submitPrepared(
 }
 
 describe('CapabilityTaskAdapter', () => {
+  test('私有工具结果只在当前 owner 内绑定 generation 与目标转发并丢弃迟到结果', async () => {
+    let emitTrustedToolResult!: (result: AgentTrustedToolResult) => void;
+    const agent = createAgentDouble(async () => {
+      emitTrustedToolResult({
+        toolName: 'create_file',
+        ok: true,
+        relativePaths: ['result.txt']
+      });
+    });
+    const adapter = createAdapter({
+      getAuthorizedRootPath: async () => 'C:\\workspace',
+      createAgentTarget: input => {
+        emitTrustedToolResult = input.emitTrustedToolResult;
+        return preparedAgent(agent);
+      }
+    });
+    const forwarded: Array<{
+      result: AgentTrustedToolResult;
+      generation: string;
+      target: Parameters<CapabilityTaskAdapter['activateTarget']>[0]['target'];
+    }> = [];
+    adapter.onTrustedToolResult((result, generation, target) => {
+      forwarded.push({ result, generation, target });
+    });
+
+    await submitPrepared(adapter, {
+      text: '创建 result.txt',
+      visibleHistory: [],
+      generation: 'generation-current',
+      taskKind: 'file'
+    });
+    expect(forwarded).toEqual([{
+      result: {
+        toolName: 'create_file',
+        ok: true,
+        relativePaths: ['result.txt']
+      },
+      generation: 'generation-current',
+      target: defaultTargetSnapshot
+    }]);
+
+    emitTrustedToolResult({
+      toolName: 'create_file',
+      ok: true,
+      relativePaths: ['late.txt']
+    });
+    expect(forwarded).toHaveLength(1);
+  });
+
   test('能力快照不创建 Agent，只有显式激活后才构造执行端口', async () => {
     const agent = createAgentDouble();
     const target = preparedAgent(agent);

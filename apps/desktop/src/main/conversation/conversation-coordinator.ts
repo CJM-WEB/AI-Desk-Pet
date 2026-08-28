@@ -11,15 +11,20 @@ import type {
   ConversationBehaviorPort,
   ExplicitBehaviorDirective
 } from '../characters/character-behavior-director';
-import type { AgentFileTaskOutcome } from '../agent/agent-service';
+import type { AgentFileTaskOutcome, AgentTrustedToolResult } from '../agent/agent-service';
 import {
   capabilityIntentRouter,
-  createFilePlanningHint
+  createFilePlanningHint,
+  type CapabilityIntent
 } from './capability-intent-router';
 import {
   isPublicFileTaskErrorCode,
   publicFileTaskErrorDetails
 } from '../agent/file-task-public-errors';
+import {
+  CapabilityTransactionStore,
+  type CapabilityTransactionSnapshot
+} from './capability-transaction';
 
 const 最大用户消息字符数 = 4_000;
 const 任务级授权有效期毫秒 = 2 * 60 * 1_000;
@@ -45,6 +50,11 @@ export type PreparedCapabilityTarget = Readonly<{
 
 export interface ConversationCapabilityTaskPort {
   onEvent(listener: (event: TaskEvent, generation: string) => void): () => void;
+  onTrustedToolResult(listener: (
+    result: AgentTrustedToolResult,
+    generation: string,
+    target: PreparedCapabilityTarget
+  ) => void): () => void;
   prepareTarget(input: {
     generation: string;
     taskKind: CapabilityTaskKind;
@@ -100,6 +110,7 @@ interface TurnContext {
   controller: AbortController;
   planningHint?: FilePlanningHint;
   continuationTarget?: PreparedCapabilityTarget;
+  transactionContinuation?: boolean;
   modelEscalation?: 'allowed' | 'blocked';
 }
 
@@ -152,6 +163,9 @@ export class ConversationCoordinator {
   private readonly createId: () => string;
   private generation: string;
   private readonly unsubscribeCapabilityEvents: () => void;
+  private readonly unsubscribeTrustedToolResults: () => void;
+  private readonly capabilityTransaction = new CapabilityTransactionStore();
+  private capabilityTransactionTarget: PreparedCapabilityTarget | null = null;
   private pendingDisclosure: PendingHistoryDisclosure | null = null;
   private activeCapabilityTurn: ActiveCapabilityTurn | null = null;
   private pendingFileContinuation: PendingFileContinuation | null = null;
@@ -165,9 +179,13 @@ export class ConversationCoordinator {
     this.unsubscribeCapabilityEvents = options.capabilityTasks.onEvent((event, generation) => {
       this.handleCapabilityEvent(event, generation);
     });
+    this.unsubscribeTrustedToolResults = options.capabilityTasks.onTrustedToolResult(
+      (result, generation, target) => this.handleTrustedToolResult(result, generation, target)
+    );
   }
 
   async submit(text: string): Promise<void> {
+    if (this.handleAwaitingConfirmationFollowUp(text)) return;
     try {
       this.assertIdle();
     } catch (error) {
@@ -208,12 +226,35 @@ export class ConversationCoordinator {
       context.capabilityText = prepared.capabilityText;
       context.explicitDirective = prepared.explicitDirective;
 
+      const transactionSnapshot = this.capabilityTransaction.snapshot();
+      const transactionFollowUp = transactionSnapshot?.generation === context.generation
+        ? this.capabilityTransaction.classifyFollowUp(context.capabilityText)
+        : 'none';
+      if (transactionSnapshot !== null && transactionFollowUp === 'status'
+        && (transactionSnapshot.phase === 'completed' || transactionSnapshot.phase === 'failed')) {
+        this.finishTransactionStatusFollowUp(transactionSnapshot);
+        return;
+      }
+      if (transactionSnapshot !== null && transactionFollowUp === 'continue'
+        && this.capabilityTransactionTarget !== null
+        && transactionSnapshot.kind === 'file') {
+        context.transactionContinuation = true;
+        context.continuationTarget = this.capabilityTransactionTarget;
+        context.capabilityText = appendTrustedFileContext(
+          context.capabilityText,
+          transactionSnapshot
+        );
+      }
+
       const continuation = this.pendingFileContinuation;
       const continuationIntent = capabilityIntentRouter.route(context.capabilityText);
       const trustedContinuationIntent = continuation === null
         ? null
         : capabilityIntentRouter.routeTrustedFileContinuation(context.capabilityText);
-      let effectiveIntent = continuationIntent;
+      const transactionContinuationIntent: CapabilityIntent | null = context.transactionContinuation
+        ? { kind: 'file_task', evidence: { kind: 'explicit_file_operation' } }
+        : null;
+      let effectiveIntent = transactionContinuationIntent ?? continuationIntent;
       if (
         continuation?.generation === context.generation
         && context.capabilityText.trim().length > 0
@@ -240,13 +281,18 @@ export class ConversationCoordinator {
       // Router 是唯一分流权威；能力任务在创建聊天 Provider 前处理。
       const intent = context.continuationTarget === undefined
         ? effectiveIntent
-        : trustedContinuationIntent ?? continuationIntent;
+        : transactionContinuationIntent ?? trustedContinuationIntent ?? continuationIntent;
       if (intent.kind === 'chat') context.modelEscalation = intent.modelEscalation;
       if (intent.kind === 'file_task' || intent.kind === 'powershell_task') {
         if (intent.kind === 'powershell_task' && intent.evidence.requestedRunMode === 'background') {
           throw publicErrorForCode('POWERSHELL_BACKGROUND_UNSUPPORTED');
         }
         const taskKind: CapabilityTaskKind = intent.kind === 'file_task' ? 'file' : 'powershell';
+        if (transactionSnapshot !== null && !context.transactionContinuation
+          && context.continuationTarget === undefined) {
+          this.capabilityTransaction.invalidate('new_task');
+          this.capabilityTransactionTarget = null;
+        }
         if (taskKind === 'file') {
           // Router 提示不携带工具授权，Agent 仍从完整受控文件工具集中接受真实 tool_call。
           const planningHint = createFilePlanningHint(context.capabilityText);
@@ -525,6 +571,8 @@ export class ConversationCoordinator {
     this.activeCapabilityTurn = null;
     this.pendingFileContinuation = null;
     this.pendingCapabilityAuthorization = null;
+    this.capabilityTransaction.invalidate('generation_changed');
+    this.capabilityTransactionTarget = null;
 
     const failures: unknown[] = [];
     try {
@@ -577,10 +625,13 @@ export class ConversationCoordinator {
     this.activeCapabilityTurn = null;
     this.pendingFileContinuation = null;
     this.pendingCapabilityAuthorization = null;
+    this.capabilityTransaction.invalidate('closed');
+    this.capabilityTransactionTarget = null;
     const closing = Promise.resolve().then(async () => {
       const failures: unknown[] = [];
       for (const cleanup of [
         () => this.unsubscribeCapabilityEvents(),
+        () => this.unsubscribeTrustedToolResults(),
         () => controller?.abort(),
         () => {
           if (cancelCapabilityTask) this.options.capabilityTasks.cancelActive();
@@ -717,6 +768,14 @@ export class ConversationCoordinator {
         || target.capabilityRevision !== context.continuationTarget.capabilityRevision
       )
     ) {
+      const providerChanged = target.profileId !== context.continuationTarget.profileId
+        || target.providerIdentity !== context.continuationTarget.providerIdentity;
+      this.capabilityTransaction.invalidate(
+        providerChanged ? 'provider_changed' : 'authorization_root_changed'
+      );
+      this.capabilityTransactionTarget = null;
+      // 新快照已经占用 Adapter owner，拒绝续接时同步释放，避免阻塞后续任务。
+      this.options.capabilityTasks.cancelActive();
       throw publicErrorForCode('FILE_TARGET_MISMATCH');
     }
     const requestId = this.createId();
@@ -827,6 +886,16 @@ export class ConversationCoordinator {
     visibleHistory: readonly ModelMessage[]
   ): Promise<void> {
     if (context.generation !== this.generation) return;
+    if (!context.transactionContinuation) {
+      this.capabilityTransaction.begin({
+        id: `${context.generation}:${taskKind}`,
+        generation: context.generation,
+        kind: taskKind,
+        providerId: target.profileId,
+        authorizationRootId: target.capabilityRevision
+      });
+      this.capabilityTransactionTarget = target;
+    }
     const active: ActiveCapabilityTurn = {
       generation: context.generation,
       text: context.text,
@@ -854,6 +923,7 @@ export class ConversationCoordinator {
         && outcome.acted === false
         && context.generation === this.generation
       ) {
+        this.capabilityTransaction.apply({ type: 'clarification' });
         this.pendingFileContinuation = Object.freeze({
           generation: context.generation,
           capabilityText: context.capabilityText,
@@ -884,6 +954,7 @@ export class ConversationCoordinator {
   /** 能力事件只能更新当前 generation；终态在公开前先完成 Main 历史与状态提交。 */
   private handleCapabilityEvent(event: TaskEvent, generation: string): void {
     if (this.state.kind === 'closed' || generation !== this.generation) return;
+    this.capabilityTransaction.apply(event);
     const active = this.activeCapabilityTurn;
     if (active?.generation === generation) {
       if (event.type === 'message' && event.role === 'assistant') {
@@ -925,6 +996,42 @@ export class ConversationCoordinator {
     this.options.emit(event);
   }
 
+  private handleTrustedToolResult(
+    result: AgentTrustedToolResult,
+    generation: string,
+    target: PreparedCapabilityTarget
+  ): void {
+    const transaction = this.capabilityTransaction.snapshot();
+    if (transaction === null || generation !== this.generation
+      || transaction.generation !== generation
+      || transaction.providerId !== target.profileId
+      || transaction.authorizationRootId !== target.capabilityRevision) return;
+    this.capabilityTransaction.apply(result);
+  }
+
+  private handleAwaitingConfirmationFollowUp(text: unknown): boolean {
+    if (this.state.kind !== 'awaiting_capability_confirmation' || typeof text !== 'string'
+      || this.capabilityTransaction.classifyFollowUp(text) !== 'continue') return false;
+    const normalized = normalizeUserText(text);
+    this.options.emit({ type: 'message', role: 'user', text: normalized });
+    this.options.emit({
+      type: 'message',
+      role: 'assistant',
+      text: '当前操作仍在等待确认，请先处理现有确认卡。'
+    });
+    this.options.emit({ type: 'phase', phase: 'awaiting_confirmation' });
+    return true;
+  }
+
+  private finishTransactionStatusFollowUp(transaction: CapabilityTransactionSnapshot): void {
+    const text = transaction.phase === 'completed'
+      ? '上一个本地任务已成功完成。'
+      : '上一个本地任务未成功完成。';
+    this.options.emit({ type: 'message', role: 'assistant', text });
+    this.state = { kind: 'idle' };
+    this.options.emit({ type: 'phase', phase: 'success' });
+  }
+
   private assertIdle(): void {
     if (this.state.kind === 'closed') throw publicErrorForCode('CONVERSATION_CLOSED');
     if (this.state.kind !== 'idle') throw publicErrorForCode('TASK_ALREADY_ACTIVE');
@@ -952,6 +1059,13 @@ export class ConversationCoordinator {
     if (this.state !== boundaryState) return;
     this.options.emit({ type: 'phase', phase: 'error' });
   }
+}
+
+function appendTrustedFileContext(
+  text: string,
+  transaction: CapabilityTransactionSnapshot
+): string {
+  return `${text}\n任务内可信文件引用（仅用于本轮规划）：${JSON.stringify(transaction.references)}`;
 }
 
 function normalizeUserText(input: unknown): string {

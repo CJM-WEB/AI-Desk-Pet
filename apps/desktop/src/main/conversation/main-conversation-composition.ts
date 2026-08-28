@@ -24,6 +24,7 @@ import {
   type CapabilityTaskAgentPort
 } from './capability-task-adapter';
 import type { CapabilityTaskKind } from './conversation-coordinator';
+import type { AgentTrustedToolResult } from '../agent/agent-service';
 import type { ConversationBehaviorPort } from
   '../characters/character-behavior-director';
 
@@ -41,6 +42,7 @@ export interface MainConversationAgentFactoryInput<TPrivacy> {
   primaryProfile: ProviderProfileV2;
   fallbackProfiles: readonly ProviderProfileV2[];
   emit(event: TaskEvent): void;
+  emitTrustedToolResult(result: AgentTrustedToolResult): void;
 }
 
 export interface MainConversationCompositionOptions<TPrivacy> {
@@ -151,6 +153,7 @@ export function createMainConversationComposition<TPrivacy>(
     generation: string;
     taskKind: CapabilityTaskKind;
     emit: (event: TaskEvent) => void;
+    emitTrustedToolResult: (result: AgentTrustedToolResult) => void;
   }) => {
     const snapshot = preparedAgentSnapshot;
     const descriptor = preparedAgentTarget;
@@ -168,7 +171,8 @@ export function createMainConversationComposition<TPrivacy>(
         selection,
         primaryProfile,
         fallbackProfiles,
-        emit: input.emit
+        emit: input.emit,
+        emitTrustedToolResult: input.emitTrustedToolResult
       }),
       profileId: selection.disclosureTarget.profileId,
       providerIdentity: selection.disclosureTarget.providerIdentity,
