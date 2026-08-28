@@ -22,7 +22,7 @@ import type {
   ResolvedBehaviorTarget
 } from '@myself/character-runtime';
 import { characterManifestV2Schema } from '../../packages/character-runtime/src/character-v2-schema';
-import type { ProviderProfileV2, TaskEvent } from '@myself/shared-types';
+import type { ProviderCatalogEntry, ProviderProfileV2, TaskEvent } from '@myself/shared-types';
 import { FileToolService } from '@myself/file-tools';
 import { AgentService } from '../../apps/desktop/src/main/agent/agent-service';
 import { createMainAgentSession } from
@@ -50,8 +50,6 @@ import {
   createMainConversationComposition,
   type MainConversationAgentFactoryInput
 } from '../../apps/desktop/src/main/conversation/main-conversation-composition';
-import { createFilePlanningHint } from
-  '../../apps/desktop/src/main/conversation/capability-intent-router';
 import type { ConversationBehaviorPort } from
   '../../apps/desktop/src/main/characters/character-behavior-director';
 import { CharacterBehaviorDirector } from
@@ -722,6 +720,9 @@ function completeIntegrationChatResponse(response: ModelResponse): ModelResponse
 function conversationIntegrationHarness(input: {
   responses: Array<string | ModelResponse>;
   authorizedRootPath?: string | null;
+  providerSettings?: ProviderSettingsSnapshot;
+  catalog?: readonly ProviderCatalogEntry[];
+  assertProviderReady?: (profile: ProviderProfileV2) => void;
   incognito?: boolean;
   behavior?: ConversationBehaviorPort;
   createChatAdapter?: () => ConversationChatAdapter;
@@ -733,18 +734,19 @@ function conversationIntegrationHarness(input: {
   privacySessions.register('integration-conversation', {
     incognito: input.incognito ?? false
   });
-  let chatProfileId = conversationPrimary.id;
-  const providerSettings = {
+  const defaultProviderSettings: ProviderSettingsSnapshot = {
     profiles: [conversationPrimary, conversationSameFallback, conversationCross],
     route: {
       primaryProfileId: conversationPrimary.id,
-      chatProfileId,
+      chatProfileId: conversationPrimary.id,
       agentProfileId: conversationPrimary.id,
       visionProfileId: null,
       fallbackProfileIds: [conversationSameFallback.id, conversationCross.id],
       allowCrossProviderFallback: true
     }
   };
+  const providerSettings = input.providerSettings ?? defaultProviderSettings;
+  let chatProfileId = providerSettings.route.chatProfileId;
   const events: TaskEvent[] = [];
   const chatRequests: Array<{ profileId: string; request: Parameters<ModelProvider['respond']>[0] }> = [];
   const fileSubmissions: Array<{
@@ -785,9 +787,10 @@ function conversationIntegrationHarness(input: {
     };
   });
   const composition = createMainConversationComposition({
-    catalog: [],
+    catalog: input.catalog ?? [],
     privacySessions,
     sessionId: 'integration-conversation',
+    ...(input.assertProviderReady === undefined ? {} : { assertProviderReady: input.assertProviderReady }),
     readProviderSettings: async () => ({
       ...providerSettings,
       route: { ...providerSettings.route, chatProfileId }
@@ -2037,77 +2040,164 @@ describe('桌面 Agent 真实服务集成', () => {
   });
 
   test.each(['OpenAI Compatible', '内置本地模型'] as const)(
-    '%s 正式链按文件名读取只信任真实临时授权根，不调用 Provider 猜测路径',
+    '%s 正式链从 Coordinator 原句按文件名读取并用可信结果完成事务',
     async providerKind => {
       const namedReadPrompt = '请告诉我目录下的 test 文件内容是什么';
-      const planningHint = createFilePlanningHint(namedReadPrompt);
-      if (planningHint?.targetNameQuery !== 'test') throw new Error('缺少受控文件名查询');
-      const deepSeek = providerKind === 'OpenAI Compatible'
-        ? await deepSeekHarness({ responses: [] })
-        : null;
-      const local = providerKind === '内置本地模型'
-        ? await localModelFileHarness({
-            steps: [],
-            moveToRecycleBin: async () => undefined
-          })
-        : null;
-      const service = deepSeek?.service ?? local?.service;
-      const events = deepSeek?.events ?? local?.events;
-      const authorized = deepSeek?.authorized ?? local?.authorized;
-      if (!service || !events || !authorized) throw new Error('缺少正式按名称读取夹具');
+      const authorized = await createAuthorizedRoot();
+      roots.push(authorized);
       await mkdir(join(authorized.root, 'nested'));
       await writeFile(join(authorized.root, 'nested', 'test.txt'), '正式唯一正文', 'utf8');
+      let providerSettings: ProviderSettingsSnapshot;
+      let catalog: readonly ProviderCatalogEntry[] = [];
+      let createProvider: (input: MainConversationAgentFactoryInput<{
+        dataCategories: { memory: boolean };
+      }>) => ModelProvider;
+      let providerRequestCount: () => number;
+      let assertProviderComplete: () => void;
+      let assertProviderReady: ((profile: ProviderProfileV2) => void) | undefined;
 
-      await expect(service.submitFileTask({
-        text: namedReadPrompt,
-        visibleHistory: [],
-        planningHint
-      })).resolves.toEqual({ kind: 'completed', acted: true });
-      expect(events).toContainEqual({
+      if (providerKind === 'OpenAI Compatible') {
+        const providerServer = await startProviderServer([]);
+        servers.push(providerServer);
+        const profile = conversationProfile('named-read-openai', providerServer.baseUrl);
+        providerSettings = {
+          profiles: [profile],
+          route: {
+            primaryProfileId: profile.id,
+            chatProfileId: profile.id,
+            agentProfileId: profile.id,
+            visionProfileId: null,
+            fallbackProfileIds: [],
+            allowCrossProviderFallback: false
+          }
+        };
+        createProvider = () => new OpenAICompatibleProvider({
+          providerId: 'openai-compatible',
+          modelId: profile.modelId,
+          baseUrl: providerServer.baseUrl
+        }, async () => providerServer.apiKey);
+        providerRequestCount = () => providerServer.requests.length;
+        assertProviderComplete = () => providerServer.assertComplete();
+      } else {
+        const localServer = await startLocalModelServer([]);
+        const cloudServer = await startProviderServer([]);
+        servers.push(localServer, cloudServer);
+        const cloudProfile = conversationProfile('named-read-cloud', cloudServer.baseUrl);
+        providerSettings = createLocalModelRoutingSnapshot({
+          profiles: [cloudProfile],
+          route: {
+            primaryProfileId: cloudProfile.id,
+            chatProfileId: cloudProfile.id,
+            agentProfileId: cloudProfile.id,
+            visionProfileId: null,
+            fallbackProfileIds: [],
+            allowCrossProviderFallback: false
+          }
+        }, true);
+        catalog = [BUILTIN_LOCAL_PROVIDER_CATALOG_ENTRY];
+        assertProviderReady = () => undefined;
+        const providerRegistry = new ProviderRegistry(
+          [BUILTIN_LOCAL_PROVIDER_CATALOG_ENTRY],
+          () => new LocalModelProvider(localServer.connectionPort)
+        );
+        createProvider = factoryInput => providerRegistry.create(
+          factoryInput.primaryProfile,
+          async () => cloudServer.apiKey
+        );
+        providerRequestCount = () => localServer.requests.length + cloudServer.requests.length;
+        assertProviderComplete = () => {
+          localServer.assertComplete();
+          cloudServer.assertComplete();
+        };
+      }
+
+      const capabilitySubmissions: Array<Parameters<AgentService['submitFileTask']>[0]> = [];
+      const trustedResults: Array<{
+        toolName: string;
+        ok: boolean;
+        relativePaths: readonly string[];
+        submissionOwner?: symbol;
+      }> = [];
+      const sessionGenerations: string[] = [];
+      const createSession = vi.fn((factoryInput: MainConversationAgentFactoryInput<{
+        dataCategories: { memory: boolean };
+      }>) => {
+        sessionGenerations.push(factoryInput.generation);
+        return createMainAgentSession({
+          initialCapability: 'file',
+          authorizedRootPath: authorized.root,
+          generation: factoryInput.generation,
+          provider: createProvider(factoryInput),
+          fallbackProviders: [],
+          createFileTools: async () => authorized.fileTools,
+          createPowerShellTool: () => new PowerShellTool()
+        });
+      });
+      const fixture = conversationIntegrationHarness({
+        responses: [],
+        authorizedRootPath: authorized.root,
+        providerSettings,
+        catalog,
+        ...(assertProviderReady === undefined ? {} : { assertProviderReady }),
+        createAgentService: factoryInput => {
+          const service = new AgentService({
+            loop: new AgentLoop(),
+            pending: new PendingActionStore(),
+            createSession: () => createSession(factoryInput),
+            emit: factoryInput.emit,
+            createConversationId: () => 'named-read-coordinator-conversation',
+            emitTrustedToolResult: result => {
+              trustedResults.push(result);
+              factoryInput.emitTrustedToolResult(result);
+            }
+          });
+          return {
+            submitFileTask: async submission => {
+              capabilitySubmissions.push(submission);
+              return service.submitFileTask(submission);
+            },
+            cancelActive: () => service.cancelActive(),
+            confirm: actionId => service.confirm(actionId),
+            cancelAction: actionId => service.cancelAction(actionId),
+            resetForNewConversation: () => service.resetForNewConversation(),
+            close: () => service.close()
+          };
+        }
+      });
+
+      await fixture.composition.coordinator.submit(namedReadPrompt);
+      expect(fixture.events).toContainEqual({
         type: 'message',
         role: 'assistant',
         text: '已读取 nested/test.txt：\n正式唯一正文'
       });
+      await fixture.composition.coordinator.submit('成功了吗');
 
-      await mkdir(join(authorized.root, 'a'));
-      await mkdir(join(authorized.root, 'b'));
-      await writeFile(join(authorized.root, 'a', 'duplicate.txt'), '甲', 'utf8');
-      await writeFile(join(authorized.root, 'b', 'duplicate.md'), '乙', 'utf8');
-      const duplicatePrompt = '请告诉我目录下的 duplicate 文件内容是什么';
-      const duplicateHint = createFilePlanningHint(duplicatePrompt);
-      if (duplicateHint?.targetNameQuery !== 'duplicate') throw new Error('缺少重名查询');
-
-      await expect(service.submitFileTask({
-        text: duplicatePrompt,
-        visibleHistory: [],
-        planningHint: duplicateHint
-      })).resolves.toEqual({ kind: 'clarification', missingField: 'target_path', acted: false });
-      expect(events).toContainEqual({
+      expect(providerRequestCount()).toBe(0);
+      expect(capabilitySubmissions).toHaveLength(1);
+      expect(capabilitySubmissions[0]).toMatchObject({
+        text: namedReadPrompt,
+        planningHint: { operation: 'read_file', targetNameQuery: 'test' }
+      });
+      expect(typeof capabilitySubmissions[0]?.submissionOwner).toBe('symbol');
+      expect(trustedResults).toEqual([{
+        toolName: 'read_file',
+        ok: true,
+        relativePaths: ['nested/test.txt'],
+        submissionOwner: capabilitySubmissions[0]?.submissionOwner
+      }]);
+      expect(fixture.agentFactoryInputs).toHaveLength(1);
+      expect(sessionGenerations).toEqual([fixture.agentFactoryInputs[0]?.generation]);
+      expect(fixture.agentFactoryInputs[0]?.selection.disclosureTarget.profileId)
+        .toBe(fixture.agentFactoryInputs[0]?.primaryProfile.id);
+      expect(fixture.events).toContainEqual({
         type: 'message',
         role: 'assistant',
-        text: '找到多个同名文件，请提供目标相对路径：a/duplicate.txt、b/duplicate.md。'
+        text: '上一个本地任务已成功完成。'
       });
-
-      const missingPrompt = '请告诉我目录下的 missing 文件内容是什么';
-      const missingHint = createFilePlanningHint(missingPrompt);
-      if (missingHint?.targetNameQuery !== 'missing') throw new Error('缺少未命中查询');
-      await expect(service.submitFileTask({
-        text: missingPrompt,
-        visibleHistory: [],
-        planningHint: missingHint
-      })).resolves.toEqual({ kind: 'clarification', missingField: 'target_path', acted: false });
-      expect(events).toContainEqual({
-        type: 'message',
-        role: 'assistant',
-        text: '授权目录内未找到该文件，请提供目标相对路径。'
-      });
-
-      if (deepSeek) {
-        expect(deepSeek.fetchClient).not.toHaveBeenCalled();
-      } else if (local) {
-        expect(local.localServer.requests).toHaveLength(0);
-        expect(local.cloudServer.requests).toHaveLength(0);
-      }
+      expect(createSession).toHaveBeenCalledOnce();
+      assertProviderComplete();
+      await fixture.composition.close();
     }
   );
 

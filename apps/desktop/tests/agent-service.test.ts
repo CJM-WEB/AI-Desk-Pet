@@ -442,6 +442,35 @@ describe('AgentService', () => {
     });
   });
 
+  test.each([
+    ['上级路径', '../secret'],
+    ['通配星号', '*'],
+    ['控制字符', 'bad\u0001name'],
+    ['当前目录点号', '.'],
+    ['上级目录双点', '..'],
+    ['超长文件名', 'a'.repeat(121)],
+    ['Windows 绝对路径前缀', 'C:\\secret']
+  ] as const)('非法 targetNameQuery（%s）不会进入 glob、Provider 或读取', async (_label, targetNameQuery) => {
+    const harness = await createNamedReadHarness();
+    const executeRead = vi.spyOn(harness.fileTools, 'executeRead');
+
+    await expect(harness.service.submitFileTask({
+      text: '请告诉我目录下的文件内容是什么',
+      visibleHistory: [],
+      planningHint: { operation: 'read_file', targetNameQuery }
+    })).resolves.toEqual({ kind: 'clarification', missingField: 'target_path', acted: false });
+
+    expect(executeRead).not.toHaveBeenCalled();
+    expect(harness.provider.requests).toHaveLength(0);
+    expect(harness.trustedResults).toEqual([]);
+    expect(harness.events).toContainEqual({
+      type: 'message',
+      role: 'assistant',
+      text: '目标文件名无效，请提供目标相对路径。'
+    });
+    expect(JSON.stringify(harness.events)).not.toContain(harness.root);
+  });
+
   test('按无扩展文件名有多个真实候选时只返回十项内的相对路径澄清', async () => {
     const harness = await createNamedReadHarness();
     await mkdir(join(harness.root, 'a'));

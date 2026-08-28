@@ -98,7 +98,7 @@ type NamedReadResolution =
   | {
       kind: 'clarification';
       candidates: readonly string[];
-      reason: 'not_found' | 'ambiguous' | 'search_truncated';
+      reason: 'not_found' | 'ambiguous' | 'search_truncated' | 'invalid_query';
     };
 
 function errorCode(error: unknown): string {
@@ -276,6 +276,21 @@ function namedReadCandidates(paths: readonly string[], targetNameQuery: string):
       && extensionOffset > 0
       && fileName.slice(0, extensionOffset) === targetNameQuery;
   }).sort());
+}
+
+/** 执行边界再次收窄公开 hint，避免外部构造值直接进入 glob 语义或路径工具。 */
+function normalizeSafeTargetNameQuery(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  const candidate = value.normalize('NFKC').trim();
+  if (
+    candidate.length < 1
+    || candidate.length > 120
+    || candidate === '.'
+    || candidate === '..'
+    || /[\\/*?\p{Cc}]/u.test(candidate)
+    || /^(?:[a-z]:|[\\/])/iu.test(candidate)
+  ) return null;
+  return candidate;
 }
 
 /** 目标名来自受限 Router；这里仍将 glob 语义字符编码，避免名称改变搜索范围。 */
@@ -687,10 +702,14 @@ export class AgentService {
     signal: AbortSignal,
     owner: symbol
   ): Promise<NamedReadResolution | null> {
-    const targetNameQuery = planningHint?.operation === 'read_file'
+    const rawTargetNameQuery = planningHint?.operation === 'read_file'
       ? planningHint.targetNameQuery
       : undefined;
-    if (targetNameQuery === undefined) return null;
+    if (rawTargetNameQuery === undefined) return null;
+    const targetNameQuery = normalizeSafeTargetNameQuery(rawTargetNameQuery);
+    if (targetNameQuery === null) {
+      return { kind: 'clarification', candidates: [], reason: 'invalid_query' };
+    }
 
     this.publish({ type: 'phase', phase: 'thinking' }, owner);
     this.assertTaskOwned(owner, signal);
@@ -797,6 +816,8 @@ export class AgentService {
         ? '文件搜索结果过多，请提供更具体的目标相对路径' + (
           resolution.candidates.length === 0 ? '。' : '：' + resolution.candidates.join('、') + '。'
         )
+        : resolution.reason === 'invalid_query'
+          ? '目标文件名无效，请提供目标相对路径。'
         : '找到多个同名文件，请提供目标相对路径：' + resolution.candidates.join('、') + '。';
     this.publish({ type: 'message', role: 'assistant', text }, owner);
     this.publish({ type: 'phase', phase: 'success' }, owner);

@@ -131,7 +131,6 @@ async function harness(steps: ProviderScript) {
       taskKind: 'file',
       provider,
       fileTools: authorized.fileTools,
-      fileDisclosureAllowed: true,
       tools: registry.definitions(),
       toolRuntime: {
         prepare: raw => registry.prepare(raw, permissionPolicy),

@@ -11,6 +11,7 @@
 
 - 本节记录 `2026-08-28-ai-pet-file-transaction-correction` Task 4 的最终收口，只覆盖旧测试夹具字段清理、门禁复跑与验收事实同步。
 - `apps/desktop/tests/main-agent-session-factory.test.ts` 与 `apps/desktop/tests/agent-service.test.ts` 已删除只服务旧文件披露 gate 的 `fileDisclosureAllowed` 夹具字段与分支；`apps/desktop/tests/capability-transaction.test.ts` 本轮未发现 `providerId`、`authorizationRootId` 或 `fileDisclosureAllowed` 旧字段，无需改动。
+- 最终 Minor 收尾复核补记：`tests/security/permission-boundary.test.ts` 已删除根级安全夹具中未使用的 `fileDisclosureAllowed` 字段；`apps`、`packages` 与 `tests` 活跃代码/测试检索无该旧字段残留。本条只补记根级复核事实，不改写下列既有门禁计数。
 - `apps/desktop/tests/agent-service.test.ts` 仍保留 1 处 `ProviderProfileV2.providerId`。这是现行共享契约 `providerProfileV2Schema` 的必填字段，用于构造内置本地模型 profile，不属于旧测试夹具字段，故未删除。
 - 自本节起，本文关于文件事务的现行事实统一为：显式文件任务使用受控完整文件工具，普通聊天保持 `tools=[]`，旧 `fileDisclosureAllowed`/“文件数据授权关闭”披露 gate 已移除。下文保留相关旧口径时，均只作为历史证据，不再代表现行验收结论。
 
