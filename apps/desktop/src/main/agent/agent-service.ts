@@ -280,7 +280,7 @@ function namedReadCandidates(paths: readonly string[], targetNameQuery: string):
 
 /** 目标名来自受限 Router；这里仍将 glob 语义字符编码，避免名称改变搜索范围。 */
 function namedReadGlobPattern(targetNameQuery: string): string {
-  const literalName = targetNameQuery.replace(/[\[\]{}*?+!@()|]/g, character => {
+  const literalName = targetNameQuery.replace(/[\[\]{}*?+@()|]/g, character => {
     if (character === '[') return '[[]';
     if (character === ']') return '[]]';
     return '[' + character + ']';

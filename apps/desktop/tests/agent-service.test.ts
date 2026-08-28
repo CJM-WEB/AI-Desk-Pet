@@ -494,6 +494,31 @@ describe('AgentService', () => {
     });
   });
 
+  test('按文件名搜索保留感叹号字面量后读取真实文件', async () => {
+    const harness = await createNamedReadHarness();
+    await mkdir(join(harness.root, 'nested'));
+    await writeFile(join(harness.root, 'nested', 'a!b.txt'), '感叹号正文', 'utf8');
+    const executeRead = vi.spyOn(harness.fileTools, 'executeRead');
+
+    await expect(harness.service.submitFileTask({
+      text: '请告诉我目录下的 a!b 文件内容是什么',
+      visibleHistory: [],
+      planningHint: { operation: 'read_file', targetNameQuery: 'a!b' }
+    })).resolves.toEqual({ kind: 'completed', acted: true });
+
+    expect(executeRead).toHaveBeenNthCalledWith(1, {
+      requestId: 'named-read-glob',
+      toolName: 'glob_files',
+      arguments: { relativePath: '.', pattern: '**/a!b{,.*}', maxResults: 100 }
+    });
+    expect(harness.provider.requests).toHaveLength(0);
+    expect(harness.events).toContainEqual({
+      type: 'message',
+      role: 'assistant',
+      text: '已读取 nested/a!b.txt：\n感叹号正文'
+    });
+  });
+
   test('按文件名澄清最多公开十个真实相对候选', async () => {
     const harness = await createNamedReadHarness();
     await Promise.all(Array.from({ length: 12 }, async (_, index) => {

@@ -84,3 +84,28 @@ pnpm.cmd verify:desktop 退出码 0，实际观察到：
 
 - 无功能性阻塞。
 - 极端夹具失败时在系统临时目录留下一个以 ai-pet-named-read- 开头的测试目录；运行时策略拒绝递归清理命令，未尝试绕过该策略。
+
+## 独立审查 Important 修复第 2 轮
+
+### 范围与根因
+
+- 只处理新增 Important：合法 targetNameQuery 含感叹号时，字面 glob 编码不能改变 Node 的匹配语义。
+- 最小只读实验实际得到：nested/a!b.txt 与 **/a!b{,.*} 匹配；与 **/a[!]b{,.*} 不匹配。因此 [!] 不是感叹号的字面编码。
+- 未收紧 Router；合法感叹号文件名继续属于 targetNameQuery 的既有安全范围。
+
+### RED/GREEN 记录
+
+1. RED：以真实 FileToolService 和临时授权根创建 nested/a!b.txt，要求 a!b 在零 Provider 调用下唯一读取。旧实现返回 target_path 澄清，95 项中的该用例失败。
+2. GREEN：仅从 namedReadGlobPattern 的编码集合移除感叹号。感叹号用例与既有方括号字面编码用例同时通过。
+
+### 验证
+
+- apps/desktop/tests/agent-service.test.ts：95/95 通过。
+- apps/desktop/tests/capability-intent-router.test.ts：251/251 通过，现有 targetNameQuery 安全边界未退化。
+- pnpm.cmd --filter @myself/desktop typecheck：通过。
+- tests/integration/desktop-agent.test.ts：78/78 通过。
+
+### 自审
+
+- 只改变 Node 实际按字面解释的感叹号；方括号、花括号、星号、问号、加号、@、圆括号与竖线的既有字面编码保持不变。
+- 没有修改授权根、Router 拒绝策略、MCP、Renderer、Provider、可信事务或任何已登记 Minor。
