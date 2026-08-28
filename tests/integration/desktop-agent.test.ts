@@ -1450,6 +1450,62 @@ describe('桌面会话分流纵向集成', () => {
     }
   );
 
+  test('文件事务在本回合已成功写入后 retry 不会重放真实写入', async () => {
+    const authorized = await createAuthorizedRoot();
+    roots.push(authorized);
+    const capabilitySubmissions: Array<Parameters<AgentService['submitFileTask']>[0]> = [];
+    let writeCount = 0;
+    const retryWritePath = join(authorized.root, 'retry-replayed.txt');
+    const fixture = conversationIntegrationHarness({
+      responses: [],
+      authorizedRootPath: authorized.root,
+      createAgentService: factoryInput => ({
+        submitFileTask: async submission => {
+          capabilitySubmissions.push(submission);
+          if (capabilitySubmissions.length > 1) {
+            writeCount += 1;
+            await writeFile(retryWritePath, 'unexpected retry write', 'utf8');
+            return { kind: 'completed', acted: true };
+          }
+          writeCount += 1;
+          await writeFile(join(authorized.root, 'partial.txt'), '第一次写入', 'utf8');
+          factoryInput.emitTrustedToolResult({
+            toolName: 'create_file',
+            ok: true,
+            relativePaths: ['partial.txt'],
+            submissionOwner: submission.submissionOwner
+          });
+          factoryInput.emit({
+            type: 'error',
+            code: 'AGENT_INTERNAL_ERROR',
+            message: '任务执行失败，请重试。'
+          });
+          factoryInput.emit({ type: 'phase', phase: 'error' });
+          return { kind: 'completed', acted: true };
+        },
+        cancelActive: vi.fn(),
+        confirm: vi.fn(async () => undefined),
+        cancelAction: vi.fn(),
+        resetForNewConversation: vi.fn(async () => undefined),
+        close: vi.fn()
+      })
+    });
+
+    await fixture.composition.coordinator.submit('创建 partial.txt');
+    await fixture.composition.coordinator.submit('retry');
+
+    expect(capabilitySubmissions).toHaveLength(1);
+    expect(writeCount).toBe(1);
+    await expect(readFile(join(authorized.root, 'partial.txt'), 'utf8')).resolves.toBe('第一次写入');
+    await expect(lstat(retryWritePath)).rejects.toMatchObject({ code: 'ENOENT' });
+    expect(fixture.events).toContainEqual({
+      type: 'message',
+      role: 'assistant',
+      text: '任务已部分执行，不能自动重试。'
+    });
+    await fixture.composition.close();
+  });
+
   test('跨 Provider 仅发送当前消息时历史为空且当前消息继续执行', async () => {
     const fixture = conversationIntegrationHarness({
       responses: [

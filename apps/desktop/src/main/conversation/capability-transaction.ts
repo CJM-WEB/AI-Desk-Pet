@@ -41,6 +41,7 @@ export type CapabilityTransactionInvalidation =
 
 export type CapabilityTransactionSnapshot = CapabilityTransactionIdentity & Readonly<{
   phase: CapabilityTransactionPhase;
+  hasSuccessfulMutation: boolean;
   warningCodes: readonly string[];
   toolTranscript: readonly Readonly<{
     toolName: string;
@@ -60,6 +61,7 @@ type MutableTransaction = CapabilityTransactionIdentity & {
   references: TrustedFileReference[];
   warningCodes: string[];
   lastTrustedResultOk: boolean | null;
+  hasSuccessfulMutation: boolean;
   expectedOperation: CapabilityTransactionExpectedOperation | null;
   expectedOperationSatisfied: boolean;
   lastUpdatedAtMs: number;
@@ -89,6 +91,7 @@ export class CapabilityTransactionStore {
       references: [],
       warningCodes: [],
       lastTrustedResultOk: null,
+      hasSuccessfulMutation: false,
       expectedOperation: options.expectedOperation ?? null,
       expectedOperationSatisfied: options.expectedOperation === undefined,
       lastUpdatedAtMs: this.now()
@@ -105,6 +108,7 @@ export class CapabilityTransactionStore {
     current.phase = 'planning';
     current.warningCodes = [];
     current.lastTrustedResultOk = null;
+    current.hasSuccessfulMutation = false;
     current.expectedOperation = options.expectedOperation ?? null;
     current.expectedOperationSatisfied = options.expectedOperation === undefined;
     current.lastUpdatedAtMs = this.now();
@@ -222,6 +226,7 @@ export class CapabilityTransactionStore {
       profileId: current.profileId,
       capabilityRevision: current.capabilityRevision,
       phase: current.phase,
+      hasSuccessfulMutation: current.hasSuccessfulMutation,
       warningCodes: Object.freeze([...current.warningCodes]),
       toolTranscript: Object.freeze(current.toolTranscript.map(item => Object.freeze({ ...item }))),
       references: Object.freeze(current.references.map(item => Object.freeze({ ...item })))
@@ -248,6 +253,7 @@ export class CapabilityTransactionStore {
       return;
     }
     current.lastTrustedResultOk = true;
+    if (isSuccessfulMutationTool(result.toolName)) current.hasSuccessfulMutation = true;
     if (
       current.expectedOperation === null
       || matchesExpectedOperation(current.expectedOperation, result.toolName)
@@ -308,9 +314,22 @@ function matchesExpectedOperation(
   return normalizeOperationName(toolName) === expectedOperation;
 }
 
+function isSuccessfulMutationTool(toolName: string): boolean {
+  return 成功写入工具名.has(normalizeOperationName(toolName));
+}
+
 function normalizeOperationName(toolName: string): string {
   const leaf = toolName.split('.').at(-1) ?? toolName;
   if (leaf === 'read_text' || leaf === 'read_text_file') return 'read_file';
   if (leaf === 'list_directory') return 'list_files';
   return leaf;
 }
+
+const 成功写入工具名 = new Set<string>([
+  'create_file',
+  'create_directory',
+  'apply_patch',
+  'edit_file',
+  'delete_file',
+  'move_file'
+]);

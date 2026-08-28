@@ -1837,6 +1837,37 @@ describe('ConversationCoordinator', () => {
     });
   });
 
+  test('failed 终态在本回合已有成功 mutation 时 retry 只提示部分执行且不重放', async () => {
+    const fileTasks = new CapturingCapabilityTasks();
+    fileTasks.submit = async input => {
+      fileTasks.submissions.push(input);
+      fileTasks.publishTrustedToolResult({
+        toolName: 'create_file',
+        ok: true,
+        relativePaths: ['partial.txt']
+      }, input.generation);
+      fileTasks.publish({
+        type: 'error',
+        code: 'AGENT_INTERNAL_ERROR',
+        message: '任务执行失败，请重试。'
+      }, input.generation);
+      fileTasks.publish({ type: 'phase', phase: 'error' }, input.generation);
+      return { kind: 'completed', acted: true };
+    };
+    const harness = createHarness([], { fileTasks });
+    await harness.coordinator.submit('创建 partial.txt');
+
+    await harness.coordinator.submit('retry');
+
+    expect(fileTasks.submissions).toHaveLength(1);
+    expect(harness.events).toContainEqual({
+      type: 'message',
+      role: 'assistant',
+      text: '任务已部分执行，不能自动重试。'
+    });
+    expect(harness.factoryCallCount()).toBe(0);
+  });
+
   test('failed 终态只有 retry 才从最后可信状态重开，continue 只报告失败终态', async () => {
     const fileTasks = new CapturingCapabilityTasks();
     fileTasks.submit = async input => {

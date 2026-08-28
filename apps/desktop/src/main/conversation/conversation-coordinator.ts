@@ -292,6 +292,14 @@ export class ConversationCoordinator {
         && transactionFollowUp === 'retry'
         && isTerminalTransactionPhase(transactionSnapshot.phase)
       ) {
+        if (
+          transactionSnapshot.phase === 'failed'
+          && transactionSnapshot.kind === 'file'
+          && transactionSnapshot.hasSuccessfulMutation
+        ) {
+          this.finishPartialMutationRetryBlocked();
+          return;
+        }
         if (!this.prepareFailedFileRetry(context, transactionSnapshot)) {
           this.finishTransactionStatusFollowUp(transactionSnapshot);
           return;
@@ -1113,6 +1121,16 @@ export class ConversationCoordinator {
         ? '上一个本地操作已成功，但模型总结失败。'
         : '上一个本地任务已成功完成。';
     this.options.emit({ type: 'message', role: 'assistant', text });
+    this.state = { kind: 'idle' };
+    this.options.emit({ type: 'phase', phase: 'success' });
+  }
+
+  private finishPartialMutationRetryBlocked(): void {
+    this.options.emit({
+      type: 'message',
+      role: 'assistant',
+      text: '任务已部分执行，不能自动重试。'
+    });
     this.state = { kind: 'idle' };
     this.options.emit({ type: 'phase', phase: 'success' });
   }

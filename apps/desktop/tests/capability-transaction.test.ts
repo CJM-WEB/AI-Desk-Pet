@@ -159,6 +159,42 @@ describe('CapabilityTransactionStore', () => {
     });
   });
 
+  test('可信 mutation 账本只由当前回合成功写工具置位，并在 beginTurn 时清零', () => {
+    const store = createStore();
+    store.begin(identity);
+
+    expect(store.snapshot()?.hasSuccessfulMutation).toBe(false);
+    store.apply({
+      toolName: 'builtin.files.create_file',
+      ok: true,
+      relativePaths: ['test.txt']
+    });
+    expect(store.snapshot()?.hasSuccessfulMutation).toBe(true);
+
+    store.beginTurn();
+
+    expect(store.snapshot()).toMatchObject({
+      hasSuccessfulMutation: false,
+      references: [{ role: 'created', relativePath: 'test.txt' }]
+    });
+  });
+
+  test('只读成功不会置位可信 mutation 账本', () => {
+    const store = createStore();
+    store.begin(identity);
+
+    store.apply({
+      toolName: 'builtin.files.read_file',
+      ok: true,
+      relativePaths: ['test.txt']
+    });
+
+    expect(store.snapshot()).toMatchObject({
+      hasSuccessfulMutation: false,
+      references: [{ role: 'read', relativePath: 'test.txt' }]
+    });
+  });
+
   test('等待确认时继续只分类为续接并保持原确认状态', () => {
     const store = createStore();
     store.begin(identity);
