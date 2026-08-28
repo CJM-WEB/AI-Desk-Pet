@@ -5549,11 +5549,11 @@ test.describe('真实 Provider 业务闭环', () => {
     const newText = `新会话正文-${randomBytes(12).toString('hex')}`;
     const provider = await startProviderServer([
       {
-        response: { type: 'text', text: '不得回流的旧回复' },
+        response: characterChatResponse('不得回流的旧回复'),
         gate: oldGate
       },
       {
-        response: { type: 'text', text: '新会话回复' },
+        response: characterChatResponse('新会话回复'),
         inspect: request => {
           const visible = request.messages.slice(1);
           if (request.tools.length !== 0
@@ -5670,7 +5670,7 @@ test.describe('真实 Provider 业务闭环', () => {
         }
       },
       {
-        response: { type: 'text', text: '重置后新会话回复' },
+        response: characterChatResponse('重置后新会话回复'),
         inspect: request => {
           const visible = request.messages.slice(1);
           if (request.tools.length !== 0
