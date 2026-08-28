@@ -1,4 +1,7 @@
-import { describe, expect, test, vi } from 'vitest';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { afterEach, describe, expect, test, vi } from 'vitest';
 import {
   AgentLoop,
   CAPABILITY_CLARIFICATION_TOOL_NAME
@@ -9,14 +12,21 @@ import type {
   ModelRequest,
   ModelResponse
 } from '@myself/agent-core';
-import { FileToolError, type VerifiedWriteAction } from '@myself/file-tools';
+import {
+  FileToolError,
+  FileToolService,
+  PathPolicy,
+  type VerifiedWriteAction
+} from '@myself/file-tools';
 import type { CharacterAgentBehaviorIntent } from '@myself/character-runtime';
 import { providerCatalog, type ProviderProfileV2, type TaskEvent } from '@myself/shared-types';
 import {
   AgentService,
   type AgentFileTools,
-  type AgentSession
+  type AgentSession,
+  type AgentTrustedToolResult
 } from '../src/main/agent/agent-service';
+import { createMainAgentSession } from '../src/main/agent/main-agent-session-factory';
 import { PermissionPolicy } from '../src/main/agent/permission-policy';
 import { PendingActionStore } from '../src/main/agent/pending-action-store';
 import { OpenAICompatibleProvider } from '../src/main/providers/openai-provider';
@@ -69,6 +79,48 @@ function verifiedAction(): VerifiedWriteAction {
     contentPreviewSuppressedReason: null,
     previewTruncated: false
   });
+}
+
+const namedReadRoots: string[] = [];
+
+afterEach(async () => {
+  await Promise.all(namedReadRoots.splice(0).map(root => rm(root, {
+    recursive: true,
+    force: true
+  })));
+});
+
+/** 该夹具保留正式会话和真实 FileToolService，只隔离临时授权根与 Provider 网络。 */
+async function createNamedReadHarness() {
+  const root = await mkdtemp(join(tmpdir(), 'ai-pet-named-read-'));
+  namedReadRoots.push(root);
+  const policy = await PathPolicy.create(root);
+  const fileTools = new FileToolService(policy);
+  const provider = new ScriptedProvider([]);
+  const events: TaskEvent[] = [];
+  const trustedResults: AgentTrustedToolResult[] = [];
+  const loop = new AgentLoop();
+  const pending = new PendingActionStore({
+    onDiscard: execution => loop.discard(execution.continuationToken)
+  });
+  const createSession = vi.fn(() => createMainAgentSession({
+    initialCapability: 'file',
+    authorizedRootPath: root,
+    generation: 'named-read-generation',
+    provider,
+    fallbackProviders: [],
+    createFileTools: async () => fileTools,
+    createPowerShellTool: () => ({ close: async () => undefined }) as PowerShellTool
+  }));
+  const service = new AgentService({
+    loop,
+    pending,
+    createSession,
+    emit: event => events.push(event),
+    emitTrustedToolResult: result => trustedResults.push(result),
+    createConversationId: () => 'named-read-conversation'
+  });
+  return { createSession, events, fileTools, provider, root, service, trustedResults };
 }
 
 function readResponse(requestId = 'read-1'): ModelResponse {
@@ -354,6 +406,138 @@ function createPowerShellHarness(
 }
 
 describe('AgentService', () => {
+  test('按无扩展文件名唯一命中时以真实 FileToolService 读取正文且不调用 Provider', async () => {
+    const harness = await createNamedReadHarness();
+    await mkdir(join(harness.root, 'nested'));
+    await writeFile(join(harness.root, 'nested', 'test.txt'), '唯一正文', 'utf8');
+    const executeRead = vi.spyOn(harness.fileTools, 'executeRead');
+
+    await expect(harness.service.submitFileTask({
+      text: '请告诉我目录下的 test 文件内容是什么',
+      visibleHistory: [],
+      planningHint: { operation: 'read_file', targetNameQuery: 'test' }
+    })).resolves.toEqual({ kind: 'completed', acted: true });
+
+    expect(harness.provider.requests).toHaveLength(0);
+    expect(executeRead).toHaveBeenNthCalledWith(1, {
+      requestId: 'named-read-glob',
+      toolName: 'glob_files',
+      arguments: { relativePath: '.', pattern: '**/*', maxResults: 100 }
+    });
+    expect(executeRead).toHaveBeenNthCalledWith(2, {
+      requestId: 'named-read-file',
+      toolName: 'read_file',
+      arguments: { relativePath: 'nested/test.txt', startLine: 1, lineCount: 200 }
+    });
+    expect(harness.trustedResults).toEqual([
+      { toolName: 'glob_files', ok: true, relativePaths: ['nested/test.txt'] },
+      { toolName: 'read_file', ok: true, relativePaths: ['nested/test.txt'] }
+    ]);
+    expect(harness.events).toContainEqual({
+      type: 'message',
+      role: 'assistant',
+      text: '已读取 nested/test.txt：\n唯一正文'
+    });
+  });
+
+  test('按无扩展文件名有多个真实候选时只返回十项内的相对路径澄清', async () => {
+    const harness = await createNamedReadHarness();
+    await mkdir(join(harness.root, 'a'));
+    await mkdir(join(harness.root, 'b'));
+    await writeFile(join(harness.root, 'a', 'test.txt'), '甲', 'utf8');
+    await writeFile(join(harness.root, 'b', 'test.md'), '乙', 'utf8');
+
+    await expect(harness.service.submitFileTask({
+      text: '请告诉我目录下的 test 文件内容是什么',
+      visibleHistory: [],
+      planningHint: { operation: 'read_file', targetNameQuery: 'test' }
+    })).resolves.toEqual({ kind: 'clarification', missingField: 'target_path', acted: false });
+
+    expect(harness.provider.requests).toHaveLength(0);
+    const messages = harness.events.filter((event): event is Extract<TaskEvent, { type: 'message' }> => (
+      event.type === 'message'
+    ));
+    expect(messages.at(-1)).toEqual({
+      type: 'message',
+      role: 'assistant',
+      text: '找到多个同名文件，请提供目标相对路径：a/test.txt、b/test.md。'
+    });
+    expect(JSON.stringify(messages)).not.toContain(harness.root);
+    expect(harness.trustedResults).toEqual([
+      { toolName: 'glob_files', ok: true, relativePaths: ['a/test.txt', 'b/test.md'] }
+    ]);
+  });
+
+  test('按文件名澄清最多公开十个真实相对候选', async () => {
+    const harness = await createNamedReadHarness();
+    await Promise.all(Array.from({ length: 12 }, async (_, index) => {
+      const directory = 'candidate-' + String(index).padStart(2, '0');
+      await mkdir(join(harness.root, directory));
+      await writeFile(join(harness.root, directory, 'test.txt'), '候选', 'utf8');
+    }));
+
+    await expect(harness.service.submitFileTask({
+      text: '请告诉我目录下的 test 文件内容是什么',
+      visibleHistory: [],
+      planningHint: { operation: 'read_file', targetNameQuery: 'test' }
+    })).resolves.toEqual({ kind: 'clarification', missingField: 'target_path', acted: false });
+
+    const message = harness.events.filter((event): event is Extract<TaskEvent, { type: 'message' }> => (
+      event.type === 'message'
+    )).at(-1);
+    if (!message) throw new Error('缺少相对路径澄清');
+    expect(message.text).toContain('candidate-00/test.txt');
+    expect(message.text).toContain('candidate-09/test.txt');
+    expect(message.text).not.toContain('candidate-10/test.txt');
+    expect(message.text).not.toContain('candidate-11/test.txt');
+  });
+
+  test('按文件名未找到真实候选时返回 target_path 澄清且不索要绝对路径', async () => {
+    const harness = await createNamedReadHarness();
+    await writeFile(join(harness.root, 'other.txt'), '无关正文', 'utf8');
+
+    await expect(harness.service.submitFileTask({
+      text: '请告诉我目录下的 test 文件内容是什么',
+      visibleHistory: [],
+      planningHint: { operation: 'read_file', targetNameQuery: 'test' }
+    })).resolves.toEqual({ kind: 'clarification', missingField: 'target_path', acted: false });
+
+    expect(harness.provider.requests).toHaveLength(0);
+    expect(harness.events).toContainEqual({
+      type: 'message',
+      role: 'assistant',
+      text: '授权目录内未找到该文件，请提供目标相对路径。'
+    });
+    expect(JSON.stringify(harness.events)).not.toContain(harness.root);
+  });
+
+  test('真实 glob 搜索被截断时不把单个已返回候选当作唯一文件', async () => {
+    const harness = await createNamedReadHarness();
+    await writeFile(join(harness.root, 'test.txt'), '不应读取', 'utf8');
+    await Promise.all(Array.from({ length: 100 }, async (_, index) => {
+      await writeFile(join(
+        harness.root,
+        'filler-' + String(index).padStart(3, '0') + '.txt'
+      ), '占位', 'utf8');
+    }));
+
+    await expect(harness.service.submitFileTask({
+      text: '请告诉我目录下的 test 文件内容是什么',
+      visibleHistory: [],
+      planningHint: { operation: 'read_file', targetNameQuery: 'test' }
+    })).resolves.toEqual({ kind: 'clarification', missingField: 'target_path', acted: false });
+
+    expect(harness.provider.requests).toHaveLength(0);
+    expect(harness.events).toContainEqual({
+      type: 'message',
+      role: 'assistant',
+      text: '文件搜索结果过多，请提供更具体的目标相对路径。'
+    });
+    expect(harness.trustedResults).toEqual([
+      expect.objectContaining({ toolName: 'glob_files', ok: true })
+    ]);
+  });
+
   test('同一 AgentService 的事务后续复用同一 AgentSession', async () => {
     const provider = new ScriptedProvider([
       readResponse(),

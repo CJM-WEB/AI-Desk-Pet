@@ -70,6 +70,7 @@ const explicitTargetPathReplyPattern = /^(?:目标)?(?:相对)?路径\s*(?:是|�
 const naturalNestedPathReplyPattern = /^([^\s“”"'（）()<>，,。！？!?；;]{1,160})(?:下|中|里)的([^\s“”"'（）()<>，,。！？!?；;]{1,160})(?:文件夹|目录|文件)[。！]?$/u;
 const directPathReplyPattern = /^(?:\.{1,2}[\\/][^\s“”"'（）()<>，,。！？!?；;]+|[^\s“”"'（）()<>，,。！？!?；;]+[\\/][^\s“”"'（）()<>，,。！？!?；;]+|[^\s“”"'（）()<>，,。！？!?；;]*\.[a-z\d_-]+(?:\.[a-z\d_-]+)*)[。！]?$/iu;
 const closedFileContentQuestionPattern = /(?:文件)?(?:内容|正文)(?:是什么|是啥|内容是什么|正文是什么|是什么内容)(?:呢)?[？?。！]?$/u;
+const namedFileContentQuestionPattern = /(?:目录下|当前(?:文件夹|目录)|授权目录)(?:的)?\s*([^\s“”"'（）()<>，,。！？!?；;]+)\s*(?:文件)?(?:内容|正文)(?:是什么|是啥|内容是什么|正文是什么|是什么内容)(?:呢)?[？?。！]?$/u;
 const trustedReferenceOnlyPattern = /(?:刚(?:创建|读取|移动|修改|删除)的文件?|刚才(?:那个)?文件|这个文件|那个文件|该文件|它)(?![\\/.\w-])/u;
 
 const chineseExplicitPowerShellPattern = /^(?:(?:请|请你|帮我|麻烦(?:你|给我)?)\s*)?(?:运行|执行)\s+powershell\s+([\s\S]+)$/iu;
@@ -224,6 +225,21 @@ function hasClosedFileContentQuestion(text: string): boolean {
       .test(unquotedText);
 }
 
+/** 仅将封闭问句中的单个安全文件名交给 Main 进行受控解析，路径仍必须由文件工具裁决。 */
+function targetNameQueryFromClosedFileContentQuestion(text: string): string | null {
+  const candidate = namedFileContentQuestionPattern.exec(text)?.[1]?.normalize('NFKC').trim();
+  if (
+    candidate === undefined
+    || candidate.length < 1
+    || candidate.length > 120
+    || candidate === '.'
+    || candidate === '..'
+    || /[\\/*?\p{Cc}]/u.test(candidate)
+    || /^(?:[a-z]:|[\\/])/iu.test(candidate)
+  ) return null;
+  return candidate;
+}
+
 /**
  * Main 只识别封闭直接命令形状；未命中的开放式语义交给模型控制计划，
  * 不再维护知识、咨询或可行性词表来模拟自然语言理解。
@@ -362,9 +378,13 @@ export function createFilePlanningHint(prompt: string): FilePlanningHint | null 
   const normalizedText = prompt.normalize('NFKC').trim();
   const operation = filePlanningOperation(normalizedText);
   if (operation === null) return null;
+  const targetNameQuery = operation === 'read_file'
+    ? targetNameQueryFromClosedFileContentQuestion(normalizedText)
+    : null;
   return Object.freeze({ operation,
     ...(missingTargetPathPattern.test(normalizedText) && !normalizedText.includes(clarifiedTargetMarker)
-      ? { missingField: 'target_path' as const } : {}) });
+      ? { missingField: 'target_path' as const } : {}),
+    ...(targetNameQuery === null ? {} : { targetNameQuery }) });
 }
 
 export class DefaultCapabilityIntentRouter implements CapabilityIntentRouter {

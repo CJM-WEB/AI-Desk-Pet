@@ -32,6 +32,8 @@ import { ProviderResponseError } from '../providers/provider-response-error';
 
 const MAX_USER_TEXT_LENGTH = 4_000;
 const MAX_PRIVATE_PLANNING_CONTEXT_LENGTH = 1_200;
+const NAMED_READ_GLOB_MAX_RESULTS = 100;
+const NAMED_READ_LINE_COUNT = 200;
 
 export interface AgentFileTools {
   executeRead(request: ToolRequest): Promise<unknown>;
@@ -90,6 +92,14 @@ export interface AgentServiceOptions {
 }
 
 type CapabilityExecution = import('./pending-action-store').PendingExecution;
+
+type NamedReadResolution =
+  | { kind: 'resolved'; relativePath: string; content: string; truncated: boolean }
+  | {
+      kind: 'clarification';
+      candidates: readonly string[];
+      reason: 'not_found' | 'ambiguous' | 'search_truncated';
+    };
 
 function errorCode(error: unknown): string {
   if (error instanceof Error && 'code' in error && typeof error.code === 'string') {
@@ -227,6 +237,47 @@ function trustedReadRelativePaths(result: unknown): readonly string[] {
   ))));
 }
 
+function isGlobFilesResult(value: unknown): value is Readonly<{
+  toolName: 'glob_files';
+  paths: readonly string[];
+  truncated: boolean;
+}> {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
+  const record = value as Record<string, unknown>;
+  return record['toolName'] === 'glob_files'
+    && Array.isArray(record['paths'])
+    && record['paths'].every(isRootRelativePathInput)
+    && typeof record['truncated'] === 'boolean';
+}
+
+function isReadFileResult(value: unknown): value is Readonly<{
+  toolName: 'read_file';
+  relativePath: string;
+  content: string;
+  truncated: boolean;
+}> {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
+  const record = value as Record<string, unknown>;
+  return record['toolName'] === 'read_file'
+    && typeof record['relativePath'] === 'string'
+    && isRootRelativePathInput(record['relativePath'])
+    && typeof record['content'] === 'string'
+    && typeof record['truncated'] === 'boolean';
+}
+
+function namedReadCandidates(paths: readonly string[], targetNameQuery: string): readonly string[] {
+  const queryHasExtension = targetNameQuery.lastIndexOf('.') > 0;
+  return Object.freeze(paths.filter(relativePath => {
+    const fileName = relativePath.split('/').at(-1);
+    if (fileName === undefined) return false;
+    if (fileName === targetNameQuery) return true;
+    const extensionOffset = fileName.lastIndexOf('.');
+    return !queryHasExtension
+      && extensionOffset > 0
+      && fileName.slice(0, extensionOffset) === targetNameQuery;
+  }).sort());
+}
+
 function trustedWriteRelativePaths(action: VerifiedWriteAction): readonly string[] {
   const candidates = action.operation === 'move_file'
     ? [action.sourceRelativePath, action.targetRelativePath]
@@ -345,6 +396,15 @@ export class AgentService {
       this.transactionSession = session;
       this.activeSession = session;
       if (visibleHistory.length > 0) this.historyBoundSessions.add(session);
+      const namedReadResolution = await this.resolveNamedRead(
+        session,
+        input.planningHint,
+        controller.signal,
+        owner
+      );
+      if (namedReadResolution !== null) {
+        return this.completeNamedRead(namedReadResolution, owner);
+      }
       return await this.forward(
         this.loop.run(
           normalized,
@@ -605,6 +665,141 @@ export class AgentService {
     const error = Object.assign(new Error('TASK_ALREADY_ACTIVE'), { code: 'TASK_ALREADY_ACTIVE' });
     this.emitFailure(error);
     throw error;
+  }
+
+  /**
+   * 按文件名读取始终在同一 Agent 会话内先执行受控只读工具；Provider 不参与路径猜测。
+   * 搜索截断时宁可澄清，也不能把局部结果误认作唯一命中。
+   */
+  private async resolveNamedRead(
+    session: AgentSession,
+    planningHint: FilePlanningHint | undefined,
+    signal: AbortSignal,
+    owner: symbol
+  ): Promise<NamedReadResolution | null> {
+    const targetNameQuery = planningHint?.operation === 'read_file'
+      ? planningHint.targetNameQuery
+      : undefined;
+    if (targetNameQuery === undefined) return null;
+
+    this.publish({ type: 'phase', phase: 'thinking' }, owner);
+    this.assertTaskOwned(owner, signal);
+    let rawGlobResult: unknown;
+    try {
+      rawGlobResult = await session.fileTools.executeRead({
+        requestId: 'named-read-glob',
+        toolName: 'glob_files',
+        arguments: {
+          relativePath: '.',
+          pattern: '**/*',
+          maxResults: NAMED_READ_GLOB_MAX_RESULTS
+        }
+      });
+    } catch (error) {
+      this.publishTrustedToolResult({
+        toolName: 'glob_files',
+        ok: false,
+        relativePaths: []
+      }, owner);
+      throw error;
+    }
+    this.assertTaskOwned(owner, signal);
+    if (!isGlobFilesResult(rawGlobResult)) {
+      this.publishTrustedToolResult({
+        toolName: 'glob_files',
+        ok: false,
+        relativePaths: []
+      }, owner);
+      throw Object.assign(new Error('TOOL_RESULT_INVALID'), { code: 'TOOL_RESULT_INVALID' });
+    }
+    this.publishTrustedToolResult({
+      toolName: 'glob_files',
+      ok: true,
+      relativePaths: rawGlobResult.paths
+    }, owner);
+    this.publish({ type: 'phase', phase: 'acting' }, owner);
+    if (rawGlobResult.truncated) {
+      return { kind: 'clarification', candidates: [], reason: 'search_truncated' };
+    }
+
+    const candidates = namedReadCandidates(rawGlobResult.paths, targetNameQuery);
+    if (candidates.length === 0) {
+      return { kind: 'clarification', candidates: [], reason: 'not_found' };
+    }
+    if (candidates.length > 1) {
+      return {
+        kind: 'clarification',
+        candidates: Object.freeze(candidates.slice(0, 10)),
+        reason: 'ambiguous'
+      };
+    }
+
+    const relativePath = candidates[0]!;
+    this.assertTaskOwned(owner, signal);
+    let rawReadResult: unknown;
+    try {
+      rawReadResult = await session.fileTools.executeRead({
+        requestId: 'named-read-file',
+        toolName: 'read_file',
+        arguments: {
+          relativePath,
+          startLine: 1,
+          lineCount: NAMED_READ_LINE_COUNT
+        }
+      });
+    } catch (error) {
+      this.publishTrustedToolResult({
+        toolName: 'read_file',
+        ok: false,
+        relativePaths: []
+      }, owner);
+      throw error;
+    }
+    this.assertTaskOwned(owner, signal);
+    if (!isReadFileResult(rawReadResult) || rawReadResult.relativePath !== relativePath) {
+      this.publishTrustedToolResult({
+        toolName: 'read_file',
+        ok: false,
+        relativePaths: []
+      }, owner);
+      throw Object.assign(new Error('TOOL_RESULT_INVALID'), { code: 'TOOL_RESULT_INVALID' });
+    }
+    this.publishTrustedToolResult({
+      toolName: 'read_file',
+      ok: true,
+      relativePaths: [rawReadResult.relativePath]
+    }, owner);
+    return {
+      kind: 'resolved',
+      relativePath: rawReadResult.relativePath,
+      content: rawReadResult.content,
+      truncated: rawReadResult.truncated
+    };
+  }
+
+  private completeNamedRead(
+    resolution: NamedReadResolution,
+    owner: symbol
+  ): AgentFileTaskOutcome {
+    if (resolution.kind === 'resolved') {
+      this.publish({
+        type: 'message',
+        role: 'assistant',
+        text: '已读取 ' + resolution.relativePath + '：\n' + resolution.content + (
+          resolution.truncated ? '\n（文件内容已截断。）' : ''
+        )
+      }, owner);
+      this.publish({ type: 'phase', phase: 'success' }, owner);
+      return { kind: 'completed', acted: true };
+    }
+    const text = resolution.reason === 'not_found'
+      ? '授权目录内未找到该文件，请提供目标相对路径。'
+      : resolution.reason === 'search_truncated'
+        ? '文件搜索结果过多，请提供更具体的目标相对路径。'
+        : '找到多个同名文件，请提供目标相对路径：' + resolution.candidates.join('、') + '。';
+    this.publish({ type: 'message', role: 'assistant', text }, owner);
+    this.publish({ type: 'phase', phase: 'success' }, owner);
+    return { kind: 'clarification', missingField: 'target_path', acted: false };
   }
 
   /** 所有文件写入在 Main 消费确认后统一提交，角色表现不拥有文件提交权。 */

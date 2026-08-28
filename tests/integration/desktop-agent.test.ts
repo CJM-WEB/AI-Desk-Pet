@@ -50,6 +50,8 @@ import {
   createMainConversationComposition,
   type MainConversationAgentFactoryInput
 } from '../../apps/desktop/src/main/conversation/main-conversation-composition';
+import { createFilePlanningHint } from
+  '../../apps/desktop/src/main/conversation/capability-intent-router';
 import type { ConversationBehaviorPort } from
   '../../apps/desktop/src/main/characters/character-behavior-director';
 import { CharacterBehaviorDirector } from
@@ -2033,6 +2035,81 @@ describe('桌面 Agent 真实服务集成', () => {
 
     expect(characterManifestV2Schema.parse(manifest)).toEqual(manifest);
   });
+
+  test.each(['OpenAI Compatible', '内置本地模型'] as const)(
+    '%s 正式链按文件名读取只信任真实临时授权根，不调用 Provider 猜测路径',
+    async providerKind => {
+      const namedReadPrompt = '请告诉我目录下的 test 文件内容是什么';
+      const planningHint = createFilePlanningHint(namedReadPrompt);
+      if (planningHint?.targetNameQuery !== 'test') throw new Error('缺少受控文件名查询');
+      const deepSeek = providerKind === 'OpenAI Compatible'
+        ? await deepSeekHarness({ responses: [] })
+        : null;
+      const local = providerKind === '内置本地模型'
+        ? await localModelFileHarness({
+            steps: [],
+            moveToRecycleBin: async () => undefined
+          })
+        : null;
+      const service = deepSeek?.service ?? local?.service;
+      const events = deepSeek?.events ?? local?.events;
+      const authorized = deepSeek?.authorized ?? local?.authorized;
+      if (!service || !events || !authorized) throw new Error('缺少正式按名称读取夹具');
+      await mkdir(join(authorized.root, 'nested'));
+      await writeFile(join(authorized.root, 'nested', 'test.txt'), '正式唯一正文', 'utf8');
+
+      await expect(service.submitFileTask({
+        text: namedReadPrompt,
+        visibleHistory: [],
+        planningHint
+      })).resolves.toEqual({ kind: 'completed', acted: true });
+      expect(events).toContainEqual({
+        type: 'message',
+        role: 'assistant',
+        text: '已读取 nested/test.txt：\n正式唯一正文'
+      });
+
+      await mkdir(join(authorized.root, 'a'));
+      await mkdir(join(authorized.root, 'b'));
+      await writeFile(join(authorized.root, 'a', 'duplicate.txt'), '甲', 'utf8');
+      await writeFile(join(authorized.root, 'b', 'duplicate.md'), '乙', 'utf8');
+      const duplicatePrompt = '请告诉我目录下的 duplicate 文件内容是什么';
+      const duplicateHint = createFilePlanningHint(duplicatePrompt);
+      if (duplicateHint?.targetNameQuery !== 'duplicate') throw new Error('缺少重名查询');
+
+      await expect(service.submitFileTask({
+        text: duplicatePrompt,
+        visibleHistory: [],
+        planningHint: duplicateHint
+      })).resolves.toEqual({ kind: 'clarification', missingField: 'target_path', acted: false });
+      expect(events).toContainEqual({
+        type: 'message',
+        role: 'assistant',
+        text: '找到多个同名文件，请提供目标相对路径：a/duplicate.txt、b/duplicate.md。'
+      });
+
+      const missingPrompt = '请告诉我目录下的 missing 文件内容是什么';
+      const missingHint = createFilePlanningHint(missingPrompt);
+      if (missingHint?.targetNameQuery !== 'missing') throw new Error('缺少未命中查询');
+      await expect(service.submitFileTask({
+        text: missingPrompt,
+        visibleHistory: [],
+        planningHint: missingHint
+      })).resolves.toEqual({ kind: 'clarification', missingField: 'target_path', acted: false });
+      expect(events).toContainEqual({
+        type: 'message',
+        role: 'assistant',
+        text: '授权目录内未找到该文件，请提供目标相对路径。'
+      });
+
+      if (deepSeek) {
+        expect(deepSeek.fetchClient).not.toHaveBeenCalled();
+      } else if (local) {
+        expect(local.localServer.requests).toHaveLength(0);
+        expect(local.cloudServer.requests).toHaveLength(0);
+      }
+    }
+  );
 
   test.each(['DeepSeek', '内置本地模型'] as const)(
     '%s 在隔离授权根完成创建、读取、编辑和移动的真实文件事务',

@@ -83,10 +83,11 @@ export type FilePlanningOperation =
   | 'delete_file'
   | 'move_file';
 
-/** 文件规划提示只辅助缺参说明，不能授权、收窄工具面或声明本地执行结果。 */
+/** 文件规划提示只辅助缺参和受限文件名读取，不能授权、收窄工具面或声明本地执行结果。 */
 export type FilePlanningHint = Readonly<{
   operation: FilePlanningOperation;
   missingField?: 'target_path';
+  targetNameQuery?: string;
 }>;
 
 type CapabilityPlanningState = Readonly<{

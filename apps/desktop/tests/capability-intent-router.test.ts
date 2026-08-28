@@ -41,11 +41,35 @@ describe('能力意图路由器', () => {
     expect(createFilePlanningHint('创建 result.txt 并写入正文')).toEqual({ operation: 'create_file' });
   });
 
-  test('封闭的文件内容问句规划为 read_file，并进入显式文件任务', () => {
+  test('封闭的按文件名内容问句规划为受限 read_file，并进入显式文件任务', () => {
     const text = '请告诉我目录下的 test 文件内容是什么';
 
-    expect(createFilePlanningHint(text)).toEqual({ operation: 'read_file' });
+    expect(createFilePlanningHint(text)).toEqual({
+      operation: 'read_file',
+      targetNameQuery: 'test'
+    });
     expectIntentKind(text, 'file_task');
+  });
+
+  test('按文件名内容问句只接受单个安全 NFKC 文件名', () => {
+    expect(createFilePlanningHint('请告诉我目录下的 report.md 文件内容是什么')).toEqual({
+      operation: 'read_file',
+      targetNameQuery: 'report.md'
+    });
+    expect(createFilePlanningHint('请告诉我目录下的 ｔｅｓｔ 文件内容是什么')).toEqual({
+      operation: 'read_file',
+      targetNameQuery: 'test'
+    });
+  });
+
+  test.each([
+    '请告诉我目录下的 nested/test 文件内容是什么',
+    '请告诉我目录下的 nested\\test 文件内容是什么',
+    '请告诉我目录下的 C:\\secret\\test 文件内容是什么',
+    '请告诉我目录下的 *.txt 文件内容是什么',
+    '请告诉我目录下的 “test” 文件内容是什么'
+  ])('按文件名内容问句不从不安全或引用文本提取查询：%s', text => {
+    expect(createFilePlanningHint(text)).toEqual({ operation: 'read_file' });
   });
 
   test('明确声明目标路径缺失时规划只允许请求结构化澄清', () => {
