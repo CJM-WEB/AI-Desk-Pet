@@ -16,6 +16,7 @@ import {
   type MovementControlPlan
 } from '@myself/character-runtime';
 import { ProviderResponseError } from '../providers/provider-response-error';
+import { providerResponseCorrelationId } from '../providers/diagnosed-provider';
 import type { ConversationBehaviorContext } from
   '../characters/character-behavior-director';
 
@@ -102,7 +103,10 @@ export type ConversationChatReply = Readonly<{
 export class ConversationChatAdapter {
   constructor(
     private readonly provider: ModelProvider,
-    private readonly reportResponseError: (error: ProviderResponseError) => void = () => undefined
+    private readonly reportResponseError: (
+      error: ProviderResponseError,
+      correlationId?: string
+    ) => void = () => undefined
   ) {}
 
   /**
@@ -122,15 +126,21 @@ export class ConversationChatAdapter {
       ...(input.onTextDelta === undefined ? {} : { onTextDelta: input.onTextDelta })
     } satisfies Parameters<ModelProvider['respond']>[0];
     const response = await this.provider.respond(request, input.signal);
+    const correlationId = providerResponseCorrelationId(response);
 
     if (response.type !== 'text' || !是合法正文(response.text)) {
-      throw new ProviderResponseError('RESPONSE_FORMAT_UNSUPPORTED', 'chat_control');
+      const formatError = new ProviderResponseError(
+        'RESPONSE_FORMAT_UNSUPPORTED',
+        'chat_control'
+      );
+      this.reportResponseError(formatError, correlationId);
+      throw formatError;
     }
     const controls = 解析聊天控制字段(response);
     if (controls !== null) return { text: response.text, ...controls };
 
     const controlError = new ProviderResponseError('CONTROL_SCHEMA_INVALID', 'chat_control');
-    this.reportResponseError(controlError);
+    this.reportResponseError(controlError, correlationId);
     try {
       const repaired = await this.provider.respond(构建控制字段修复请求(request), input.signal);
       if (repaired.type === 'text' && repaired.structured_output !== undefined) {

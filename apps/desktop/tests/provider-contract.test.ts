@@ -2478,6 +2478,158 @@ describe('ProviderRegistry', () => {
     capabilities: ['chat', 'tools'],
     hasStoredSecret: false
   };
+  test.each([
+    ['HTTP_BODY_NOT_JSON', 'transport'],
+    ['RESPONSE_SHAPE_INVALID', 'transport'],
+    ['CONTROL_SCHEMA_INVALID', 'chat_control'],
+    ['TOOL_ARGUMENTS_INVALID', 'tool_call'],
+    ['STREAM_TERMINAL_MISSING', 'stream'],
+    ['RESPONSE_FORMAT_UNSUPPORTED', 'chat_control']
+  ] as const)('诊断包装器对 %s 只上报一次四字段私有诊断', async (code, stage) => {
+    const error = Object.assign(new ProviderResponseError(code, stage), {
+      apiKey: 'sk-private-diagnostic-key',
+      fullPath: 'C:\\Users\\Alice\\Documents\\private.txt',
+      fileBody: '绝密文件正文',
+      rawResponse: '{"raw":"provider response"}'
+    });
+    const sink = vi.fn();
+    const registry = new ProviderRegistry(
+      providerCatalog,
+      () => ({ respond: vi.fn(async () => { throw error; }) }),
+      { sink, createCorrelationId: () => 'diagnostic-correlation-id' }
+    );
+    const provider = registry.create(builtinLocalProfile, async () => '不得读取');
+
+    await expect(provider.respond(request, new AbortController().signal)).rejects.toBe(error);
+
+    expect(sink).toHaveBeenCalledOnce();
+    expect(sink).toHaveBeenCalledWith({
+      providerType: BUILTIN_LOCAL_PROFILE_ID,
+      stage,
+      code,
+      correlationId: 'diagnostic-correlation-id'
+    });
+    const serialized = JSON.stringify(sink.mock.calls);
+    expect(serialized).not.toContain('sk-private-diagnostic-key');
+    expect(serialized).not.toContain('C:\\Users\\Alice\\Documents\\private.txt');
+    expect(serialized).not.toContain('绝密文件正文');
+    expect(serialized).not.toContain('{"raw":"provider response"}');
+  });
+
+  test('聊天控制修复使用同一私有 reporter 且每次 respond 使用新 correlation id', async () => {
+    const rawProvider: ModelProvider = {
+      respond: vi.fn()
+        .mockResolvedValueOnce({
+          type: 'text',
+          text: '首次正文。',
+          structured_output: {
+            rawResponse: [
+              'sk-private-control-key',
+              'C:\\Users\\Alice\\Documents\\control.txt',
+              '控制字段中的绝密正文',
+              '{"raw":"control response"}'
+            ].join('|')
+          }
+        })
+        .mockResolvedValueOnce({
+          type: 'text',
+          text: '修复正文不得替换首次正文。',
+          structured_output: {
+            activity: '安静陪伴',
+            status: 'idle',
+            movementControl: { kind: 'keep' },
+            behaviorPlan: { kind: 'none' },
+            capabilityPlan: { kind: 'chat' }
+          }
+        })
+    };
+    const sink = vi.fn();
+    const createCorrelationId = vi.fn()
+      .mockReturnValueOnce('provider-call-1')
+      .mockReturnValueOnce('repair-call-2');
+    const registry = new ProviderRegistry(
+      providerCatalog,
+      () => rawProvider,
+      { sink, createCorrelationId }
+    );
+    const provider = registry.create(builtinLocalProfile, async () => '不得读取');
+    const adapter = new ConversationChatAdapter(
+      provider,
+      (error, correlationId) => registry.reportResponseError(
+        builtinLocalProfile,
+        error,
+        correlationId
+      )
+    );
+
+    await expect(adapter.respond({
+      history: [], text: '普通聊天', behaviorContext: providerBehaviorContext,
+      signal: new AbortController().signal
+    })).resolves.toMatchObject({ text: '首次正文。', activity: '安静陪伴' });
+
+    expect(createCorrelationId).toHaveBeenCalledTimes(2);
+    expect(sink).toHaveBeenCalledOnce();
+    expect(sink).toHaveBeenCalledWith({
+      providerType: BUILTIN_LOCAL_PROFILE_ID,
+      stage: 'chat_control',
+      code: 'CONTROL_SCHEMA_INVALID',
+      correlationId: 'provider-call-1'
+    });
+    expect(JSON.stringify(sink.mock.calls)).not.toContain('control response');
+  });
+
+  test.each([
+    ['preset', {
+      id: 'account-alias',
+      displayName: 'OpenAI',
+      mode: 'preset',
+      providerId: 'openai',
+      modelId: 'gpt-4.1-mini',
+      hasStoredSecret: true
+    }, 'openai'],
+    ['custom', {
+      id: 'custom-account-alias',
+      displayName: '自定义服务',
+      mode: 'custom',
+      protocol: 'openai-compatible',
+      baseUrl: 'https://custom.example.com/v1',
+      modelId: 'custom-model',
+      additionalParameters: {},
+      hasStoredSecret: true
+    }, 'openai-compatible']
+  ] satisfies Array<[string, ProviderProfileV2, string]>)(
+    '%s 档案诊断只使用公开 Provider 类型而不使用档案标识',
+    async (_mode, profile, expectedProviderType) => {
+      const sink = vi.fn();
+      const registry = new ProviderRegistry(
+        providerCatalog,
+        vi.fn<() => ModelProvider>(),
+        { sink, createCorrelationId: () => 'public-provider-type-id' }
+      );
+      const provider = registry.create(
+        profile,
+        async () => 'sk-private-provider-type-key',
+        vi.fn(async () => new Response('private raw response', {
+          status: 200,
+          headers: { 'content-type': 'application/json' }
+        }))
+      );
+
+      await expect(provider.respond(request, new AbortController().signal)).rejects.toMatchObject({
+        code: 'HTTP_BODY_NOT_JSON'
+      });
+
+      expect(sink).toHaveBeenCalledWith({
+        providerType: expectedProviderType,
+        stage: 'transport',
+        code: 'HTTP_BODY_NOT_JSON',
+        correlationId: 'public-provider-type-id'
+      });
+      expect(JSON.stringify(sink.mock.calls)).not.toContain('account-alias');
+      expect(JSON.stringify(sink.mock.calls)).not.toContain('private raw response');
+      expect(JSON.stringify(sink.mock.calls)).not.toContain('sk-private-provider-type-key');
+    }
+  );
 
   test('仅固定 builtin-local 档案使用 Main 注入 factory', () => {
     const localProvider = {

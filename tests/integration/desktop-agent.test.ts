@@ -702,6 +702,21 @@ const conversationCross = conversationProfile(
   'https://conversation-b.example/v1'
 );
 
+function completeIntegrationChatResponse(response: ModelResponse): ModelResponse {
+  if (response.type !== 'text') return response;
+  return {
+    ...response,
+    structured_output: {
+      activity: '集成聊天',
+      status: 'idle',
+      movementControl: { kind: 'keep' },
+      behaviorPlan: { kind: 'none' },
+      capabilityPlan: { kind: 'chat' },
+      ...response.structured_output
+    }
+  };
+}
+
 function conversationIntegrationHarness(input: {
   responses: Array<string | ModelResponse>;
   authorizedRootPath?: string | null;
@@ -782,7 +797,9 @@ function conversationIntegrationHarness(input: {
         chatRequests.push({ profileId: profile.id, request });
         const response = input.responses.shift();
         if (!response) throw new Error('聊天响应脚本已耗尽');
-        return typeof response === 'string' ? { type: 'text', text: response } : response;
+        return completeIntegrationChatResponse(
+          typeof response === 'string' ? { type: 'text', text: response } : response
+        );
       }
     }),
     createAgentService,

@@ -588,7 +588,8 @@ describe('ConversationChatAdapter', () => {
         arguments: { path: 'private-content' }
       }
     });
-    const adapter = new ConversationChatAdapter(provider);
+    const diagnostics = vi.fn();
+    const adapter = new ConversationChatAdapter(provider, diagnostics);
 
     const error = await adapter.respond({
       history: [],
@@ -601,6 +602,11 @@ describe('ConversationChatAdapter', () => {
       code: 'RESPONSE_FORMAT_UNSUPPORTED',
       retryable: false
     });
+    expect(diagnostics).toHaveBeenCalledOnce();
+    expect(diagnostics).toHaveBeenCalledWith(expect.objectContaining({
+      code: 'RESPONSE_FORMAT_UNSUPPORTED',
+      stage: 'chat_control'
+    }), undefined);
     expect(String(error)).not.toContain('private-content');
   });
 

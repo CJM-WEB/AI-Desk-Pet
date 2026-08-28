@@ -11,7 +11,7 @@ import type {
 } from '@myself/agent-core';
 import { FileToolError, type VerifiedWriteAction } from '@myself/file-tools';
 import type { CharacterAgentBehaviorIntent } from '@myself/character-runtime';
-import type { TaskEvent } from '@myself/shared-types';
+import { providerCatalog, type ProviderProfileV2, type TaskEvent } from '@myself/shared-types';
 import {
   AgentService,
   type AgentFileTools,
@@ -21,6 +21,8 @@ import { PermissionPolicy } from '../src/main/agent/permission-policy';
 import { PendingActionStore } from '../src/main/agent/pending-action-store';
 import { OpenAICompatibleProvider } from '../src/main/providers/openai-provider';
 import { ProviderResponseError } from '../src/main/providers/provider-response-error';
+import { ProviderRegistry } from '../src/main/providers/provider-registry';
+import { BUILTIN_LOCAL_PROFILE_ID } from '../src/main/local-model/local-model-route';
 import { createBuiltinAgentToolRegistry } from '../src/main/agent/tool-registry';
 import type { PowerShellTool, VerifiedPowerShellAction } from '../src/main/agent/powershell-tool';
 import { createTaskStore } from '../src/renderer/src/stores/task-store';
@@ -2061,6 +2063,52 @@ describe('AgentService', () => {
     });
     expect(JSON.stringify(events)).not.toContain('HTTP_BODY_NOT_JSON');
   });
+
+  test.each(['file', 'powershell'] as const)(
+    '%s 能力任务的本地 Provider 格式错误上报一次私有诊断且公开映射不变',
+    async initialCapability => {
+    const providerError = new ProviderResponseError('TOOL_ARGUMENTS_INVALID', 'tool_call');
+    const rawProvider = new ScriptedProvider([providerError]);
+    const sink = vi.fn();
+    const registry = new ProviderRegistry(
+      providerCatalog,
+      () => rawProvider,
+      { sink, createCorrelationId: () => 'agent-correlation-id' }
+    );
+    const profile: ProviderProfileV2 = {
+      id: BUILTIN_LOCAL_PROFILE_ID,
+      displayName: '内置本地模型',
+      mode: 'preset',
+      providerId: BUILTIN_LOCAL_PROFILE_ID,
+      modelId: BUILTIN_LOCAL_PROFILE_ID,
+      capabilities: ['chat', 'tools'],
+      hasStoredSecret: false
+    };
+    const provider = registry.create(profile, async () => '不得读取');
+    const { events, service } = initialCapability === 'file'
+      ? createHarness(provider)
+      : createPowerShellHarness(provider, {
+          preview: vi.fn(() => powerShellAction()),
+          execute: vi.fn(async () => powerShellResult(true))
+        });
+
+    await expect(service.submitFileTask({ text: '调用模型', visibleHistory: [] }))
+      .rejects.toBe(providerError);
+
+    expect(sink).toHaveBeenCalledOnce();
+    expect(sink).toHaveBeenCalledWith({
+      providerType: BUILTIN_LOCAL_PROFILE_ID,
+      stage: 'tool_call',
+      code: 'TOOL_ARGUMENTS_INVALID',
+      correlationId: 'agent-correlation-id'
+    });
+    expect(events.at(-2)).toEqual({
+      type: 'error',
+      code: 'PROVIDER_MALFORMED_RESPONSE',
+      message: '任务执行失败，请重试。'
+    });
+    }
+  );
 
   test('可重试的 Provider 错误只自动重试一次', async () => {
     const retryableError = Object.assign(new Error('temporary failure'), {

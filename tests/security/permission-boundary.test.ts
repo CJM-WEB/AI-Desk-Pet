@@ -201,6 +201,21 @@ function securityProfile() {
   };
 }
 
+function completeSecurityChatResponse(response: ModelResponse): ModelResponse {
+  if (response.type !== 'text') return response;
+  return {
+    ...response,
+    structured_output: {
+      activity: '安全聊天',
+      status: 'idle',
+      movementControl: { kind: 'keep' },
+      behaviorPlan: { kind: 'none' },
+      capabilityPlan: { kind: 'chat' },
+      ...response.structured_output
+    }
+  };
+}
+
 function conversationSecurityHarness(input: {
   chatText: string;
   chatResponse?: ModelResponse;
@@ -247,7 +262,9 @@ function conversationSecurityHarness(input: {
           toolChoice: request.toolChoice,
           responseContract: request.responseContract
         });
-        return input.chatResponse ?? { type: 'text', text: input.chatText };
+        return completeSecurityChatResponse(
+          input.chatResponse ?? { type: 'text', text: input.chatText }
+        );
       }
     }),
     createAgentService,

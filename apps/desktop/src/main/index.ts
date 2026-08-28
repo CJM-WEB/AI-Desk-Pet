@@ -507,7 +507,11 @@ async function createApplicationWindows(
   const mainProviderCatalog = [...providerCatalog, BUILTIN_LOCAL_PROVIDER_CATALOG_ENTRY];
   const providerRegistry = new ProviderRegistry(
     mainProviderCatalog,
-    () => new LocalModelProvider(localModelRuntime)
+    () => new LocalModelProvider(localModelRuntime),
+    {
+      // 私有诊断对象已在 Provider 边界收敛为四个非敏感字段。
+      sink: diagnostic => console.warn('模型响应格式故障。', diagnostic)
+    }
   );
   const createChatProvider = (profile: ProviderProfileV2) => providerRegistry.create(
     profile,
@@ -994,7 +998,14 @@ async function createApplicationWindows(
     readAuthorizedRootPath: () => settingsStore.getAuthorizedRootPath(),
     readPrivacySettings: () => settingsStore.getPrivacySettings(),
     behavior: characterBehaviorDirector,
-    createChatAdapter: profile => new ConversationChatAdapter(createChatProvider(profile), error => console.warn('模型响应控制字段无效。', error.code, error.stage)),
+    createChatAdapter: profile => new ConversationChatAdapter(
+      createChatProvider(profile),
+      (error, correlationId) => providerRegistry.reportResponseError(
+        profile,
+        error,
+        correlationId
+      )
+    ),
     createAgentService: ({
       snapshot,
       generation,
