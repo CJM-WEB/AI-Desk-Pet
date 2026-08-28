@@ -416,8 +416,8 @@ describe('FileToolService.executeRead', () => {
       paths: [],
       truncated: true
     });
-  // 根级多项目门禁会并行运行大量文件系统套件；隔离约 14–16 秒，并行实测约 22 秒。
-  }, 30_000);
+  // 根级多项目门禁会并行运行大量文件系统套件；隔离约 12 秒，根级并行实测曾达 31.5 秒。
+  }, 45_000);
 
   it('grep_files 对匹配行返回相对路径与行号，并以完整匹配为单位截断', async () => {
     const { service, root } = await fixtureService();

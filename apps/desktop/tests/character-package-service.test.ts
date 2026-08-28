@@ -334,7 +334,8 @@ describe('角色包 Main 服务', () => {
     expect((await readdir(testDirectory)).some(name => (
       name.startsWith('.character-export-')
     ))).toBe(false);
-  }, 15_000);
+  // 根级多项目门禁会与真实角色存储和 ZIP I/O 竞争；隔离及桌面 suite 均通过，保留局部并发余量。
+  }, 20_000);
 
   test('V1 角色包在 staging 内统一转换为 V2 后安装', async () => {
     const packagePath = join(testDirectory, 'legacy-v1.zip');

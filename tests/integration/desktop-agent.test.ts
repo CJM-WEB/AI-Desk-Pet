@@ -1784,19 +1784,27 @@ describe('桌面 Agent 真实服务集成', () => {
   });
 
   test.each(['DeepSeek', '内置本地模型'] as const)(
-    '%s 把同一组真实文件表达转为工具调用、逐次确认和真实副作用',
+    '%s 在隔离授权根完成创建、读取、编辑和移动的真实文件事务',
     async providerKind => {
       const deepSeek = providerKind === 'DeepSeek'
         ? await deepSeekHarness({
             responses: [
               compatibleToolCall('task6-create', 'builtin__files__create_file', {
-                relativePath: 'ab.txt', content: 'Task 6 正文\n'
+                relativePath: 'test.txt', content: '初始内容'
               }),
-              compatibleText('ab.txt 已创建'),
+              compatibleText('test.txt 已创建'),
+              compatibleToolCall('task6-read', 'builtin__files__read_file', {
+                relativePath: 'test.txt'
+              }),
+              compatibleText('test.txt 已读取'),
+              compatibleToolCall('task6-edit', 'builtin__files__edit_file', {
+                relativePath: 'test.txt', oldString: '初始内容', newString: 'hello'
+              }),
+              compatibleText('test.txt 已编辑'),
               compatibleToolCall('task6-move', 'builtin__files__move_file', {
-                sourceRelativePath: 'A', targetDirectoryRelativePath: 'B'
+                sourceRelativePath: 'test.txt', targetDirectoryRelativePath: 'a'
               }),
-              compatibleText('A 已移动到 B')
+              compatibleText('test.txt 已移动到 a')
             ],
             moveToRecycleBin: async () => undefined
           })
@@ -1806,16 +1814,28 @@ describe('桌面 Agent 真实服务集成', () => {
             steps: [
               {
                 response: toolCall('task6-local-create', 'builtin.files.create_file', {
-                  relativePath: 'ab.txt', content: 'Task 6 正文\n'
+                  relativePath: 'test.txt', content: '初始内容'
                 })
               },
-              { response: { type: 'text', text: 'ab.txt 已创建' } },
+              { response: { type: 'text', text: 'test.txt 已创建' } },
+              {
+                response: toolCall('task6-local-read', 'builtin.files.read_file', {
+                  relativePath: 'test.txt'
+                })
+              },
+              { response: { type: 'text', text: 'test.txt 已读取' } },
+              {
+                response: toolCall('task6-local-edit', 'builtin.files.edit_file', {
+                  relativePath: 'test.txt', oldString: '初始内容', newString: 'hello'
+                })
+              },
+              { response: { type: 'text', text: 'test.txt 已编辑' } },
               {
                 response: toolCall('task6-local-move', 'builtin.files.move_file', {
-                  sourceRelativePath: 'A', targetDirectoryRelativePath: 'B'
+                  sourceRelativePath: 'test.txt', targetDirectoryRelativePath: 'a'
                 })
               },
-              { response: { type: 'text', text: 'A 已移动到 B' } }
+              { response: { type: 'text', text: 'test.txt 已移动到 a' } }
             ],
             moveToRecycleBin: async () => undefined
           })
@@ -1824,31 +1844,43 @@ describe('桌面 Agent 真实服务集成', () => {
       const events = deepSeek?.events ?? local?.events;
       const authorized = deepSeek?.authorized ?? local?.authorized;
       if (!service || !events || !authorized) throw new Error('缺少真实协议测试夹具');
-      const created = join(authorized.root, 'ab.txt');
-      const source = join(authorized.root, 'A');
-      const targetDirectory = join(authorized.root, 'B');
-      const moved = join(targetDirectory, 'A');
+      const created = join(authorized.root, 'test.txt');
+      const targetDirectory = join(authorized.root, 'a');
+      const moved = join(targetDirectory, 'test.txt');
       const latestPendingAction = () => {
         const event = events.filter(candidate => candidate.type === 'pending_action').at(-1);
         if (!event || event.type !== 'pending_action') throw new Error('缺少最新确认卡');
         return event.action;
       };
-      await writeFile(source, 'A 文件内容', 'utf8');
       await mkdir(targetDirectory);
 
       await service.submitFileTask({
-        text: '帮我在当前目录下创建ab.txt文件', visibleHistory: []
+        text: '创建 test.txt', visibleHistory: [], planningHint: { operation: 'create_file' }
       });
       await expect(lstat(created)).rejects.toMatchObject({ code: 'ENOENT' });
       await service.confirm(latestPendingAction().actionId);
-      await expect(readFile(created, 'utf8')).resolves.toBe('Task 6 正文\n');
+      await expect(readFile(created, 'utf8')).resolves.toBe('初始内容');
 
-      await service.submitFileTask({ text: '把 A 移动到 B', visibleHistory: [] });
-      await expect(readFile(source, 'utf8')).resolves.toBe('A 文件内容');
+      await service.submitFileTask({
+        text: '读取 test.txt', visibleHistory: [], planningHint: { operation: 'read_file' }
+      });
+      await expect(readFile(created, 'utf8')).resolves.toBe('初始内容');
+
+      await service.submitFileTask({
+        text: '把 test.txt 的内容改为 hello', visibleHistory: [], planningHint: { operation: 'edit_file' }
+      });
+      await expect(readFile(created, 'utf8')).resolves.toBe('初始内容');
+      await service.confirm(latestPendingAction().actionId);
+      await expect(readFile(created, 'utf8')).resolves.toBe('hello');
+
+      await service.submitFileTask({
+        text: '把 test.txt 移动到 a', visibleHistory: [], planningHint: { operation: 'move_file' }
+      });
+      await expect(readFile(created, 'utf8')).resolves.toBe('hello');
       await expect(lstat(moved)).rejects.toMatchObject({ code: 'ENOENT' });
       await service.confirm(latestPendingAction().actionId);
-      await expect(lstat(source)).rejects.toMatchObject({ code: 'ENOENT' });
-      await expect(readFile(moved, 'utf8')).resolves.toBe('A 文件内容');
+      await expect(lstat(created)).rejects.toMatchObject({ code: 'ENOENT' });
+      await expect(readFile(moved, 'utf8')).resolves.toBe('hello');
 
       expect(events.filter(event => event.type === 'phase' && event.phase === 'error'))
         .toEqual([]);

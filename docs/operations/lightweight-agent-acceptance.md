@@ -5,6 +5,27 @@
 - 当前意图编排、可见正文与隐藏控制解耦、真实工具调用、层级状态动作生命周期及三态运动的自动化证据，见 [`2026-08-27-ai-pet-intent-and-behavior-orchestration-acceptance.md`](./2026-08-27-ai-pet-intent-and-behavior-orchestration-acceptance.md)。
 - 该记录只在上述范围内替代 [`2026-08-27-ai-pet-structured-control-repair-acceptance.md`](./2026-08-27-ai-pet-structured-control-repair-acceptance.md) 的现行结论。旧记录仍是当时版本及 CPU/GGUF 复验的历史证据，不代表当前提交上的真实 DeepSeek 网络、真实窗口观感或回收站恢复已经人工通过。
 
+## 2026-08-28 文件事务稳定性纵向自动验收
+
+### 替代范围与环境
+
+- 本节替代旧“文件数据授权关闭时，显式文件任务只公告结构化澄清工具”的描述。显式文件任务的受控工具面不再由文件披露开关阻断；授权根、相对路径、逐次确认、真实执行和公开脱敏边界保持不变。
+- 环境：Windows 隔离 worktree `C:\Users\Administrator\.codex\worktrees\e43f\myself`，起始提交 `c9615798d0ac8a12f3bb8c5a4838f8748c91ad2e`。文件副作用仅写入测试以 `mkdtemp` 创建的临时授权根，清理后不保留用户目录文件。
+- 两个 Provider fixture 分别覆盖 OpenAI-compatible 外部工具别名与内置本地模型环回协议；HTTP 服务、模型响应和回收站端口均为隔离夹具，`AgentLoop`、`AgentService`、`FileToolService`、路径策略与确认执行链均为正式实现。
+
+### 实际运行结果
+
+- `pnpm.cmd test:integration -- desktop-agent.test.ts`：退出码 `0`，4 个测试文件、87 项通过。新增参数化事务在两种 Provider 下均依次完成：创建 `test.txt` 后确认、读取、编辑为字面 `hello` 后确认、移动到 `a/test.txt` 后确认；确认前后均直接断言临时磁盘副作用，最终源文件不存在且目标内容为 `hello`。
+- `pnpm.cmd test:security -- permission-boundary.test.ts`：退出码 `0`，1 个测试文件、28 项通过。普通聊天保持无工具请求且不触达文件或 PowerShell 能力；`..`、绝对路径、UNC 与授权根前缀碰撞继续被拒绝。
+- `pnpm.cmd --dir apps/desktop exec vitest run --config vitest.config.ts tests/conversation-coordinator.test.ts`：退出码 `0`，1 个测试文件、99 项通过。普通聊天不会借用文件任务或旧澄清提权，已确认文件结果仅作为下一轮私有规划上下文。
+- 新增纵向断言首次即为绿，未发现生产接线缺口；本轮没有为了制造失败而修改生产实现、权限策略或测试夹具协议。
+- 文件工具 `glob_files` 预算用例与角色 V2 导出用例的隔离、所属 package suite 均通过；依据根级并行的真实磁盘 I/O 耗时，分别仅将两条用例的局部预算设为 45 秒和 20 秒，未调整全局预算、产品逻辑、授权或 Provider 协议。
+- 最终 `pnpm.cmd verify:desktop`：退出码 `1`。全仓类型检查、单元测试 3505/3505、安全测试 28/28、集成测试 87/87、生产构建和 preload 外部依赖校验均通过；Electron E2E 为 75 通过、1 跳过、2 失败。两条失败均为既有 Provider 会话场景在 `assertComplete` 报告“脚本化 Provider 收到 1 个额外请求”，分别是“模型响应挂起时新建对话会隔离迟到回复并允许新会话继续”和“文件动作待确认时新建对话会使旧确认失效且不改文件”；本轮未修改其产品逻辑或夹具协议。
+
+### 未覆盖项
+
+- 待用户人工确认：真实外部 Provider 网络与账号、真实 Windows 回收站可恢复性、开发模式窗口交互以及用户目录下的人工文件操作。本节的临时根自动测试不替代这些观察。
+
 ## 自动证据
 
 - `pnpm.cmd test:security`：验证普通聊天不读取授权根、不创建文件或 PowerShell 能力；公开事件、诊断和 Provider 摘要不包含绝对路径、正文、命令输出或密钥。
