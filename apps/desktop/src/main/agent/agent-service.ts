@@ -278,6 +278,16 @@ function namedReadCandidates(paths: readonly string[], targetNameQuery: string):
   }).sort());
 }
 
+/** 目标名来自受限 Router；这里仍将 glob 语义字符编码，避免名称改变搜索范围。 */
+function namedReadGlobPattern(targetNameQuery: string): string {
+  const literalName = targetNameQuery.replace(/[\[\]{}*?+!@()|]/g, character => {
+    if (character === '[') return '[[]';
+    if (character === ']') return '[]]';
+    return '[' + character + ']';
+  });
+  return '**/' + literalName + (targetNameQuery.lastIndexOf('.') > 0 ? '' : '{,.*}');
+}
+
 function trustedWriteRelativePaths(action: VerifiedWriteAction): readonly string[] {
   const candidates = action.operation === 'move_file'
     ? [action.sourceRelativePath, action.targetRelativePath]
@@ -691,38 +701,27 @@ export class AgentService {
         toolName: 'glob_files',
         arguments: {
           relativePath: '.',
-          pattern: '**/*',
+          pattern: namedReadGlobPattern(targetNameQuery),
           maxResults: NAMED_READ_GLOB_MAX_RESULTS
         }
       });
     } catch (error) {
-      this.publishTrustedToolResult({
-        toolName: 'glob_files',
-        ok: false,
-        relativePaths: []
-      }, owner);
       throw error;
     }
     this.assertTaskOwned(owner, signal);
     if (!isGlobFilesResult(rawGlobResult)) {
-      this.publishTrustedToolResult({
-        toolName: 'glob_files',
-        ok: false,
-        relativePaths: []
-      }, owner);
       throw Object.assign(new Error('TOOL_RESULT_INVALID'), { code: 'TOOL_RESULT_INVALID' });
     }
-    this.publishTrustedToolResult({
-      toolName: 'glob_files',
-      ok: true,
-      relativePaths: rawGlobResult.paths
-    }, owner);
     this.publish({ type: 'phase', phase: 'acting' }, owner);
+    const candidates = namedReadCandidates(rawGlobResult.paths, targetNameQuery);
     if (rawGlobResult.truncated) {
-      return { kind: 'clarification', candidates: [], reason: 'search_truncated' };
+      return {
+        kind: 'clarification',
+        candidates: Object.freeze(candidates.slice(0, 10)),
+        reason: 'search_truncated'
+      };
     }
 
-    const candidates = namedReadCandidates(rawGlobResult.paths, targetNameQuery);
     if (candidates.length === 0) {
       return { kind: 'clarification', candidates: [], reason: 'not_found' };
     }
@@ -795,7 +794,9 @@ export class AgentService {
     const text = resolution.reason === 'not_found'
       ? '授权目录内未找到该文件，请提供目标相对路径。'
       : resolution.reason === 'search_truncated'
-        ? '文件搜索结果过多，请提供更具体的目标相对路径。'
+        ? '文件搜索结果过多，请提供更具体的目标相对路径' + (
+          resolution.candidates.length === 0 ? '。' : '：' + resolution.candidates.join('、') + '。'
+        )
         : '找到多个同名文件，请提供目标相对路径：' + resolution.candidates.join('、') + '。';
     this.publish({ type: 'message', role: 'assistant', text }, owner);
     this.publish({ type: 'phase', phase: 'success' }, owner);
