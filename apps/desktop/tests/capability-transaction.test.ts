@@ -195,6 +195,27 @@ describe('CapabilityTransactionStore', () => {
     });
   });
 
+  test('失败写工具不会置位可信 mutation 账本', () => {
+    const store = createStore();
+    store.begin(identity);
+
+    store.apply({
+      toolName: 'builtin.files.create_file',
+      ok: false,
+      relativePaths: ['test.txt']
+    });
+
+    expect(store.snapshot()).toMatchObject({
+      hasSuccessfulMutation: false,
+      phase: 'failed',
+      toolTranscript: [{
+        toolName: 'builtin.files.create_file',
+        ok: false,
+        resultCode: 'FAILED'
+      }]
+    });
+  });
+
   test('等待确认时继续只分类为续接并保持原确认状态', () => {
     const store = createStore();
     store.begin(identity);
