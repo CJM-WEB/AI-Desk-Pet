@@ -19,7 +19,6 @@ function input(initialCapability: 'file' | 'powershell') {
     initialCapability,
     authorizedRootPath: 'D:\\authorized',
     generation: 'generation-1',
-    fileDisclosureAllowed: true,
     provider,
     fallbackProviders: [],
     createFileTools: vi.fn(async () => fileTools),
@@ -79,10 +78,8 @@ describe('Main 能力会话工厂', () => {
     expect(options.createPowerShellTool).toHaveBeenCalledOnce();
   });
 
-  test('旧文件披露值为 false 时显式文件会话仍调用受控读取端口', async () => {
-    const options = { ...input('file'), fileDisclosureAllowed: false };
-
-    const session = await createMainAgentSession(options);
+  test('显式文件会话始终调用受控读取端口', async () => {
+    const session = await createMainAgentSession(input('file'));
 
     expect(session.tools.map(tool => tool.function.name).sort()).toEqual([
       'builtin.files.apply_patch',

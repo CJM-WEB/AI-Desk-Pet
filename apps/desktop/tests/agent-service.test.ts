@@ -233,7 +233,6 @@ function patchAction(targetRelativePath = 'result.txt'): VerifiedWriteAction {
 function createHarness(
   provider: ModelProvider,
   fileOverrides: Partial<AgentFileTools> = {},
-  legacyFileDisclosureAllowed = true,
   fallbackProviders: ModelProvider[] = [],
   onEmit?: (event: TaskEvent) => void,
   emitBehaviorIntent?: (intent: CharacterAgentBehaviorIntent) => void,
@@ -253,7 +252,7 @@ function createHarness(
   };
   const registry = createBuiltinAgentToolRegistry();
   const permissionPolicy = new PermissionPolicy({ highRiskEnabled: false });
-  const session: AgentSession & { fileDisclosureAllowed?: boolean } = {
+  const session: AgentSession = {
     taskKind: 'agent',
     initialCapability: 'file',
     provider,
@@ -274,7 +273,6 @@ function createHarness(
     ...(pendingNow === undefined ? {} : { now: pendingNow }),
     onDiscard: execution => loop.discard(execution.continuationToken)
   });
-  if (!legacyFileDisclosureAllowed) session.fileDisclosureAllowed = false;
   const createSession = vi.fn(async () => (
     createSessionOverride ? createSessionOverride(session) : session
   ));
@@ -742,7 +740,6 @@ describe('AgentService', () => {
         content: '不得进入私有结果端口的正文',
         truncated: false
       })) },
-      true,
       [],
       undefined,
       undefined,
@@ -775,7 +772,6 @@ describe('AgentService', () => {
     const harness = createHarness(
       provider,
       {},
-      true,
       [],
       undefined,
       undefined,
@@ -801,7 +797,6 @@ describe('AgentService', () => {
     const failed = createHarness(
       new ScriptedProvider([writeResponse(), { type: 'text', text: '失败已处理' }]),
       { executeWrite: vi.fn(async () => { throw new FileToolError('TARGET_EXISTS', 'private'); }) },
-      true,
       [],
       undefined,
       undefined,
@@ -815,7 +810,7 @@ describe('AgentService', () => {
 
     const cancelled = createHarness(
       new ScriptedProvider([writeResponse()]),
-      {}, true, [], undefined, undefined, undefined,
+      {}, [], undefined, undefined, undefined,
       result => trustedResults.push(result)
     );
     await cancelled.service.submitFileTask({ text: '创建 result.txt', visibleHistory: [] });
@@ -834,7 +829,6 @@ describe('AgentService', () => {
     const harness = createHarness(
       new ScriptedProvider([writeResponse()]),
       {},
-      true,
       [],
       undefined,
       undefined,
@@ -852,12 +846,12 @@ describe('AgentService', () => {
     expect(harness.fileTools.executeWrite).not.toHaveBeenCalled();
     expect(trustedResults.filter(result => result.ok)).toEqual([]);
   });
-  test('旧文件披露值为 false 时创建文件确认后的续跑仍公告完整文件工具', async () => {
+  test('创建文件确认后的续跑仍公告完整文件工具', async () => {
     const provider = new ScriptedProvider([
       writeResponse(),
       { type: 'text', text: '文件已创建' }
     ]);
-    const { events, service } = createHarness(provider, {}, false);
+    const { events, service } = createHarness(provider);
 
     await service.submitFileTask({
       text: '创建 result.txt',
@@ -1526,7 +1520,6 @@ describe('AgentService', () => {
     const harness = createHarness(
       provider,
       {},
-      true,
       [],
       undefined,
       undefined,
@@ -1568,7 +1561,6 @@ describe('AgentService', () => {
         }
       }]),
       {},
-      true,
       [],
       undefined,
       emitBehaviorIntent
@@ -1626,7 +1618,6 @@ describe('AgentService', () => {
     const harness = createHarness(
       provider,
       {},
-      true,
       [],
       event => store.getState().apply(event)
     );
@@ -1669,7 +1660,7 @@ describe('AgentService', () => {
       readResponse(),
       { type: 'text', text: '备用模型已响应' }
     ]);
-    const { events, service } = createHarness(primary, {}, true, [fallback]);
+    const { events, service } = createHarness(primary, {}, [fallback]);
 
     await service.submitFileTask({ text: '继续任务', visibleHistory: [] });
 
@@ -1687,7 +1678,7 @@ describe('AgentService', () => {
     const secondError = Object.assign(new Error('PRIMARY_DOWN'), { retryable: true });
     const primary = new ScriptedProvider([firstError, secondError]);
     const fallback = new ScriptedProvider([{ type: 'text', text: '不得收到历史' }]);
-    const { service } = createHarness(primary, {}, true, [fallback]);
+    const { service } = createHarness(primary, {}, [fallback]);
 
     await expect(service.submitFileTask({
       text: '继续任务',
@@ -2155,7 +2146,6 @@ describe('AgentService', () => {
     const harness = createHarness(
       provider,
       { preview: vi.fn(async () => recycleAction()) },
-      true,
       [],
       event => {
         if (event.type === 'character_carrying') throw new Error('角色反馈端口不可用');
@@ -2274,7 +2264,6 @@ describe('AgentService', () => {
       const harness = createHarness(
         new ScriptedProvider([writeResponse(), { type: 'text', text: '不得公开旧总结' }]),
         {},
-        true,
         [],
         event => {
           const matched = resetAt === 'acting'

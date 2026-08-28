@@ -5,6 +5,34 @@
 - 当前意图编排、可见正文与隐藏控制解耦、真实工具调用、层级状态动作生命周期及三态运动的自动化证据，见 [`2026-08-27-ai-pet-intent-and-behavior-orchestration-acceptance.md`](./2026-08-27-ai-pet-intent-and-behavior-orchestration-acceptance.md)。
 - 该记录只在上述范围内替代 [`2026-08-27-ai-pet-structured-control-repair-acceptance.md`](./2026-08-27-ai-pet-structured-control-repair-acceptance.md) 的现行结论。旧记录仍是当时版本及 CPU/GGUF 复验的历史证据，不代表当前提交上的真实 DeepSeek 网络、真实窗口观感或回收站恢复已经人工通过。
 
+## 2026-08-28 文件事务纠偏最终收口验收
+
+### 范围与结论
+
+- 本节记录 `2026-08-28-ai-pet-file-transaction-correction` Task 4 的最终收口，只覆盖旧测试夹具字段清理、门禁复跑与验收事实同步。
+- `apps/desktop/tests/main-agent-session-factory.test.ts` 与 `apps/desktop/tests/agent-service.test.ts` 已删除只服务旧文件披露 gate 的 `fileDisclosureAllowed` 夹具字段与分支；`apps/desktop/tests/capability-transaction.test.ts` 本轮未发现 `providerId`、`authorizationRootId` 或 `fileDisclosureAllowed` 旧字段，无需改动。
+- `apps/desktop/tests/agent-service.test.ts` 仍保留 1 处 `ProviderProfileV2.providerId`。这是现行共享契约 `providerProfileV2Schema` 的必填字段，用于构造内置本地模型 profile，不属于旧测试夹具字段，故未删除。
+- 本节在“旧文件披露值为 false”相关描述范围内，覆盖上文 `2026-08-28 文件事务稳定性纵向自动验收` 的同类旧夹具表述；其余真实文件事务、安全边界和人工待验范围保持不变。
+
+### 实际运行结果
+
+- 环境：Windows，隔离 worktree `C:\Users\Administrator\.codex\worktrees\e43f\myself`；Task 4 起始基线提交 `6301a6b`；执行日期 `2026-08-28`。
+- 定向复核：`pnpm.cmd --dir apps/desktop exec vitest run --config vitest.config.ts tests/main-agent-session-factory.test.ts tests/agent-service.test.ts tests/capability-transaction.test.ts` 退出码 `0`，3 个测试文件、133 项通过。
+- `pnpm.cmd --filter @myself/agent-core test`：退出码 `0`，4 个测试文件、100 项通过。
+- `pnpm.cmd --filter @myself/agent-core typecheck`：退出码 `0`。
+- `pnpm.cmd --filter @myself/desktop test`：退出码 `0`，107 个测试文件、2830 项通过。
+- `pnpm.cmd --filter @myself/desktop typecheck`：退出码 `0`。
+- `pnpm.cmd test:security`：退出码 `0`，1 个测试文件、28 项通过。
+- `pnpm.cmd test:integration`：退出码 `0`，4 个测试文件、92 项通过。
+- `pnpm.cmd verify:desktop`：退出码 `0`。workspace typecheck 覆盖 10/11 个存在脚本的项目；单元测试 136 个测试文件、3546 项通过；安全测试 28/28，通过集成测试 92/92；生产构建、preload 外部依赖校验与正式边界校验通过；Electron E2E 为 77 通过、1 条既有长时场景跳过、0 失败。
+- 本轮 `desktop test`、`verify:desktop` 与相关角色/工作台测试输出中继续出现 `CHARACTER_IMPORT_RECOVERY_*`、角色运行失败码、`HTMLCanvasElement.getContext()` 未实现等既有受控 stderr；对应 suite 最终均为退出码 `0`，本节不把这些已断言的受控诊断误记为失败。
+- `git diff --check`：见本节提交前最终差异检查，退出码 `0`；仅有 Windows 工作区 LF/CRLF 提示，没有 whitespace error。
+
+### 未覆盖项
+
+- 待用户人工确认：真实外部 Provider 网络与账号、真实本地 GGUF/CPU 或 Vulkan 模型重跑、真实 Windows 窗口交互与观感、真实回收站可恢复性，以及用户目录中的手工文件操作。
+- 本轮没有新增或替换任何生产契约来迁就测试；也没有处理 progress ledger 中 Task 3 已登记的两个 deferred Minor。
+
 ## 2026-08-28 文件事务稳定性纵向自动验收
 
 ### 替代范围与环境
