@@ -2674,7 +2674,7 @@ test.describe('固定尺寸视觉几何', () => {
         allowCrossProviderFallback: false
       });
       await window.myself.savePrivacySettings({
-        dataCategories: { file: false, memory: false },
+        dataCategories: { memory: false },
         longTermMemory: false,
         proactivityMode: 'passive'
       });
@@ -3952,9 +3952,7 @@ test.describe('自主行为最小闭环', () => {
             allowCrossProviderFallback: false
           });
           await window.myself.savePrivacySettings({
-            dataCategories: {
-              file: false, memory: false
-            },
+            dataCategories: { memory: false },
             longTermMemory: false,
             proactivityMode: 'passive'
           });
@@ -4090,10 +4088,7 @@ test.describe('自主行为最小闭环', () => {
           allowCrossProviderFallback: false
         });
         await window.myself.savePrivacySettings({
-          dataCategories: {
-            file: false,
-            memory: false
-          },
+          dataCategories: { memory: false },
           longTermMemory: false,
           proactivityMode: 'passive'
         });
@@ -4210,9 +4205,7 @@ test.describe('自主行为最小闭环', () => {
     ): Promise<void> => {
       await pet.evaluate(async proactivityMode => {
         await window.myself.savePrivacySettings({
-          dataCategories: {
-            file: true, memory: false
-          },
+          dataCategories: { memory: false },
           longTermMemory: false,
           proactivityMode
         });
@@ -4250,9 +4243,7 @@ test.describe('自主行为最小闭环', () => {
           allowCrossProviderFallback: false
         });
         await window.myself.savePrivacySettings({
-          dataCategories: {
-            file: true, memory: false
-          },
+          dataCategories: { memory: false },
           longTermMemory: false,
           proactivityMode: 'passive'
         });
@@ -4726,10 +4717,7 @@ test.describe('真实 Provider 业务闭环', () => {
           allowCrossProviderFallback: false
         });
         await window.myself.savePrivacySettings({
-          dataCategories: {
-            file: true,
-            memory: false
-          },
+          dataCategories: { memory: false },
           longTermMemory: false,
           proactivityMode: 'passive'
         });
@@ -5074,7 +5062,6 @@ test.describe('真实 Provider 业务闭环', () => {
       settings = pageFor('settings')!;
       await expect.poll(() => settings.evaluate(() => document.visibilityState)).toBe('visible');
       await settings.getByRole('button', { name: '隐私' }).click();
-      await settings.getByRole('checkbox', { name: '文件数据授权' }).check();
       await settings.getByRole('button', { name: '保存隐私设置' }).click();
       await expect(settings.getByText('隐私设置已保存。')).toBeVisible();
       await settings.getByRole('button', { name: '选择目录' }).click();
@@ -5443,10 +5430,7 @@ test.describe('真实 Provider 业务闭环', () => {
           allowCrossProviderFallback: false
         });
         await window.myself.savePrivacySettings({
-          dataCategories: {
-            file: true,
-            memory: false
-          },
+          dataCategories: { memory: false },
           longTermMemory: false,
           proactivityMode: 'passive'
         });
@@ -5734,10 +5718,7 @@ test.describe('真实 Provider 业务闭环', () => {
           allowCrossProviderFallback: false
         });
         await window.myself.savePrivacySettings({
-          dataCategories: {
-            file: true,
-            memory: false
-          },
+          dataCategories: { memory: false },
           longTermMemory: false,
           proactivityMode: 'passive'
         });
@@ -5851,10 +5832,7 @@ test.describe('真实 Provider 业务闭环', () => {
           allowCrossProviderFallback: false
         });
         await window.myself.savePrivacySettings({
-          dataCategories: {
-            file: true,
-            memory: false
-          },
+          dataCategories: { memory: false },
           longTermMemory: false,
           proactivityMode: 'passive'
         });
@@ -5968,7 +5946,7 @@ test.describe('真实 Provider 业务闭环', () => {
           allowCrossProviderFallback: false
         });
         await window.myself.savePrivacySettings({
-          dataCategories: { file: true, memory: false },
+          dataCategories: { memory: false },
           longTermMemory: false,
           proactivityMode: 'passive'
         });
@@ -6072,7 +6050,6 @@ test.describe('真实 Provider 业务闭环', () => {
       await settingsPage.getByRole('button', { name: '保存路由' }).click();
       await expect(settingsPage.getByText('模型路由已保存。')).toBeVisible();
       await settingsPage.getByRole('button', { name: '隐私', exact: true }).click();
-      await settingsPage.getByRole('checkbox', { name: '文件数据授权' }).check();
       await settingsPage.getByRole('button', { name: '保存隐私设置' }).click();
       await expect(settingsPage.getByText('隐私设置已保存。')).toBeVisible();
       await settingsPage.getByRole('button', { name: '选择目录' }).click();
@@ -6509,7 +6486,6 @@ test.describe('真实 Provider 业务闭环', () => {
       await expect(settingsPage.getByText('模型路由已保存。')).toBeVisible();
 
       await settingsPage.getByRole('button', { name: '隐私' }).click();
-      await settingsPage.getByRole('checkbox', { name: '文件数据授权' }).check();
       await settingsPage.getByRole('button', { name: '保存隐私设置' }).click();
       await expect(settingsPage.getByText('隐私设置已保存。')).toBeVisible();
       await settingsPage.getByRole('button', { name: '选择目录' }).click();
@@ -6781,10 +6757,7 @@ test.describe('真实 Provider 业务闭环', () => {
           allowCrossProviderFallback: false
         });
         await window.myself.savePrivacySettings({
-          dataCategories: {
-            file: true,
-            memory: false
-          },
+          dataCategories: { memory: false },
           longTermMemory: false,
           proactivityMode: 'assistive'
         });

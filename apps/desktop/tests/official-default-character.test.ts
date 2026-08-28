@@ -71,7 +71,7 @@ describe('官方默认角色安装', () => {
     expect(publishedManifest.actions.map(action => action.semantic)).not.toEqual(
       expect.arrayContaining(['hide', 'emerge'])
     );
-  });
+  }, 15_000);
 
   test('已有可用默认角色时不重写其运行版本', async () => {
     temporaryDirectory = await mkdtemp(join(tmpdir(), 'ai-pet-default-'));

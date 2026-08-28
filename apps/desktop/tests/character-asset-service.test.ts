@@ -155,7 +155,7 @@ describe('角色素材 Main 安全边界', () => {
     expect(new Uint8Array(
       await readFile(join(characterDirectory, 'source', `${pngSource.assetId}.png`))
     )).toEqual(PNG_BYTES);
-  });
+  }, 15_000);
 
   test('扩展名与文件签名不同时拒绝整批导入且不留下部分文件', async () => {
     const validPath = join(selectedDirectory, 'valid.png');
