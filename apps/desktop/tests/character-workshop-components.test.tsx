@@ -1,7 +1,8 @@
 // @vitest-environment jsdom
 
 import { readFile } from 'node:fs/promises';
-import { resolve } from 'node:path';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
@@ -221,15 +222,15 @@ function state(
 
 async function workshopCss(): Promise<string> {
   return readFile(resolve(
-    process.cwd(),
-    'src/renderer/src/characters/workshop/character-workshop.css'
+    dirname(fileURLToPath(import.meta.url)),
+    '../src/renderer/src/characters/workshop/character-workshop.css'
   ), 'utf8');
 }
 
 async function rendererStyles(): Promise<string> {
   return readFile(resolve(
-    process.cwd(),
-    'src/renderer/src/styles.css'
+    dirname(fileURLToPath(import.meta.url)),
+    '../src/renderer/src/styles.css'
   ), 'utf8');
 }
 
