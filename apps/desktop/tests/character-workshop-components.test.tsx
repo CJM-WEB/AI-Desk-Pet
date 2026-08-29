@@ -787,9 +787,14 @@ describe('V2 结构化 Inspector', () => {
     const dialog = await screen.findByRole('dialog', { name: '新建扩展状态' });
     await waitFor(() => expect(showModal).toHaveBeenCalledOnce());
     expect(showModal.mock.instances[0]).toBe(dialog);
-    await waitFor(() => expect(document.activeElement).toBe(
-      screen.getByLabelText('状态名称')
-    ));
+    const extensionNameInput = screen.getByLabelText('状态名称');
+    const createButton = screen.getByRole('button', { name: '创建扩展状态' });
+    await waitFor(() => expect(document.activeElement).toBe(extensionNameInput));
+    expect((createButton as HTMLButtonElement).disabled).toBe(true);
+
+    fireEvent.input(extensionNameInput, { target: { value: '搬运状态' } });
+
+    await waitFor(() => expect((createButton as HTMLButtonElement).disabled).toBe(false));
 
     fireEvent.click(screen.getByRole('button', { name: '取消' }));
 

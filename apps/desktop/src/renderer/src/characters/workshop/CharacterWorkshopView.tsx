@@ -222,6 +222,7 @@ export function CharacterWorkshopWorkspace(
   ));
   const [perFrameAnchors, setPerFrameAnchors] = useState(false);
   const [extensionOpen, setExtensionOpen] = useState(false);
+  const [extensionName, setExtensionName] = useState('');
   const [pendingConfigurationDelete, setPendingConfigurationDelete] = useState<
     PendingConfigurationDelete | null
   >(null);
@@ -387,6 +388,7 @@ export function CharacterWorkshopWorkspace(
 
   function closeExtensionDialog(): void {
     extensionFormRef.current?.reset();
+    setExtensionName('');
     setExtensionOpen(false);
   }
 
@@ -1083,7 +1085,8 @@ export function CharacterWorkshopWorkspace(
               ref={extensionNameInputRef}
               autoFocus
               name="extensionName"
-              defaultValue=""
+              value={extensionName}
+              onChange={event => setExtensionName(event.currentTarget.value)}
             />
           </label>
           <label>
@@ -1114,6 +1117,7 @@ export function CharacterWorkshopWorkspace(
             <button
               className="primary-command"
               type="submit"
+              disabled={!extensionName.trim()}
             >
               创建扩展状态
             </button>

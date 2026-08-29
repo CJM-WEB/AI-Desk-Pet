@@ -3504,13 +3504,14 @@ test.describe('真实角色工作室闭环', () => {
       await workshop.getByRole('button', { name: '添加扩展状态' }).click();
       const extensionNameInput = workshop.getByLabel('状态名称');
       await expect(extensionNameInput).toBeFocused();
-      await extensionNameInput.fill('搬运状态');
-      await workshop.getByLabel('状态类别').selectOption('modifier');
-      await workshop.getByLabel('标准语义').selectOption('carry');
       const createExtensionButton = workshop.getByRole('button', {
         name: '创建扩展状态'
       });
+      await expect(createExtensionButton).toBeDisabled();
+      await extensionNameInput.fill('搬运状态');
       await expect(createExtensionButton).toBeEnabled();
+      await workshop.getByLabel('状态类别').selectOption('modifier');
+      await workshop.getByLabel('标准语义').selectOption('carry');
       await createExtensionButton.click();
       const carryingState = workshop.getByRole('list', { name: '状态与动作列表' })
         .getByRole('listitem')
