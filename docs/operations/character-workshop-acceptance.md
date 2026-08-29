@@ -196,3 +196,21 @@ Task 5 最终阶段没有单独重复运行 build、完整 Desktop E2E 与 `--li
 
 - 本轮没有改变角色工作台的自定义状态、动作、语义标签、速度或方向发布契约；运行时仍从用户已发布的公开候选中选择最高相似动作。
 - 停止锁、运动计划、固定尺寸、文件执行和匿名模型属于跨模块修复，其现行实现与自动证据统一记录在 `docs/operations/2026-08-25-ai-pet-core-repair-acceptance.md`，不在角色工作台验收记录中重复维护。
+
+## 2026-08-29 角色工作台布局稳定性验收（`a2514f4`）
+
+本节只登记 2026-08-29 在最终代码基线 `a2514f44af00c2351c866b4c72fa1657df0976d9` 上新鲜执行的结果，不改写也不借用前述历史门禁。环境为 Windows NT 10.0.26200.0、Node.js v24.18.0、pnpm 11.9.0。
+
+首次执行 `pnpm.cmd verify:characters` 在 104.01 秒后退出 1：character-runtime 341/341、character-assets 99/99 以及脚本内 Desktop typecheck 已通过；Desktop 单测为 107/108 个文件、2856/2857 项通过，唯一失败是 `draft-character-preview.test.tsx` 的“场景播放帧回写父级，纯索引同步不重建且后续控制从实际帧继续”，`showAction` 期望 1 次、实际 3 次。由于顶层脚本使用 `&&`，该次运行没有执行后续 security、integration 与 Electron E2E，不能写成总门通过。
+
+失败后只做一次诊断重跑：`pnpm.cmd --filter @myself/desktop test -- draft-character-preview.test.tsx` 的参数经既有 package script 转发后实际运行了 Desktop 全组；失败场景在该次运行中通过，最终为 108/108 个文件、2857/2857 项通过，命令退出 0、耗时 92.62 秒。此结果表明首次失败具有全量并发时序波动特征，但不抹去首次总门失败，也不宣称已经定位统一根因。
+
+随后仅重跑一次完整 `pnpm.cmd verify:characters`，命令退出 0、总耗时 653 秒（10 分 53 秒），且未达到 15 分钟时间盒：character-runtime 15/15 个文件、341/341 项通过；character-assets 6/6 个文件、99/99 项通过；Desktop 108/108 个文件、2857/2857 项通过；security 28/28、integration 92/92；真实 Electron E2E 共 80 项，79 项通过、1 项按既有标记跳过，Playwright 报告耗时 8.7 分钟。独立执行 `pnpm.cmd --filter @myself/desktop typecheck` 退出 0、耗时 12.34 秒；修改文档前执行 `git diff --check` 退出 0、耗时 0.16 秒且无输出，文档修改后复查同样退出 0、耗时 0.17 秒。
+
+本次自动化覆盖边界如下：
+
+- 组件测试验证扩展状态与发布要求对话框实际调用原生 `showModal()`/`close()`；真实 Electron 工作室闭环通过鼠标点击“创建扩展状态”完成状态创建，而不是用 Enter 绕过命中问题。
+- DOM 测试验证 separator 的 Pointer Capture、8px/Shift+32px 键盘调节、ARIA、约束收敛、提交时保存及失败提示；真实 Electron E2E 验证四条分隔器的鼠标拖动、重开持久化恢复、窗口缩窄后的响应式隐藏与重新放宽后的恢复。
+- 组件测试确认工作台不再暴露皮肤编辑界面；双皮肤 fixture 的 integration 与真实 Electron E2E 验证 V2 包导入、编译、默认皮肤运行表现、导出和回导仍保留两个皮肤及 `defaultSkinId`，不把删除 UI 误写成删除角色包兼容链。
+
+以下项目没有 2026-08-29 的人工观察证据，状态保持“待用户人工确认”：真实 Windows 窗口中模态顶层的视觉观感与遮挡关系；不同 DPI/缩放比例及多种显示器尺寸下的布局手感；四条分隔器长时间、反复拖动的跟手性与可用性。自动化命中、数值变化和持久化通过不能替代这些人工结论。
