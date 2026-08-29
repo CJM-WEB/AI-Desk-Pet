@@ -6,6 +6,10 @@ import type { ProviderProfileV2 } from '@myself/shared-types';
 import ts from 'typescript';
 import { afterEach, describe, expect, test, vi } from 'vitest';
 import {
+  DEFAULT_WORKSHOP_LAYOUT,
+  workshopLayoutSettingsSchema
+} from '../src/shared/workshop-layout-ipc';
+import {
   SettingsStore,
   type McpServerSettings
 } from '../src/main/storage/settings-store';
@@ -211,6 +215,15 @@ const nonMcpMutationCases: readonly NonMcpMutationCase[] = [
   {
     methodName: 'saveLocalModelEnabled',
     mutate: store => store.saveLocalModelEnabled(false)
+  },
+  {
+    methodName: 'saveWorkshopLayout',
+    mutate: store => store.saveWorkshopLayout({
+      leftWidth: 320,
+      rightWidth: 280,
+      sidebarTopHeight: 260,
+      stageHeight: 420
+    })
   },
   {
     methodName: 'revokeAuthorizedRoot',
@@ -621,10 +634,100 @@ export class SettingsStore {
     ).resolves.toEqual({ enabled: false });
   });
 
+  test('旧设置缺失工作台布局时返回默认值并回写持久化字段', async () => {
+    const { file, store } = await createStore();
+    await writeFile(file, JSON.stringify({
+      version: 6,
+      providerProfiles: [],
+      modelRoute: {
+        primaryProfileId: null,
+        chatProfileId: null,
+        agentProfileId: null,
+        visionProfileId: null,
+        fallbackProfileIds: [],
+        allowCrossProviderFallback: false
+      },
+      authorizedRoot: null,
+      petPlacementState: { kind: 'ready', placements: [] },
+      petAlwaysOnTop: false,
+      privacy: {
+        dataCategories: { memory: false },
+        longTermMemory: false,
+        proactivityMode: 'autonomous'
+      },
+      movementMode: 2,
+      mcpServers: [],
+      localModel: { enabled: true }
+    }), 'utf8');
+
+    await expect(store.getWorkshopLayout()).resolves.toEqual(DEFAULT_WORKSHOP_LAYOUT);
+    expect(JSON.parse(await readFile(file, 'utf8'))).toMatchObject({
+      workshopLayout: DEFAULT_WORKSHOP_LAYOUT
+    });
+  });
+
+  test('工作台布局可原子保存并在新实例中重载', async () => {
+    const { file, store } = await createStore();
+    const layout = {
+      leftWidth: 320,
+      rightWidth: 280,
+      sidebarTopHeight: 260,
+      stageHeight: 420
+    } as const;
+
+    await expect(store.saveWorkshopLayout(layout)).resolves.toEqual(layout);
+    await expect(store.getWorkshopLayout()).resolves.toEqual(layout);
+    await expect(
+      new SettingsStore(file, async () => false).getWorkshopLayout()
+    ).resolves.toEqual(layout);
+  });
+
+  test.each([
+    {
+      label: 'NaN',
+      input: {
+        leftWidth: Number.NaN,
+        rightWidth: 280,
+        sidebarTopHeight: 260,
+        stageHeight: 420
+      }
+    },
+    {
+      label: 'Infinity',
+      input: {
+        leftWidth: 320,
+        rightWidth: Number.POSITIVE_INFINITY,
+        sidebarTopHeight: 260,
+        stageHeight: 420
+      }
+    },
+    {
+      label: 'negative',
+      input: {
+        leftWidth: -1,
+        rightWidth: 280,
+        sidebarTopHeight: 260,
+        stageHeight: 420
+      }
+    },
+    {
+      label: 'over-budget',
+      input: {
+        leftWidth: 320,
+        rightWidth: 10_000,
+        sidebarTopHeight: 260,
+        stageHeight: 420
+      }
+    }
+  ])('工作台布局 Schema 拒绝非法值：$label', ({ input }) => {
+    expect(() => workshopLayoutSettingsSchema.parse(input)).toThrow();
+  });
+
   test('迁移旧文件披露值时丢弃已退役 Gate 并保留其他隐私设置', async () => {
     const { file, store } = await createStore();
     await store.savePetAlwaysOnTop(true);
     const legacy = JSON.parse(await readFile(file, 'utf8'));
+    delete legacy.workshopLayout;
     legacy.version = 5;
     legacy.fileDisclosureAccepted = false;
     legacy.privacy.dataCategories.file = false;
@@ -1312,6 +1415,7 @@ test('加载旧设置时移除截图与剪贴板隐私占位并保留其余设�
   const { file, store } = await createStore();
   await store.savePetAlwaysOnTop(true);
   const legacy = JSON.parse(await readFile(file, 'utf8'));
+  delete legacy.workshopLayout;
   legacy.version = 5;
   legacy.fileDisclosureAccepted = true;
   legacy.privacy.dataCategories.file = true;

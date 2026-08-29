@@ -33,6 +33,7 @@ import type {
 } from './pet-window-interaction';
 import type { PetGeometryRenderView } from './character-motion-ipc';
 import type { LocalModelPublicStatus } from './local-model-ipc';
+import type { WorkshopLayoutSettings } from './workshop-layout-ipc';
 
 export type LocalDataScope = 'conversation' | 'audit' | 'secret' | 'all';
 
@@ -93,6 +94,8 @@ export interface MyselfApi extends PetWindowInteractionApi {
   testProviderProfile(profileId: string): Promise<{ ok: boolean; message: string }>;
   saveModelRoute(route: ModelRouteConfig): Promise<SettingsDashboardDto>;
   savePrivacySettings(input: PrivacySettingsDto): Promise<SettingsDashboardDto>;
+  getWorkshopLayout(): Promise<WorkshopLayoutSettings>;
+  saveWorkshopLayout(input: WorkshopLayoutSettings): Promise<WorkshopLayoutSettings>;
   savePetAlwaysOnTop(enabled: boolean): Promise<SettingsDashboardDto>;
   setLocalModelEnabled(enabled: boolean): Promise<SettingsDashboardDto>;
   setIncognitoSession(incognito: boolean): Promise<{ incognito: boolean }>;

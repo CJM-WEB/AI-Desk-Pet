@@ -20,6 +20,7 @@ import {
   localModelPublicStatusSchema,
   type LocalModelPublicStatus
 } from '../../shared/local-model-ipc';
+import type { WorkshopLayoutSettings } from '../../shared/workshop-layout-ipc';
 
 interface SettingsAccess {
   getProviderSettings(): Promise<{
@@ -35,6 +36,8 @@ interface SettingsAccess {
     mode: CharacterMovementMode,
     isCurrent?: () => boolean
   ): Promise<CharacterBehaviorSettingsSnapshot | null>;
+  getWorkshopLayout(): Promise<WorkshopLayoutSettings>;
+  saveWorkshopLayout(layout: WorkshopLayoutSettings): Promise<WorkshopLayoutSettings>;
   getPetAlwaysOnTop(): Promise<boolean>;
   savePetAlwaysOnTop(enabled: boolean): Promise<void>;
   getPublic(): Promise<{
@@ -224,6 +227,15 @@ export class DesktopSettingsService {
     const snapshot = await this.options.settings.savePrivacySettings(input);
     this.options.applyCharacterBehaviorSettings(snapshot);
     return this.getDashboard();
+  }
+
+  /** 工作台布局持久化只代理强类型设置存取，不在 Main 增加额外运行态副作用。 */
+  getWorkshopLayout(): Promise<WorkshopLayoutSettings> {
+    return this.options.settings.getWorkshopLayout();
+  }
+
+  saveWorkshopLayout(layout: WorkshopLayoutSettings): Promise<WorkshopLayoutSettings> {
+    return this.options.settings.saveWorkshopLayout(layout);
   }
 
   /** 此入口只供 Main 本地 Gate 使用，Renderer 不获得停止锁写权。 */

@@ -1,7 +1,11 @@
 import { describe, expect, test, vi } from 'vitest';
 import type { IpcMain } from 'electron';
-import { registerSettingsIpc } from '../src/main/ipc/register-ipc';
+import {
+  registerAdvancedSettingsIpc,
+  registerSettingsIpc
+} from '../src/main/ipc/register-ipc';
 import { ipcChannels } from '../src/shared/ipc-channels';
+import { DEFAULT_WORKSHOP_LAYOUT } from '../src/shared/workshop-layout-ipc';
 
 type Handler = (event: unknown, input?: unknown) => unknown;
 
@@ -242,5 +246,73 @@ describe('设置 IPC', () => {
     expect(secrets.clearAll).toHaveBeenCalledOnce();
     expect(lifecycle.onProviderChanged).toHaveBeenCalledOnce();
     expect(lifecycle.onAuthorizedRootChanged).toHaveBeenCalledOnce();
+  });
+
+  test('工作台布局读取走固定通道并返回严格解析后的结果', async () => {
+    const { handlers, ipcMain } = createIpcMain();
+    const service = {
+      getDashboard: vi.fn(async () => ({ marker: 'dashboard' })),
+      saveProviderProfile: vi.fn(async () => ({ marker: 'saved' })),
+      deleteProviderProfile: vi.fn(async () => ({ marker: 'deleted' })),
+      saveModelRoute: vi.fn(async () => ({ marker: 'route' })),
+      testProviderProfile: vi.fn(async () => ({ ok: true, message: '连接成功。' })),
+      savePrivacySettings: vi.fn(async () => ({ marker: 'privacy' })),
+      savePetAlwaysOnTop: vi.fn(async () => ({ marker: 'topmost' })),
+      setLocalModelEnabled: vi.fn(async () => ({ marker: 'local-model' })),
+      setIncognitoSession: vi.fn(async () => ({ incognito: true })),
+      revokeAuthorizedRoot: vi.fn(async () => ({ marker: 'root-revoked' })),
+      getWorkshopLayout: vi.fn(async () => DEFAULT_WORKSHOP_LAYOUT),
+      saveWorkshopLayout: vi.fn(async () => DEFAULT_WORKSHOP_LAYOUT)
+    };
+    registerAdvancedSettingsIpc(ipcMain, service);
+
+    await expect(
+      handlers.get(ipcChannels.settingsWorkshopLayoutGet)?.({}, {})
+    ).resolves.toEqual(DEFAULT_WORKSHOP_LAYOUT);
+    expect(service.getWorkshopLayout).toHaveBeenCalledOnce();
+  });
+
+  test('工作台布局保存先严格解析 payload，再交给服务', async () => {
+    const { handlers, ipcMain } = createIpcMain();
+    const service = {
+      getDashboard: vi.fn(async () => ({ marker: 'dashboard' })),
+      saveProviderProfile: vi.fn(async () => ({ marker: 'saved' })),
+      deleteProviderProfile: vi.fn(async () => ({ marker: 'deleted' })),
+      saveModelRoute: vi.fn(async () => ({ marker: 'route' })),
+      testProviderProfile: vi.fn(async () => ({ ok: true, message: '连接成功。' })),
+      savePrivacySettings: vi.fn(async () => ({ marker: 'privacy' })),
+      savePetAlwaysOnTop: vi.fn(async () => ({ marker: 'topmost' })),
+      setLocalModelEnabled: vi.fn(async () => ({ marker: 'local-model' })),
+      setIncognitoSession: vi.fn(async () => ({ incognito: true })),
+      revokeAuthorizedRoot: vi.fn(async () => ({ marker: 'root-revoked' })),
+      getWorkshopLayout: vi.fn(async () => DEFAULT_WORKSHOP_LAYOUT),
+      saveWorkshopLayout: vi.fn(async input => input)
+    };
+    registerAdvancedSettingsIpc(ipcMain, service);
+
+    const input = {
+      leftWidth: 320,
+      rightWidth: 280,
+      sidebarTopHeight: 260,
+      stageHeight: 420
+    };
+    await expect(
+      handlers.get(ipcChannels.settingsWorkshopLayoutSave)?.({}, input)
+    ).resolves.toEqual(input);
+    expect(service.saveWorkshopLayout).toHaveBeenCalledExactlyOnceWith(input);
+
+    await expect(
+      handlers.get(ipcChannels.settingsWorkshopLayoutSave)?.({}, {
+        ...input,
+        rightWidth: Number.POSITIVE_INFINITY
+      })
+    ).rejects.toMatchObject({ code: 'SETTINGS_INPUT_INVALID' });
+    await expect(
+      handlers.get(ipcChannels.settingsWorkshopLayoutSave)?.({}, {
+        ...input,
+        injected: 'forbidden'
+      })
+    ).rejects.toMatchObject({ code: 'SETTINGS_INPUT_INVALID' });
+    expect(service.saveWorkshopLayout).toHaveBeenCalledExactlyOnceWith(input);
   });
 });

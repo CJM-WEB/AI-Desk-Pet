@@ -8,6 +8,7 @@ import {
 import { privacySettingsSchema } from '../storage/settings-store';
 import { z } from 'zod';
 import { ipcChannels } from '../../shared/ipc-channels';
+import { workshopLayoutSettingsSchema } from '../../shared/workshop-layout-ipc';
 import {
   characterBytesResultSchema,
   characterActivateInputSchema,
@@ -276,6 +277,7 @@ const profileSaveSchema = z.object({
 const profileIdSchema = z.object({ profileId: identifierSchema }).strict();
 const routeSaveSchema = z.object({ route: modelRouteConfigSchema }).strict();
 const incognitoSchema = z.object({ incognito: z.boolean() }).strict();
+const workshopLayoutGetSchema = z.object({}).strict();
 const petAlwaysOnTopSaveSchema = z.object({ enabled: z.boolean() }).strict();
 const localModelEnabledSetSchema = z.object({ enabled: z.boolean() }).strict();
 
@@ -286,6 +288,8 @@ export interface AdvancedSettingsIpcService {
   saveModelRoute(route: z.infer<typeof modelRouteConfigSchema>): Promise<unknown>;
   testProviderProfile(profileId: string): Promise<unknown>;
   savePrivacySettings(input: z.infer<typeof privacySettingsSchema>): Promise<unknown>;
+  getWorkshopLayout(): Promise<unknown>;
+  saveWorkshopLayout(input: z.infer<typeof workshopLayoutSettingsSchema>): Promise<unknown>;
   savePetAlwaysOnTop(enabled: boolean): Promise<unknown>;
   setLocalModelEnabled(enabled: boolean): Promise<unknown>;
   setIncognitoSession(incognito: boolean): Promise<unknown>;
@@ -339,6 +343,14 @@ export function registerAdvancedSettingsIpc(
   replaceHandler(ipcMain, ipcChannels.settingsPrivacySave, async (_event, raw) => {
     const input = parseInput(privacySettingsSchema, raw);
     return changed(() => service.savePrivacySettings(input));
+  });
+  replaceHandler(ipcMain, ipcChannels.settingsWorkshopLayoutGet, async (_event, raw) => {
+    parseInput(workshopLayoutGetSchema, raw);
+    return service.getWorkshopLayout();
+  });
+  replaceHandler(ipcMain, ipcChannels.settingsWorkshopLayoutSave, async (_event, raw) => {
+    const input = parseInput(workshopLayoutSettingsSchema, raw);
+    return service.saveWorkshopLayout(input);
   });
   replaceHandler(ipcMain, ipcChannels.settingsPetAlwaysOnTopSave, async (_event, raw) => {
     const { enabled } = parseInput(petAlwaysOnTopSaveSchema, raw);

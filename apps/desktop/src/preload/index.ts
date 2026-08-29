@@ -39,6 +39,7 @@ import {
   localModelPublicStatusSchema,
   type LocalModelPublicStatus
 } from '../shared/local-model-ipc';
+import { workshopLayoutSettingsSchema } from '../shared/workshop-layout-ipc';
 
 const e2eProbeEnabled = process.argv.includes('--myself-e2e-probe');
 let behaviorProbe: CharacterBehaviorProbe = {
@@ -115,6 +116,19 @@ const api: MyselfApi = {
   ),
   savePrivacySettings: (input: PrivacySettingsDto) => (
     ipcRenderer.invoke(ipcChannels.settingsPrivacySave, input)
+  ),
+  getWorkshopLayout: async () => (
+    workshopLayoutSettingsSchema.parse(
+      await ipcRenderer.invoke(ipcChannels.settingsWorkshopLayoutGet, {})
+    )
+  ),
+  saveWorkshopLayout: async input => (
+    workshopLayoutSettingsSchema.parse(
+      await ipcRenderer.invoke(
+        ipcChannels.settingsWorkshopLayoutSave,
+        workshopLayoutSettingsSchema.parse(input)
+      )
+    )
   ),
   savePetAlwaysOnTop: (enabled: boolean) => (
     ipcRenderer.invoke(ipcChannels.settingsPetAlwaysOnTopSave, { enabled })

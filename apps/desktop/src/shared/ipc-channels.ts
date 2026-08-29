@@ -12,6 +12,8 @@ export const ipcChannels = {
   settingsProfileTest: 'settings:profile-test',
   settingsRouteSave: 'settings:route-save',
   settingsPrivacySave: 'settings:privacy-save',
+  settingsWorkshopLayoutGet: 'settings:workshop-layout-get',
+  settingsWorkshopLayoutSave: 'settings:workshop-layout-save',
   settingsPetAlwaysOnTopSave: 'settings:pet-always-on-top-save',
   settingsLocalModelEnabledSet: 'settings:local-model-enabled-set',
   settingsIncognitoSet: 'settings:incognito-set',

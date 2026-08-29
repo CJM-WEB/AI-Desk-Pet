@@ -1,8 +1,9 @@
 import { beforeEach, describe, expect, test, vi } from 'vitest';
 import type { MyselfApi } from '../src/shared/myself-api';
 import { ipcChannels } from '../src/shared/ipc-channels';
+import { DEFAULT_WORKSHOP_LAYOUT } from '../src/shared/workshop-layout-ipc';
 
-const invoke = vi.fn(async () => undefined);
+const invoke = vi.fn<(...args: unknown[]) => Promise<unknown>>(async () => undefined);
 const send = vi.fn();
 const on = vi.fn();
 const removeListener = vi.fn();
@@ -78,5 +79,34 @@ describe('角色工作室关闭握手 Preload 边界', () => {
         { token: 'failed-token', ok: false }
       );
     });
+  });
+
+  test('只暴露两个工作台布局方法，并把读取结果解析为严格布局契约', async () => {
+    invoke.mockResolvedValueOnce(DEFAULT_WORKSHOP_LAYOUT);
+
+    await expect(exposedApi?.getWorkshopLayout()).resolves.toEqual(DEFAULT_WORKSHOP_LAYOUT);
+    expect(invoke).toHaveBeenCalledWith(ipcChannels.settingsWorkshopLayoutGet, {});
+    expect(
+      Object.keys(exposedApi ?? {}).filter(key => key.toLowerCase().includes('workshoplayout'))
+    ).toEqual(['getWorkshopLayout', 'saveWorkshopLayout']);
+  });
+
+  test('工作台布局方法拒绝带私有字段或非法数值的 IPC payload', async () => {
+    invoke.mockResolvedValueOnce({
+      ...DEFAULT_WORKSHOP_LAYOUT,
+      privatePath: 'C:\\private'
+    });
+    await expect(exposedApi?.getWorkshopLayout()).rejects.toThrow();
+
+    invoke.mockResolvedValueOnce({
+      ...DEFAULT_WORKSHOP_LAYOUT,
+      stageHeight: Number.NaN
+    });
+    await expect(exposedApi?.saveWorkshopLayout(DEFAULT_WORKSHOP_LAYOUT)).rejects.toThrow();
+    expect(invoke).toHaveBeenNthCalledWith(
+      2,
+      ipcChannels.settingsWorkshopLayoutSave,
+      DEFAULT_WORKSHOP_LAYOUT
+    );
   });
 });

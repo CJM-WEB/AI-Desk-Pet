@@ -3,6 +3,7 @@ import { describe, expect, test, vi } from 'vitest';
 import { PrivacySessionRegistry } from '../src/main/agent/disclosure-policy';
 import { DesktopSettingsService } from '../src/main/settings/desktop-settings-service';
 import type { LocalModelPublicStatus } from '../src/shared/local-model-ipc';
+import { DEFAULT_WORKSHOP_LAYOUT } from '../src/shared/workshop-layout-ipc';
 
 function providerSnapshot() {
   return {
@@ -56,6 +57,8 @@ function createFixture() {
       behaviorSettings = { ...behaviorSettings, movementMode };
       return Object.freeze({ ...behaviorSettings });
     }),
+    getWorkshopLayout: vi.fn(async () => DEFAULT_WORKSHOP_LAYOUT),
+    saveWorkshopLayout: vi.fn(async input => input),
     getPetAlwaysOnTop: vi.fn(async () => storedPetAlwaysOnTop),
     savePetAlwaysOnTop: vi.fn(async (enabled: boolean) => {
       storedPetAlwaysOnTop = enabled;

@@ -14,6 +14,11 @@ import {
 } from '@myself/shared-types';
 import { characterIdSchema } from '../../shared/character-ipc';
 import type { LocalModelSettings } from '../../shared/local-model-ipc';
+import {
+  DEFAULT_WORKSHOP_LAYOUT,
+  workshopLayoutSettingsSchema,
+  type WorkshopLayoutSettings
+} from '../../shared/workshop-layout-ipc';
 
 const providerMetadataSchema = z.object({
   id: z.string().min(1),
@@ -204,7 +209,8 @@ const { fileDisclosureAccepted: _legacyFileDisclosureAccepted, ...storedSettings
 const storedSettingsV6Shape = {
   ...storedSettingsV5WithoutDisclosure,
   version: z.literal(6),
-  privacy: privacySettingsSchema
+  privacy: privacySettingsSchema,
+  workshopLayout: workshopLayoutSettingsSchema.default(DEFAULT_WORKSHOP_LAYOUT)
 };
 const storedSettingsV6Schema = z.object(storedSettingsV6Shape).strict();
 
@@ -302,7 +308,8 @@ function defaultSettings(): StoredSettings {
     privacy: defaultPrivacySettings(),
     movementMode: 2,
     mcpServers: [],
-    localModel: { enabled: true }
+    localModel: { enabled: true },
+    workshopLayout: DEFAULT_WORKSHOP_LAYOUT
   };
 }
 
@@ -1000,11 +1007,25 @@ export class SettingsStore {
     return this.enqueue(async () => structuredClone((await this.load()).localModel));
   }
 
+  async getWorkshopLayout(): Promise<WorkshopLayoutSettings> {
+    return this.enqueue(async () => structuredClone((await this.load()).workshopLayout));
+  }
+
   saveLocalModelEnabled(enabled: boolean): Promise<void> {
     return this.enqueueWrite(async () => {
       const settings = await this.load();
       settings.localModel.enabled = z.boolean().parse(enabled);
       await atomicWrite(this.file, settings);
+    });
+  }
+
+  saveWorkshopLayout(input: WorkshopLayoutSettings): Promise<WorkshopLayoutSettings> {
+    return this.enqueue(async () => {
+      const layout = workshopLayoutSettingsSchema.parse(input);
+      const settings = await this.load();
+      settings.workshopLayout = layout;
+      await atomicWrite(this.file, settings);
+      return structuredClone(layout);
     });
   }
 

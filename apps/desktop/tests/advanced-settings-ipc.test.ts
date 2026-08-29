@@ -2,6 +2,7 @@ import type { IpcMain } from 'electron';
 import { describe, expect, test, vi } from 'vitest';
 import { registerAdvancedSettingsIpc } from '../src/main/ipc/register-ipc';
 import { ipcChannels } from '../src/shared/ipc-channels';
+import { DEFAULT_WORKSHOP_LAYOUT } from '../src/shared/workshop-layout-ipc';
 
 type Handler = (event: unknown, input?: unknown) => unknown;
 
@@ -22,6 +23,8 @@ function serviceDouble() {
     saveModelRoute: vi.fn(async () => ({ marker: 'route' })),
     testProviderProfile: vi.fn(async () => ({ ok: true, message: '连接成功。' })),
     savePrivacySettings: vi.fn(async () => ({ marker: 'privacy' })),
+    getWorkshopLayout: vi.fn(async () => DEFAULT_WORKSHOP_LAYOUT),
+    saveWorkshopLayout: vi.fn(async () => DEFAULT_WORKSHOP_LAYOUT),
     savePetAlwaysOnTop: vi.fn(async () => ({ marker: 'topmost' })),
     setLocalModelEnabled: vi.fn(async () => ({ marker: 'local-model' })),
     setIncognitoSession: vi.fn(async () => ({ incognito: true })),
