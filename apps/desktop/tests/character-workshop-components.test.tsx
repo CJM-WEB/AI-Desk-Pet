@@ -10,8 +10,6 @@ import type { CharacterSummaryDto } from '../src/shared/character-ipc';
 import type { MyselfApi } from '../src/shared/myself-api';
 import { CharacterWorkshopView } from '../src/renderer/src/characters/workshop/CharacterWorkshopView';
 import { CharacterIdentityInspector } from '../src/renderer/src/characters/workshop/CharacterIdentityInspector';
-import { SkinList } from '../src/renderer/src/characters/workshop/SkinList';
-import { SkinInspector } from '../src/renderer/src/characters/workshop/SkinInspector';
 import { StateInspector } from '../src/renderer/src/characters/workshop/StateInspector';
 import { ActionInspector } from '../src/renderer/src/characters/workshop/ActionInspector';
 import {
@@ -604,34 +602,30 @@ describe('角色工作室 SSR 外壳', () => {
 });
 
 describe('V2 结构化 Inspector', () => {
-  test('角色与皮肤区域只保留一个二级标题', () => {
-    const markup = renderToStaticMarkup(<CharacterWorkshopWorkspace state={state()} />);
-    expect(markup.match(/<h2[^>]*>角色与皮肤<\/h2>/gu)).toHaveLength(1);
+  test('双皮肤草稿与旧皮肤选择都不再暴露皮肤编辑界面', () => {
+    const draftWithTwoSkins = structuredClone(currentDraft);
+    draftWithTwoSkins.skins.push({
+      id: 'winter',
+      name: '冬装',
+      description: '适合冬日桌面的保暖外观',
+      presentations: [],
+      semanticFallbacks: []
+    });
+    renderWorkspace(state({
+      draft: draftWithTwoSkins,
+      selectedSkinId: 'winter',
+      selectedEntity: { kind: 'skin', skinId: 'winter' }
+    }));
+
+    expect(screen.queryByRole('heading', { name: /^角色$/u })).not.toBeNull();
+    expect(screen.queryByText('角色与皮肤')).toBeNull();
+    expect(screen.queryByRole('list', { name: '皮肤列表' })).toBeNull();
+    expect(screen.queryByRole('button', { name: '新增皮肤' })).toBeNull();
+    expect(screen.queryByRole('button', { name: /设为默认|删除皮肤/u })).toBeNull();
+    expect(screen.queryByLabelText('皮肤名称')).toBeNull();
+    expect(screen.queryByLabelText('皮肤说明')).toBeNull();
   });
 
-  test('皮肤列表区分默认皮肤并只允许删除非默认皮肤', () => {
-    const markup = renderToStaticMarkup(
-      <SkinList
-        skins={[
-          { id: 'default', name: '默认皮肤', presentations: [], semanticFallbacks: [] },
-          { id: 'winter', name: '冬装', presentations: [], semanticFallbacks: [] }
-        ]}
-        defaultSkinId="default"
-        selectedSkinId="winter"
-        disabled={false}
-        onAdd={vi.fn()}
-        onSelect={vi.fn()}
-        onSetDefault={vi.fn()}
-        onRequestDelete={vi.fn()}
-      />
-    );
-
-    expect(markup).toContain('aria-label="皮肤"');
-    expect(markup).not.toContain('<h2');
-    expect(markup).toContain('aria-label="新增皮肤"');
-    expect(markup).not.toContain('删除皮肤“默认皮肤”');
-    expect(markup).toContain('aria-label="删除皮肤“冬装”"');
-  });
 
   test('人设只提供 V2 结构化字段且复杂字段具有持续帮助文字', () => {
     const markup = renderToStaticMarkup(
@@ -657,57 +651,6 @@ describe('V2 结构化 Inspector', () => {
     expect(markup).toContain('性格标签');
     expect(markup).toContain('最多 32 项');
     expect(markup).not.toMatch(/系统 Prompt|JSON|脚本/u);
-  });
-
-  test('皮肤属性说明当前表现覆盖状态且字段受协议长度限制', () => {
-    const markup = renderToStaticMarkup(
-      <SkinInspector
-        skin={{
-          id: 'winter',
-          name: '冬装',
-          description: '适合冬季',
-          presentations: [{
-            actionId: 'idle-main',
-            fps: 12,
-            frames: [],
-            anchors: { ground: { x: 0.5, y: 1 } }
-          }],
-          semanticFallbacks: []
-        }}
-        actions={currentDraft.actions}
-        selectedActionId="idle-main"
-        presentationSource="skin-action"
-        disabled={false}
-        onChange={vi.fn()}
-      />
-    );
-
-    expect(markup).toContain('皮肤名称');
-    expect(markup).toContain('当前皮肤精确表现');
-    expect(markup).toContain('idle 语义回退');
-    expect(markup).toContain('maxLength="120"');
-    expect(markup).not.toMatch(/系统 Prompt|JSON|脚本|自由执行/u);
-  });
-
-  test.each([
-    ['skin-action', '当前皮肤精确表现'],
-    ['skin-semantic', '当前皮肤语义回退'],
-    ['default-action', '默认皮肤动作'],
-    ['default-state', '默认状态回退'],
-    [null, '无可播放表现']
-  ] as const)('皮肤检查器说明当前动作表现来源：%s', (presentationSource, expected) => {
-    const markup = renderToStaticMarkup(
-      <SkinInspector
-        skin={{ id: 'winter', name: '冬装', presentations: [], semanticFallbacks: [] }}
-        actions={currentDraft.actions}
-        selectedActionId="idle-main"
-        presentationSource={presentationSource}
-        disabled={false}
-        onChange={vi.fn()}
-      />
-    );
-
-    expect(markup).toContain(expected);
   });
 
   test('状态属性只暴露可信 signal、标准语义和当前状态引用', () => {
@@ -781,12 +724,10 @@ describe('V2 结构化 Inspector', () => {
     expect(markup).not.toMatch(/系统 Prompt|JSON|脚本|自由执行/u);
   });
 
-  test('V2 列表与表单保持 44px 目标和至少 8px 操作间距', async () => {
+  test('V2 表单保持 44px 目标和至少 8px 操作间距', async () => {
     const css = await workshopCss();
 
-    expect(css).toMatch(/\.skin-select\s*\{[^}]*min-height:\s*44px;/su);
     expect(css).toMatch(/\.inspector-form\s+(?:input|select|textarea)[^\{]*\{[^}]*min-height:\s*44px;/su);
-    expect(css).toMatch(/\.skin-row-commands\s*\{[^}]*gap:\s*8px;/su);
     expect(css).toMatch(/\.recovery-actions\s*\{[^}]*gap:\s*8px;/su);
   });
 

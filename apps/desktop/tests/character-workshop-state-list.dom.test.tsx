@@ -5,7 +5,6 @@ import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { StateList } from '../src/renderer/src/characters/workshop/StateList';
 import { ActionInspector } from '../src/renderer/src/characters/workshop/ActionInspector';
 import { StateInspector } from '../src/renderer/src/characters/workshop/StateInspector';
-import { SkinInspector } from '../src/renderer/src/characters/workshop/SkinInspector';
 import { CharacterWorkshopWorkspace } from '../src/renderer/src/characters/workshop/CharacterWorkshopView';
 import type { CharacterWorkshopState } from '../src/renderer/src/characters/store/character-workshop-store';
 
@@ -332,38 +331,6 @@ describe('V2 状态与动作结构化交互', () => {
     expect(onChange).toHaveBeenCalledWith({ tags: [] });
   });
 
-  test('皮肤语义回退只提供同语义动作且可清空', () => {
-    const onChange = vi.fn();
-    const idleAlternative = { ...actions[0]!, id: 'idle-soft', name: '轻柔待机' };
-    const speakAction = {
-      ...actions[0]!, id: 'speak-main', name: '说话', semantic: 'speak' as const
-    };
-    render(
-      <SkinInspector
-        skin={{
-          id: 'winter', name: '冬装', presentations: [],
-          semanticFallbacks: [{ semantic: 'idle', actionId: 'idle-main' }]
-        }}
-        actions={[actions[0]!, idleAlternative, speakAction]}
-        selectedActionId="idle-main"
-        presentationSource="skin-semantic"
-        disabled={false}
-        onChange={onChange}
-      />
-    );
-
-    const idleFallback = screen.getByLabelText('idle 语义回退') as HTMLSelectElement;
-    expect(idleFallback.querySelector('option[value="idle-soft"]')).not.toBeNull();
-    expect(idleFallback.querySelector('option[value="speak-main"]')).toBeNull();
-    fireEvent.change(idleFallback, { target: { value: 'idle-soft' } });
-    expect(onChange).toHaveBeenCalledWith({
-      semanticFallbacks: [{ semantic: 'idle', actionId: 'idle-soft' }]
-    });
-    fireEvent.change(idleFallback, { target: { value: '' } });
-    expect(onChange).toHaveBeenCalledWith({ semanticFallbacks: [] });
-    expect(screen.queryByLabelText(/自定义语义回退/u)).toBeNull();
-  });
-
   test('正式 V2 字段编辑器继承工作室禁用态', () => {
     render(
       <>
@@ -374,22 +341,12 @@ describe('V2 状态与动作结构化交互', () => {
           disabled
           onChange={vi.fn()}
         />
-        <SkinInspector
-          skin={{ id: 'winter', name: '冬装', presentations: [], semanticFallbacks: [] }}
-          actions={actions}
-          selectedActionId="idle-main"
-          presentationSource={null}
-          disabled
-          onChange={vi.fn()}
-        />
       </>
     );
 
     expect((screen.getByLabelText('新增动作标签') as HTMLInputElement).disabled)
       .toBe(true);
     expect((screen.getByLabelText('动作建议持续时间（毫秒）') as HTMLInputElement).disabled)
-      .toBe(true);
-    expect((screen.getByLabelText('idle 语义回退') as HTMLSelectElement).disabled)
       .toBe(true);
   });
 

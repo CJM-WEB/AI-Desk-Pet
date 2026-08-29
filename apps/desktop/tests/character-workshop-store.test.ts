@@ -1425,6 +1425,7 @@ describe('角色工作室 Zustand 状态层', () => {
     const publishCharacter = vi.fn<CharacterWorkshopApi['publishCharacter']>(async () => undefined);
     const sourceAssetId = '123e4567-e89b-42d3-a456-426614174000';
     const loadedDraft = draft('default', 'AI Pet 默认角色');
+    loadedDraft.defaultSkinId = 'winter';
     loadedDraft.actions[0]!.semantic = 'carry';
     loadedDraft.skins[0]!.presentations = [{
       actionId: 'idle-main',
@@ -1485,6 +1486,11 @@ describe('角色工作室 Zustand 状态层', () => {
     });
     await store.getState().load();
 
+    expect(store.getState()).toMatchObject({
+      selectedSkinId: 'winter',
+      selectedActionId: 'idle-main'
+    });
+
     await store.getState().compileAndPublish();
 
     expect(compileAction).toHaveBeenCalledTimes(2);
@@ -1493,7 +1499,7 @@ describe('角色工作室 Zustand 状态层', () => {
     expect(input.manifest).toMatchObject({
       version: 2,
       compilerVersion: 'character-atlas-compiler-v2',
-      defaultSkinId: 'default',
+      defaultSkinId: 'winter',
       skins: [{
         id: 'default',
         presentations: [{
@@ -1512,6 +1518,7 @@ describe('角色工作室 Zustand 状态层', () => {
         }]
       }]
     });
+    expect(input.manifest.skins.map(skin => skin.id)).toEqual(['default', 'winter']);
     expect(() => characterManifestV2Schema.parse(input.manifest)).not.toThrow();
   });
 

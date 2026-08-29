@@ -205,22 +205,39 @@ export async function materializeCharacterWorkshopFixtures(
     action('safe-carry-action', '搬运', 'carry'),
     action('safe-wave-action', '挥手', 'celebrate')
   ];
+  /** 双皮肤夹具复用同一安全素材，仅用默认皮肤的播放属性证明兼容链未丢字段。 */
+  const presentations = (
+    assetId: string,
+    useWinterPlayback = false
+  ): CharacterActionPresentationV2[] => actions.map(item => ({
+    ...presentation(item.id, assetId),
+    ...(useWinterPlayback && item.id === 'safe-idle-action'
+      ? { playbackRate: 1.5, mirrorX: true }
+      : {})
+  }));
   const draft: CharacterDraftV2 = {
     version: 2,
     id: characterId,
     name: 'E2E 安全角色',
     thumbnailAssetId: source.assetId,
     identity,
-    defaultSkinId: 'default',
+    defaultSkinId: 'winter',
     defaultStateId: 'idle',
-    skins: [{
-      id: 'default',
-      name: '默认皮肤',
-      presentations: [
-        ...actions.map(item => presentation(item.id, source.assetId))
-      ],
-      semanticFallbacks: []
-    }],
+    skins: [
+      {
+        id: 'default',
+        name: '默认皮肤',
+        presentations: presentations(source.assetId),
+        semanticFallbacks: []
+      },
+      {
+        id: 'winter',
+        name: '冬装',
+        description: '用于验证隐藏编辑界面后的多皮肤兼容。',
+        presentations: presentations(source.assetId, true),
+        semanticFallbacks: []
+      }
+    ],
     states,
     actions
   };
@@ -230,23 +247,37 @@ export async function materializeCharacterWorkshopFixtures(
     name: 'E2E 安全角色',
     thumbnailAssetId: 'atlas',
     identity,
-    defaultSkinId: 'default',
+    defaultSkinId: 'winter',
     defaultStateId: 'idle',
-    skins: [{
-      id: 'default',
-      name: '默认皮肤',
-      presentations: [
-        ...actions.map(item => ({
-          ...presentation(item.id, 'atlas'),
+    skins: [
+      {
+        id: 'default',
+        name: '默认皮肤',
+        presentations: presentations('atlas').map(item => ({
+          ...item,
           geometry: {
             visualBounds: { x: 0, y: 0, width: 1, height: 1 },
             groundAnchor: { x: 0.5, y: 1 },
             resourceRevision: sha256(bytes)
           }
-        }))
-      ],
-      semanticFallbacks: []
-    }],
+        })),
+        semanticFallbacks: []
+      },
+      {
+        id: 'winter',
+        name: '冬装',
+        description: '用于验证隐藏编辑界面后的多皮肤兼容。',
+        presentations: presentations('atlas', true).map(item => ({
+          ...item,
+          geometry: {
+            visualBounds: { x: 0, y: 0, width: 1, height: 1 },
+            groundAnchor: { x: 0.5, y: 1 },
+            resourceRevision: sha256(bytes)
+          }
+        })),
+        semanticFallbacks: []
+      }
+    ],
     states,
     actions,
     compilerVersion: 'e2e-fixture-1',

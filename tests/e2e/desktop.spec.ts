@@ -2992,6 +2992,183 @@ test.describe('角色工作台布局分隔器', () => {
   });
 });
 
+test.describe('角色工作台双皮肤包兼容', () => {
+  const workspaceRoot = resolve(process.cwd());
+  const characterId = 'e2e-safe-character';
+  let fixtureModule: ElectronFixtureModule;
+
+  test.beforeAll(async () => {
+    fixtureModule = await loadElectronFixtureModule();
+  });
+
+  const openWorkshop = async (fixture: AppFixture): Promise<Page> => {
+    const pet = await waitForRendererPage(fixture, 'pet', 15_000);
+    await pet.evaluate(() => window.myself.openCharacterWorkshop());
+    return waitForRendererPage(fixture, 'characters', 15_000);
+  };
+
+  const importFixtureCharacter = async (workshop: Page): Promise<void> => {
+    await workshop.getByRole('button', { name: '导入角色包' }).click({
+      timeout: 15_000
+    });
+    const character = workshop.locator(`[data-character-id="${characterId}"]`);
+    await expect(character).toBeVisible({ timeout: 15_000 });
+    await character.getByRole('button', { name: /^E2E 安全角色/u }).click({
+      timeout: 10_000
+    });
+  };
+
+  const selectIdleAction = async (workshop: Page): Promise<void> => {
+    const idleState = workshop.getByRole('list', { name: '状态与动作列表' })
+      .locator(':scope > li')
+      .filter({ has: workshop.getByRole('button', { name: /^待机/u }) })
+      .first();
+    await idleState.getByRole('button', { name: /^待机/u }).first().click({
+      timeout: 10_000
+    });
+    await idleState.getByRole('list', { name: '待机动作' })
+      .getByRole('button', { name: /^待机/u })
+      .click({ timeout: 10_000 });
+  };
+
+  const readV2PackageState = async (fixture: AppFixture) => {
+    const root = join(fixture.userDataDirectory, 'characters', characterId);
+    const [draft, manifest] = await Promise.all([
+      readFile(join(root, 'draft', 'draft.json'), 'utf8'),
+      readFile(join(root, 'compiled', 'manifest.json'), 'utf8')
+    ]);
+    return {
+      draft: JSON.parse(draft) as {
+        defaultSkinId: string;
+        skins: Array<{ id: string }>;
+      },
+      manifest: JSON.parse(manifest) as {
+        defaultSkinId: string;
+        skins: Array<{
+          id: string;
+          presentations: Array<{
+            actionId: string;
+            playbackRate?: number;
+            mirrorX?: boolean;
+          }>;
+        }>;
+      }
+    };
+  };
+
+  const expectWinterPackageState = async (fixture: AppFixture): Promise<void> => {
+    const { draft, manifest } = await readV2PackageState(fixture);
+    expect(draft.defaultSkinId).toBe('winter');
+    expect(draft.skins.map(skin => skin.id)).toEqual(['default', 'winter']);
+    expect(manifest.defaultSkinId).toBe('winter');
+    expect(manifest.skins.map(skin => skin.id)).toEqual(['default', 'winter']);
+    expect(manifest.skins[1]?.presentations.find(
+      presentation => presentation.actionId === 'safe-idle-action'
+    )).toMatchObject({ playbackRate: 1.5, mirrorX: true });
+  };
+
+  const expectWinterRuntime = async (fixture: AppFixture): Promise<void> => {
+    const pet = await waitForRendererPage(fixture, 'pet', 15_000);
+    await expect.poll(async () => pet.evaluate(async () => {
+      const snapshot = await window.myself.getCharacterRuntimeSnapshot();
+      const idleAction = snapshot?.manifest.states
+        .find(state => state.id === 'idle')?.actions[0];
+      return {
+        activeCharacterId: snapshot?.activeCharacterId ?? null,
+        playbackRate: idleAction?.playbackRate ?? null,
+        mirrorX: idleAction?.mirrorX ?? null
+      };
+    }), { timeout: 15_000 }).toEqual({
+      activeCharacterId: characterId,
+      playbackRate: 1.5,
+      mirrorX: true
+    });
+  };
+
+  test('真实导入、编译、导出与回导保留双皮肤默认运行表现', async () => {
+    test.setTimeout(180_000);
+    const first = await fixtureModule.createElectronAppFixture({
+      workspaceRoot,
+      apiKey: runtimeDiagnosticKey(),
+      launchTimeoutMs: 15_000,
+      enableSoftwareRasterizer: true
+    });
+    try {
+      const workshop = await openWorkshop(first);
+      await importFixtureCharacter(workshop);
+      await expect(workshop.getByRole('heading', { name: '角色', exact: true }))
+        .toBeVisible();
+      await expect(workshop.getByRole('list', { name: '皮肤列表' })).toHaveCount(0);
+      await expect(workshop.getByRole('button', { name: '新增皮肤' })).toHaveCount(0);
+      await selectIdleAction(workshop);
+      const preview = workshop.locator('[data-preview-status]');
+      await expect(preview).toHaveAttribute('data-preview-status', 'ready');
+      await expect(preview).toHaveAttribute('data-preview-speed', '1.5');
+      await expect(preview).toHaveAttribute('data-preview-direction', 'left');
+
+      await workshop.getByRole('button', { name: '编译并发布' }).click();
+      await expect(workshop.getByText('运行版本已编译并发布。'))
+        .toBeVisible({ timeout: 15_000 });
+      await workshop.getByRole('button', {
+        name: '关闭工作台提示：运行版本已编译并发布。'
+      }).click();
+      await expectWinterPackageState(first);
+      await workshop.getByRole('button', { name: '启用角色' }).click();
+      await expect(workshop.getByText('角色已启用。')).toBeVisible({ timeout: 15_000 });
+      await workshop.getByRole('button', {
+        name: '关闭工作台提示：角色已启用。'
+      }).click();
+      await expectWinterRuntime(first);
+
+      await workshop.getByRole('button', { name: '导出角色包' }).click();
+      await expect(workshop.getByText('角色包已导出。')).toBeVisible({ timeout: 15_000 });
+      await workshop.getByRole('button', {
+        name: '关闭工作台提示：角色包已导出。'
+      }).click();
+      const exportedBytes = await readFile(first.characterExportDestination!);
+      expect(exportedBytes.byteLength).toBeGreaterThan(0);
+
+      // 同一 Electron 生命周期内删除已导入角色，再以刚导出的包回导，避免无关的二次启动成本。
+      // 该闭环需要连续两次选择安全包；默认 E2E 队列仍保留 safe→malicious 供安全用例使用。
+      await Promise.all([
+        writeFile(first.safeCharacterPackage!, exportedBytes),
+        writeFile(first.maliciousCharacterPackage!, exportedBytes)
+      ]);
+      await expect(Promise.all([
+        readFile(first.safeCharacterPackage!),
+        readFile(first.maliciousCharacterPackage!)
+      ])).resolves.toEqual([exportedBytes, exportedBytes]);
+      await workshop.locator('[data-character-id="builtin-default"] button')
+        .first()
+        .click({ timeout: 10_000 });
+      await workshop.getByRole('button', { name: '启用角色' }).click({
+        timeout: 10_000
+      });
+      await expect(workshop.getByText('角色已启用。')).toBeVisible({
+        timeout: 15_000
+      });
+      await workshop.getByRole('button', {
+        name: '关闭工作台提示：角色已启用。'
+      }).click();
+      await workshop.getByRole('button', { name: '删除 E2E 安全角色' }).click();
+      const deleteDialog = workshop.getByRole('dialog', {
+        name: '删除角色“E2E 安全角色”'
+      });
+      await deleteDialog.getByRole('button', { name: '确认删除' }).click();
+      await expect(workshop.locator(`[data-character-id="${characterId}"]`))
+        .toHaveCount(0);
+      await importFixtureCharacter(workshop);
+      await expectWinterPackageState(first);
+      await expect(workshop.getByRole('list', { name: '皮肤列表' })).toHaveCount(0);
+      await workshop.getByRole('button', { name: '启用角色' }).click();
+      await expect(workshop.getByText('角色已启用。')).toBeVisible({ timeout: 15_000 });
+      await expectWinterRuntime(first);
+    } finally {
+      await first.dispose();
+    }
+  });
+});
+
 test.describe('角色恢复', () => {
   const workspaceRoot = resolve(process.cwd());
   const targetId = 'e2e-safe-character';
@@ -3404,7 +3581,7 @@ test.describe('真实桌宠像素命中与左键拖拽', () => {
 });
 
 test.describe('真实角色工作室闭环', () => {
-  test('V2 人设、皮肤和精确表现重启后保留且导出回导等价', async () => {
+  test('V2 人设、状态动作和精确表现重启后保留且导出回导等价', async () => {
     test.setTimeout(300_000);
     const fixtureModule = await loadElectronFixtureModule();
 
@@ -3593,7 +3770,7 @@ test.describe('真实角色工作室闭环', () => {
       await expect(workshop.getByRole('button', { name: /^E2E 工作室角色/ }))
         .toBeVisible();
 
-      // 人设与皮肤均通过正式受控表单写入，后续由同一闭环验证持久化与包等价。
+      // 人设与动作表现通过正式受控表单写入，后续由同一闭环验证持久化与包等价。
       await workshop.getByRole('button', { name: '编辑角色人设' }).click();
       await workshop.getByLabel('角色描述').fill('喜欢整理桌面的伙伴');
       await workshop.getByLabel('角色背景').fill('从冬日窗边来到桌面的伙伴');
@@ -3602,15 +3779,6 @@ test.describe('真实角色工作室闭环', () => {
       await workshop.getByRole('group', { name: '性格标签' })
         .getByRole('textbox')
         .fill('细心');
-      await workshop.getByRole('button', { name: '新增皮肤' }).click();
-      await workshop.getByLabel('皮肤名称').fill('冬装');
-      await workshop.getByLabel('皮肤说明').fill('适合冬日桌面的保暖外观');
-      const winterSkinItem = workshop.getByRole('list', { name: '皮肤列表' })
-        .getByRole('listitem')
-        .filter({ hasText: '冬装' });
-      await winterSkinItem.getByRole('button', { name: '设为默认' }).click();
-      await expect(winterSkinItem).toContainText('默认皮肤');
-
       await workshop.getByRole('button', {
         name: '向“待机”添加动作'
       }).click();
@@ -3643,7 +3811,7 @@ test.describe('真实角色工作室闭环', () => {
       const configuredActionDeleteDialog = workshop.getByRole('dialog', {
         name: '删除动作“动作 1”'
       });
-      await expect(configuredActionDeleteDialog).toContainText('skins.1.presentations');
+      await expect(configuredActionDeleteDialog).toContainText('skins.0.presentations');
       await configuredActionDeleteDialog.getByRole('button', { name: '取消' }).click();
       await expect(configuredActionDeleteDialog).toHaveCount(0);
       await expect(idleActionDelete).toBeVisible();
@@ -3780,13 +3948,6 @@ test.describe('真实角色工作室闭环', () => {
       await expect(workshop.getByLabel('语言风格')).toHaveValue('温和而简洁');
       await expect(workshop.getByRole('group', { name: '性格标签' })
         .getByRole('textbox')).toHaveValue('细心');
-      const recoveredWinterSkin = workshop.getByRole('list', { name: '皮肤列表' })
-        .getByRole('listitem')
-        .filter({ hasText: '冬装' });
-      await expect(recoveredWinterSkin).toContainText('默认皮肤');
-      await recoveredWinterSkin.getByRole('button', { name: /冬装/ }).click();
-      await expect(workshop.getByLabel('皮肤说明'))
-        .toHaveValue('适合冬日桌面的保暖外观');
       await selectIdleAction(workshop, /^冬日待机/u, '重启恢复：选择待机动作');
       await expect(workshop.getByLabel('已导入素材')).toContainText('idle.png');
       await expect(workshop.getByLabel('动作名称'))
@@ -3849,13 +4010,6 @@ test.describe('真实角色工作室闭环', () => {
       await expect(workshop.getByLabel('语言风格')).toHaveValue('温和而简洁');
       await expect(workshop.getByRole('group', { name: '性格标签' })
         .getByRole('textbox')).toHaveValue('细心');
-      const importedWinterSkin = workshop.getByRole('list', { name: '皮肤列表' })
-        .getByRole('listitem')
-        .filter({ hasText: '冬装' });
-      await expect(importedWinterSkin).toContainText('默认皮肤');
-      await importedWinterSkin.getByRole('button', { name: /冬装/ }).click();
-      await expect(workshop.getByLabel('皮肤说明'))
-        .toHaveValue('适合冬日桌面的保暖外观');
       await selectIdleAction(workshop, /^动作 1/u, '隔离导入：选择待机动作');
       await expect(workshop.getByText('当前使用：当前皮肤精确表现')).toBeVisible();
       await expectExactIdlePresentation(workshop);

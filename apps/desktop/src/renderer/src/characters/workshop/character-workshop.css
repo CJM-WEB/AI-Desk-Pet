@@ -1298,7 +1298,7 @@
   min-width: 0;
 }
 
-/* V2 左栏延续现有列表层级，并为破坏性命令保留清晰的操作间距。 */
+/* 角色人设入口延续左栏既有的可聚焦按钮形态。 */
 .identity-select-command {
   min-height: 44px;
   margin: 8px 12px;
@@ -1310,64 +1310,6 @@
   font-weight: 700;
 }
 
-.skin-list-section {
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
-  border-top: 1px solid var(--workshop-border);
-}
-
-.skin-list-heading {
-  min-height: 36px;
-}
-
-.skin-list {
-  min-height: 0;
-  margin: 0;
-  padding: 0;
-  overflow-y: auto;
-  list-style: none;
-}
-
-.skin-list > li {
-  display: flex;
-  align-items: center;
-  border-bottom: 1px solid #edf0f0;
-}
-
-.skin-select {
-  min-width: 0;
-  min-height: 44px;
-  flex: 1;
-  display: grid;
-  gap: 2px;
-  padding: 5px 12px;
-  border: 0;
-  color: inherit;
-  background: transparent;
-  font: inherit;
-  text-align: left;
-}
-
-.skin-select[aria-pressed="true"] {
-  color: #075f59;
-  background: var(--workshop-teal-soft);
-  font-weight: 700;
-}
-
-.skin-select small {
-  color: var(--workshop-muted);
-  font-size: 11px;
-}
-
-.skin-row-commands {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding-right: 8px;
-}
-
-.skin-row-commands button,
 .inspector-form button,
 .recovery-actions button {
   min-height: 44px;
@@ -1380,13 +1322,7 @@
   cursor: pointer;
 }
 
-.skin-row-commands .danger-icon {
-  min-width: 44px;
-  padding: 0;
-  color: var(--workshop-danger);
-}
-
-/* 四类 Inspector 共享同一表单节奏，不为 V2 另起视觉系统。 */
+/* 三类 Inspector 共享同一表单节奏，不为 V2 另起视觉系统。 */
 .inspector-form {
   display: grid;
   gap: 16px;
@@ -1396,8 +1332,7 @@
 .inspector-form label,
 .string-list-editor,
 .condition-catalog,
-.tag-editor,
-.semantic-fallback-editor {
+.tag-editor {
   display: grid;
   gap: 6px;
   color: #4a5b58;
@@ -1434,8 +1369,7 @@
 
 .string-list-editor,
 .condition-catalog,
-.tag-editor,
-.semantic-fallback-editor {
+.tag-editor {
   margin: 0;
   padding: 12px;
   border: 1px solid #dce3e2;
@@ -1469,11 +1403,6 @@
   grid-template-columns: minmax(0, 1fr) auto;
   align-items: end;
   gap: 8px;
-}
-
-.semantic-fallback-editor {
-  display: grid;
-  gap: 10px;
 }
 
 /* 状态引用保持紧凑分组，同时为复选框整行提供足够的点击区域。 */

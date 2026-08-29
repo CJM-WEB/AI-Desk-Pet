@@ -43,8 +43,6 @@ import {
 } from '../store/character-workshop-store';
 import { CharacterList } from './CharacterList';
 import { CharacterIdentityInspector } from './CharacterIdentityInspector';
-import { SkinList } from './SkinList';
-import { SkinInspector } from './SkinInspector';
 import { StateInspector } from './StateInspector';
 import { StateList } from './StateList';
 import { ActionInspector } from './ActionInspector';
@@ -151,13 +149,6 @@ type PendingConfigurationDelete =
     }
   | {
       kind: 'state';
-      id: string;
-      name: string;
-      safeReferencePaths: string[];
-      blockingReferencePaths: string[];
-    }
-  | {
-      kind: 'skin';
       id: string;
       name: string;
       safeReferencePaths: string[];
@@ -304,9 +295,6 @@ export function CharacterWorkshopWorkspace(
   const selectedCharacter = state.characters.find(
     character => character.id === state.selectedCharacterId
   );
-  const selectedSkin = state.draft?.skins.find(
-    skin => skin.id === state.selectedSkinId
-  ) ?? null;
   const selectedState = state.draft?.states.find(
     candidate => candidate.id === state.selectedStateId
   ) ?? null;
@@ -326,14 +314,6 @@ export function CharacterWorkshopWorkspace(
     state.selectedSkinId,
     state.selectedActionId
   ]);
-  const selectedPresentationSource = useMemo(() => {
-    if (!state.draft || !state.selectedSkinId || !state.selectedActionId) return null;
-    return resolveCharacterPresentation(
-      state.draft,
-      state.selectedSkinId,
-      state.selectedActionId
-    )?.source ?? null;
-  }, [state.draft, state.selectedSkinId, state.selectedActionId]);
   const selectedPresentation = useMemo(() => {
     if (!state.draft || !state.selectedSkinId || !state.selectedActionId) return null;
     return resolveCharacterPresentation(
@@ -499,12 +479,6 @@ export function CharacterWorkshopWorkspace(
     openReferenceDelete('state', stateId, definition.name, state.requestRemoveState(stateId));
   }
 
-  function requestDeleteSkin(skinId: string): void {
-    const definition = state.draft?.skins.find(candidate => candidate.id === skinId);
-    if (!definition) return;
-    openReferenceDelete('skin', skinId, definition.name, state.requestRemoveSkin(skinId));
-  }
-
   /** 单帧删除先走 Store 引用审计；排序、复制等批量变更仍沿用完整帧数组更新。 */
   function updateTimelineFrames(frames: DraftActionClip['frames']): void {
     const previousFrames = action ? ensureStableFrameIds(action.frames) : [];
@@ -552,8 +526,6 @@ export function CharacterWorkshopWorkspace(
       state.requestRemoveAction(pendingConfigurationDelete.id, true);
     } else if (pendingConfigurationDelete.kind === 'state') {
       state.requestRemoveState(pendingConfigurationDelete.id, true);
-    } else if (pendingConfigurationDelete.kind === 'skin') {
-      state.requestRemoveSkin(pendingConfigurationDelete.id, true);
     } else if (pendingConfigurationDelete.kind === 'frame') {
       state.requestRemoveCurrentFrame(pendingConfigurationDelete.id, true);
     } else {
@@ -692,7 +664,7 @@ export function CharacterWorkshopWorkspace(
         <aside className="workshop-sidebar" aria-label="角色与状态">
           <section className="workshop-section character-section">
             <div className="section-heading">
-              <h2>角色与皮肤</h2>
+              <h2>角色</h2>
               <small>{state.characters.length}</small>
             </div>
             {state.loadStatus === 'loading' ? (
@@ -708,27 +680,15 @@ export function CharacterWorkshopWorkspace(
               />
             )}
             {state.draft ? (
-              <>
-                <button
-                  className="identity-select-command"
-                  type="button"
-                  disabled={busy}
-                  aria-pressed={state.selectedEntity.kind === 'identity'}
-                  onClick={state.selectIdentity}
-                >
-                  编辑角色人设
-                </button>
-                <SkinList
-                  skins={state.draft.skins}
-                  defaultSkinId={state.draft.defaultSkinId}
-                  selectedSkinId={state.selectedSkinId}
-                  disabled={busy}
-                  onAdd={() => state.addSkin(`新皮肤 ${state.draft!.skins.length + 1}`)}
-                  onSelect={state.selectSkin}
-                  onSetDefault={state.setDefaultSkin}
-                  onRequestDelete={requestDeleteSkin}
-                />
-              </>
+              <button
+                className="identity-select-command"
+                type="button"
+                disabled={busy}
+                aria-pressed={state.selectedEntity.kind === 'identity'}
+                onClick={state.selectIdentity}
+              >
+                编辑角色人设
+              </button>
             ) : null}
             {state.loadStatus === 'error' && !migrationRecovery ? (
               <button
@@ -885,11 +845,11 @@ export function CharacterWorkshopWorkspace(
                 ? '迁移恢复'
                 : state.selectedEntity.kind === 'identity'
                   ? '角色人设'
-                  : state.selectedEntity.kind === 'skin'
-                    ? '皮肤属性'
-                    : state.selectedEntity.kind === 'state'
+                  : state.selectedEntity.kind === 'state'
                       ? '状态属性'
-                      : '动作属性'}
+                      : state.selectedEntity.kind === 'action'
+                        ? '动作属性'
+                        : '属性'}
             </h2>
           </div>
           {migrationRecovery && selectedCharacter ? (
@@ -919,15 +879,6 @@ export function CharacterWorkshopWorkspace(
               identity={state.draft.identity}
               disabled={busy}
               onChange={state.updateIdentity}
-            />
-          ) : state.selectedEntity.kind === 'skin' && selectedSkin ? (
-            <SkinInspector
-              skin={selectedSkin}
-              actions={state.draft?.actions ?? []}
-              selectedActionId={state.selectedActionId}
-              presentationSource={selectedPresentationSource}
-              disabled={busy}
-              onChange={patch => state.updateSkin(selectedSkin.id, patch)}
             />
           ) : state.selectedEntity.kind === 'state' && selectedState ? (
             <StateInspector
@@ -1105,9 +1056,7 @@ export function CharacterWorkshopWorkspace(
                   ? '动作'
                   : pendingConfigurationDelete.kind === 'state'
                     ? '状态'
-                    : pendingConfigurationDelete.kind === 'skin'
-                      ? '皮肤'
-                      : '帧'}“${pendingConfigurationDelete.name}”`}
+                    : '帧'}“${pendingConfigurationDelete.name}”`}
             </h2>
             <p>操作会清理以下安全引用；阻塞引用必须先重选，系统不会自动猜测替代项。</p>
             {pendingConfigurationDelete.safeReferencePaths.length > 0 ? (
