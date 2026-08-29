@@ -2834,6 +2834,117 @@ test.describe('固定尺寸视觉几何', () => {
 
 });
 
+test.describe('角色工作台布局分隔器', () => {
+  const workspaceRoot = resolve(process.cwd());
+  let fixtureModule: ElectronFixtureModule;
+
+  test.beforeAll(async () => {
+    fixtureModule = await loadElectronFixtureModule();
+  });
+
+  const openWorkshop = async (fixture: AppFixture): Promise<Page> => {
+    const pet = await waitForRendererPage(fixture, 'pet', 15_000);
+    await pet.evaluate(() => window.myself.openCharacterWorkshop());
+    const workshop = await waitForRendererPage(fixture, 'characters', 15_000);
+    await expect(workshop.getByRole('separator')).toHaveCount(4);
+    return workshop;
+  };
+
+  const dragSplitter = async (
+    page: Page,
+    name: string,
+    delta: Readonly<{ x: number; y: number }>
+  ): Promise<void> => {
+    const splitter = page.getByRole('separator', { name });
+    const box = await splitter.boundingBox();
+    if (!box) throw new Error(`分隔器不可见：${name}`);
+    const start = { x: box.x + box.width / 2, y: box.y + box.height / 2 };
+    await page.mouse.move(start.x, start.y);
+    await page.mouse.down();
+    await page.mouse.move(start.x + delta.x, start.y + delta.y, { steps: 4 });
+    await page.mouse.up();
+  };
+
+  test('四条分隔器真实拖动、重开恢复且窄屏回退无空轨道', async () => {
+    test.setTimeout(90_000);
+    const fixture = await fixtureModule.createElectronAppFixture({
+      workspaceRoot,
+      apiKey: runtimeDiagnosticKey(),
+      launchTimeoutMs: 15_000,
+      enableSoftwareRasterizer: true
+    });
+
+    try {
+      const workshop = await openWorkshop(fixture);
+      const before = await workshop.evaluate(() => {
+        const rect = (selector: string) => document.querySelector(selector)!.getBoundingClientRect();
+        return {
+          left: rect('.workshop-sidebar').width,
+          right: rect('.workshop-inspector').width,
+          character: rect('.character-section').height,
+          preview: rect('.preview-workspace').height
+        };
+      });
+
+      await dragSplitter(workshop, '调整角色侧栏宽度', { x: 24, y: 0 });
+      await dragSplitter(workshop, '调整属性侧栏宽度', { x: 16, y: 0 });
+      await dragSplitter(workshop, '调整角色区与状态区高度', { x: 0, y: 24 });
+      await dragSplitter(workshop, '调整预览区与时间轴高度', { x: 0, y: -24 });
+
+      const after = await workshop.evaluate(() => {
+        const columns = document.querySelector<HTMLElement>('.workshop-columns')!;
+        const rect = (selector: string) => document.querySelector(selector)!.getBoundingClientRect();
+        return {
+          left: rect('.workshop-sidebar').width,
+          right: rect('.workshop-inspector').width,
+          character: rect('.character-section').height,
+          preview: rect('.preview-workspace').height,
+          values: [
+            '--workshop-left-width',
+            '--workshop-right-width',
+            '--workshop-sidebar-top-height',
+            '--workshop-stage-height'
+          ].map(name => columns.style.getPropertyValue(name))
+        };
+      });
+      expect(after.left).toBeGreaterThan(before.left + 8);
+      expect(after.right).toBeLessThan(before.right - 8);
+      expect(after.character).toBeGreaterThan(before.character + 8);
+      expect(after.preview).toBeLessThan(before.preview - 8);
+
+      const workshopClosed = workshop.waitForEvent('close');
+      await workshop.evaluate(() => window.close());
+      await workshopClosed;
+      const reopened = await openWorkshop(fixture);
+      await expect.poll(() => reopened.evaluate(() => {
+        const columns = document.querySelector<HTMLElement>('.workshop-columns')!;
+        return [
+          '--workshop-left-width',
+          '--workshop-right-width',
+          '--workshop-sidebar-top-height',
+          '--workshop-stage-height'
+        ].map(name => columns.style.getPropertyValue(name));
+      })).toEqual(after.values);
+
+      await reopened.evaluate(() => window.resizeTo(900, 620));
+      await expect(reopened.getByRole('separator')).toHaveCount(0);
+      await expect(reopened.locator('.workshop-inspector')).toBeVisible();
+      const narrowTracks = await reopened.locator('.workshop-columns').evaluate(element => (
+        getComputedStyle(element).gridTemplateColumns
+      ));
+      expect(narrowTracks.split(' ').filter(Boolean)).toHaveLength(2);
+
+      await reopened.evaluate(() => window.resizeTo(1_120, 760));
+      await expect(reopened.getByRole('separator')).toHaveCount(4);
+      await expect.poll(() => reopened.locator('.workshop-columns').evaluate(element => (
+        (element as HTMLElement).style.getPropertyValue('--workshop-left-width')
+      ))).toBe(after.values[0]);
+    } finally {
+      await fixture.dispose();
+    }
+  });
+});
+
 test.describe('角色恢复', () => {
   const workspaceRoot = resolve(process.cwd());
   const targetId = 'e2e-safe-character';

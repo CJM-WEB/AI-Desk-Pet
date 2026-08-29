@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
-import { afterEach, describe, expect, test, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { StrictMode } from 'react';
 import type { CharacterDraftV2 } from '@myself/character-runtime';
 import type { CharacterSummaryDto } from '../src/shared/character-ipc';
@@ -44,8 +44,23 @@ const characters: CharacterSummaryDto[] = [{
   migrationRecoveryAvailable: false
 }];
 
+beforeEach(() => {
+  Object.defineProperties(HTMLDialogElement.prototype, {
+    showModal: {
+      configurable: true,
+      value(this: HTMLDialogElement) { this.open = true; }
+    },
+    close: {
+      configurable: true,
+      value(this: HTMLDialogElement) { this.open = false; }
+    }
+  });
+});
+
 afterEach(() => {
   cleanup();
+  Reflect.deleteProperty(HTMLDialogElement.prototype, 'showModal');
+  Reflect.deleteProperty(HTMLDialogElement.prototype, 'close');
 });
 
 type CharacterWorkshopViewApi = Parameters<typeof CharacterWorkshopView>[0]['api'];
@@ -72,6 +87,10 @@ function workshopApi(
       fallbackErrorCode: null,
       issues: []
     })),
+    getWorkshopLayout: vi.fn(async () => ({
+      leftWidth: 300, rightWidth: 300, sidebarTopHeight: 290, stageHeight: 460
+    })),
+    saveWorkshopLayout: vi.fn(async value => value),
     onCharacterWorkshopFlushRequested: vi.fn(() => vi.fn()),
     ...overrides
   };

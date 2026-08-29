@@ -24,7 +24,10 @@ import type {
 
 type CharacterWorkshopViewApi = CharacterWorkshopApi & Pick<
   MyselfApi,
-  'onCharacterWorkshopFlushRequested' | 'getCharacterRecoverySnapshot'
+  | 'onCharacterWorkshopFlushRequested'
+  | 'getCharacterRecoverySnapshot'
+  | 'getWorkshopLayout'
+  | 'saveWorkshopLayout'
 >;
 
 const showModal = vi.fn(function (this: HTMLDialogElement): void {
@@ -115,7 +118,11 @@ function apiDouble(): CharacterWorkshopViewApi {
     getCharacterRecoverySnapshot: vi.fn(async () => ({
       fallbackErrorCode: null,
       issues: []
-    }))
+    })),
+    getWorkshopLayout: vi.fn(async () => ({
+      leftWidth: 300, rightWidth: 300, sidebarTopHeight: 290, stageHeight: 460
+    })),
+    saveWorkshopLayout: vi.fn(async value => value)
   };
 }
 
@@ -492,6 +499,9 @@ describe('角色工作室 SSR 外壳', () => {
     expect(css).toMatch(
       /\.workshop-columns\s*\{[^}]*grid-row:\s*3;/su
     );
+    expect(css).toMatch(
+      /\.workshop-columns\s*\{[^}]*grid-template-columns:[^}]*var\(--workshop-left-width[^}]*8px[^}]*minmax\(380px,\s*1fr\)[^}]*8px[^}]*var\(--workshop-right-width/su
+    );
     expect(globalCss).toMatch(
       /\.transient-toast-layer\s*\{[^}]*position:\s*fixed;[^}]*z-index:\s*50;[^}]*top:\s*68px;[^}]*right:\s*16px;[^}]*pointer-events:\s*none;/su
     );
@@ -506,6 +516,9 @@ describe('角色工作室 SSR 外壳', () => {
     );
     expect(css).toMatch(
       /@media \(max-width:\s*920px\)[\s\S]*?\.workshop-columns\s*\{[^}]*overflow-y:\s*auto;/su
+    );
+    expect(css).toMatch(
+      /@media \(max-width:\s*920px\)[\s\S]*?\.workshop-splitter\s*\{[^}]*display:\s*none;/su
     );
   });
 

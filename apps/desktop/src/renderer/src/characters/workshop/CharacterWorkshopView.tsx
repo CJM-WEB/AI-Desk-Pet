@@ -3,8 +3,10 @@ import {
   useMemo,
   useRef,
   useState,
+  type CSSProperties,
   type FormEvent,
-  type KeyboardEvent
+  type KeyboardEvent,
+  type RefObject
 } from 'react';
 import {
   Box,
@@ -24,6 +26,10 @@ import {
   type DraftActionClip
 } from '@myself/character-runtime';
 import type { MyselfApi } from '../../../../shared/myself-api';
+import {
+  DEFAULT_WORKSHOP_LAYOUT,
+  type WorkshopLayoutSettings
+} from '../../../../shared/workshop-layout-ipc';
 import type {
   CharacterRecoveryIssueDto,
   CharacterRecoverySnapshotDto
@@ -54,6 +60,20 @@ import {
   type PreviewState
 } from './PreviewControls';
 import { useModalDialog } from './use-modal-dialog';
+import { WorkshopSplitter } from './WorkshopSplitter';
+import {
+  clampWorkshopLayout,
+  WORKSHOP_CENTER_MIN,
+  WORKSHOP_LEFT_MIN,
+  WORKSHOP_RIGHT_MIN,
+  WORKSHOP_SIDEBAR_BOTTOM_MIN,
+  WORKSHOP_SIDEBAR_TOP_MIN,
+  WORKSHOP_SPLITTER_SIZE,
+  WORKSHOP_STAGE_HEADER_HEIGHT,
+  WORKSHOP_STAGE_MIN,
+  WORKSHOP_TIMELINE_MIN,
+  type WorkshopLayoutBounds
+} from './workshop-layout';
 import { AtlasImportPanel } from './AtlasImportPanel';
 import {
   TransientToastLayer,
@@ -73,7 +93,10 @@ function workshopToastDurationMs(toast: TransientToast): 3000 | 6000 {
 export interface CharacterWorkshopViewProps {
   api: CharacterWorkshopApi & Pick<
     MyselfApi,
-    'onCharacterWorkshopFlushRequested' | 'getCharacterRecoverySnapshot'
+    | 'onCharacterWorkshopFlushRequested'
+    | 'getCharacterRecoverySnapshot'
+    | 'getWorkshopLayout'
+    | 'saveWorkshopLayout'
   >;
 }
 
@@ -83,6 +106,12 @@ export interface CharacterWorkshopWorkspaceProps {
   pendingDeleteCharacterId?: string | null;
   recoveryIssues?: readonly CharacterRecoveryIssueDto[];
   recoveryLoadFailed?: boolean;
+  layout?: WorkshopLayoutSettings;
+  layoutBounds?: WorkshopLayoutBounds;
+  columnsRef?: RefObject<HTMLDivElement | null>;
+  layoutNotice?: string | null;
+  onLayoutChange?(key: keyof WorkshopLayoutSettings, value: number): void;
+  onLayoutCommit?(key: keyof WorkshopLayoutSettings, value: number): void;
 }
 
 function currentAction(state: CharacterWorkshopState): DraftActionClip | null {
@@ -212,6 +241,41 @@ export function CharacterWorkshopWorkspace(
   props: CharacterWorkshopWorkspaceProps
 ) {
   const { state } = props;
+  const layout = props.layout ?? DEFAULT_WORKSHOP_LAYOUT;
+  const layoutBounds = props.layoutBounds ?? { width: 1_120, height: 659 };
+  const onLayoutChange = props.onLayoutChange ?? (() => undefined);
+  const onLayoutCommit = props.onLayoutCommit ?? (() => undefined);
+  const leftMax = Math.max(
+    WORKSHOP_LEFT_MIN,
+    Math.floor(layoutBounds.width)
+      - (WORKSHOP_SPLITTER_SIZE * 2)
+      - WORKSHOP_CENTER_MIN
+      - layout.rightWidth
+  );
+  const rightMax = Math.max(
+    WORKSHOP_RIGHT_MIN,
+    Math.floor(layoutBounds.width)
+      - (WORKSHOP_SPLITTER_SIZE * 2)
+      - WORKSHOP_CENTER_MIN
+      - layout.leftWidth
+  );
+  const sidebarTopMax = Math.max(
+    WORKSHOP_SIDEBAR_TOP_MIN,
+    Math.floor(layoutBounds.height) - WORKSHOP_SPLITTER_SIZE - WORKSHOP_SIDEBAR_BOTTOM_MIN
+  );
+  const stageMax = Math.max(
+    WORKSHOP_STAGE_MIN,
+    Math.floor(layoutBounds.height)
+      - WORKSHOP_STAGE_HEADER_HEIGHT
+      - WORKSHOP_SPLITTER_SIZE
+      - WORKSHOP_TIMELINE_MIN
+  );
+  const layoutStyle: CSSProperties & Record<`--workshop-${string}`, string> = {
+    '--workshop-left-width': `${layout.leftWidth}px`,
+    '--workshop-right-width': `${layout.rightWidth}px`,
+    '--workshop-sidebar-top-height': `${layout.sidebarTopHeight}px`,
+    '--workshop-stage-height': `${layout.stageHeight}px`
+  };
   const [createOpen, setCreateOpen] = useState(false);
   const [characterName, setCharacterName] = useState('');
   const [internalPendingDelete, setInternalPendingDelete] = useState<string | null>(null);
@@ -619,7 +683,11 @@ export function CharacterWorkshopWorkspace(
         );
       })}
 
-      <div className="workshop-columns">
+      {props.layoutNotice ? (
+        <p className="workshop-layout-notice" role="status">{props.layoutNotice}</p>
+      ) : null}
+
+      <div className="workshop-columns" ref={props.columnsRef} style={layoutStyle}>
         <aside className="workshop-sidebar" aria-label="角色与状态">
           <section className="workshop-section character-section">
             <div className="section-heading">
@@ -672,6 +740,15 @@ export function CharacterWorkshopWorkspace(
               </button>
             ) : null}
           </section>
+          <WorkshopSplitter
+            label="调整角色区与状态区高度"
+            orientation="horizontal"
+            value={layout.sidebarTopHeight}
+            min={WORKSHOP_SIDEBAR_TOP_MIN}
+            max={sidebarTopMax}
+            onChange={value => onLayoutChange('sidebarTopHeight', value)}
+            onCommit={value => onLayoutCommit('sidebarTopHeight', value)}
+          />
           <section className="workshop-section state-section">
             <div className="section-heading">
               <h2>状态与动作</h2>
@@ -701,6 +778,16 @@ export function CharacterWorkshopWorkspace(
             />
           </section>
         </aside>
+
+        <WorkshopSplitter
+          label="调整角色侧栏宽度"
+          orientation="vertical"
+          value={layout.leftWidth}
+          min={WORKSHOP_LEFT_MIN}
+          max={leftMax}
+          onChange={value => onLayoutChange('leftWidth', value)}
+          onCommit={value => onLayoutCommit('leftWidth', value)}
+        />
 
         <section className="workshop-stage" aria-labelledby="preview-heading">
           <div className="stage-heading">
@@ -751,6 +838,15 @@ export function CharacterWorkshopWorkspace(
               }}
             />
           </div>
+          <WorkshopSplitter
+            label="调整预览区与时间轴高度"
+            orientation="horizontal"
+            value={layout.stageHeight}
+            min={WORKSHOP_STAGE_MIN}
+            max={stageMax}
+            onChange={value => onLayoutChange('stageHeight', value)}
+            onCommit={value => onLayoutCommit('stageHeight', value)}
+          />
           {action ? (
             <ActionTimeline
               frames={action.frames}
@@ -769,6 +865,17 @@ export function CharacterWorkshopWorkspace(
             <div className="timeline-empty">当前没有可编辑动作</div>
           )}
         </section>
+
+        <WorkshopSplitter
+          label="调整属性侧栏宽度"
+          orientation="vertical"
+          value={layout.rightWidth}
+          min={WORKSHOP_RIGHT_MIN}
+          max={rightMax}
+          pointerDirection={-1}
+          onChange={value => onLayoutChange('rightWidth', value)}
+          onCommit={value => onLayoutCommit('rightWidth', value)}
+        />
 
         <aside className="workshop-inspector" aria-labelledby="properties-heading">
           <div className="section-heading">
@@ -1135,8 +1242,18 @@ export function CharacterWorkshopView(props: CharacterWorkshopViewProps) {
     CharacterRecoverySnapshotDto | null
   >(null);
   const [recoveryLoadFailed, setRecoveryLoadFailed] = useState(false);
+  const [layout, setLayout] = useState<WorkshopLayoutSettings>(DEFAULT_WORKSHOP_LAYOUT);
+  const [layoutBounds, setLayoutBounds] = useState<WorkshopLayoutBounds>({
+    width: 1_120,
+    height: 659
+  });
+  const [layoutNotice, setLayoutNotice] = useState<string | null>(null);
+  const columnsRef = useRef<HTMLDivElement>(null);
+  const layoutBoundsRef = useRef(layoutBounds);
+  const preferredLayoutRef = useRef<WorkshopLayoutSettings>(DEFAULT_WORKSHOP_LAYOUT);
   // 同一挂载生命周期复用读取，避免 React StrictMode 重放 effect 时重复 IPC。
   const recoverySnapshotPromiseRef = useRef<Promise<CharacterRecoverySnapshotDto> | null>(null);
+  const layoutPromiseRef = useRef<Promise<WorkshopLayoutSettings> | null>(null);
 
   useEffect(() => {
     let active = true;
@@ -1146,10 +1263,18 @@ export function CharacterWorkshopView(props: CharacterWorkshopViewProps) {
     );
     const recoverySnapshotPromise = recoverySnapshotPromiseRef.current
       ??= props.api.getCharacterRecoverySnapshot();
+    const layoutPromise = layoutPromiseRef.current ??= props.api.getWorkshopLayout();
     void recoverySnapshotPromise.then(snapshot => {
       if (active) setRecoverySnapshot(snapshot);
     }).catch(() => {
       if (active) setRecoveryLoadFailed(true);
+    });
+    void layoutPromise.then(value => {
+      if (!active) return;
+      preferredLayoutRef.current = value;
+      setLayout(clampWorkshopLayout(value, layoutBoundsRef.current));
+    }).catch(() => {
+      if (active) setLayoutNotice('工作台布局暂时无法读取，已使用默认布局。');
     });
     return () => {
       active = false;
@@ -1157,6 +1282,38 @@ export function CharacterWorkshopView(props: CharacterWorkshopViewProps) {
       dispose();
     };
   }, [props.api, store]);
+
+  useEffect(() => {
+    const columns = columnsRef.current;
+    if (!columns || typeof ResizeObserver === 'undefined') return;
+    const observer = new ResizeObserver(entries => {
+      const contentRect = entries[0]?.contentRect;
+      if (!contentRect) return;
+      const nextBounds = { width: contentRect.width, height: contentRect.height };
+      layoutBoundsRef.current = nextBounds;
+      setLayoutBounds(nextBounds);
+      setLayout(clampWorkshopLayout(preferredLayoutRef.current, nextBounds));
+    });
+    observer.observe(columns);
+    return () => observer.disconnect();
+  }, []);
+
+  const changeLayout = (key: keyof WorkshopLayoutSettings, value: number) => {
+    setLayout(current => clampWorkshopLayout({ ...current, [key]: value }, layoutBoundsRef.current));
+  };
+
+  const commitLayout = (key: keyof WorkshopLayoutSettings, value: number) => {
+    const next = clampWorkshopLayout(
+      { ...preferredLayoutRef.current, [key]: value },
+      layoutBoundsRef.current
+    );
+    preferredLayoutRef.current = next;
+    setLayout(next);
+    setLayoutNotice(null);
+    void props.api.saveWorkshopLayout(next).catch(() => {
+      setLayoutNotice('工作台布局暂时无法保存，本次调整仍会保留到窗口关闭。');
+    });
+  };
 
   const recoveryIssues = recoverySnapshot?.issues.filter(
     issue => issue.characterId === state.selectedCharacterId
@@ -1167,6 +1324,12 @@ export function CharacterWorkshopView(props: CharacterWorkshopViewProps) {
       api={props.api}
       recoveryIssues={recoveryIssues}
       recoveryLoadFailed={recoveryLoadFailed}
+      layout={layout}
+      layoutBounds={layoutBounds}
+      columnsRef={columnsRef}
+      layoutNotice={layoutNotice}
+      onLayoutChange={changeLayout}
+      onLayoutCommit={commitLayout}
     />
   );
 }
