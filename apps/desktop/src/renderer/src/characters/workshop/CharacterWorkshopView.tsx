@@ -1303,14 +1303,15 @@ export function CharacterWorkshopView(props: CharacterWorkshopViewProps) {
   };
 
   const commitLayout = (key: keyof WorkshopLayoutSettings, value: number) => {
-    const next = clampWorkshopLayout(
-      { ...preferredLayoutRef.current, [key]: value },
-      layoutBoundsRef.current
-    );
-    preferredLayoutRef.current = next;
-    setLayout(next);
+    // 只规范本次交互字段；其他字段的窗口临时 clamp 不能污染持久偏好。
+    const preferred = {
+      ...preferredLayoutRef.current,
+      [key]: Math.min(4_096, Math.max(1, Math.round(value)))
+    };
+    preferredLayoutRef.current = preferred;
+    setLayout(clampWorkshopLayout(preferred, layoutBoundsRef.current));
     setLayoutNotice(null);
-    void props.api.saveWorkshopLayout(next).catch(() => {
+    void props.api.saveWorkshopLayout(preferred).catch(() => {
       setLayoutNotice('工作台布局暂时无法保存，本次调整仍会保留到窗口关闭。');
     });
   };

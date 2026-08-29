@@ -15,6 +15,23 @@ afterEach(() => {
 });
 
 describe('角色工作台布局收敛', () => {
+  test.each([
+    { bounds: { width: 1_920, height: 1_080 } },
+    { bounds: { width: 1_280, height: 720 } }
+  ])('$bounds.width×$bounds.height 保持默认桌面布局不变', ({ bounds }) => {
+    expect(clampWorkshopLayout({
+      leftWidth: 300,
+      rightWidth: 300,
+      sidebarTopHeight: 290,
+      stageHeight: 460
+    }, bounds)).toEqual({
+      leftWidth: 300,
+      rightWidth: 300,
+      sidebarTopHeight: 290,
+      stageHeight: 460
+    });
+  });
+
   test('桌面宽度按两侧剩余空间等比例收敛并限制纵向轨道', () => {
     expect(clampWorkshopLayout({
       leftWidth: 900,
@@ -223,7 +240,7 @@ describe('角色工作台布局生命周期', () => {
     expect(api.saveWorkshopLayout).not.toHaveBeenCalled();
   });
 
-  test('拖动只在释放时保存最终四字段布局', async () => {
+  test('临时纵向 clamp 后拖动左栏只更新左栏持久偏好', async () => {
     ResizeObserverDouble.instances = [];
     vi.stubGlobal('ResizeObserver', ResizeObserverDouble);
     const saveWorkshopLayout = vi.fn(async (value: WorkshopLayoutSettings) => value);
@@ -242,7 +259,7 @@ describe('角色工作台布局生命周期', () => {
       leftWidth: 400,
       rightWidth: 320,
       sidebarTopHeight: 300,
-      stageHeight: 451
+      stageHeight: 470
     }));
   });
 

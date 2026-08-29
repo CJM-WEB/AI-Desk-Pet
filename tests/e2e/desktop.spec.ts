@@ -2933,6 +2933,25 @@ test.describe('角色工作台布局分隔器', () => {
         getComputedStyle(element).gridTemplateColumns
       ));
       expect(narrowTracks.split(' ').filter(Boolean)).toHaveLength(2);
+      const narrowPanels = await reopened.evaluate(() => {
+        const rect = (selector: string) => document.querySelector(selector)!.getBoundingClientRect();
+        return {
+          leftWidth: rect('.workshop-sidebar').width,
+          centerWidth: rect('.workshop-stage').width,
+          rightWidth: rect('.workshop-inspector').width,
+          characterHeight: rect('.character-section').height,
+          stateHeight: rect('.state-section').height,
+          previewHeight: rect('.preview-workspace').height,
+          timelineHeight: rect('.action-timeline, .timeline-empty').height
+        };
+      });
+      expect(narrowPanels.leftWidth).toBeGreaterThanOrEqual(220);
+      expect(narrowPanels.centerWidth).toBeGreaterThanOrEqual(360);
+      expect(narrowPanels.rightWidth).toBeGreaterThanOrEqual(360);
+      expect(narrowPanels.characterHeight).toBeGreaterThanOrEqual(220);
+      expect(narrowPanels.stateHeight).toBeGreaterThanOrEqual(220);
+      expect(narrowPanels.previewHeight).toBeGreaterThanOrEqual(280);
+      expect(narrowPanels.timelineHeight).toBeGreaterThanOrEqual(150);
 
       await reopened.evaluate(() => window.resizeTo(1_120, 760));
       await expect(reopened.getByRole('separator')).toHaveCount(4);
