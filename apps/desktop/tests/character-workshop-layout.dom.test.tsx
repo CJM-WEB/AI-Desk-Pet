@@ -105,6 +105,7 @@ function SplitterHarness(props: {
   initial?: number;
   min?: number;
   max?: number;
+  direction?: 1 | -1;
   onCommit?: (value: number) => void;
 }) {
   const [value, setValue] = useState(props.initial ?? 300);
@@ -115,6 +116,7 @@ function SplitterHarness(props: {
       value={value}
       min={props.min ?? 250}
       max={props.max ?? 500}
+      {...(props.direction === undefined ? {} : { valueDirection: props.direction })}
       onChange={setValue}
       onCommit={props.onCommit ?? (() => undefined)}
     />
@@ -166,6 +168,28 @@ describe('角色工作台分隔器', () => {
     expect(splitter.getAttribute('aria-valuenow')).toBe('468');
     expect(onCommit).toHaveBeenLastCalledWith(468);
     expect(splitter.getAttribute('aria-orientation')).toBe('vertical');
+  });
+
+  test('右侧分隔器的键盘与指针都按分隔线空间方向映射', () => {
+    const onCommit = vi.fn();
+    render(<SplitterHarness initial={300} direction={-1} onCommit={onCommit} />);
+    const splitter = screen.getByRole('separator', { name: '调整测试区域' });
+    pointerCaptureDouble(splitter);
+
+    fireEvent.keyDown(splitter, { key: 'ArrowRight' });
+    expect(splitter.getAttribute('aria-valuenow')).toBe('292');
+    expect(onCommit).toHaveBeenLastCalledWith(292);
+
+    fireEvent.keyDown(splitter, { key: 'ArrowLeft' });
+    expect(splitter.getAttribute('aria-valuenow')).toBe('300');
+    fireEvent.keyDown(splitter, { key: 'ArrowLeft', shiftKey: true });
+    expect(splitter.getAttribute('aria-valuenow')).toBe('332');
+    expect(onCommit).toHaveBeenLastCalledWith(332);
+
+    fireEvent.pointerDown(splitter, { pointerId: 11, clientX: 100, clientY: 20 });
+    fireEvent.pointerUp(splitter, { pointerId: 11, clientX: 108, clientY: 20 });
+    expect(splitter.getAttribute('aria-valuenow')).toBe('324');
+    expect(onCommit).toHaveBeenLastCalledWith(324);
   });
 
   test('错误 pointerId、无关方向键和重复收口均不产生提交', () => {
@@ -286,7 +310,7 @@ describe('角色工作台布局生命周期', () => {
     }));
   });
 
-  test('保存失败保留当前布局并只显示脱敏非阻塞提示', async () => {
+  test('保存失败保留当前布局，本次卸载后恢复上次成功持久值', async () => {
     ResizeObserverDouble.instances = [];
     vi.stubGlobal('ResizeObserver', ResizeObserverDouble);
     const api = viewApi({
@@ -294,7 +318,7 @@ describe('角色工作台布局生命周期', () => {
         throw new Error('C:\\Users\\private\\settings.json token-sentinel');
       })
     });
-    render(<CharacterWorkshopView api={api} />);
+    const first = render(<CharacterWorkshopView api={api} />);
     const splitter = await screen.findByRole('separator', { name: '调整角色侧栏宽度' });
     await waitFor(() => expect(splitter.getAttribute('aria-valuenow')).toBe('360'));
     fireEvent.keyDown(splitter, { key: 'ArrowRight' });
@@ -303,12 +327,20 @@ describe('角色工作台布局生命周期', () => {
     expect(document.body.textContent).not.toContain('C:\\Users\\private');
     expect(document.body.textContent).not.toContain('token-sentinel');
     expect(splitter.getAttribute('aria-valuenow')).toBe('368');
+
+    first.unmount();
+    const restartedApi = viewApi();
+    render(<CharacterWorkshopView api={restartedApi} />);
+    const restored = await screen.findByRole('separator', { name: '调整角色侧栏宽度' });
+    await waitFor(() => expect(restored.getAttribute('aria-valuenow')).toBe('360'));
+    expect(restartedApi.getWorkshopLayout).toHaveBeenCalledOnce();
   });
 
   test.each([
     {
       name: '调整角色侧栏宽度',
       key: 'leftWidth' as const,
+      keyboardKey: 'ArrowLeft',
       initial: '396',
       target: '388',
       preservedKey: 'rightWidth' as const,
@@ -317,13 +349,14 @@ describe('角色工作台布局生命周期', () => {
     {
       name: '调整属性侧栏宽度',
       key: 'rightWidth' as const,
+      keyboardKey: 'ArrowRight',
       initial: '328',
       target: '320',
       preservedKey: 'leftWidth' as const,
       preserved: 900
     }
   ])('过预算偏好下 $key 小幅提交不跳变', async ({
-    name, key, initial, target, preservedKey, preserved
+    name, key, keyboardKey, initial, target, preservedKey, preserved
   }) => {
     vi.stubGlobal('ResizeObserver', ResizeObserverDouble);
     const saveWorkshopLayout = vi.fn(async (value: WorkshopLayoutSettings) => value);
@@ -340,7 +373,7 @@ describe('角色工作台布局生命周期', () => {
     const splitter = await screen.findByRole('separator', { name });
     await waitFor(() => expect(splitter.getAttribute('aria-valuenow')).toBe(initial));
 
-    fireEvent.keyDown(splitter, { key: 'ArrowLeft' });
+    fireEvent.keyDown(splitter, { key: keyboardKey });
     await waitFor(() => expect(splitter.getAttribute('aria-valuenow')).toBe(target));
     const saved = saveWorkshopLayout.mock.calls[0]?.[0];
     expect(saved?.[preservedKey]).toBe(preserved);

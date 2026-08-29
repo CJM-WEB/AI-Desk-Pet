@@ -2898,14 +2898,41 @@ test.describe('角色工作台布局分隔器', () => {
         };
       });
 
+      const rightKeyboardSplitter = workshop.getByRole('separator', {
+        name: '调整属性侧栏宽度'
+      });
+      const keyboardStartBox = await rightKeyboardSplitter.boundingBox();
+      if (!keyboardStartBox) throw new Error('右侧分隔器不可见');
+      await rightKeyboardSplitter.press('ArrowRight');
+      await expect.poll(() => workshop.locator('.workshop-inspector').evaluate(element => (
+        element.getBoundingClientRect().width
+      ))).toBeLessThanOrEqual(before.right - 7);
+      const keyboardRightWidth = await workshop.locator('.workshop-inspector').evaluate(element => (
+        element.getBoundingClientRect().width
+      ));
+      expect(keyboardRightWidth).toBeGreaterThanOrEqual(before.right - 9);
+      const keyboardRightBox = await rightKeyboardSplitter.boundingBox();
+      expect(keyboardRightBox?.x).toBeGreaterThanOrEqual(keyboardStartBox.x + 7);
+      await rightKeyboardSplitter.press('Shift+ArrowRight');
+      await expect.poll(() => workshop.locator('.workshop-inspector').evaluate(element => (
+        element.getBoundingClientRect().width
+      ))).toBeLessThanOrEqual(before.right - 39);
+      const keyboardShiftWidth = await workshop.locator('.workshop-inspector').evaluate(element => (
+        element.getBoundingClientRect().width
+      ));
+      expect(keyboardShiftWidth).toBeGreaterThanOrEqual(before.right - 41);
+
+      const leftBeforeDrag = await workshop.locator('.workshop-sidebar').evaluate(element => (
+        element.getBoundingClientRect().width
+      ));
       await dragSplitter(workshop, '调整角色侧栏宽度', { x: -8, y: 0 });
       await expect.poll(() => workshop.locator('.workshop-sidebar').evaluate(element => (
         element.getBoundingClientRect().width
-      ))).toBeLessThanOrEqual(before.left - 7);
+      ))).toBeLessThanOrEqual(leftBeforeDrag - 7);
       const leftAfterDrag = await workshop.locator('.workshop-sidebar').evaluate(element => (
         element.getBoundingClientRect().width
       ));
-      expect(leftAfterDrag).toBeGreaterThanOrEqual(before.left - 9);
+      expect(leftAfterDrag).toBeGreaterThanOrEqual(leftBeforeDrag - 9);
       const rightBeforeDrag = await workshop.locator('.workshop-inspector').evaluate(element => (
         element.getBoundingClientRect().width
       ));

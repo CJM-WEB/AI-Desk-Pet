@@ -833,7 +833,7 @@ export function CharacterWorkshopWorkspace(
           value={layout.rightWidth}
           min={WORKSHOP_RIGHT_MIN}
           max={rightMax}
-          pointerDirection={-1}
+          valueDirection={-1}
           onChange={value => onLayoutChange('rightWidth', value)}
           onCommit={value => onLayoutCommit('rightWidth', value)}
         />

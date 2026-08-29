@@ -144,7 +144,7 @@ type CapabilityTransaction = {
 - 复用 `AnchorEditor` 的 Pointer Capture 模式；拖动只更新 CSS 自定义属性，不触发高频 Main IPC。
 - 分隔器具有 `role="separator"`、方向、`aria-valuenow/min/max`，方向键按固定步长调节，Shift+方向键使用较大步长。
 - 每个分区设最小可用尺寸；窗口 resize、DPI 改变和恢复旧值时统一 clamp，保证预览、属性和操作按钮始终可达。
-- 指针释放或键盘调节结束时，通过现有 SettingsStore 扩展出的最小强类型 IPC 持久化；保存失败保留本次界面尺寸并显示非阻塞提示，下次启动回退默认值。
+- 指针释放或键盘调节结束时，通过现有 SettingsStore 扩展出的最小强类型 IPC 持久化；保存失败保留本次界面尺寸并显示非阻塞提示，下次启动恢复上一次成功持久化值；若从未成功持久化，则由 SettingsStore 返回默认值。
 - 小于现有响应式阈值时继续使用堆叠布局并隐藏 splitter；回到桌面布局时恢复经 clamp 的持久化尺寸。
 
 ### 6.3 删除皮肤编辑界面

@@ -6,7 +6,7 @@ export interface WorkshopSplitterProps {
   value: number;
   min: number;
   max: number;
-  pointerDirection?: 1 | -1;
+  valueDirection?: 1 | -1;
   onChange(value: number): void;
   onCommit(value: number): void;
 }
@@ -35,7 +35,7 @@ export function WorkshopSplitter(props: WorkshopSplitterProps) {
     if (!interaction || interaction.pointerId !== event.pointerId) return null;
     const next = clamp(
       interaction.startValue
-        + (coordinate(event) - interaction.startCoordinate) * (props.pointerDirection ?? 1),
+        + (coordinate(event) - interaction.startCoordinate) * (props.valueDirection ?? 1),
       props.min,
       props.max
     );
@@ -60,7 +60,8 @@ export function WorkshopSplitter(props: WorkshopSplitterProps) {
     const positiveKey = props.orientation === 'vertical' ? 'ArrowRight' : 'ArrowDown';
     if (event.key !== negativeKey && event.key !== positiveKey) return;
     event.preventDefault();
-    const direction = event.key === positiveKey ? 1 : -1;
+    // 键位表达分隔线的空间方向，再统一映射到受控尺寸的增减方向。
+    const direction = (event.key === positiveKey ? 1 : -1) * (props.valueDirection ?? 1);
     const next = clamp(props.value + direction * (event.shiftKey ? 32 : 8), props.min, props.max);
     props.onChange(next);
     props.onCommit(next);
