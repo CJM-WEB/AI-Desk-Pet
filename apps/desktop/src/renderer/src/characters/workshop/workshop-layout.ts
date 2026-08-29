@@ -87,3 +87,71 @@ export function clampWorkshopLayout(
 
   return { leftWidth, rightWidth, sidebarTopHeight, stageHeight };
 }
+
+type WorkshopWidthKey = 'leftWidth' | 'rightWidth';
+
+/**
+ * 左右栏共享中央宽度预算，交互得到的是 rendered 值。这里以固定 1..4096
+ * 整数域反解 preferred，保证只改目标字段且再次 clamp 后尽量精确复现目标值。
+ */
+export function preferredWorkshopLayoutForRenderedWidth(
+  preferred: WorkshopLayoutSettings,
+  bounds: WorkshopLayoutBounds,
+  key: WorkshopWidthKey,
+  renderedTarget: number
+): WorkshopLayoutSettings {
+  const target = finiteInteger(renderedTarget, preferred[key]);
+  const current = finiteInteger(preferred[key], DEFAULT_WORKSHOP_LAYOUT[key]);
+  const renderedAt = (candidate: number): number => clampWorkshopLayout(
+    { ...preferred, [key]: candidate },
+    bounds
+  )[key];
+  let low = 1;
+  let high = MAX_PERSISTED_LAYOUT_VALUE;
+  let best = current;
+  let bestDifference = Math.abs(renderedAt(current) - target);
+
+  // 单调整数域最多 13 轮；同误差优先保留更接近原 preferred 的候选。
+  while (low <= high) {
+    const candidate = Math.floor((low + high) / 2);
+    const rendered = renderedAt(candidate);
+    const difference = Math.abs(rendered - target);
+    if (
+      difference < bestDifference
+      || (difference === bestDifference
+        && Math.abs(candidate - current) < Math.abs(best - current))
+    ) {
+      best = candidate;
+      bestDifference = difference;
+    }
+    if (rendered < target) low = candidate + 1;
+    else if (rendered > target) high = candidate - 1;
+    else {
+      // 命中 rounding 平台时，平台内取最接近旧 preferred 的值。
+      let first = candidate;
+      let leftLow = 1;
+      let leftHigh = candidate - 1;
+      while (leftLow <= leftHigh) {
+        const probe = Math.floor((leftLow + leftHigh) / 2);
+        if (renderedAt(probe) >= target) {
+          first = probe;
+          leftHigh = probe - 1;
+        } else leftLow = probe + 1;
+      }
+      let last = candidate;
+      let rightLow = candidate + 1;
+      let rightHigh = MAX_PERSISTED_LAYOUT_VALUE;
+      while (rightLow <= rightHigh) {
+        const probe = Math.floor((rightLow + rightHigh) / 2);
+        if (renderedAt(probe) <= target) {
+          last = probe;
+          rightLow = probe + 1;
+        } else rightHigh = probe - 1;
+      }
+      best = Math.min(last, Math.max(first, current));
+      break;
+    }
+  }
+
+  return { ...preferred, [key]: best };
+}

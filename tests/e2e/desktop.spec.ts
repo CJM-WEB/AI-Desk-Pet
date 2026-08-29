@@ -2871,7 +2871,19 @@ test.describe('角色工作台布局分隔器', () => {
       workspaceRoot,
       apiKey: runtimeDiagnosticKey(),
       launchTimeoutMs: 15_000,
-      enableSoftwareRasterizer: true
+      enableSoftwareRasterizer: true,
+      prepareUserData: async directories => {
+        const settings = new SettingsStore(
+          join(directories.userDataDirectory, 'settings.json'),
+          async () => false
+        );
+        await settings.saveWorkshopLayout({
+          leftWidth: 900,
+          rightWidth: 600,
+          sidebarTopHeight: 300,
+          stageHeight: 470
+        });
+      }
     });
 
     try {
@@ -2886,8 +2898,25 @@ test.describe('角色工作台布局分隔器', () => {
         };
       });
 
-      await dragSplitter(workshop, '调整角色侧栏宽度', { x: 24, y: 0 });
-      await dragSplitter(workshop, '调整属性侧栏宽度', { x: 16, y: 0 });
+      await dragSplitter(workshop, '调整角色侧栏宽度', { x: -8, y: 0 });
+      await expect.poll(() => workshop.locator('.workshop-sidebar').evaluate(element => (
+        element.getBoundingClientRect().width
+      ))).toBeLessThanOrEqual(before.left - 7);
+      const leftAfterDrag = await workshop.locator('.workshop-sidebar').evaluate(element => (
+        element.getBoundingClientRect().width
+      ));
+      expect(leftAfterDrag).toBeGreaterThanOrEqual(before.left - 9);
+      const rightBeforeDrag = await workshop.locator('.workshop-inspector').evaluate(element => (
+        element.getBoundingClientRect().width
+      ));
+      await dragSplitter(workshop, '调整属性侧栏宽度', { x: 8, y: 0 });
+      await expect.poll(() => workshop.locator('.workshop-inspector').evaluate(element => (
+        element.getBoundingClientRect().width
+      ))).toBeLessThanOrEqual(rightBeforeDrag - 7);
+      const rightAfterDrag = await workshop.locator('.workshop-inspector').evaluate(element => (
+        element.getBoundingClientRect().width
+      ));
+      expect(rightAfterDrag).toBeGreaterThanOrEqual(rightBeforeDrag - 9);
       await dragSplitter(workshop, '调整角色区与状态区高度', { x: 0, y: 24 });
       await dragSplitter(workshop, '调整预览区与时间轴高度', { x: 0, y: -24 });
 
@@ -2907,8 +2936,7 @@ test.describe('角色工作台布局分隔器', () => {
           ].map(name => columns.style.getPropertyValue(name))
         };
       });
-      expect(after.left).toBeGreaterThan(before.left + 8);
-      expect(after.right).toBeLessThan(before.right - 8);
+      expect(rightAfterDrag).toBeLessThan(rightBeforeDrag);
       expect(after.character).toBeGreaterThan(before.character + 8);
       expect(after.preview).toBeLessThan(before.preview - 8);
 

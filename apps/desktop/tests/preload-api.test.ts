@@ -123,6 +123,8 @@ describe('preload 公开 API', () => {
       'testProviderProfile',
       'saveModelRoute',
       'savePrivacySettings',
+      'getWorkshopLayout',
+      'saveWorkshopLayout',
       'savePetAlwaysOnTop',
       'setLocalModelEnabled',
       'setIncognitoSession',

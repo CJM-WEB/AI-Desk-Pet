@@ -63,6 +63,7 @@ import { useModalDialog } from './use-modal-dialog';
 import { WorkshopSplitter } from './WorkshopSplitter';
 import {
   clampWorkshopLayout,
+  preferredWorkshopLayoutForRenderedWidth,
   WORKSHOP_CENTER_MIN,
   WORKSHOP_LEFT_MIN,
   WORKSHOP_RIGHT_MIN,
@@ -1304,10 +1305,17 @@ export function CharacterWorkshopView(props: CharacterWorkshopViewProps) {
 
   const commitLayout = (key: keyof WorkshopLayoutSettings, value: number) => {
     // 只规范本次交互字段；其他字段的窗口临时 clamp 不能污染持久偏好。
-    const preferred = {
-      ...preferredLayoutRef.current,
-      [key]: Math.min(4_096, Math.max(1, Math.round(value)))
-    };
+    const preferred = key === 'leftWidth' || key === 'rightWidth'
+      ? preferredWorkshopLayoutForRenderedWidth(
+          preferredLayoutRef.current,
+          layoutBoundsRef.current,
+          key,
+          value
+        )
+      : {
+          ...preferredLayoutRef.current,
+          [key]: Math.min(4_096, Math.max(1, Math.round(value)))
+        };
     preferredLayoutRef.current = preferred;
     setLayout(clampWorkshopLayout(preferred, layoutBoundsRef.current));
     setLayoutNotice(null);

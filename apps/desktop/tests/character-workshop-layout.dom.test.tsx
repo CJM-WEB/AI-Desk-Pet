@@ -7,7 +7,10 @@ import type { MyselfApi } from '../src/shared/myself-api';
 import type { WorkshopLayoutSettings } from '../src/shared/workshop-layout-ipc';
 import { CharacterWorkshopView } from '../src/renderer/src/characters/workshop/CharacterWorkshopView';
 import { WorkshopSplitter } from '../src/renderer/src/characters/workshop/WorkshopSplitter';
-import { clampWorkshopLayout } from '../src/renderer/src/characters/workshop/workshop-layout';
+import {
+  clampWorkshopLayout,
+  preferredWorkshopLayoutForRenderedWidth
+} from '../src/renderer/src/characters/workshop/workshop-layout';
 
 afterEach(() => {
   cleanup();
@@ -74,6 +77,26 @@ describe('角色工作台布局收敛', () => {
       sidebarTopHeight: 220,
       stageHeight: 280
     });
+  });
+
+  test.each([
+    { key: 'leftWidth' as const, target: 388, preservedKey: 'rightWidth' as const, preserved: 600 },
+    { key: 'rightWidth' as const, target: 320, preservedKey: 'leftWidth' as const, preserved: 900 }
+  ])('反解 $key 的 rendered 目标且不覆盖另一侧 preferred', ({
+    key, target, preservedKey, preserved
+  }) => {
+    const preferred = preferredWorkshopLayoutForRenderedWidth({
+      leftWidth: 900,
+      rightWidth: 600,
+      sidebarTopHeight: 300,
+      stageHeight: 470
+    }, { width: 1_120, height: 659 }, key, target);
+
+    expect(preferred[preservedKey]).toBe(preserved);
+    expect(preferred[key]).toBeGreaterThanOrEqual(1);
+    expect(preferred[key]).toBeLessThanOrEqual(4_096);
+    expect(Number.isInteger(preferred[key])).toBe(true);
+    expect(clampWorkshopLayout(preferred, { width: 1_120, height: 659 })[key]).toBe(target);
   });
 });
 
@@ -280,5 +303,47 @@ describe('角色工作台布局生命周期', () => {
     expect(document.body.textContent).not.toContain('C:\\Users\\private');
     expect(document.body.textContent).not.toContain('token-sentinel');
     expect(splitter.getAttribute('aria-valuenow')).toBe('368');
+  });
+
+  test.each([
+    {
+      name: '调整角色侧栏宽度',
+      key: 'leftWidth' as const,
+      initial: '396',
+      target: '388',
+      preservedKey: 'rightWidth' as const,
+      preserved: 600
+    },
+    {
+      name: '调整属性侧栏宽度',
+      key: 'rightWidth' as const,
+      initial: '328',
+      target: '320',
+      preservedKey: 'leftWidth' as const,
+      preserved: 900
+    }
+  ])('过预算偏好下 $key 小幅提交不跳变', async ({
+    name, key, initial, target, preservedKey, preserved
+  }) => {
+    vi.stubGlobal('ResizeObserver', ResizeObserverDouble);
+    const saveWorkshopLayout = vi.fn(async (value: WorkshopLayoutSettings) => value);
+    const api = viewApi({
+      getWorkshopLayout: vi.fn(async () => ({
+        leftWidth: 900,
+        rightWidth: 600,
+        sidebarTopHeight: 300,
+        stageHeight: 470
+      })),
+      saveWorkshopLayout
+    });
+    render(<CharacterWorkshopView api={api} />);
+    const splitter = await screen.findByRole('separator', { name });
+    await waitFor(() => expect(splitter.getAttribute('aria-valuenow')).toBe(initial));
+
+    fireEvent.keyDown(splitter, { key: 'ArrowLeft' });
+    await waitFor(() => expect(splitter.getAttribute('aria-valuenow')).toBe(target));
+    const saved = saveWorkshopLayout.mock.calls[0]?.[0];
+    expect(saved?.[preservedKey]).toBe(preserved);
+    expect(clampWorkshopLayout(saved!, { width: 1_120, height: 659 })[key]).toBe(Number(target));
   });
 });
