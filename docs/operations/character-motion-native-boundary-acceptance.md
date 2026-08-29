@@ -59,7 +59,7 @@ pnpm.cmd --filter @myself/desktop exec vitest run --config vitest.config.ts test
 
 两道门中 `pet-geometry-coordinator.test.ts` 36/36 与 `character-motion-controller.test.ts` 57/57 均已通过。`verify:behavior` 的完整真实 Electron 链没有输出主进程未捕获异常；测试过程出现的 `CHARACTER_IMPORT_RECOVERY_*`、JSDOM Canvas 未实现和构建 `use client` 提示均属于既有、由对应测试断言或环境产生的受控诊断。
 
-因为 `verify:desktop` 退出 1，本记录不会用随后定向 1/1 或已通过的行为门把它改写成通过。本轮按简报只进行一次精确定向诊断，没有重跑完整门；首次失败必须永久保留，但后续完成根因修复后仍必须在稳定的同一最终 HEAD 重新运行完整 `verify:desktop`，这是完成计划而不是掩盖历史。
+因为 `verify:desktop` 退出 1，本记录不会用随后定向 1/1 或已通过的行为门把它改写成通过。本轮按简报只进行一次精确定向诊断，没有重跑完整门；首次失败必须永久保留。后续完成必要处理并稳定最终 HEAD 后，仍必须在保留本轮首次失败历史的前提下重新运行完整 `verify:desktop` 并取得退出码 0，这是完成计划而不是掩盖历史。
 
 ## 预备轮历史诊断
 
@@ -74,7 +74,7 @@ pnpm.cmd --filter @myself/desktop exec vitest run --config vitest.config.ts test
 
 - Task 1 首审的唯一 Important 已由 `a487b88` 修正并在限定复审中清零。
 - Task 2 已对文档提交 `763393e` 完成独立证据一致性复审，结论为 Critical 0 / Important 1 / Minor 2。
-- 本文档正按该复审修正“复审状态失实”“隔离通过被误写为并发根因”和“后续完整门重跑会掩盖首次失败”三项问题；修正后的限定复审尚未执行，不能写成审查全绿。
+- Fix Round 1 限定复审确认原 Important 1 / Minor 1 / Minor 2 均已清零，且没有新增 Critical/Important，结论为 Critical 0 / Important 0；仅剩两项机械 Minor，已由本提交同步修正文档复审状态和未来重跑前提。
 - `verify:desktop` 仍为失败，因此无论文档 finding 是否清零，Task 2 都不能标记 complete。
 
 ## 待用户人工确认
@@ -92,4 +92,4 @@ pnpm.cmd --filter @myself/desktop exec vitest run --config vitest.config.ts test
 - `verify:behavior`：通过。
 - `verify:desktop`：失败；完整门中的目标用例达到 5000ms 超时，一次隔离执行未复现，细根因未证实且不改变完整门结果。
 - 真实 Windows 长时间运行：待用户人工确认。
-- Task 2 总体：**未完成。当前未达到“两道完整门均通过”的计划预期；后续修复后必须在保留本轮失败历史的前提下重新运行完整 `verify:desktop`。**
+- Task 2 总体：**未完成。当前未达到“两道完整门均通过”的计划预期；后续完成必要处理并稳定最终 HEAD 后，必须在保留本轮首次失败历史的前提下重新运行完整 `verify:desktop` 并取得退出码 0。**
