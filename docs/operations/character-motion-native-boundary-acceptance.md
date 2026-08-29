@@ -54,12 +54,12 @@ pnpm.cmd --filter @myself/desktop exec vitest run --config vitest.config.ts test
 | --- | --- | --- | --- |
 | `pnpm.cmd verify:behavior` | 10:33:32–10:44:39，666.6 秒 | 退出码 0 | character-runtime 341/341；Agent Core 100/100；Desktop typecheck 通过、108 个文件 2858/2858；security 28/28；integration 92/92；生产构建与边界检查通过；Electron E2E 79 通过、1 个既有长时场景按配置跳过 |
 | `pnpm.cmd verify:desktop` | 10:44:46–10:46:42，116.3 秒 | 退出码 1 | 全仓 10 个 workspace typecheck 通过；root unit 为 136 个文件通过、1 个失败，3573 项通过、1 项失败；唯一失败是未修改的 `V1 角色包在 staging 内统一转换为 V2 后安装` 达到固定 5000ms 超时，后续 security、integration 与 Electron E2E 未由本命令执行 |
-| 一次精确定向诊断 | 10:46:57–10:47:00，3.5 秒 | 退出码 0 | 同一 V1 staging 用例 1/1 通过、72 项跳过；用例本体 895ms。该结果只定位并发固定超时，不覆盖完整 `verify:desktop` 失败事实 |
+| 一次精确定向诊断 | 10:46:57–10:47:00，3.5 秒 | 退出码 0 | 同一 V1 staging 用例 1/1 通过、72 项跳过；用例本体 895ms。本次隔离执行未复现完整门中的超时，只表明失败可能与时序或负载相关，细根因未证实；该结果不覆盖完整 `verify:desktop` 失败事实 |
 | `git diff --check` | 10:47:07，0.1 秒 | 退出码 0 | 无 whitespace error |
 
 两道门中 `pet-geometry-coordinator.test.ts` 36/36 与 `character-motion-controller.test.ts` 57/57 均已通过。`verify:behavior` 的完整真实 Electron 链没有输出主进程未捕获异常；测试过程出现的 `CHARACTER_IMPORT_RECOVERY_*`、JSDOM Canvas 未实现和构建 `use client` 提示均属于既有、由对应测试断言或环境产生的受控诊断。
 
-因为 `verify:desktop` 退出 1，本记录不会用随后定向 1/1 或已通过的行为门把它改写成通过，也不会补跑完整门掩盖首次失败。
+因为 `verify:desktop` 退出 1，本记录不会用随后定向 1/1 或已通过的行为门把它改写成通过。本轮按简报只进行一次精确定向诊断，没有重跑完整门；首次失败必须永久保留，但后续完成根因修复后仍必须在稳定的同一最终 HEAD 重新运行完整 `verify:desktop`，这是完成计划而不是掩盖历史。
 
 ## 预备轮历史诊断
 
@@ -73,7 +73,9 @@ pnpm.cmd --filter @myself/desktop exec vitest run --config vitest.config.ts test
 ## 独立复审
 
 - Task 1 首审的唯一 Important 已由 `a487b88` 修正并在限定复审中清零。
-- Task 2 本记录提交后的证据一致性复审尚未执行；不得在复审前写成最终审查通过。
+- Task 2 已对文档提交 `763393e` 完成独立证据一致性复审，结论为 Critical 0 / Important 1 / Minor 2。
+- 本文档正按该复审修正“复审状态失实”“隔离通过被误写为并发根因”和“后续完整门重跑会掩盖首次失败”三项问题；修正后的限定复审尚未执行，不能写成审查全绿。
+- `verify:desktop` 仍为失败，因此无论文档 finding 是否清零，Task 2 都不能标记 complete。
 
 ## 待用户人工确认
 
@@ -88,6 +90,6 @@ pnpm.cmd --filter @myself/desktop exec vitest run --config vitest.config.ts test
 
 - 运动原生参数和 timer 边界：自动化通过。
 - `verify:behavior`：通过。
-- `verify:desktop`：失败；既有 5 秒固定超时的一次定向诊断通过，但不改变完整门结果。
+- `verify:desktop`：失败；完整门中的目标用例达到 5000ms 超时，一次隔离执行未复现，细根因未证实且不改变完整门结果。
 - 真实 Windows 长时间运行：待用户人工确认。
-- Task 2 总体：**未达到“两道完整门均通过”的计划预期，按事实交付验收记录。**
+- Task 2 总体：**未完成。当前未达到“两道完整门均通过”的计划预期；后续修复后必须在保留本轮失败历史的前提下重新运行完整 `verify:desktop`。**
