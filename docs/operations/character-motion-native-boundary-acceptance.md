@@ -5,6 +5,7 @@
 - 日期：2026-08-29
 - 环境：Windows，`AgentCoreExtension` 分支，本地 pnpm workspace
 - 最终代码 HEAD：`bf062497c7aff916786a45729d43804e2c1b06d5`
+- 稳定环境重跑 HEAD：`bb4ec705fd7a2da80e2620027fa6cfa1f123f423`（相对最终代码 HEAD 仅包含本验收文档修正，不改变可执行代码或测试）
 - 规格：`docs/superpowers/specs/2026-08-28-ai-pet-agent-workshop-stability-design.md`
 - 计划：`docs/superpowers/plans/2026-08-28-character-motion-native-boundary.md`
 - 生产实现：`46180c34adcec5726304f633ed3fb43275a6f85f`
@@ -14,7 +15,7 @@
 
 本记录只验收角色运动进入 Electron 原生窗口前的坐标规范化、Int32 拒绝和 timer 异常收口，不扩展到所有运动策略，不启用 MCP，也不改变 Renderer 权限。
 
-当前状态：**`verify:behavior` 通过，`verify:desktop` 失败；运动定向边界自动化通过，但 Task 2 的完整桌面门未通过，不宣称完整自动化验收通过。真实 Windows 长时间运行仍待用户人工确认。**
+当前状态：**`verify:behavior` 与稳定环境完整 `verify:desktop` 均通过，Task 2 自动化验收完成。首次 `verify:desktop` 超时失败及随后隔离未复现仍作为历史事实保留；真实 Windows 长时间运行仍待用户人工确认。**
 
 ## TDD 证据
 
@@ -48,7 +49,7 @@ pnpm.cmd --filter @myself/desktop exec vitest run --config vitest.config.ts test
 
 ## 最终门禁结果
 
-所有最终结论绑定同一代码 HEAD `bf062497c7aff916786a45729d43804e2c1b06d5`。
+行为门绑定最终代码 HEAD `bf062497c7aff916786a45729d43804e2c1b06d5`；稳定环境完整桌面门绑定 `bb4ec705fd7a2da80e2620027fa6cfa1f123f423`。两者之间仅有本验收文档修正，没有可执行代码或测试变化。
 
 | 命令 | 时间与耗时 | 结果 | 实际证据 |
 | --- | --- | --- | --- |
@@ -56,10 +57,11 @@ pnpm.cmd --filter @myself/desktop exec vitest run --config vitest.config.ts test
 | `pnpm.cmd verify:desktop` | 10:44:46–10:46:42，116.3 秒 | 退出码 1 | 全仓 10 个 workspace typecheck 通过；root unit 为 136 个文件通过、1 个失败，3573 项通过、1 项失败；唯一失败是未修改的 `V1 角色包在 staging 内统一转换为 V2 后安装` 达到固定 5000ms 超时，后续 security、integration 与 Electron E2E 未由本命令执行 |
 | 一次精确定向诊断 | 10:46:57–10:47:00，3.5 秒 | 退出码 0 | 同一 V1 staging 用例 1/1 通过、72 项跳过；用例本体 895ms。本次隔离执行未复现完整门中的超时，只表明失败可能与时序或负载相关，细根因未证实；该结果不覆盖完整 `verify:desktop` 失败事实 |
 | `git diff --check` | 10:47:07，0.1 秒 | 退出码 0 | 无 whitespace error |
+| 稳定环境完整重跑 `pnpm.cmd verify:desktop` | 11:00:57–11:12:38，701.1 秒 | 退出码 0 | HEAD `bb4ec70`；全仓 10 个 workspace typecheck 通过；root unit 137 个文件、3574/3574 通过；此前超时的 V1 staging 用例本轮 4549ms 通过；security 28/28；integration 92/92；生产构建与边界检查通过；Electron E2E 79 通过、1 个既有长时场景按配置跳过 |
 
 两道门中 `pet-geometry-coordinator.test.ts` 36/36 与 `character-motion-controller.test.ts` 57/57 均已通过。`verify:behavior` 的完整真实 Electron 链没有输出主进程未捕获异常；测试过程出现的 `CHARACTER_IMPORT_RECOVERY_*`、JSDOM Canvas 未实现和构建 `use client` 提示均属于既有、由对应测试断言或环境产生的受控诊断。
 
-因为 `verify:desktop` 退出 1，本记录不会用随后定向 1/1 或已通过的行为门把它改写成通过。本轮按简报只进行一次精确定向诊断，没有重跑完整门；首次失败必须永久保留。后续完成必要处理并稳定最终 HEAD 后，仍必须在保留本轮首次失败历史的前提下重新运行完整 `verify:desktop` 并取得退出码 0，这是完成计划而不是掩盖历史。
+首次 `verify:desktop` 退出 1，随后定向 1/1 仅说明隔离环境未复现，不能改写首次失败或证明并发、负载就是根因。在完成必要处理并稳定最终 HEAD 后，本轮已按计划重新运行一次完整 `verify:desktop` 并取得退出码 0；自动化完成结论来自这次完整重跑，而不是定向结果。首次失败继续永久保留。
 
 ## 预备轮历史诊断
 
@@ -75,7 +77,7 @@ pnpm.cmd --filter @myself/desktop exec vitest run --config vitest.config.ts test
 - Task 1 首审的唯一 Important 已由 `a487b88` 修正并在限定复审中清零。
 - Task 2 已对文档提交 `763393e` 完成独立证据一致性复审，结论为 Critical 0 / Important 1 / Minor 2。
 - Fix Round 1 限定复审确认原 Important 1 / Minor 1 / Minor 2 均已清零，且没有新增 Critical/Important，结论为 Critical 0 / Important 0；仅剩两项机械 Minor，已由本提交同步修正文档复审状态和未来重跑前提。
-- `verify:desktop` 仍为失败，因此无论文档 finding 是否清零，Task 2 都不能标记 complete。
+- 稳定环境完整 `verify:desktop` 已取得退出码 0；文档 finding 保持 Critical 0 / Important 0，Task 2 自动化部分可以标记 complete。
 
 ## 待用户人工确认
 
@@ -90,6 +92,6 @@ pnpm.cmd --filter @myself/desktop exec vitest run --config vitest.config.ts test
 
 - 运动原生参数和 timer 边界：自动化通过。
 - `verify:behavior`：通过。
-- `verify:desktop`：失败；完整门中的目标用例达到 5000ms 超时，一次隔离执行未复现，细根因未证实且不改变完整门结果。
+- `verify:desktop`：稳定环境完整重跑通过；首次完整门中的目标用例达到 5000ms 超时、一次隔离执行未复现的历史事实继续保留。
 - 真实 Windows 长时间运行：待用户人工确认。
-- Task 2 总体：**未完成。当前未达到“两道完整门均通过”的计划预期；后续完成必要处理并稳定最终 HEAD 后，必须在保留本轮首次失败历史的前提下重新运行完整 `verify:desktop` 并取得退出码 0。**
+- Task 2 自动化：**完成。两道完整门已在可执行代码不变的稳定快照上分别取得退出码 0；人工 Windows 边界不由自动化替代，继续待用户确认。**
