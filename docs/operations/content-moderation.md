@@ -2,6 +2,8 @@
 
 本手册供唯一管理员处理 AI Pet 共享资源包、反馈和建议。普通投稿完全匿名；管理员邮箱、审核证据、状态令牌和存储地址不得公开。
 
+> 2026-08-31 状态：下述流程已通过本地 Production/Memory 合同与 PostgreSQL 行为验证，但 CloudBase 开发环境和真实网关尚未验证，生产未部署，线上仍是旧测试版。共享包投稿继续关闭，本分支的管理员强制发布能力尚未上线。
+
 ## 1. 审核原则
 
 - 只允许与 AI Pet 产品直接相关的内容。
@@ -114,4 +116,4 @@
 
 ## 14. 数据库迁移冻结
 
-`pnpm.cmd plan:cloudbase-migrations` 仍是默认只读迁移入口，只在本地输出 checksum plan，不读取凭据、不连接数据库。`node tools/test-cloudbase-migrations.mjs --postgres-runtime <本地 PostgreSQL 目录>` 仅用于一次性本地 PostgreSQL 行为门：它在随机本机端口顺序执行全部历史迁移，验证函数、约束、批准拒绝与事务回滚后停止并删除临时实例；不得传入远端地址，也不构成 CloudBase 部署或生产写入授权。已提交数据库变更只能新增前向 migration；真实开发环境和生产迁移仍受阶段 2C 独立授权门冻结。
+`pnpm.cmd plan:cloudbase-migrations` 仍是默认只读迁移入口，只在本地输出 checksum plan，不读取凭据、不连接数据库。2026-08-31 已用 `node tools/test-cloudbase-migrations.mjs --postgres-runtime <本地 PostgreSQL 目录>` 在临时 PostgreSQL 17.11 中顺序执行 7 个 migration 并通过 42 项行为验证；该工具只用于一次性本地行为门，在随机本机端口验证函数、约束、批准拒绝与事务回滚后停止并删除临时实例，不得传入远端地址，也不构成 CloudBase 部署或生产写入授权。已提交数据库变更只能新增前向 migration；真实开发环境和生产迁移仍受阶段 2C 独立授权门冻结。

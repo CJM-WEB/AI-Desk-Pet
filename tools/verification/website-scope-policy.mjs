@@ -40,6 +40,7 @@ export const ALLOWED_WEBSITE_SCOPE_PATHS = Object.freeze([
   'docs/adr/0001-admin-override-publication.md',
   'docs/operations/website-chain-verification.md',
   'docs/operations/website-chain-verification-acceptance.md',
+  'docs/operations/website-optimization-acceptance.md',
   'docs/operations/content-moderation.md',
   'docs/operations/cloudbase-deployment.md',
   'docs/superpowers/specs/2026-08-15-website-architecture-optimization-and-production-relaunch-design.md',

@@ -81,6 +81,17 @@ test('当前网站优化阶段只放行官网业务与精确获批文档', () =>
   });
 });
 
+test('Task 8 只放行精确的网站优化验收记录', () => {
+  const acceptance = 'docs/operations/website-optimization-acceptance.md';
+  const similarlyNamedPath = 'docs/operations/website-optimization-acceptance.txt';
+
+  assert.deepEqual(classifyChangedPaths([acceptance, similarlyNamedPath]), {
+    allowed: [acceptance],
+    forbidden: [],
+    outside: [similarlyNamedPath],
+  });
+});
+
 test('阶段二 ScannerProtocol 只放行共享协议和扫描器路径', () => {
   const approvedStagePaths = [
     'docs/superpowers/specs/2026-08-31-website-stage-2-3-local-closure-design.md',
