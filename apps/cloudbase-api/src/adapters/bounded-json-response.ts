@@ -24,34 +24,34 @@ export async function readBoundedJsonResponse(
   options: BoundedJsonResponseOptions
 ): Promise<unknown> {
   const reader = response.body?.getReader();
+  if (options.signal.aborted) {
+    if (reader) {
+      cancelReader(reader);
+      releaseReaderLock(reader);
+    }
+    throw new BoundedJsonResponseError('RESPONSE_ABORTED');
+  }
   if (!reader) throw new BoundedJsonResponseError('RESPONSE_EMPTY');
 
-  let aborted = options.signal.aborted;
-  const cancelReader = async (): Promise<void> => {
-    try {
-      await reader.cancel();
-    } catch {
-      // cancel 只负责尽快停止上游；原始边界分类不能被清理失败覆盖。
-    }
-  };
+  let aborted = false;
   const handleAbort = (): void => {
     aborted = true;
-    void cancelReader();
+    cancelReader(reader);
   };
 
   try {
+    options.signal.addEventListener('abort', handleAbort, { once: true });
+    if (options.signal.aborted) {
+      handleAbort();
+      throw new BoundedJsonResponseError('RESPONSE_ABORTED');
+    }
+
     const declaredBytes = parseContentLength(
       response.headers.get('content-length')
     );
     if (declaredBytes !== null && declaredBytes > options.maxBytes) {
-      await cancelReader();
+      cancelReader(reader);
       throw new BoundedJsonResponseError('RESPONSE_TOO_LARGE');
-    }
-
-    options.signal.addEventListener('abort', handleAbort, { once: true });
-    if (aborted) {
-      await cancelReader();
-      throw new BoundedJsonResponseError('RESPONSE_ABORTED');
     }
 
     const chunks: Uint8Array[] = [];
@@ -64,7 +64,7 @@ export async function readBoundedJsonResponse(
       if (item.done) break;
       totalBytes += item.value.byteLength;
       if (totalBytes > options.maxBytes) {
-        await cancelReader();
+        cancelReader(reader);
         throw new BoundedJsonResponseError('RESPONSE_TOO_LARGE');
       }
       chunks.push(item.value);
@@ -94,7 +94,27 @@ export async function readBoundedJsonResponse(
     throw new BoundedJsonResponseError('RESPONSE_INVALID_JSON');
   } finally {
     options.signal.removeEventListener('abort', handleAbort);
+    releaseReaderLock(reader);
+  }
+}
+
+function cancelReader(
+  reader: ReadableStreamDefaultReader<Uint8Array>
+): void {
+  try {
+    void reader.cancel().catch(() => undefined);
+  } catch {
+    // cancel 只负责尽快停止上游；清理失败不能阻塞或覆盖边界分类。
+  }
+}
+
+function releaseReaderLock(
+  reader: ReadableStreamDefaultReader<Uint8Array>
+): void {
+  try {
     reader.releaseLock();
+  } catch {
+    // releaseLock 是尽力清理，不能覆盖成功值或原始边界错误。
   }
 }
 
