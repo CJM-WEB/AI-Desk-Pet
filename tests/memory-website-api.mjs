@@ -105,6 +105,12 @@ export function createMemoryWebsiteApi({ runId }) {
       if (request.method === 'POST' && finalizeId) {
         await readJson(request);
         const record = requireSubmission(finalizeId);
+        if (record.status === 'system_reviewing') {
+          return sendData(response, 200, { status: 'system_reviewing' });
+        }
+        if (record.status !== 'uploading') {
+          return sendError(response, 409, 'UPLOAD_STATE_CONFLICT');
+        }
         if (!uploads.has(`${record.id}:cover`) || !uploads.has(`${record.id}:package`)) {
           return sendError(response, 409, 'UPLOAD_INCOMPLETE');
         }
@@ -513,8 +519,20 @@ function applyAdminAction(response, record, body, now) {
     || typeof body.idempotencyKey !== 'string' || body.idempotencyKey.length < 8) {
     return sendError(response, 400, 'INVALID_REQUEST');
   }
-  if (record.idempotency.has(body.idempotencyKey)) {
-    return sendData(response, 200, { submission: adminBase(record), replayed: true });
+  const requestPayload = {
+    action: body.action,
+    version: body.version,
+    reason: body.reason.trim()
+  };
+  const previous = record.idempotency.get(body.idempotencyKey);
+  if (previous) {
+    if (JSON.stringify(previous.request) !== JSON.stringify(requestPayload)) {
+      return sendError(response, 409, 'IDEMPOTENCY_KEY_REUSED');
+    }
+    return sendData(response, 200, {
+      ...structuredClone(previous.result),
+      replayed: true
+    });
   }
   if (body.version !== record.statusVersion) return sendError(response, 409, 'VERSION_CONFLICT');
   const beforeStatus = record.status;
@@ -560,8 +578,12 @@ function applyAdminAction(response, record, body, now) {
     reason: body.reason.trim(),
     createdAt: record.updatedAt
   });
-  record.idempotency.set(body.idempotencyKey, true);
-  return sendData(response, 200, { submission: adminBase(record), replayed: false });
+  const result = { submission: adminBase(record), replayed: false };
+  record.idempotency.set(body.idempotencyKey, {
+    request: requestPayload,
+    result: structuredClone(result)
+  });
+  return sendData(response, 200, result);
 }
 
 function hasCurrentTechnicalEvidence(record, currentTime) {

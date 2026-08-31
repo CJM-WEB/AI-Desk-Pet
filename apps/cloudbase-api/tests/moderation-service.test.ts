@@ -227,6 +227,23 @@ describe('自动审核编排', () => {
     });
   });
 
+  it('技术扫描记录沿用扫描完成时间并与证据时间保持一致', async () => {
+    const scanCompletedAt = '2026-07-30T23:59:00.000Z';
+    const { service, store } = createService({
+      scan: { ...safeScan, completedAt: scanCompletedAt }
+    });
+
+    await service.process('submission-1');
+
+    const technical = store.applyModerationDecision.mock.calls[0]![0].results
+      .find((result: ModerationRecord) => result.kind === 'package_scan');
+    expect(technical).toMatchObject({
+      requestedAt: '2026-07-31T00:00:00.000Z',
+      completedAt: scanCompletedAt,
+      evidence: { completedAt: scanCompletedAt }
+    });
+  });
+
   it.each([
     ['归档大小', { archive: { sizeBytes: 19, sha256: 'a'.repeat(64) } }],
     ['投稿身份', { submissionId: 'submission-2' }],

@@ -50,4 +50,12 @@ test('迁移编排模块进入依赖审计且测试进入快速门', () => {
   const migrationStep = WEB_CHAIN_PROFILES.fast.find(step => step.id === 'migration-tool-test');
   assert.ok(migrationStep.args.includes('tools/cloudbase-user-migrations.test.mjs'));
   assert.ok(migrationStep.args.includes('tools/cloudbase-user-migration-adapter.test.mjs'));
+  const behaviorStep = WEB_CHAIN_PROFILES.fast.find(
+    step => step.id === 'migration-behavior-gate'
+  );
+  assert.deepEqual(behaviorStep, {
+    id: 'migration-behavior-gate',
+    command: process.execPath,
+    args: ['tools/test-cloudbase-migrations.mjs']
+  });
 });

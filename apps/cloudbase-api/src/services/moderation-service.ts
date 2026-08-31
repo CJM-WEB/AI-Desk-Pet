@@ -189,7 +189,8 @@ export class ModerationService {
       'isolated-scanner',
       technicalSignal,
       technicalEvidence,
-      scan.safe ? scan.ruleVersion : '2026-07-31'
+      scan.safe ? scan.ruleVersion : '2026-07-31',
+      scan.safe ? scan.completedAt : undefined
     ));
     signals.push(technicalSignal);
     if (!scan.safe) return signals;
@@ -353,7 +354,8 @@ export class ModerationService {
     provider: string,
     signal: ModerationSignal,
     evidence: Record<string, unknown> = {},
-    ruleVersion = '2026-07-31'
+    ruleVersion = '2026-07-31',
+    completedAt?: string
   ): ModerationRecord {
     const timestamp = this.clock.now().toISOString();
     return {
@@ -366,7 +368,7 @@ export class ModerationService {
       score: null,
       evidence,
       requestedAt: timestamp,
-      completedAt: timestamp,
+      completedAt: completedAt ?? timestamp,
       errorMessage: null
     };
   }

@@ -72,6 +72,9 @@ const fastSteps = Object.freeze([
     'tools/plan-cloudbase-migrations.test.mjs',
     'tools/test-cloudbase-migrations.test.mjs',
   ]),
+  defineStep('migration-behavior-gate', process.execPath, [
+    'tools/test-cloudbase-migrations.mjs',
+  ]),
   defineStep('dependency-audit', process.execPath, ['tools/verification/run-web-dependency-audit.mjs']),
 ]);
 

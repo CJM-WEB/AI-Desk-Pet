@@ -108,6 +108,15 @@ async function submitSharedPackageViaApi(
   );
   expect(finalized.ok()).toBe(true);
   expect((await finalized.json()).data).toEqual({ status: 'system_reviewing' });
+  const repeatedFinalize = await request.post(
+    `/api/v1/submissions/${encodeURIComponent(prepared.submissionId)}/finalize`,
+    { data: {} }
+  );
+  expect(repeatedFinalize.ok()).toBe(true);
+  expect((await repeatedFinalize.json()).data).toEqual({ status: 'system_reviewing' });
+  const reviewing = (await adminItems(request, 'system_reviewing'))
+    .find(item => item.id === prepared.submissionId);
+  expect(reviewing?.statusVersion).toBe(1);
   const hiddenStatus = await request.post('/api/v1/submission-status', {
     data: { statusToken: prepared.statusToken }
   });
@@ -572,6 +581,57 @@ test('安全共享包经系统与管理员审核后才在真实网页公开', as
   await page.goto('/?seed=42');
   await enterChapter(page, 'community');
   await expect(page.getByText(title, { exact: true })).toBeVisible();
+
+  const invalidFinalize = await request.post(
+    `/api/v1/submissions/${encodeURIComponent(receipt.submissionId)}/finalize`,
+    { data: {} }
+  );
+  expect(invalidFinalize.status()).toBe(409);
+  expect((await invalidFinalize.json()).error.code).toBe('UPLOAD_STATE_CONFLICT');
+});
+
+test('管理员幂等回放返回首次结果快照且拒绝同 key 异参', async ({ request }) => {
+  const receipt = await submitFeedbackViaApi(request, 'E2E 管理员幂等回放验证。');
+  const pending = (await adminItems(request, 'manual_review_pending'))
+    .find(item => item.id === receipt.submissionId)!;
+  const approveRequest = {
+    action: 'approve',
+    version: pending.statusVersion,
+    reason: '首次批准',
+    idempotencyKey: `e2e-replay-${receipt.submissionId}`
+  };
+  const actionUrl = `/api/v1/admin/submissions/${encodeURIComponent(receipt.submissionId)}/actions`;
+  const first = await request.post(actionUrl, {
+    headers: { authorization: `Bearer ${E2E_ADMIN_TOKEN}` },
+    data: approveRequest
+  });
+  expect(first.ok()).toBe(true);
+  const firstResult = (await first.json()).data;
+  expect(firstResult).toMatchObject({
+    submission: { status: 'published' },
+    replayed: false
+  });
+
+  const published = (await adminItems(request, 'published'))
+    .find(item => item.id === receipt.submissionId)!;
+  await applyAdminAction(request, published, 'delete', '随后隔离');
+
+  const replay = await request.post(actionUrl, {
+    headers: { authorization: `Bearer ${E2E_ADMIN_TOKEN}` },
+    data: approveRequest
+  });
+  expect(replay.ok()).toBe(true);
+  expect((await replay.json()).data).toEqual({
+    ...firstResult,
+    replayed: true
+  });
+
+  const conflict = await request.post(actionUrl, {
+    headers: { authorization: `Bearer ${E2E_ADMIN_TOKEN}` },
+    data: { ...approveRequest, reason: '复用 key 改写理由' }
+  });
+  expect(conflict.status()).toBe(409);
+  expect((await conflict.json()).error.code).toBe('IDEMPOTENCY_KEY_REUSED');
 });
 
 test('匿名反馈批准前隐藏且批准后进入真实网页列表', async ({ page, request }) => {

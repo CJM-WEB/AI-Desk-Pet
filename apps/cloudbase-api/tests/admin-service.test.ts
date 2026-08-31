@@ -1,7 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
 
+import { ApiError } from '../src/errors.js';
 import { AdminService } from '../src/services/admin-service.js';
 import type {
+  AdminActionInput,
   AdminModerationResult,
   AdminStore,
   AdminSubmissionDetail,
@@ -42,9 +44,7 @@ function createService(row = submission('manual_review_pending')) {
       nextCursor: null
     })),
     findAdminSubmission: vi.fn(async () => row),
-    applyAdminAction: vi.fn(async (input: {
-      nextStatus: string;
-    }) => ({
+    applyAdminAction: vi.fn(async (input: AdminActionInput) => ({
       submission: {
         id: 'submission-1',
         status: input.nextStatus as AdminSubmissionDetail['status'],
@@ -382,6 +382,81 @@ describe('管理员审核服务', () => {
     expect(second.store.applyAdminAction).toHaveBeenCalledWith(
       expect.objectContaining({ nextStatus: 'system_reviewing' })
     );
+  });
+
+  it.each([
+    {
+      name: '共享包转人工',
+      action: 'move_to_manual' as const,
+      initial: submission('auto_rejected'),
+      changed: submission('system_reviewing', { statusVersion: 4 })
+    },
+    {
+      name: '共享包恢复',
+      action: 'restore' as const,
+      initial: submission('deleted_quarantined', { preQuarantineStatus: 'published' }),
+      changed: submission('system_reviewing', { statusVersion: 4, preQuarantineStatus: null })
+    },
+    {
+      name: '文本恢复',
+      action: 'restore' as const,
+      initial: submission('deleted_quarantined', {
+        kind: 'feedback',
+        assets: [],
+        preQuarantineStatus: 'manual_review_pending'
+      }),
+      changed: submission('manual_review_pending', {
+        kind: 'feedback',
+        assets: [],
+        statusVersion: 4,
+        preQuarantineStatus: null
+      })
+    }
+  ])('$name 首次成功后相同请求交给数据库回放且新 key 仍被拒绝', async ({
+    action,
+    initial,
+    changed
+  }) => {
+    const idempotencyKey = `replay-${action}-${initial.kind}`;
+    const { service, store } = createService(initial);
+    store.findAdminSubmission
+      .mockResolvedValueOnce(initial)
+      .mockResolvedValue(changed);
+    store.applyAdminAction.mockImplementation(async input => {
+      if (input.idempotencyKey !== idempotencyKey) {
+        throw new ApiError('INVALID_ADMIN_ACTION', 409);
+      }
+      return {
+        submission: {
+          id: initial.id,
+          status: changed.status,
+          statusVersion: 4
+        },
+        replayed: store.applyAdminAction.mock.calls.length > 1
+      };
+    });
+    const request = {
+      action,
+      version: 3,
+      idempotencyKey,
+      reason: '保持原请求'
+    };
+
+    await expect(service.applyAction(
+      { uid: 'uid-admin', email: 'admin@example.com' },
+      initial.id,
+      request
+    )).resolves.toMatchObject({ replayed: false });
+    await expect(service.applyAction(
+      { uid: 'uid-admin', email: 'admin@example.com' },
+      initial.id,
+      request
+    )).resolves.toMatchObject({ replayed: true });
+    await expect(service.applyAction(
+      { uid: 'uid-admin', email: 'admin@example.com' },
+      initial.id,
+      { ...request, idempotencyKey: `${idempotencyKey}-new` }
+    )).rejects.toMatchObject({ code: 'INVALID_ADMIN_ACTION' });
   });
 
   it.each(['feedback', 'suggestion'] as const)(

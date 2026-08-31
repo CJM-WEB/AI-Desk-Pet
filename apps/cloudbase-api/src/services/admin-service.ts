@@ -57,6 +57,7 @@ export class AdminService {
     const nextStatus = nextStatusFor(
       submission,
       action.action,
+      action.version,
       this.clock.now()
     );
     return this.store.applyAdminAction({
@@ -87,6 +88,7 @@ async function safeCoverPreview(
 function nextStatusFor(
   submission: AdminSubmissionDetail,
   action: AdminAction['action'],
+  requestedVersion: number,
   now: Date
 ): SubmissionStatus {
   const status = submission.status;
@@ -115,6 +117,17 @@ function nextStatusFor(
       ? 'system_reviewing'
       : 'manual_review_pending';
   }
+  if (
+    action === 'move_to_manual'
+    && submission.statusVersion !== requestedVersion
+    && (
+      (submission.kind === 'shared_package' && status === 'system_reviewing')
+      || (submission.kind !== 'shared_package' && status === 'manual_review_pending')
+    )
+  ) {
+    // 只重建首次请求的确定目标，让数据库按原幂等键决定回放或拒绝新键。
+    return status;
+  }
   if (action === 'delete' && status !== 'purged') {
     return 'deleted_quarantined';
   }
@@ -123,6 +136,16 @@ function nextStatusFor(
       return submission.kind === 'shared_package'
         ? 'system_reviewing'
         : submission.preQuarantineStatus;
+    }
+    if (
+      submission.statusVersion !== requestedVersion
+      && (
+        (submission.kind === 'shared_package' && status === 'system_reviewing')
+        || (submission.kind !== 'shared_package' && status === 'manual_review_pending')
+      )
+    ) {
+      // 恢复成功会清空 preQuarantineStatus，目标状态仍可由当前版本安全重建。
+      return status;
     }
     throw new ApiError('INVALID_ADMIN_ACTION', 409);
   }

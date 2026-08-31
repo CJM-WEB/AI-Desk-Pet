@@ -9,9 +9,13 @@ import { inventoryCloudBaseMigrations } from './cloudbase-migration-inventory.mj
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
-export function parseMigrationGateArguments(arguments_) {
+export function parseMigrationGateArguments(arguments_, environment = {}) {
   if (arguments_.length === 0) {
-    throw new Error('必须提供本地 PostgreSQL 运行时');
+    const configuredRuntime = environment.AI_PET_POSTGRES_RUNTIME;
+    if (!configuredRuntime?.trim()) {
+      throw new Error('必须提供本地 PostgreSQL 运行时');
+    }
+    return { postgresRuntime: configuredRuntime };
   }
   if (arguments_.length !== 2 || arguments_[0] !== '--postgres-runtime') {
     throw new Error(`未知参数：${arguments_[0] ?? ''}`);
@@ -20,6 +24,15 @@ export function parseMigrationGateArguments(arguments_) {
     throw new Error('必须提供本地 PostgreSQL 运行时');
   }
   return { postgresRuntime: arguments_[1] };
+}
+
+/** 行为门锁定 PostgreSQL 17 主版本，同时允许安全接收后续补丁版本。 */
+export function parseSupportedPostgresVersion(versionOutput) {
+  const versionMatch = /PostgreSQL\)\s+(\d+)\.(\d+)/u.exec(versionOutput);
+  if (!versionMatch) throw new Error('无法识别本地 PostgreSQL 版本');
+  const major = Number(versionMatch[1]);
+  if (major !== 17) throw new Error('仅支持 PostgreSQL 17 主版本');
+  return { major, version: `${versionMatch[1]}.${versionMatch[2]}` };
 }
 
 /**
@@ -33,8 +46,7 @@ export async function runCloudBaseMigrationBehaviorGate({
   const binaryDirectory = join(postgresRuntime, 'bin');
   const executable = name => join(binaryDirectory, `${name}.exe`);
   const versionOutput = await run(executable('postgres'), ['--version']);
-  const versionMatch = /PostgreSQL\)\s+(\d+\.\d+)/u.exec(versionOutput);
-  if (!versionMatch) throw new Error('无法识别本地 PostgreSQL 版本');
+  const postgresVersion = parseSupportedPostgresVersion(versionOutput);
 
   const temporaryRoot = await mkdtemp(join(tmpdir(), 'ai-pet-migrations-'));
   const dataDirectory = join(temporaryRoot, 'data');
@@ -79,7 +91,8 @@ export async function runCloudBaseMigrationBehaviorGate({
     await run(executable('psql'), [...connection, '-f', '-'], behaviorSql);
 
     return {
-      postgresVersion: versionMatch[1],
+      postgresVersion: postgresVersion.version,
+      postgresMajorVersion: postgresVersion.major,
       migrationsApplied: migrations.length,
       behaviorsVerified: 8
     };
@@ -406,7 +419,7 @@ $gate$;
 
 if (process.argv[1]
   && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  const options = parseMigrationGateArguments(process.argv.slice(2));
+  const options = parseMigrationGateArguments(process.argv.slice(2), process.env);
   const result = await runCloudBaseMigrationBehaviorGate(options);
   process.stdout.write(
     `PostgreSQL ${result.postgresVersion}：${result.migrationsApplied} 个迁移，`
