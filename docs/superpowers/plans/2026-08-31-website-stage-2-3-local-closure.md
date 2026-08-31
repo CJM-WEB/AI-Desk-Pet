@@ -142,6 +142,8 @@
 
 ## Task 6：共享 HTTP 信封与逐 endpoint 契约
 
+> 依赖补充：先完成并验收 `2026-08-31-admin-override-publication.md`；Task 6 必须消费最终 `move_to_manual`、`force_publish`、`publicationBasis` 契约，不得建立临时重复 DTO。
+
 **Files:**
 - Create: `packages/shared-types/src/website-http.ts`, `packages/shared-types/tests/website-http.test.ts`
 - Modify: `packages/shared-types/package.json`, `.dependency-cruiser.mjs`, `.dependency-cruiser.web.mjs`
@@ -152,7 +154,7 @@
 **依赖：** Task 5 的最终状态与 admin evidence 形状。
 
 1. RED：必填 requestId；data/error 互斥；extra key、畸形 data、非 JSON、错误 HTTP+畸形信封均失败关闭。
-2. 精确请求与响应：共享子路径同时提供 prepare、feedback、status 的 strict 请求 Schema，删除双重断言；prepare=`uploading+cover/package targets`；finalize=`system_reviewing`；feedback=`manual_review_pending`；status=公开状态；公开 list/detail/like/download 与 admin queue/detail/action 全部 strict。
+2. 精确请求与响应：共享子路径同时提供 prepare、feedback、status 的 strict 请求 Schema，删除双重断言；prepare=`uploading+cover/package targets`；finalize=`system_reviewing`；feedback=`system_reviewing`；status=公开状态；公开 list/detail/like/download 与 admin queue/detail/action（含独立 `force_publish` 风险确认和 `publicationBasis`）全部 strict。
 3. GREEN：唯一 `ApiClient.request(path, schema, init)`；服务端发送前 strict parse，失败经 `normalizeError` 返回不泄露原对象的 500 `INTERNAL_ERROR`。
 4. REFACTOR：删除本地 Envelope、`request<unknown>`、重复 DTO/Schema、无消费者 error message 和手工 wire 投影。
 5. 完成标准：shared-types、website、CloudBase API test/typecheck 通过，残余检索为零。
