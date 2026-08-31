@@ -258,10 +258,47 @@ describe('云端共享仓库', () => {
     await expect(repository.getById('missing')).resolves.toBeNull();
     await repository.getById('pet-1');
     await expect(repository.toggleLike('pet-1')).resolves.toMatchObject({ likedByCurrentUser: true, likeCount: 2 });
+    const likeOptions = vi.mocked(api.request).mock.calls[2]?.[2];
+    expect(likeOptions).toMatchObject({ method: 'POST' });
+    expect(JSON.parse(String(likeOptions?.body))).toEqual({
+      liked: true,
+      operationId: expect.stringMatching(
+        /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u
+      )
+    });
     await expect(repository.getDownload('pet-1')).resolves.toEqual({
       url: 'https://storage.example/package', expiresAt: '2026-08-01T00:00:00.000Z',
       fileName: 'pet.zip', publicationBasis: 'admin_override'
     });
+  });
+
+  it('点赞失败重试复用同一 desired state 与 operationId', async () => {
+    const item = {
+      id: 'pet-retry', name: '宠物', description: '描述',
+      cover: { url: 'https://storage.example/cover', expiresAt: '2026-08-01T00:00:00.000Z' },
+      packageFileName: 'pet.zip', packageSizeBytes: 7, likeCount: 0, downloadCount: 0,
+      publishedAt: '2026-08-01T00:00:00.000Z', publicationBasis: 'standard'
+    };
+    const request = vi.fn()
+      .mockResolvedValueOnce(item)
+      .mockRejectedValueOnce(new Error('NETWORK_FAILED'))
+      .mockResolvedValueOnce({ liked: true, likeCount: 1 });
+    const repository = new CloudSharedPetRepository({ request } as unknown as ApiClient);
+    await repository.getById(item.id);
+
+    await expect(repository.toggleLike(item.id)).rejects.toThrow('NETWORK_FAILED');
+    await expect(repository.toggleLike(item.id)).resolves.toMatchObject({
+      likedByCurrentUser: true,
+      likeCount: 1
+    });
+
+    const firstBody = JSON.parse(String(request.mock.calls[1]?.[2]?.body));
+    const retryBody = JSON.parse(String(request.mock.calls[2]?.[2]?.body));
+    expect(firstBody).toEqual({
+      liked: true,
+      operationId: expect.any(String)
+    });
+    expect(retryBody).toEqual(firstBody);
   });
 
   it.each([undefined, 'unsafe'])('公开列表对非法发布依据失败关闭：%s', async publicationBasis => {

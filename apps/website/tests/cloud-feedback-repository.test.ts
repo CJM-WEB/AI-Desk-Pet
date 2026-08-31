@@ -187,8 +187,15 @@ describe('云端反馈仓库', () => {
       likedByCurrentBrowser: true, likeCount: 4
     });
 
-    expect(vi.mocked(api.request)).toHaveBeenLastCalledWith('/feedback/published-1/like', expect.anything(), {
-      method: 'POST', body: '{}'
+    const likeOptions = vi.mocked(api.request).mock.calls.at(-1)?.[2];
+    expect(vi.mocked(api.request)).toHaveBeenLastCalledWith(
+      '/feedback/published-1/like',
+      expect.anything(),
+      expect.objectContaining({ method: 'POST' })
+    );
+    expect(JSON.parse(String(likeOptions?.body))).toEqual({
+      liked: true,
+      operationId: expect.any(String)
     });
     expect(listener).toHaveBeenCalledOnce();
   });
@@ -226,6 +233,40 @@ describe('云端反馈仓库', () => {
         id: 'published-1', likedByCurrentBrowser: false, likeCount: 3
       })
     ]));
+    const firstBody = JSON.parse(String(vi.mocked(api.request).mock.calls[1]?.[2]?.body));
+    const secondBody = JSON.parse(String(vi.mocked(api.request).mock.calls[2]?.[2]?.body));
+    expect(firstBody).toMatchObject({ liked: true });
+    expect(secondBody).toMatchObject({ liked: false });
+    expect(secondBody.operationId).not.toBe(firstBody.operationId);
+  });
+
+  it('点赞失败重试复用同一 desired state 与 operationId', async () => {
+    const api = {
+      request: vi.fn()
+        .mockResolvedValueOnce({
+          items: [{
+            id: 'published-retry', kind: 'feedback', authorName: '公开用户',
+            content: '已经审核发布的反馈。', likeCount: 3,
+            createdAt: '2026-08-01T00:00:00.000Z'
+          }],
+          nextCursor: null
+        })
+        .mockRejectedValueOnce(new Error('NETWORK_FAILED'))
+        .mockResolvedValueOnce({ liked: true, likeCount: 4 })
+    } as unknown as ApiClient;
+    const repository = new CloudFeedbackRepository(api);
+    await repository.refresh('feedback');
+
+    await expect(repository.toggleLike('published-retry')).rejects.toThrow('NETWORK_FAILED');
+    await expect(repository.toggleLike('published-retry')).resolves.toMatchObject({
+      likedByCurrentBrowser: true,
+      likeCount: 4
+    });
+
+    const firstBody = JSON.parse(String(vi.mocked(api.request).mock.calls[1]?.[2]?.body));
+    const retryBody = JSON.parse(String(vi.mocked(api.request).mock.calls[2]?.[2]?.body));
+    expect(firstBody).toEqual({ liked: true, operationId: expect.any(String) });
+    expect(retryBody).toEqual(firstBody);
   });
 
   it('公开读取失败时清空网络快照，仅保留官方示例', async () => {

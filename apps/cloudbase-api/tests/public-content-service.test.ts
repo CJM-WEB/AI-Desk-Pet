@@ -112,35 +112,72 @@ describe('公开列表与互动服务', () => {
   ] as const)('反馈点赞仅接受已发布的反馈或建议：%s/%s', async (kind, status, allowed) => {
     const store = {
       findById: vi.fn(async () => ({ id: 'submission-1', kind, status })),
-      togglePublicLike: vi.fn(async () => ({ liked: true, likeCount: 2 }))
+      setPublicLike: vi.fn(async () => ({ liked: true, likeCount: 2 }))
     };
     const service = new PublicContentService(store as never, {} as never);
+    const operationId = '00000000-0000-4000-8000-000000000001';
 
-    const result = service.toggleFeedbackLike('submission-1', 'a'.repeat(64));
+    const result = service.setFeedbackLike(
+      'submission-1',
+      'a'.repeat(64),
+      true,
+      operationId
+    );
 
     if (allowed) {
       await expect(result).resolves.toEqual({ liked: true, likeCount: 2 });
-      expect(store.togglePublicLike).toHaveBeenCalledWith({
-        submissionId: 'submission-1', fingerprintHash: 'a'.repeat(64)
+      expect(store.setPublicLike).toHaveBeenCalledWith({
+        submissionId: 'submission-1',
+        fingerprintHash: 'a'.repeat(64),
+        desiredLiked: true,
+        operationId
       });
     } else {
       await expect(result).rejects.toMatchObject({ code: 'NOT_FOUND' });
-      expect(store.togglePublicLike).not.toHaveBeenCalled();
+      expect(store.setPublicLike).not.toHaveBeenCalled();
     }
   });
 
-  it('社区点赞只接受已发布的共享包', async () => {
+  it('社区 desired-state 点赞不反转状态并原样传递操作事实', async () => {
+    const store = {
+      findById: vi.fn(async () => ({
+        id: 'community-1', kind: 'shared_package', status: 'published'
+      })),
+      setPublicLike: vi.fn(async () => ({ liked: false, likeCount: 0 }))
+    };
+    const service = new PublicContentService(store as never, {} as never);
+    const operationId = '00000000-0000-4000-8000-000000000002';
+
+    await expect(service.setCommunityLike(
+      'community-1',
+      'b'.repeat(64),
+      false,
+      operationId
+    )).resolves.toEqual({ liked: false, likeCount: 0 });
+    expect(store.setPublicLike).toHaveBeenCalledWith({
+      submissionId: 'community-1',
+      fingerprintHash: 'b'.repeat(64),
+      desiredLiked: false,
+      operationId
+    });
+  });
+
+  it('社区点赞拒绝已发布但类型错误的反馈', async () => {
     const store = {
       findById: vi.fn(async () => ({
         id: 'feedback-1', kind: 'feedback', status: 'published'
       })),
-      togglePublicLike: vi.fn(async () => ({ liked: true, likeCount: 2 }))
+      setPublicLike: vi.fn(async () => ({ liked: true, likeCount: 2 }))
     };
     const service = new PublicContentService(store as never, {} as never);
 
-    await expect(service.toggleCommunityLike('feedback-1', 'a'.repeat(64)))
-      .rejects.toMatchObject({ code: 'NOT_FOUND' });
-    expect(store.togglePublicLike).not.toHaveBeenCalled();
+    await expect(service.setCommunityLike(
+      'feedback-1',
+      'a'.repeat(64),
+      true,
+      '00000000-0000-4000-8000-000000000003'
+    )).rejects.toMatchObject({ code: 'NOT_FOUND' });
+    expect(store.setPublicLike).not.toHaveBeenCalled();
   });
 
   it('社区列表只返回公开 DTO 并为封面签发五分钟地址', async () => {

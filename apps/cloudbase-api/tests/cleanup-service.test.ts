@@ -50,15 +50,16 @@ describe('三天隔离清理服务', () => {
 
   it('main 把本次函数 context 传给 V3 运行时', async () => {
     stubCleanupConfig();
-    vi.stubGlobal('fetch', vi.fn(async () => new Response(
-      JSON.stringify([]),
+    vi.stubGlobal('fetch', vi.fn(async (input: string) => new Response(
+      JSON.stringify(input.includes('purge_expired_public_interaction_operations') ? 0 : []),
       { status: 200, headers: { 'content-type': 'application/json' } }
     )));
 
     await expect(productionMain({}, functionContext)).resolves.toEqual({
       claimed: 0,
       purged: 0,
-      failed: 0
+      failed: 0,
+      expiredOperationsPurged: 0
     });
 
     expect(productionSdk.createRuntime).toHaveBeenCalledWith(
@@ -83,6 +84,10 @@ describe('三天隔离清理服务', () => {
       }]
     }];
     const store: CleanupStore = {
+      purgeExpiredPublicInteractionOperations: vi.fn(async () => {
+        order.push('expired-operations');
+        return 4;
+      }),
       claimCleanupJobs: vi.fn(async () => jobs),
       markPurged: vi.fn(async () => {
         order.push('purged');
@@ -100,12 +105,18 @@ describe('三天隔离清理服务', () => {
 
     const result = await service.purgeDue(20);
 
-    expect(result).toEqual({ claimed: 1, purged: 1, failed: 0 });
+    expect(result).toEqual({
+      claimed: 1,
+      purged: 1,
+      failed: 0,
+      expiredOperationsPurged: 4
+    });
+    expect(store.purgeExpiredPublicInteractionOperations).toHaveBeenCalledWith(500);
     expect(store.claimCleanupJobs).toHaveBeenCalledWith(
       20,
       '2026-08-03T00:10:00.000Z'
     );
-    expect(order).toEqual(['object', 'purged']);
+    expect(order).toEqual(['expired-operations', 'object', 'purged']);
     expect(store.markPurged).toHaveBeenCalledWith({
       submissionId: 'submission-1',
       expectedVersion: 4
@@ -135,6 +146,7 @@ describe('三天隔离清理服务', () => {
         }
       ];
     const store: CleanupStore = {
+      purgeExpiredPublicInteractionOperations: vi.fn(async () => 0),
       claimCleanupJobs: vi.fn(async () => jobs),
       markPurged: vi.fn(async () => true)
     };
@@ -149,7 +161,12 @@ describe('三天隔离清理服务', () => {
 
     const result = await service.purgeDue(20);
 
-    expect(result).toEqual({ claimed: 2, purged: 1, failed: 1 });
+    expect(result).toEqual({
+      claimed: 2,
+      purged: 1,
+      failed: 1,
+      expiredOperationsPurged: 0
+    });
     expect(store.markPurged).toHaveBeenCalledOnce();
     expect(store.markPurged).toHaveBeenCalledWith({
       submissionId: 'submission-2',
@@ -173,6 +190,7 @@ describe('三天隔离清理服务', () => {
       }]
     }];
     const store: CleanupStore = {
+      purgeExpiredPublicInteractionOperations: vi.fn(async () => 0),
       claimCleanupJobs: vi.fn(async () => jobs),
       markPurged: vi.fn(async () => true)
     };
@@ -186,8 +204,28 @@ describe('三天隔离清理服务', () => {
     await expect(service.purgeDue(20)).resolves.toEqual({
       claimed: 1,
       purged: 0,
-      failed: 1
+      failed: 1,
+      expiredOperationsPurged: 0
     });
     expect(store.markPurged).not.toHaveBeenCalled();
+  });
+
+  it('互动账本清理失败时整轮失败且不吞数据库异常', async () => {
+    const databaseError = new Error('数据库清理失败');
+    const store: CleanupStore = {
+      purgeExpiredPublicInteractionOperations: vi.fn(async () => {
+        throw databaseError;
+      }),
+      claimCleanupJobs: vi.fn(async () => []),
+      markPurged: vi.fn(async () => true)
+    };
+    const service = new CleanupService(
+      store,
+      { delete: vi.fn(async () => undefined) },
+      { now: () => new Date('2026-08-03T00:00:00.000Z') }
+    );
+
+    await expect(service.purgeDue(20)).rejects.toBe(databaseError);
+    expect(store.claimCleanupJobs).not.toHaveBeenCalled();
   });
 });

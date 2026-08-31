@@ -100,8 +100,18 @@ interface PublicContentApi {
     kind: 'feedback' | 'suggestion',
     input: { limit: number; cursor?: string | null }
   ): Promise<{ items: PublicFeedbackItem[]; nextCursor: string | null }>;
-  toggleFeedbackLike(id: string, fingerprint: string): Promise<unknown>;
-  toggleCommunityLike(id: string, fingerprint: string): Promise<unknown>;
+  setFeedbackLike(
+    id: string,
+    fingerprint: string,
+    desiredLiked: boolean,
+    operationId: string
+  ): Promise<unknown>;
+  setCommunityLike(
+    id: string,
+    fingerprint: string,
+    desiredLiked: boolean,
+    operationId: string
+  ): Promise<unknown>;
   getDownload(id: string): Promise<PublicDownload>;
 }
 
@@ -303,7 +313,12 @@ async function dispatch(
     );
     await dependencies.abuseControl.consume(`like:${feedbackLikeId}`, deviceHash);
     return publicLikeResponseSchema.parse(
-      await dependencies.publicContent.toggleFeedbackLike(feedbackLikeId, deviceHash)
+      await dependencies.publicContent.setFeedbackLike(
+        feedbackLikeId,
+        deviceHash,
+        body.data.liked,
+        body.data.operationId
+      )
     );
   }
 
@@ -324,7 +339,12 @@ async function dispatch(
     );
     await dependencies.abuseControl.consume(`like:${likeId}`, deviceHash);
     return publicLikeResponseSchema.parse(
-      await dependencies.publicContent.toggleCommunityLike(likeId, deviceHash)
+      await dependencies.publicContent.setCommunityLike(
+        likeId,
+        deviceHash,
+        body.data.liked,
+        body.data.operationId
+      )
     );
   }
 

@@ -160,6 +160,18 @@ describe('公开 endpoint 契约', () => {
       .toBe(false);
   });
 
+  it('点赞请求必须携带明确目标状态与 UUID 操作号', () => {
+    const operationId = '00000000-0000-4000-8000-000000000001';
+    expect(publicLikeRequestSchema.parse({ liked: true, operationId }))
+      .toEqual({ liked: true, operationId });
+    for (const invalid of [
+      {},
+      { liked: true },
+      { liked: true, operationId: 'not-a-uuid' },
+      { liked: true, operationId, privateDeviceHash: 'x' }
+    ]) expect(publicLikeRequestSchema.safeParse(invalid).success).toBe(false);
+  });
+
   it('公开与管理员路径、query 和空 body 请求拒绝额外字段', () => {
     expect(publicListRequestSchema.parse({ limit: 8, cursor: 'v1.abc' }).cursor)
       .toBe('v1.abc');

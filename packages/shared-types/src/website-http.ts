@@ -119,7 +119,10 @@ export const publicDetailRequestSchema = z.object({
   query: z.object({}).strict(),
   body: z.object({}).strict()
 }).strict();
-export const publicLikeRequestSchema = emptyRequestSchema;
+export const publicLikeRequestSchema = z.object({
+  liked: z.boolean(),
+  operationId: z.string().uuid()
+}).strict();
 export const publicDownloadRequestSchema = emptyRequestSchema;
 
 const signedUrlSchema = z.object({

@@ -42,7 +42,8 @@ type PublishedContractRecord = Omit<ContractRecord, 'status' | 'publicationBasis
 interface ProductionFixtureState {
   records: Map<string, ContractRecord>;
   idempotency: Map<string, { payload: string; result: unknown }>;
-  communityLiked: boolean;
+  interactionOperations: Map<string, { payload: string; result: { liked: boolean; likeCount: number } }>;
+  interactionVotes: Set<string>;
 }
 
 function createState(): ProductionFixtureState {
@@ -90,7 +91,8 @@ function createState(): ProductionFixtureState {
       }],
     ]),
     idempotency: new Map(),
-    communityLiked: false,
+    interactionOperations: new Map(),
+    interactionVotes: new Set(),
   };
 }
 
@@ -268,11 +270,10 @@ function createDependencies(state: ProductionFixtureState): ApiDependencies {
           createdAt: CREATED_AT,
         }].filter(item => item.kind === kind), input, `feedback:${kind}`,
         item => item.createdAt, item => item),
-      toggleCommunityLike: async () => {
-        state.communityLiked = !state.communityLiked;
-        return { liked: state.communityLiked, likeCount: state.communityLiked ? 1 : 0 };
-      },
-      toggleFeedbackLike: async () => ({ liked: true, likeCount: 1 }),
+      setCommunityLike: async (id, fingerprint, desiredLiked, operationId) =>
+        setContractLike(state, id, fingerprint, desiredLiked, operationId),
+      setFeedbackLike: async (id, fingerprint, desiredLiked, operationId) =>
+        setContractLike(state, id, fingerprint, desiredLiked, operationId),
       getDownload: async id => {
         const record = state.records.get(id);
         if (!record || !isPublished(record)) throw new ApiError('NOT_FOUND', 404);
@@ -324,6 +325,38 @@ function createDependencies(state: ProductionFixtureState): ApiDependencies {
       },
     },
   };
+}
+
+/** 生产合同替身独立实现 desired-state 和操作号冲突，不借用数据库适配器。 */
+function setContractLike(
+  state: ProductionFixtureState,
+  submissionId: string,
+  fingerprint: string,
+  desiredLiked: boolean,
+  operationId: string,
+): { liked: boolean; likeCount: number } {
+  const payload = JSON.stringify({
+    action: 'like',
+    submissionId,
+    fingerprint,
+    desiredLiked,
+  });
+  const previous = state.interactionOperations.get(operationId);
+  if (previous) {
+    if (previous.payload !== payload) throw new ApiError('IDEMPOTENCY_CONFLICT', 409);
+    return structuredClone(previous.result);
+  }
+  const voteKey = `${fingerprint}:${submissionId}`;
+  if (desiredLiked) state.interactionVotes.add(voteKey);
+  else state.interactionVotes.delete(voteKey);
+  const likeCount = [...state.interactionVotes]
+    .filter(key => key.endsWith(`:${submissionId}`)).length;
+  const result = { liked: desiredLiked, likeCount };
+  state.interactionOperations.set(operationId, {
+    payload,
+    result: structuredClone(result),
+  });
+  return result;
 }
 
 /** 合同 driver 只模拟 HTTP 可观察键集语义，不导入数据库实现。 */

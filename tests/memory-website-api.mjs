@@ -7,6 +7,13 @@ const moderationModuleUrl = pathToFileURL(
   websiteRequire.resolve('@myself/shared-types/moderation')
 ).href;
 const { adminActionSchema } = await import(moderationModuleUrl);
+const { z } = websiteRequire('zod');
+
+/** Memory 保持与生产共享 wire 同形，避免测试服务器直接装载含内部源码依赖的 TS 聚合模块。 */
+const publicLikeRequestSchema = z.object({
+  liked: z.boolean(),
+  operationId: z.string().uuid()
+}).strict();
 
 const ADMIN_TOKEN = 'e2e-admin-session';
 const CONTRACT_ADMIN_TOKEN = 'contract-admin-token';
@@ -29,6 +36,8 @@ export function createMemoryWebsiteApi({ runId }) {
   const tokenIndex = new Map();
   const uploads = new Map();
   const adminIdempotency = new Map();
+  const interactionOperations = new Map();
+  const interactionVotes = new Set();
   let sequence = 0;
 
   const reset = () => {
@@ -36,6 +45,8 @@ export function createMemoryWebsiteApi({ runId }) {
     tokenIndex.clear();
     uploads.clear();
     adminIdempotency.clear();
+    interactionOperations.clear();
+    interactionVotes.clear();
     sequence = 0;
     seedContractFixtures(submissions, tokenIndex, uploads);
     return structuredClone(CONTRACT_REFS);
@@ -143,8 +154,7 @@ export function createMemoryWebsiteApi({ runId }) {
           createdAt,
           updatedAt: createdAt,
           likeCount: 0,
-          downloadCount: 0,
-          liked: false
+          downloadCount: 0
         };
         submissions.set(id, record);
         tokenIndex.set(statusToken, id);
@@ -217,8 +227,7 @@ export function createMemoryWebsiteApi({ runId }) {
           createdAt,
           updatedAt: createdAt,
           likeCount: 0,
-          downloadCount: 0,
-          liked: false
+          downloadCount: 0
         };
         submissions.set(id, record);
         tokenIndex.set(statusToken, id);
@@ -256,8 +265,16 @@ export function createMemoryWebsiteApi({ runId }) {
 
       const communityLikeId = matchId(pathname, '/api/v1/community/', '/like');
       if (request.method === 'POST' && communityLikeId) {
-        await readJson(request);
-        return sendData(response, 200, toggleLike(requirePublished(communityLikeId, 'shared_package')));
+        const body = publicLikeRequestSchema.safeParse(await readJson(request));
+        if (!body.success) return sendError(response, 400, 'INVALID_REQUEST');
+        return sendData(response, 200, setLike({
+          record: requirePublished(communityLikeId, 'shared_package'),
+          deviceHash: memoryDeviceHash(request),
+          request: body.data,
+          interactionOperations,
+          interactionVotes,
+          now: now()
+        }));
       }
 
       const downloadId = matchId(pathname, '/api/v1/community/', '/download');
@@ -286,8 +303,16 @@ export function createMemoryWebsiteApi({ runId }) {
 
       const feedbackLikeId = matchId(pathname, '/api/v1/feedback/', '/like');
       if (request.method === 'POST' && feedbackLikeId) {
-        await readJson(request);
-        return sendData(response, 200, toggleLike(requirePublished(feedbackLikeId, ['feedback', 'suggestion'])));
+        const body = publicLikeRequestSchema.safeParse(await readJson(request));
+        if (!body.success) return sendError(response, 400, 'INVALID_REQUEST');
+        return sendData(response, 200, setLike({
+          record: requirePublished(feedbackLikeId, ['feedback', 'suggestion']),
+          deviceHash: memoryDeviceHash(request),
+          request: body.data,
+          interactionOperations,
+          interactionVotes,
+          now: now()
+        }));
       }
 
       if (pathname.startsWith('/api/v1/admin/')) {
@@ -407,8 +432,7 @@ function seedContractFixtures(submissions, tokenIndex, uploads) {
     createdAt,
     updatedAt,
     likeCount: 0,
-    downloadCount: 0,
-    liked: false
+    downloadCount: 0
   });
   const uploaded = sharedRecord(
     CONTRACT_REFS.uploadedSubmissionId,
@@ -857,10 +881,57 @@ function adminDetail(record, request) {
   };
 }
 
-function toggleLike(record) {
-  record.liked = !record.liked;
-  record.likeCount += record.liked ? 1 : -1;
-  return { liked: record.liked, likeCount: record.likeCount };
+/** Memory 与生产共用 desired-state 语义，并按设备和投稿保存独立 vote。 */
+function setLike({
+  record,
+  deviceHash,
+  request,
+  interactionOperations,
+  interactionVotes,
+  now
+}) {
+  const existing = interactionOperations.get(request.operationId);
+  if (existing && Date.parse(existing.expiresAt) <= Date.parse(now)) {
+    interactionOperations.delete(request.operationId);
+  } else if (existing) {
+    if (
+      existing.action !== 'like'
+      || existing.submissionId !== record.id
+      || existing.deviceHash !== deviceHash
+      || existing.desiredLiked !== request.liked
+    ) throw new MemoryApiError('IDEMPOTENCY_CONFLICT', 409);
+    return structuredClone(existing.result);
+  }
+
+  const voteKey = `${deviceHash}:${record.id}`;
+  const currentlyLiked = interactionVotes.has(voteKey);
+  if (request.liked && !currentlyLiked) {
+    interactionVotes.add(voteKey);
+    record.likeCount += 1;
+  } else if (!request.liked && currentlyLiked) {
+    interactionVotes.delete(voteKey);
+    record.likeCount = Math.max(0, record.likeCount - 1);
+  }
+  const result = { liked: request.liked, likeCount: record.likeCount };
+  interactionOperations.set(request.operationId, {
+    action: 'like',
+    submissionId: record.id,
+    deviceHash,
+    desiredLiked: request.liked,
+    result: structuredClone(result),
+    expiresAt: plusDays(now, 1)
+  });
+  return result;
+}
+
+/** 内存驱动只保留不可逆设备摘要，不保存来源地址或 User-Agent。 */
+function memoryDeviceHash(request) {
+  const userAgent = Array.isArray(request.headers['user-agent'])
+    ? request.headers['user-agent'].join(',')
+    : String(request.headers['user-agent'] ?? '');
+  return createHash('sha256')
+    .update(`${request.socket.remoteAddress ?? ''}\n${userAgent}`)
+    .digest('hex');
 }
 
 function applyAdminAction(response, record, body, now, adminIdempotency) {

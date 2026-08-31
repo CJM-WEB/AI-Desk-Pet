@@ -67,7 +67,7 @@ export interface RdbResult {
 export type CloudBasePostgresRpcName =
   | 'consume_abuse_limit'
   | 'create_text_submission'
-  | 'toggle_public_like'
+  | 'set_public_like'
   | 'record_public_download'
   | 'create_submission'
   | 'complete_submission_upload'
@@ -77,6 +77,7 @@ export type CloudBasePostgresRpcName =
   | 'apply_admin_action'
   | 'claim_cleanup_jobs'
   | 'mark_submission_purged'
+  | 'purge_expired_public_interaction_operations'
   | 'list_public_community'
   | 'list_public_feedback'
   | 'list_admin_submissions';
@@ -238,14 +239,19 @@ export class CloudBasePostgresStore implements
     return mapSubmission(requireData(result, '创建文本投稿失败'));
   }
 
-  async togglePublicLike(input: PublicLikeInput): Promise<PublicLikeResult> {
+  async setPublicLike(input: PublicLikeInput): Promise<PublicLikeResult> {
     requireHash(input.fingerprintHash);
-    const result = await this.rpcClient.rpc('toggle_public_like', {
+    const result = await this.rpcClient.rpc('set_public_like', {
       p_submission_id: input.submissionId,
-      p_fingerprint_hash: input.fingerprintHash
+      p_fingerprint_hash: input.fingerprintHash,
+      p_desired_liked: input.desiredLiked,
+      p_operation_id: input.operationId
     });
     throwPublicNotFound(result);
-    const row = requireRecord(requireData(result, '切换点赞失败'), '点赞结果');
+    if (result.error?.code === 'P1001') {
+      throw new ApiError('IDEMPOTENCY_CONFLICT', 409, result.error.message);
+    }
+    const row = requireRecord(requireData(result, '设置点赞失败'), '点赞结果');
     return {
       liked: requireBoolean(row.liked, 'liked'),
       likeCount: requireNonnegativeInteger(row.like_count, 'like_count')
@@ -606,6 +612,19 @@ export class CloudBasePostgresStore implements
     return requireBoolean(row.applied, 'applied');
   }
 
+  async purgeExpiredPublicInteractionOperations(limit: number): Promise<number> {
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 500) {
+      throw new ApiError('INVALID_LIMIT', 400);
+    }
+    return requireNonnegativeInteger(
+      requireData(await this.rpcClient.rpc(
+        'purge_expired_public_interaction_operations',
+        { p_limit: limit }
+      ), '清理过期互动账本失败'),
+      '过期互动账本清理数'
+    );
+  }
+
   private async findSubmission(id: string): Promise<SubmissionRow> {
     const submission = await this.findSubmissionOrNull(id);
     if (!submission) throw new ApiError('SUBMISSION_NOT_FOUND', 404);
@@ -717,6 +736,7 @@ const adminActionRpcResultSchema = z.union([
       message: '发布状态与发布依据不一致'
     });
   }
+
 });
 
 /** 管理员动作 RPC 只映射稳定裁决事实，额外字段和完整投稿私密行均失败关闭。 */

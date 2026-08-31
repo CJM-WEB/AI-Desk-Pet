@@ -158,6 +158,8 @@ export interface AbuseLimitResult {
 export interface PublicLikeInput {
   submissionId: string;
   fingerprintHash: string;
+  desiredLiked: boolean;
+  operationId: string;
 }
 
 export interface PublicLikeResult {
@@ -372,6 +374,7 @@ export interface MarkPurgedInput {
 
 /** 清理任务使用租约领取，避免多实例重复删除同一对象。 */
 export interface CleanupStore {
+  purgeExpiredPublicInteractionOperations(limit: number): Promise<number>;
   claimCleanupJobs(
     limit: number,
     leaseUntil: string
@@ -414,7 +417,7 @@ export interface PublicInteractionStore {
     kind: TextSubmissionKind,
     input: PublicListQuery
   ): Promise<PublishedFeedbackPage>;
-  togglePublicLike(input: PublicLikeInput): Promise<PublicLikeResult>;
+  setPublicLike(input: PublicLikeInput): Promise<PublicLikeResult>;
   recordPublicDownload(submissionId: string): Promise<PublicDownloadResult>;
 }
 

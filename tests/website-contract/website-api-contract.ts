@@ -164,12 +164,44 @@ export function runWebsiteApiContract(
       }), publicDownloadResponseSchema);
       expect(download.publicationBasis).toBe('standard');
 
+      const operationId = '00000000-0000-4000-8000-000000000301';
+      const likeRequest = { liked: true, operationId };
       const like = success(await driver.request({
         method: 'POST',
         path: `/api/v1/community/${refs.publicCommunityId}/like`,
-        body: {},
+        body: likeRequest,
       }), publicLikeResponseSchema);
       expect(like).toEqual({ liked: true, likeCount: 1 });
+      const replay = success(await driver.request({
+        method: 'POST',
+        path: `/api/v1/community/${refs.publicCommunityId}/like`,
+        body: likeRequest,
+      }), publicLikeResponseSchema);
+      expect(replay).toEqual(like);
+      const sameDesiredState = success(await driver.request({
+        method: 'POST',
+        path: `/api/v1/community/${refs.publicCommunityId}/like`,
+        body: {
+          liked: true,
+          operationId: '00000000-0000-4000-8000-000000000302',
+        },
+      }), publicLikeResponseSchema);
+      expect(sameDesiredState).toEqual({ liked: true, likeCount: 1 });
+      const secondDevice = success(await driver.request({
+        method: 'POST',
+        path: `/api/v1/community/${refs.publicCommunityId}/like`,
+        headers: { 'user-agent': 'website-contract-second-device' },
+        body: {
+          liked: true,
+          operationId: '00000000-0000-4000-8000-000000000303',
+        },
+      }), publicLikeResponseSchema);
+      expect(secondDevice).toEqual({ liked: true, likeCount: 2 });
+      failure(await driver.request({
+        method: 'POST',
+        path: `/api/v1/community/${refs.publicCommunityId}/like`,
+        body: { liked: false, operationId },
+      }), 409, 'IDEMPOTENCY_CONFLICT');
 
       const feedback = success(await driver.request({
         method: 'GET',

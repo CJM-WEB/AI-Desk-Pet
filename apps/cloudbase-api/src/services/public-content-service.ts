@@ -89,14 +89,24 @@ export class PublicContentService {
     };
   }
 
-  async toggleFeedbackLike(id: string, fingerprint: string): Promise<PublicLikeResult> {
+  async setFeedbackLike(
+    id: string,
+    fingerprint: string,
+    desiredLiked: boolean,
+    operationId: string
+  ): Promise<PublicLikeResult> {
     await this.requirePublishedKind(id, ['feedback', 'suggestion']);
-    return this.togglePublishedLike(id, fingerprint);
+    return this.setPublishedLike(id, fingerprint, desiredLiked, operationId);
   }
 
-  async toggleCommunityLike(id: string, fingerprint: string): Promise<PublicLikeResult> {
+  async setCommunityLike(
+    id: string,
+    fingerprint: string,
+    desiredLiked: boolean,
+    operationId: string
+  ): Promise<PublicLikeResult> {
     await this.requirePublishedKind(id, ['shared_package']);
-    return this.togglePublishedLike(id, fingerprint);
+    return this.setPublishedLike(id, fingerprint, desiredLiked, operationId);
   }
 
   async getDownload(
@@ -185,13 +195,17 @@ export class PublicContentService {
     }
   }
 
-  private async togglePublishedLike(
+  private async setPublishedLike(
     id: string,
-    fingerprint: string
+    fingerprint: string,
+    desiredLiked: boolean,
+    operationId: string
   ): Promise<PublicLikeResult> {
-    return this.store.togglePublicLike({
+    return this.store.setPublicLike({
       submissionId: id,
-      fingerprintHash: fingerprint
+      fingerprintHash: fingerprint,
+      desiredLiked,
+      operationId
     });
   }
 }

@@ -8,6 +8,7 @@ export interface PurgeResult {
   claimed: number;
   purged: number;
   failed: number;
+  expiredOperationsPurged: number;
 }
 
 const cleanupLeaseMilliseconds = 10 * 60 * 1000;
@@ -34,6 +35,8 @@ export class CleanupService {
     if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) {
       throw new RangeError('清理批量必须在 1 到 100 之间');
     }
+    const expiredOperationsPurged =
+      await this.store.purgeExpiredPublicInteractionOperations(500);
     const now = this.clock.now();
     const rows = await this.store.claimCleanupJobs(
       limit,
@@ -60,7 +63,12 @@ export class CleanupService {
         failed += 1;
       }
     }
-    return { claimed: rows.length, purged, failed };
+    return {
+      claimed: rows.length,
+      purged,
+      failed,
+      expiredOperationsPurged
+    };
   }
 }
 

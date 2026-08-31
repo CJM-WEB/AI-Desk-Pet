@@ -25,6 +25,8 @@ vi.mock('../src/adapters/cloudbase-runtime.js', () => ({
 
 const sourceIp = '203.0.113.8';
 const fingerprintSecret = '仅用于测试的指纹配置值';
+const likeOperationId = '00000000-0000-4000-8000-000000000101';
+const likeRequest = { liked: true, operationId: likeOperationId };
 const validPrepareRequest = {
   kind: 'shared_package' as const,
   title: '名称',
@@ -114,8 +116,8 @@ function createDependencies() {
         }],
         nextCursor: null
       })),
-      toggleCommunityLike: vi.fn(async () => ({ liked: true, likeCount: 3 })),
-      toggleFeedbackLike: vi.fn(async () => ({ liked: true, likeCount: 3 })),
+      setCommunityLike: vi.fn(async () => ({ liked: true, likeCount: 3 })),
+      setFeedbackLike: vi.fn(async () => ({ liked: true, likeCount: 3 })),
       getDownload: vi.fn(async () => ({
         url: 'https://storage.example/download',
         expiresAt: '2026-07-31T00:05:00.000Z',
@@ -244,7 +246,7 @@ describe('API 生产组合', () => {
 describe('公开 HTTP API', () => {
   it('发送前响应校验失败时使用新 requestId 且不泄漏原对象', async () => {
     const dependencies = createDependencies();
-    dependencies.publicContent.toggleCommunityLike.mockResolvedValueOnce({
+    dependencies.publicContent.setCommunityLike.mockResolvedValueOnce({
       liked: true,
       likeCount: 3,
       adminEmail: 'admin@example.com',
@@ -253,7 +255,7 @@ describe('公开 HTTP API', () => {
     const main = createApi(dependencies);
 
     const response = await main(
-      event('POST', '/api/v1/community/community-1/like', {}),
+      event('POST', '/api/v1/community/community-1/like', likeRequest),
       context
     );
     const body = JSON.parse(response.body);
@@ -599,7 +601,7 @@ describe('公开 HTTP API', () => {
     const main = createApi(dependencies);
 
     await main(
-      event('POST', '/api/v1/community/community-1/like', {}),
+      event('POST', '/api/v1/community/community-1/like', likeRequest),
       context
     );
     const downloadResponse = await main(
@@ -618,9 +620,9 @@ describe('公开 HTTP API', () => {
       'download:community-1',
       deviceHash
     ]);
-    expect(dependencies.publicContent.toggleCommunityLike)
-      .toHaveBeenCalledWith('community-1', deviceHash);
-    expect(dependencies.publicContent.toggleFeedbackLike).not.toHaveBeenCalled();
+    expect(dependencies.publicContent.setCommunityLike)
+      .toHaveBeenCalledWith('community-1', deviceHash, true, likeOperationId);
+    expect(dependencies.publicContent.setFeedbackLike).not.toHaveBeenCalled();
     expect(dependencies.publicContent.getDownload)
       .toHaveBeenCalledWith('community-1');
     expect(JSON.parse(downloadResponse.body).data).toEqual({
@@ -635,7 +637,10 @@ describe('公开 HTTP API', () => {
     const main = createApi(dependencies);
 
     const response = await main(
-      event('POST', '/api/v1/feedback/feedback-1/like', {}),
+      event('POST', '/api/v1/feedback/feedback-1/like', {
+        liked: false,
+        operationId: likeOperationId
+      }),
       context
     );
 
@@ -647,9 +652,25 @@ describe('公开 HTTP API', () => {
       'like:feedback-1',
       deviceHash
     );
-    expect(dependencies.publicContent.toggleFeedbackLike)
-      .toHaveBeenCalledWith('feedback-1', deviceHash);
-    expect(dependencies.publicContent.toggleCommunityLike).not.toHaveBeenCalled();
+    expect(dependencies.publicContent.setFeedbackLike)
+      .toHaveBeenCalledWith('feedback-1', deviceHash, false, likeOperationId);
+    expect(dependencies.publicContent.setCommunityLike).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    {},
+    { liked: true },
+    { liked: true, operationId: 'not-a-uuid' },
+    { liked: true, operationId: likeOperationId, extra: true }
+  ])('点赞拒绝空对象、缺字段、非 UUID 与未知字段：%o', async body => {
+    const dependencies = createDependencies();
+    const response = await createApi(dependencies)(
+      event('POST', '/api/v1/community/community-1/like', body),
+      context
+    );
+
+    expect(response.statusCode).toBe(400);
+    expect(dependencies.publicContent.setCommunityLike).not.toHaveBeenCalled();
   });
 
   it('429 响应在稳定错误信封中包含重试秒数', async () => {

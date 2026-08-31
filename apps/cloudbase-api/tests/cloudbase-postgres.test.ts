@@ -18,6 +18,9 @@ const migrationPath = fileURLToPath(
 const keysetMigrationPath = fileURLToPath(
   new URL('../../../cloudbase/migrations/20260831030000_keyset_pagination.sql', import.meta.url)
 );
+const interactionMigrationPath = fileURLToPath(
+  new URL('../../../cloudbase/migrations/20260831040000_idempotent_public_interactions.sql', import.meta.url)
+);
 describe('CloudBase PostgreSQL 迁移', () => {
   it('三条列表 RPC 使用真实键集列且不构造通用排序列', () => {
     const sql = readFileSync(keysetMigrationPath, 'utf8');
@@ -29,6 +32,21 @@ describe('CloudBase PostgreSQL 迁移', () => {
     expect(sql).toContain('(submission.published_at, submission.id) < (p_cursor_time, p_cursor_id)');
     expect(sql).toContain('(submission.created_at, submission.id) < (p_cursor_time, p_cursor_id)');
     expect(sql).not.toContain('sort_time');
+  });
+
+  it('互动前向迁移建立 desired-state 账本、有限清理并移除旧 toggle', () => {
+    const sql = readFileSync(interactionMigrationPath, 'utf8');
+
+    expect(sql).toContain('CREATE TABLE public_interaction_operations');
+    expect(sql).toContain("CHECK (action IN ('like', 'download'))");
+    expect(sql).toContain("interval '24 hours'");
+    expect(sql).toContain('CREATE FUNCTION set_public_like(');
+    expect(sql).toContain("ERRCODE = 'P1001'");
+    expect(sql).toContain('CREATE FUNCTION purge_expired_public_interaction_operations(');
+    expect(sql).toContain('p_limit > 500');
+    expect(sql).toContain('FOR UPDATE SKIP LOCKED');
+    expect(sql).toContain('ALTER TABLE public_interaction_operations FORCE ROW LEVEL SECURITY');
+    expect(sql).toContain('DROP FUNCTION toggle_public_like(text, char)');
   });
   it('迁移包含必要表、状态约束和版本条件更新', () => {
     const sql = readFileSync(migrationPath, 'utf8');
@@ -943,7 +961,7 @@ describe('CloudBase PostgreSQL 安全与公开互动存储', () => {
     });
   });
 
-  it('文本投稿、点赞和下载只调用数据库原子函数', async () => {
+  it('文本投稿、desired-state 点赞和下载只调用数据库原子函数', async () => {
     const rpc = {
       rpc: vi.fn()
         .mockResolvedValueOnce({
@@ -984,17 +1002,61 @@ describe('CloudBase PostgreSQL 安全与公开互动存储', () => {
       id: 'feedback-1',
       status: 'system_reviewing'
     });
-    await expect(store.togglePublicLike({
+    await expect(store.setPublicLike({
       submissionId: 'community-1',
-      fingerprintHash: 'd'.repeat(64)
+      fingerprintHash: 'd'.repeat(64),
+      desiredLiked: true,
+      operationId: '00000000-0000-4000-8000-000000000201'
     })).resolves.toEqual({ liked: true, likeCount: 2 });
     await expect(store.recordPublicDownload('community-1'))
       .resolves.toEqual({ downloadCount: 4 });
     expect(rpc.rpc.mock.calls.map(([name]) => name)).toEqual([
       'create_text_submission',
-      'toggle_public_like',
+      'set_public_like',
       'record_public_download'
     ]);
+    expect(rpc.rpc).toHaveBeenNthCalledWith(2, 'set_public_like', {
+      p_submission_id: 'community-1',
+      p_fingerprint_hash: 'd'.repeat(64),
+      p_desired_liked: true,
+      p_operation_id: '00000000-0000-4000-8000-000000000201'
+    });
+  });
+
+  it('desired-state 点赞把数据库幂等冲突映射为稳定 409', async () => {
+    const rpc = {
+      rpc: vi.fn(async () => ({
+        data: null,
+        error: { code: 'P1001', message: 'idempotency conflict' }
+      }))
+    };
+    const store = new CloudBasePostgresStore({ from: vi.fn() } as never, rpc);
+
+    await expect(store.setPublicLike({
+      submissionId: 'community-1',
+      fingerprintHash: 'd'.repeat(64),
+      desiredLiked: false,
+      operationId: '00000000-0000-4000-8000-000000000202'
+    })).rejects.toMatchObject({
+      code: 'IDEMPOTENCY_CONFLICT',
+      statusCode: 409
+    });
+  });
+
+  it('过期互动账本清理调用唯一 RPC 并映射删除数量', async () => {
+    const rpc = {
+      rpc: vi.fn(async () => ({ data: 500, error: null }))
+    };
+    const store = new CloudBasePostgresStore({ from: vi.fn() } as never, rpc);
+
+    await expect(store.purgeExpiredPublicInteractionOperations(500))
+      .resolves.toBe(500);
+    expect(rpc.rpc).toHaveBeenCalledWith(
+      'purge_expired_public_interaction_operations',
+      { p_limit: 500 }
+    );
+    await expect(store.purgeExpiredPublicInteractionOperations(501))
+      .rejects.toMatchObject({ code: 'INVALID_LIMIT', statusCode: 400 });
   });
 
   it('公开社区关系结果映射为不含内部字段的具名记录', async () => {

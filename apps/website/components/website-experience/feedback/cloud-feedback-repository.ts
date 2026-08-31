@@ -3,6 +3,7 @@ import {
   feedbackSubmissionRequestSchema,
   feedbackSubmissionResponseSchema,
   publicFeedbackPageSchema,
+  publicLikeRequestSchema,
   publicLikeResponseSchema,
   type PublicFeedbackPage
 } from '@myself/shared-types/website-http';
@@ -13,6 +14,7 @@ import type {
   CreateFeedbackInput,
   FeedbackEntry,
   FeedbackKind,
+  PendingFeedbackLike,
   FeedbackRepository,
   FeedbackStatusNotice
 } from './feedback-types';
@@ -29,6 +31,7 @@ export class CloudFeedbackRepository implements FeedbackRepository {
   private readonly statusNotices = new Map<FeedbackKind, FeedbackStatusNotice>();
   private readonly refreshGenerations = new Map<FeedbackKind, number>();
   private readonly likeQueues = new Map<string, Promise<void>>();
+  private readonly pendingLikes = new Map<string, PendingFeedbackLike>();
 
   constructor(private readonly api: ApiClient) {}
 
@@ -104,10 +107,19 @@ export class CloudFeedbackRepository implements FeedbackRepository {
 
   private async toggleLikeNow(id: string): Promise<FeedbackEntry> {
     const current = this.findPublishedEntry(id);
+    const pending = this.pendingLikes.get(id) ?? {
+      desiredLiked: !current.likedByCurrentBrowser,
+      operationId: globalThis.crypto.randomUUID()
+    };
+    this.pendingLikes.set(id, pending);
+    const body = publicLikeRequestSchema.parse({
+      liked: pending.desiredLiked,
+      operationId: pending.operationId
+    });
     const result = await this.api.request(
       `/feedback/${encodeURIComponent(id)}/like`,
       publicLikeResponseSchema,
-      { method: 'POST', body: '{}' }
+      { method: 'POST', body: JSON.stringify(body) }
     );
     const updated = {
       ...current,
@@ -117,6 +129,9 @@ export class CloudFeedbackRepository implements FeedbackRepository {
     this.entries.set(current.kind, (this.entries.get(current.kind) ?? []).map(
       entry => entry.id === id ? updated : entry
     ));
+    if (this.pendingLikes.get(id)?.operationId === pending.operationId) {
+      this.pendingLikes.delete(id);
+    }
     this.notify();
     return updated;
   }
@@ -143,6 +158,8 @@ export class CloudFeedbackRepository implements FeedbackRepository {
   }
 
   private toEntry(item: PublicFeedbackPage['items'][number]): FeedbackEntry {
+    const existing = (this.entries.get(item.kind) ?? [])
+      .find(entry => entry.id === item.id);
     return {
       id: item.id,
       kind: item.kind,
@@ -154,7 +171,7 @@ export class CloudFeedbackRepository implements FeedbackRepository {
       createdAt: item.createdAt,
       updatedAt: item.createdAt,
       source: 'local-user',
-      likedByCurrentBrowser: false
+      likedByCurrentBrowser: existing?.likedByCurrentBrowser ?? false
     };
   }
 

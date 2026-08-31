@@ -133,12 +133,14 @@ export async function runCloudBaseMigrationBehaviorGate({
     }
     await run(executable('psql'), [...connection, '-f', '-'], behaviorSql);
     await run(executable('psql'), [...connection, '-f', '-'], keysetBehaviorSql);
+    await run(executable('psql'), [...connection, '-f', '-'], interactionBehaviorSql);
+    await runConcurrentInteractionGate(executable('psql'), connection);
 
     return {
       postgresVersion: postgresVersion.version,
       postgresMajorVersion: postgresVersion.major,
       migrationsApplied: migrations.length,
-      behaviorsVerified: 52
+      behaviorsVerified: 62
     };
   } finally {
     if (started) {
@@ -193,6 +195,116 @@ async function run(executable, arguments_, input) {
     });
     child.stdin.end(input);
   });
+}
+
+/** 双会话固定持有 operation advisory lock，证明第二次同 ID 调用会等待并只回放首次写入。 */
+async function runConcurrentInteractionGate(psql, connection) {
+  const operationId = '00000000-0000-4000-8000-000000000499';
+  await run(psql, [...connection, '-f', '-'], String.raw`
+SELECT set_config('request.jwt.claims', '{"role":"service_role"}', false);
+INSERT INTO submissions (
+  id, kind, title, body, status, status_token_hash, published_at,
+  publication_basis
+) VALUES (
+  'gate-like-concurrent', 'feedback', '并发点赞', '并发点赞', 'published',
+  md5('gate-like-concurrent') || md5('gate-like-concurrent'), now(), 'standard'
+);
+INSERT INTO public_engagement (submission_id) VALUES ('gate-like-concurrent');
+`);
+
+  const first = runUntilMarker(
+    psql,
+    [...connection, '-f', '-'],
+    String.raw`
+BEGIN;
+SELECT set_config('request.jwt.claims', '{"role":"service_role"}', true);
+SELECT pg_advisory_xact_lock(hashtextextended('${operationId}', 0));
+\echo interaction-lock-acquired
+SELECT set_public_like(
+  'gate-like-concurrent', repeat('a', 64), true, '${operationId}'::uuid
+);
+SELECT pg_sleep(0.35);
+COMMIT;
+`,
+    'interaction-lock-acquired'
+  );
+  await first.marker;
+  const second = run(psql, [...connection, '-f', '-'], String.raw`
+SELECT set_config('request.jwt.claims', '{"role":"service_role"}', false);
+SELECT set_public_like(
+  'gate-like-concurrent', repeat('a', 64), true, '${operationId}'::uuid
+);
+`);
+  const earlyResult = await Promise.race([
+    second.then(() => 'completed'),
+    new Promise(resolvePromise => setTimeout(() => resolvePromise('blocked'), 100))
+  ]);
+  if (earlyResult !== 'blocked') {
+    throw new Error('行为门失败：并发同 operation 未等待首次事务');
+  }
+  await Promise.all([first.completion, second]);
+  await run(psql, [...connection, '-f', '-'], String.raw`
+DO $concurrent_like_gate$
+BEGIN
+  IF (SELECT count(*) FROM public_interaction_operations
+      WHERE operation_id = '${operationId}'::uuid) <> 1
+    OR (SELECT count(*) FROM engagement_votes
+        WHERE submission_id = 'gate-like-concurrent') <> 1
+    OR (SELECT like_count FROM public_engagement
+        WHERE submission_id = 'gate-like-concurrent') <> 1 THEN
+    RAISE EXCEPTION '行为门失败：并发同 operation 发生重复写入';
+  END IF;
+END
+$concurrent_like_gate$;
+`);
+}
+
+/** 启动长事务并等待 stdout 标记，同时保留完整退出错误。 */
+function runUntilMarker(executable, arguments_, input, markerText) {
+  let resolveMarker;
+  let rejectMarker;
+  const marker = new Promise((resolvePromise, rejectPromise) => {
+    resolveMarker = resolvePromise;
+    rejectMarker = rejectPromise;
+  });
+  const completion = new Promise((resolvePromise, rejectPromise) => {
+    const child = spawn(executable, arguments_, {
+      windowsHide: true,
+      stdio: ['pipe', 'pipe', 'pipe']
+    });
+    const stdout = [];
+    const stderr = [];
+    let markerSeen = false;
+    child.stdout.on('data', chunk => {
+      const bytes = Buffer.from(chunk);
+      stdout.push(bytes);
+      if (!markerSeen && Buffer.concat(stdout).toString('utf8').includes(markerText)) {
+        markerSeen = true;
+        resolveMarker();
+      }
+    });
+    child.stderr.on('data', chunk => stderr.push(Buffer.from(chunk)));
+    child.once('error', error => {
+      rejectMarker(error);
+      rejectPromise(error);
+    });
+    child.once('close', code => {
+      const output = Buffer.concat(stdout).toString('utf8');
+      const errorOutput = Buffer.concat(stderr).toString('utf8');
+      if (code === 0) {
+        if (!markerSeen) rejectMarker(new Error('PostgreSQL 并发标记未出现'));
+        resolvePromise(output);
+        return;
+      }
+      const error = new Error(
+        `本地 PostgreSQL 命令失败（${code}）：${errorOutput || output}`
+      );
+      rejectMarker(error);
+      rejectPromise(error);
+    });
+    child.stdin.end(input);
+  });
+  return { marker, completion };
 }
 
 const bootstrapSql = String.raw`
@@ -1671,6 +1783,173 @@ BEGIN
   END IF;
 END
 $keyset_gate$;
+`;
+
+/** 互动行为门验证 desired-state、幂等冲突、设备隔离、TTL、权限与有限清理。 */
+const interactionBehaviorSql = String.raw`
+DO $interaction_security_gate$
+BEGIN
+  IF has_function_privilege(
+      'anon', 'set_public_like(text,character,boolean,uuid)', 'EXECUTE')
+    OR has_function_privilege(
+      'authenticated',
+      'purge_expired_public_interaction_operations(integer)',
+      'EXECUTE')
+    OR NOT has_function_privilege(
+      'service_role', 'set_public_like(text,character,boolean,uuid)', 'EXECUTE') THEN
+    RAISE EXCEPTION '行为门失败：互动 RPC 权限不符合 service_role 边界';
+  END IF;
+  IF to_regprocedure('toggle_public_like(text,character)') IS NOT NULL THEN
+    RAISE EXCEPTION '行为门失败：旧 toggle RPC 仍然存在';
+  END IF;
+
+  PERFORM set_config('request.jwt.claims', '{"role":"anon"}', false);
+  BEGIN
+    PERFORM set_public_like(
+      'missing', repeat('a', 64), true,
+      '00000000-0000-4000-8000-000000000401'::uuid
+    );
+    RAISE EXCEPTION '行为门失败：点赞未拒绝非 service_role claims';
+  EXCEPTION WHEN SQLSTATE '42501' THEN NULL;
+  END;
+  BEGIN
+    PERFORM purge_expired_public_interaction_operations(1);
+    RAISE EXCEPTION '行为门失败：账本清理未拒绝非 service_role claims';
+  EXCEPTION WHEN SQLSTATE '42501' THEN NULL;
+  END;
+END
+$interaction_security_gate$;
+
+SELECT set_config('request.jwt.claims', '{"role":"service_role"}', false);
+
+DO $interaction_gate$
+DECLARE
+  v_first jsonb;
+  v_replay jsonb;
+  v_purged integer;
+  v_index integer;
+BEGIN
+  INSERT INTO submissions (
+    id, kind, title, body, status, status_token_hash, published_at,
+    publication_basis
+  ) VALUES
+    ('gate-like-one', 'feedback', '点赞一', '点赞一', 'published', md5('gate-like-one') || md5('gate-like-one'), now(), 'standard'),
+    ('gate-like-devices', 'suggestion', '点赞二', '点赞二', 'published', md5('gate-like-devices') || md5('gate-like-devices'), now(), 'standard'),
+    ('gate-like-expiry', 'feedback', '点赞过期', '点赞过期', 'published', md5('gate-like-expiry') || md5('gate-like-expiry'), now(), 'standard');
+  INSERT INTO public_engagement (submission_id)
+  VALUES ('gate-like-one'), ('gate-like-devices'), ('gate-like-expiry');
+
+  v_first := set_public_like(
+    'gate-like-one', repeat('a', 64), true,
+    '00000000-0000-4000-8000-000000000401'::uuid
+  );
+  v_replay := set_public_like(
+    'gate-like-one', repeat('a', 64), true,
+    '00000000-0000-4000-8000-000000000401'::uuid
+  );
+  IF v_first IS DISTINCT FROM jsonb_build_object('liked', true, 'like_count', 1)
+    OR v_replay IS DISTINCT FROM v_first
+    OR (SELECT count(*) FROM public_interaction_operations
+        WHERE operation_id = '00000000-0000-4000-8000-000000000401'::uuid) <> 1 THEN
+    RAISE EXCEPTION '行为门失败：同 operation 同输入未回放首次结果';
+  END IF;
+
+  BEGIN
+    PERFORM set_public_like(
+      'gate-like-one', repeat('a', 64), false,
+      '00000000-0000-4000-8000-000000000401'::uuid
+    );
+    RAISE EXCEPTION '行为门失败：同 operation 异参未冲突';
+  EXCEPTION WHEN SQLSTATE 'P1001' THEN NULL;
+  END;
+
+  PERFORM set_public_like(
+    'gate-like-one', repeat('a', 64), true,
+    '00000000-0000-4000-8000-000000000402'::uuid
+  );
+  IF (SELECT like_count FROM public_engagement
+      WHERE submission_id = 'gate-like-one') <> 1
+    OR (SELECT count(*) FROM engagement_votes
+        WHERE submission_id = 'gate-like-one') <> 1 THEN
+    RAISE EXCEPTION '行为门失败：不同 operation 同 desired state 重复计数';
+  END IF;
+
+  PERFORM set_public_like(
+    'gate-like-one', repeat('a', 64), false,
+    '00000000-0000-4000-8000-000000000403'::uuid
+  );
+  PERFORM set_public_like(
+    'gate-like-one', repeat('a', 64), false,
+    '00000000-0000-4000-8000-000000000404'::uuid
+  );
+  IF (SELECT like_count FROM public_engagement
+      WHERE submission_id = 'gate-like-one') <> 0 THEN
+    RAISE EXCEPTION '行为门失败：重复 false 产生负数或错误计数';
+  END IF;
+
+  PERFORM set_public_like(
+    'gate-like-devices', repeat('b', 64), true,
+    '00000000-0000-4000-8000-000000000405'::uuid
+  );
+  PERFORM set_public_like(
+    'gate-like-devices', repeat('c', 64), true,
+    '00000000-0000-4000-8000-000000000406'::uuid
+  );
+  IF (SELECT like_count FROM public_engagement
+      WHERE submission_id = 'gate-like-devices') <> 2
+    OR (SELECT count(*) FROM engagement_votes
+        WHERE submission_id = 'gate-like-devices') <> 2 THEN
+    RAISE EXCEPTION '行为门失败：两设备未保持独立投票';
+  END IF;
+
+  PERFORM set_public_like(
+    'gate-like-expiry', repeat('e', 64), true,
+    '00000000-0000-4000-8000-000000000407'::uuid
+  );
+  UPDATE public_interaction_operations
+  SET expires_at = now()
+  WHERE operation_id = '00000000-0000-4000-8000-000000000407'::uuid;
+  PERFORM set_public_like(
+    'gate-like-expiry', repeat('e', 64), false,
+    '00000000-0000-4000-8000-000000000407'::uuid
+  );
+  IF (SELECT desired_liked FROM public_interaction_operations
+      WHERE operation_id = '00000000-0000-4000-8000-000000000407'::uuid) IS DISTINCT FROM false
+    OR (SELECT like_count FROM public_engagement
+        WHERE submission_id = 'gate-like-expiry') <> 0 THEN
+    RAISE EXCEPTION '行为门失败：到期但未 cleanup 的 operation 仍被回放或冲突';
+  END IF;
+
+  IF EXISTS (
+    SELECT 1 FROM public_interaction_operations
+    WHERE expires_at - created_at IS DISTINCT FROM interval '24 hours'
+  ) THEN
+    RAISE EXCEPTION '行为门失败：互动账本不是精确 24 小时过期';
+  END IF;
+  FOR v_index IN 1..501 LOOP
+    INSERT INTO public_interaction_operations (
+      operation_id, action, submission_id, fingerprint_hash, desired_liked,
+      result_snapshot, created_at, expires_at
+    ) VALUES (
+      ('00000000-0000-4000-8001-' || lpad(to_hex(v_index), 12, '0'))::uuid,
+      'like', 'gate-like-one', repeat('d', 64), true,
+      jsonb_build_object('liked', true, 'like_count', 1),
+      now() - interval '25 hours', now() - interval '1 hour'
+    );
+  END LOOP;
+  v_purged := purge_expired_public_interaction_operations(500);
+  IF v_purged <> 500 OR (
+      SELECT count(*) FROM public_interaction_operations
+      WHERE expires_at <= now()) <> 1 THEN
+    RAISE EXCEPTION '行为门失败：互动账本清理未限制为每轮 500 条';
+  END IF;
+  BEGIN
+    PERFORM purge_expired_public_interaction_operations(501);
+    RAISE EXCEPTION '行为门失败：互动账本清理接受超过 500 的 limit';
+  EXCEPTION WHEN SQLSTATE '22023' THEN NULL;
+  END;
+END
+$interaction_gate$;
 `;
 
 if (process.argv[1]

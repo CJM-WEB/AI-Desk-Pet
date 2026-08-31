@@ -81,6 +81,12 @@ export interface SharedPetDownload {
   publicationBasis?: PublicationBasis;
 }
 
+/** 云端请求未完成时只保留可安全重放的目标状态与操作号。 */
+export interface PendingSharedPetLike {
+  desiredLiked: boolean;
+  operationId: string;
+}
+
 export interface SharedPetRepository {
   listPage(
     page: number,

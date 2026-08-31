@@ -26,6 +26,12 @@ export interface FeedbackEntry extends FeedbackRecord {
   likedByCurrentBrowser: boolean;
 }
 
+/** 云端失败重试必须复用同一目标状态和操作号。 */
+export interface PendingFeedbackLike {
+  desiredLiked: boolean;
+  operationId: string;
+}
+
 export interface CreateFeedbackInput {
   kind: FeedbackKind;
   authorName: string;

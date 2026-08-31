@@ -6,6 +6,7 @@ import {
   publicCommunityItemSchema,
   publicCommunityPageSchema,
   publicDownloadResponseSchema,
+  publicLikeRequestSchema,
   publicLikeResponseSchema,
   type PublicCommunityItem
 } from '@myself/shared-types/website-http';
@@ -16,6 +17,7 @@ import {
   type SharedPetDownload,
   type SharedPetPackageSummary,
   type SharedPetPage,
+  type PendingSharedPetLike,
   type SharedPetRepository
 } from './shared-pet-types';
 
@@ -31,6 +33,8 @@ export class CloudSharedPetRepository implements SharedPetRepository {
   private readonly listeners = new Set<() => void>();
   private readonly records = new Map<string, SharedPetPackageSummary>();
   private readonly pageCursors = new Map<number, string>();
+  private readonly pendingLikes = new Map<string, PendingSharedPetLike>();
+  private readonly likeQueues = new Map<string, Promise<void>>();
   private pageGeneration = 0;
 
   constructor(
@@ -153,15 +157,41 @@ export class CloudSharedPetRepository implements SharedPetRepository {
   }
 
   async toggleLike(id: string): Promise<SharedPetPackageSummary> {
+    const previous = this.likeQueues.get(id);
+    const operation = previous
+      ? previous.then(() => this.setLikeNow(id), () => this.setLikeNow(id))
+      : this.setLikeNow(id);
+    const tail = operation.then(() => undefined, () => undefined);
+    this.likeQueues.set(id, tail);
+    try {
+      return await operation;
+    } finally {
+      if (this.likeQueues.get(id) === tail) this.likeQueues.delete(id);
+    }
+  }
+
+  private async setLikeNow(id: string): Promise<SharedPetPackageSummary> {
+    const current = this.records.get(id) ?? await this.getById(id);
+    if (!current) throw new Error('PACKAGE_NOT_FOUND');
+    const pending = this.pendingLikes.get(id) ?? {
+      desiredLiked: !current.likedByCurrentUser,
+      operationId: globalThis.crypto.randomUUID()
+    };
+    this.pendingLikes.set(id, pending);
+    const body = publicLikeRequestSchema.parse({
+      liked: pending.desiredLiked,
+      operationId: pending.operationId
+    });
     const liked = await this.api.request(
       `/community/${encodeURIComponent(id)}/like`,
       publicLikeResponseSchema,
-      { method: 'POST', body: '{}' }
+      { method: 'POST', body: JSON.stringify(body) }
     );
-    const current = this.records.get(id) ?? await this.getById(id);
-    if (!current) throw new Error('PACKAGE_NOT_FOUND');
     const updated = { ...current, likedByCurrentUser: liked.liked, likeCount: liked.likeCount };
     this.records.set(id, updated);
+    if (this.pendingLikes.get(id)?.operationId === pending.operationId) {
+      this.pendingLikes.delete(id);
+    }
     this.notify();
     return updated;
   }
