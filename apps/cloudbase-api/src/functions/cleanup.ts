@@ -3,8 +3,9 @@ import {
   CloudBasePostgresStore
 } from '../adapters/cloudbase-postgres.js';
 import { createCloudBaseServerRuntime } from '../adapters/cloudbase-runtime.js';
+import type { CloudBaseFunctionContext } from '../adapters/cloudbase-runtime.js';
 import { CloudBaseStorage } from '../adapters/cloudbase-storage.js';
-import { loadCloudConfig } from '../config.js';
+import { loadCleanupConfig } from '../config.js';
 import {
   CleanupService,
   type PurgeResult
@@ -21,18 +22,20 @@ export function createCleanupWorker(
   return () => service.purgeDue(20);
 }
 
-let productionWorker: (() => Promise<PurgeResult>) | undefined;
-
 /** CloudBase 三天隔离清理云函数入口。 */
-export async function main(): Promise<PurgeResult> {
-  productionWorker ??= createProductionWorker();
-  return productionWorker();
+export async function main(
+  _event: unknown,
+  context: CloudBaseFunctionContext
+): Promise<PurgeResult> {
+  return createProductionWorker(context)();
 }
 
-/** 仅用于组合测试的生产依赖工厂，部署入口仍通过 main 保持惰性单例。 */
-export function createProductionWorker(): () => Promise<PurgeResult> {
-  const config = loadCloudConfig(process.env);
-  const runtime = createCloudBaseServerRuntime(config);
+/** 组合隔离清理的生产依赖；每次调用绑定本次临时身份。 */
+export function createProductionWorker(
+  context: CloudBaseFunctionContext
+): () => Promise<PurgeResult> {
+  const config = loadCleanupConfig(process.env);
+  const runtime = createCloudBaseServerRuntime(config, context);
   const store = new CloudBasePostgresStore(
     runtime.rdb,
     new CloudBasePostgresRpcClient(config.envId, config.cloudbaseApiKey)

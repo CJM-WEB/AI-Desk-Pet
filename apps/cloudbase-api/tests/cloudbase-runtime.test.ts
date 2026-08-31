@@ -1,74 +1,64 @@
 import { describe, expect, it, vi } from 'vitest';
-import { readFileSync } from 'node:fs';
+import cloudbase from '@cloudbase/js-sdk';
 
 import type { CloudBaseRdbClient } from '../src/adapters/cloudbase-postgres.js';
-import type { CloudBaseStorageBucket } from '../src/adapters/cloudbase-storage.js';
 import {
   createCloudBaseServerRuntime,
+  type CloudBaseFunctionContext,
   type CloudBaseServerSdk
 } from '../src/adapters/cloudbase-runtime.js';
-import type { CloudConfig } from '../src/config.js';
+import type { CloudBaseStorageBucket } from '../src/adapters/cloudbase-storage.js';
 
-const validConfig: CloudConfig = {
+const runtimeConfig = {
   envId: 'env-test',
-  cloudbaseRegion: 'ap-singapore',
-  cloudbaseSdkTimeoutMs: 15_000,
-  cloudbaseApiKey: 'service-role-key',
-  privateBucketId: 'ai-pet-private',
-  adminEmail: 'admin@example.com',
-  abuseHmacSecret: 'abuse-hmac-secret',
-  tencentCloudSecretId: 'secret-id',
-  tencentCloudSecretKey: 'secret-key',
-  moderationRegion: 'ap-shanghai',
-  tmsBizType: 'ai-pet-text',
-  imsBizType: 'ai-pet-image',
-  scannerUrl: 'https://scanner.example.com',
-  scannerHmacSecret: 'scanner-secret',
-  sharedPackageSubmissionsEnabled: false
+  cloudbaseRegion: 'ap-singapore' as const,
+  cloudbaseSdkTimeoutMs: 15_000 as const,
+  privateBucketId: 'ai-pet-private'
+};
+const functionContext: CloudBaseFunctionContext = {
+  eventID: 'event-1',
+  extendedContext: {
+    envId: 'env-test',
+    source: 'scf',
+    tmpSecret: {
+      secretId: 'temporary-id',
+      secretKey: 'temporary-key',
+      token: 'temporary-token'
+    }
+  }
 };
 
-describe('CloudBase V3 服务端运行时工厂', () => {
-  it('生产运行时使用 Node 后端 SDK 而不是浏览器 SDK', () => {
-    const source = readFileSync(
-      new URL('../src/adapters/cloudbase-runtime.ts', import.meta.url),
-      'utf8'
-    );
-
-    expect(source).toContain("from '@cloudbase/node-sdk'");
-    expect(source).not.toContain("from '@cloudbase/js-sdk'");
-  });
-
-  it('使用配置环境、新加坡地域和有界超时只初始化一次', () => {
-    const { fakeApp, fakeBucket, fakeRdb } = createFakeApp();
-    const init = vi.fn(() => fakeApp);
-    const runtime = createCloudBaseServerRuntime(validConfig, {
-      init
+describe('CloudBase V3 Node 运行时工厂', () => {
+  it('已安装 3.6.8 的 rdb 运行时是工厂函数', () => {
+    const app = cloudbase.init({
+      env: 'env-test',
+      context: { eventID: 'runtime-shape-probe' }
     });
 
-    expect(init).toHaveBeenCalledTimes(1);
+    expect(app.rdb).toBeTypeOf('function');
+  });
+
+  it('向 V3 SDK 传递函数原生 context 且不再传 PostgreSQL API Key', () => {
+    const { fakeApp, fakeBucket, fakeRdb } = createFakeApp();
+    const init = vi.fn(
+      (_options: Parameters<CloudBaseServerSdk['init']>[0]) => fakeApp
+    );
+    const runtime = createCloudBaseServerRuntime(
+      runtimeConfig,
+      functionContext,
+      { init }
+    );
+
+    expect(init).toHaveBeenCalledOnce();
     expect(init).toHaveBeenCalledWith({
       env: 'env-test',
       region: 'ap-singapore',
       timeout: 15_000,
-      accessKey: 'service-role-key'
+      context: functionContext
     });
-    expect(runtime).toEqual({
-      rdb: fakeRdb,
-      bucket: fakeBucket
-    });
-  });
-
-  it('服务端初始化使用 service_role API Key', () => {
-    const { fakeApp } = createFakeApp();
-    const fakeSdk: CloudBaseServerSdk = {
-      init: vi.fn(() => fakeApp)
-    };
-
-    createCloudBaseServerRuntime(validConfig, fakeSdk);
-
-    expect(fakeSdk.init).toHaveBeenCalledWith(
-      expect.objectContaining({ accessKey: 'service-role-key' })
-    );
+    expect(init.mock.calls[0]?.[0]).not.toHaveProperty('accessKey');
+    expect(fakeApp.rdb).toHaveBeenCalledOnce();
+    expect(runtime).toEqual({ rdb: fakeRdb, bucket: fakeBucket });
   });
 });
 
@@ -83,7 +73,7 @@ function createFakeApp(): {
     fakeApp: {
       rdb: vi.fn(() => fakeRdb),
       storage: { from: vi.fn(() => fakeBucket) }
-    },
+    } as unknown as ReturnType<CloudBaseServerSdk['init']>,
     fakeRdb,
     fakeBucket
   };

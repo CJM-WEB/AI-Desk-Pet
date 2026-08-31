@@ -1,6 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { createProductionWorker } from '../src/functions/cleanup.js';
+import {
+  createProductionWorker,
+  main as productionMain
+} from '../src/functions/cleanup.js';
 import { CleanupService } from '../src/services/cleanup-service.js';
 import type {
   CleanupStore,
@@ -8,8 +11,10 @@ import type {
 } from '../src/ports.js';
 import {
   createFakeRuntime,
-  stubCloudConfig
+  stubCleanupConfig
 } from './support/cloudbase-production.js';
+
+const functionContext = { eventID: 'cleanup-event' };
 
 const productionSdk = vi.hoisted(() => ({
   createRuntime: vi.fn()
@@ -25,20 +30,41 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.unstubAllEnvs();
+  vi.unstubAllGlobals();
   vi.clearAllMocks();
 });
 
 describe('三天隔离清理服务', () => {
   it('使用有效 Bucket 创建共享运行时组合', () => {
-    stubCloudConfig();
+    stubCleanupConfig();
 
-    const worker = createProductionWorker();
+    const worker = createProductionWorker(functionContext);
 
     expect(productionSdk.createRuntime).toHaveBeenCalledTimes(1);
     expect(productionSdk.createRuntime).toHaveBeenCalledWith(
-      expect.objectContaining({ envId: 'env-test' })
+      expect.objectContaining({ envId: 'env-test' }),
+      functionContext
     );
     expect(worker).toBeTypeOf('function');
+  });
+
+  it('main 把本次函数 context 传给 V3 运行时', async () => {
+    stubCleanupConfig();
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(
+      JSON.stringify([]),
+      { status: 200, headers: { 'content-type': 'application/json' } }
+    )));
+
+    await expect(productionMain({}, functionContext)).resolves.toEqual({
+      claimed: 0,
+      purged: 0,
+      failed: 0
+    });
+
+    expect(productionSdk.createRuntime).toHaveBeenCalledWith(
+      expect.objectContaining({ envId: 'env-test' }),
+      functionContext
+    );
   });
 
   it('只处理存储层领取的到期记录并先删对象后清正文', async () => {

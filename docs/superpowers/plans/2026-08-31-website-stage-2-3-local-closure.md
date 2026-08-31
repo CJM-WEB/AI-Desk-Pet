@@ -23,6 +23,8 @@
 
 ## Task 0：事实来源与精确范围门
 
+> 状态：2026-08-31 已完成；定向范围测试 15/15，scope 通过，提交 `0f24373`。
+
 **Files:**
 - Modify: `tools/verification/website-scope-policy.mjs`
 - Modify: `tools/verification/verify-website-scope.test.mjs`
@@ -38,12 +40,18 @@
 
 ## Task 1：V3 SDK 与三函数最小配置
 
+> 状态：2026-08-31 已完成；CloudBase API 210/210、typecheck、三函数 build、构建工具 3/3 与 scope 均通过。独立规格和质量复审无阻塞项。
+
 **Files:**
 - Modify: `apps/cloudbase-api/package.json`, `pnpm-lock.yaml`
+- Modify: `apps/cloudbase-api/tsconfig.json`
 - Modify: `apps/cloudbase-api/src/adapters/cloudbase-runtime.ts`
+- Modify: `apps/cloudbase-api/src/adapters/tencent-content-moderation.ts`
 - Modify: `apps/cloudbase-api/src/functions/api.ts`, `moderation-worker.ts`, `cleanup.ts`
 - Modify: `apps/cloudbase-api/src/config.ts`
-- Modify: `apps/cloudbase-api/tests/cloudbase-runtime.test.ts`, `config.test.ts`, `api.test.ts`, `moderation-worker.test.ts`, `cleanup-service.test.ts`
+- Modify: `apps/cloudbase-api/tests/cloudbase-runtime.test.ts`, `config.test.ts`, `api.test.ts`, `moderation-worker.test.ts`, `cleanup-service.test.ts`, `submission-service.test.ts`, `build-output.test.ts`
+- Modify: `apps/cloudbase-api/tests/support/cloudbase-production.ts`
+- Modify: `tools/build-cloudbase-functions.mjs`, `tools/build-cloudbase-functions.test.mjs`
 
 **依赖：** Task 0。
 
@@ -52,7 +60,8 @@
 3. RED 命令：`pnpm.cmd --filter @myself/cloudbase-api test -- tests/cloudbase-runtime.test.ts tests/config.test.ts tests/api.test.ts tests/moderation-worker.test.ts tests/cleanup-service.test.ts`，预期因旧 SDK、入口未传 context 和聚合 loader 失败。
 4. GREEN：保留单一 `config.ts` 作为内部读取模块，并从该文件导出三个函数专属 loader；迁移 V3。
 5. REFACTOR：删除 `@cloudbase/node-sdk`、旧初始化与聚合配置测试。
-6. 完成标准：CloudBase API test/typecheck/build 全通过。
+6. 构建门：直接 V3 ESM 入口必须可 bundle/load；按实际动态加载只补必要的直接依赖，不依赖旧 Node SDK 的传递依赖。
+7. 完成标准：CloudBase API test/typecheck/build 与 `node --test tools/build-cloudbase-functions.test.mjs` 全通过。
 
 ## Task 2：唯一 ScannerProtocol
 

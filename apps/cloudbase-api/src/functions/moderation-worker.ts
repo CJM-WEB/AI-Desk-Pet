@@ -1,9 +1,10 @@
 import { CloudBasePostgresRpcClient, CloudBasePostgresStore } from '../adapters/cloudbase-postgres.js';
 import { createCloudBaseServerRuntime } from '../adapters/cloudbase-runtime.js';
+import type { CloudBaseFunctionContext } from '../adapters/cloudbase-runtime.js';
 import { CloudBaseStorage } from '../adapters/cloudbase-storage.js';
 import { ScannerClient } from '../adapters/scanner-client.js';
 import { createTencentContentModerator } from '../adapters/tencent-content-moderation.js';
-import { loadCloudConfig } from '../config.js';
+import { loadModerationWorkerConfig } from '../config.js';
 import {
   ModerationService,
   type BatchResult
@@ -27,18 +28,20 @@ export function createModerationWorker(
   };
 }
 
-let productionWorker: (() => Promise<BatchResult>) | undefined;
-
 /** CloudBase 定时云函数入口。 */
-export async function main(): Promise<BatchResult> {
-  productionWorker ??= createProductionWorker();
-  return productionWorker();
+export async function main(
+  _event: unknown,
+  context: CloudBaseFunctionContext
+): Promise<BatchResult> {
+  return createProductionWorker(context)();
 }
 
-/** 仅用于组合测试的生产依赖工厂，部署入口仍通过 main 保持惰性单例。 */
-export function createProductionWorker(): () => Promise<BatchResult> {
-  const config = loadCloudConfig(process.env);
-  const runtime = createCloudBaseServerRuntime(config);
+/** 组合自动审核的生产依赖；每次调用绑定本次临时身份。 */
+export function createProductionWorker(
+  context: CloudBaseFunctionContext
+): () => Promise<BatchResult> {
+  const config = loadModerationWorkerConfig(process.env);
+  const runtime = createCloudBaseServerRuntime(config, context);
   const store = new CloudBasePostgresStore(
     runtime.rdb,
     new CloudBasePostgresRpcClient(config.envId, config.cloudbaseApiKey)

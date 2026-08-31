@@ -1,12 +1,20 @@
-/** CloudBase 审核 API 的运行时配置。 */
-export interface CloudConfig {
+/** 三个函数共享的 CloudBase 运行时最小配置。 */
+export interface CloudBaseRuntimeConfig {
   envId: string;
   cloudbaseRegion: 'ap-singapore';
   cloudbaseSdkTimeoutMs: 15000;
-  cloudbaseApiKey: string;
   privateBucketId: string;
+}
+
+export interface ApiConfig extends CloudBaseRuntimeConfig {
+  cloudbaseApiKey: string;
   adminEmail: string;
   abuseHmacSecret: string;
+  sharedPackageSubmissionsEnabled: boolean;
+}
+
+export interface ModerationWorkerConfig extends CloudBaseRuntimeConfig {
+  cloudbaseApiKey: string;
   tencentCloudSecretId: string;
   tencentCloudSecretKey: string;
   tencentCloudSessionToken?: string;
@@ -15,17 +23,31 @@ export interface CloudConfig {
   imsBizType: string;
   scannerUrl: string;
   scannerHmacSecret: string;
-  sharedPackageSubmissionsEnabled: boolean;
 }
 
-/** 读取必填环境变量，避免以空配置启动服务。 */
+export interface CleanupConfig extends CloudBaseRuntimeConfig {
+  cloudbaseApiKey: string;
+}
+
 function readRequired(env: NodeJS.ProcessEnv, name: string): string {
   const value = env[name]?.trim();
   if (!value) throw new Error(`缺少必填环境变量：${name}`);
   return value;
 }
 
-/** 优先读取 SCF 可配置别名，并兼容平台自动注入的腾讯云凭据名。 */
+function loadRuntimeConfig(env: NodeJS.ProcessEnv): CloudBaseRuntimeConfig {
+  const cloudbaseRegion = env.CLOUDBASE_REGION?.trim() || 'ap-singapore';
+  if (cloudbaseRegion !== 'ap-singapore') {
+    throw new Error('CLOUDBASE_REGION 必须为 ap-singapore');
+  }
+  return {
+    envId: readRequired(env, 'CLOUDBASE_ENV_ID'),
+    cloudbaseRegion,
+    cloudbaseSdkTimeoutMs: 15_000,
+    privateBucketId: readRequired(env, 'PRIVATE_BUCKET_ID')
+  };
+}
+
 function readCredential(
   env: NodeJS.ProcessEnv,
   alias: string,
@@ -38,46 +60,40 @@ function readCredential(
   return value;
 }
 
-/** 读取共享包投稿开关，只接受明确的布尔环境变量值。 */
-function readBooleanSwitch(
-  env: NodeJS.ProcessEnv,
-  name: string
-): boolean {
+function readBooleanSwitch(env: NodeJS.ProcessEnv, name: string): boolean {
   const value = env[name]?.trim().toLowerCase();
   if (!value || value === 'false') return false;
   if (value === 'true') return true;
   throw new Error(`${name} 必须为 true 或 false`);
 }
 
-/** 从显式传入的环境变量构造运行配置。 */
-export function loadCloudConfig(env: NodeJS.ProcessEnv): CloudConfig {
-  const envId = readRequired(env, 'CLOUDBASE_ENV_ID');
-  const cloudbaseRegion = env.CLOUDBASE_REGION?.trim() || 'ap-singapore';
-  if (cloudbaseRegion !== 'ap-singapore') {
-    throw new Error('CLOUDBASE_REGION 必须为 ap-singapore');
-  }
-  const privateBucketId = readRequired(env, 'PRIVATE_BUCKET_ID');
-  const adminEmail = readRequired(env, 'ADMIN_EMAIL');
-  const scannerUrl = normalizeHttpsUrl(
-    readRequired(env, 'SCANNER_URL'),
-    'SCANNER_URL'
-  );
-  // 显式审核密钥不能搭配平台临时 Token，否则会因凭据不属于同一会话而验签失败。
+/** 只读取公开 API 运行所需的配置。 */
+export function loadApiConfig(env: NodeJS.ProcessEnv): ApiConfig {
+  return {
+    ...loadRuntimeConfig(env),
+    cloudbaseApiKey: readRequired(env, 'CLOUDBASE_API_KEY'),
+    adminEmail: readRequired(env, 'ADMIN_EMAIL'),
+    abuseHmacSecret: readRequired(env, 'ABUSE_HMAC_SECRET'),
+    sharedPackageSubmissionsEnabled: readBooleanSwitch(
+      env,
+      'SHARED_PACKAGE_SUBMISSIONS_ENABLED'
+    )
+  };
+}
+
+/** 只读取自动审核工作器所需的配置。 */
+export function loadModerationWorkerConfig(
+  env: NodeJS.ProcessEnv
+): ModerationWorkerConfig {
   const usesModerationAlias = Boolean(
     env.MODERATION_SECRET_ID?.trim() || env.MODERATION_SECRET_KEY?.trim()
   );
   const moderationSessionToken = usesModerationAlias
     ? env.MODERATION_SESSION_TOKEN?.trim()
     : env.TENCENTCLOUD_SESSIONTOKEN?.trim();
-
   return {
-    envId,
-    cloudbaseRegion,
-    cloudbaseSdkTimeoutMs: 15_000,
+    ...loadRuntimeConfig(env),
     cloudbaseApiKey: readRequired(env, 'CLOUDBASE_API_KEY'),
-    privateBucketId,
-    adminEmail,
-    abuseHmacSecret: readRequired(env, 'ABUSE_HMAC_SECRET'),
     tencentCloudSecretId: readCredential(
       env,
       'MODERATION_SECRET_ID',
@@ -88,18 +104,25 @@ export function loadCloudConfig(env: NodeJS.ProcessEnv): CloudConfig {
       'MODERATION_SECRET_KEY',
       'TENCENTCLOUD_SECRETKEY'
     ),
-    ...(moderationSessionToken ? {
-      tencentCloudSessionToken: moderationSessionToken
-    } : {}),
+    ...(moderationSessionToken
+      ? { tencentCloudSessionToken: moderationSessionToken }
+      : {}),
     moderationRegion: readRequired(env, 'MODERATION_REGION'),
     tmsBizType: readRequired(env, 'TMS_BIZ_TYPE'),
     imsBizType: readRequired(env, 'IMS_BIZ_TYPE'),
-    scannerUrl,
-    scannerHmacSecret: readRequired(env, 'SCANNER_HMAC_SECRET'),
-    sharedPackageSubmissionsEnabled: readBooleanSwitch(
-      env,
-      'SHARED_PACKAGE_SUBMISSIONS_ENABLED'
-    )
+    scannerUrl: normalizeHttpsUrl(
+      readRequired(env, 'SCANNER_URL'),
+      'SCANNER_URL'
+    ),
+    scannerHmacSecret: readRequired(env, 'SCANNER_HMAC_SECRET')
+  };
+}
+
+/** 只读取隔离清理工作器所需的配置。 */
+export function loadCleanupConfig(env: NodeJS.ProcessEnv): CleanupConfig {
+  return {
+    ...loadRuntimeConfig(env),
+    cloudbaseApiKey: readRequired(env, 'CLOUDBASE_API_KEY')
   };
 }
 
@@ -112,9 +135,7 @@ function normalizeHttpsUrl(value: string, name: string): string {
       || url.password
       || url.search
       || url.hash
-    ) {
-      throw new Error();
-    }
+    ) throw new Error();
     return url.toString().replace(/\/$/u, '');
   } catch {
     throw new Error(`${name} 必须使用 HTTPS`);

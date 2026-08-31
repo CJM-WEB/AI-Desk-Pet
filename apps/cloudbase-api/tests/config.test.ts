@@ -1,42 +1,50 @@
 import { describe, expect, it } from 'vitest';
 
-import { loadCloudConfig } from '../src/config.js';
+import * as configModule from '../src/config.js';
 
-describe('loadCloudConfig', () => {
-  const validEnv = {
-    CLOUDBASE_ENV_ID: 'env-test',
-    CLOUDBASE_API_KEY: 'service-role-key',
-    PRIVATE_BUCKET_ID: 'ai-pet-private',
-    ADMIN_EMAIL: 'admin@example.com',
-    ABUSE_HMAC_SECRET: 'abuse-hmac-secret',
-    TENCENTCLOUD_SECRETID: 'secret-id',
-    TENCENTCLOUD_SECRETKEY: 'secret-key',
-    TENCENTCLOUD_SESSIONTOKEN: 'session-token',
-    MODERATION_REGION: 'ap-shanghai',
-    TMS_BIZ_TYPE: 'ai-pet-text',
-    IMS_BIZ_TYPE: 'ai-pet-image',
-    SCANNER_URL: 'https://scanner.example.com',
-    SCANNER_HMAC_SECRET: 'scanner-secret'
-  };
+const baseEnv = {
+  CLOUDBASE_ENV_ID: 'env-test',
+  CLOUDBASE_API_KEY: 'service-role-key',
+  PRIVATE_BUCKET_ID: 'ai-pet-private'
+};
 
-  it('缺少管理员邮箱时拒绝启动', () => {
-    expect(() => loadCloudConfig({
-      CLOUDBASE_ENV_ID: 'env-test',
-      PRIVATE_BUCKET_ID: 'ai-pet-private'
-    })).toThrow('ADMIN_EMAIL');
-  });
-
-  it('从传入环境变量加载完整运行配置', () => {
-    const config = loadCloudConfig(validEnv);
-
-    expect(config).toEqual({
+describe('CloudBase 函数专属配置', () => {
+  it('API loader 只要求 API 实际消费的变量且投稿开关默认关闭', () => {
+    expect(configModule.loadApiConfig).toBeTypeOf('function');
+    expect(configModule.loadApiConfig({
+      ...baseEnv,
+      ADMIN_EMAIL: 'admin@example.com',
+      ABUSE_HMAC_SECRET: 'abuse-secret'
+    })).toEqual({
       envId: 'env-test',
       cloudbaseRegion: 'ap-singapore',
       cloudbaseSdkTimeoutMs: 15_000,
       cloudbaseApiKey: 'service-role-key',
       privateBucketId: 'ai-pet-private',
       adminEmail: 'admin@example.com',
-      abuseHmacSecret: 'abuse-hmac-secret',
+      abuseHmacSecret: 'abuse-secret',
+      sharedPackageSubmissionsEnabled: false
+    });
+  });
+
+  it('moderation loader 只要求审核与 Scanner 变量', () => {
+    expect(configModule.loadModerationWorkerConfig).toBeTypeOf('function');
+    expect(configModule.loadModerationWorkerConfig({
+      ...baseEnv,
+      TENCENTCLOUD_SECRETID: 'secret-id',
+      TENCENTCLOUD_SECRETKEY: 'secret-key',
+      TENCENTCLOUD_SESSIONTOKEN: 'session-token',
+      MODERATION_REGION: 'ap-shanghai',
+      TMS_BIZ_TYPE: 'ai-pet-text',
+      IMS_BIZ_TYPE: 'ai-pet-image',
+      SCANNER_URL: 'https://scanner.example.com',
+      SCANNER_HMAC_SECRET: 'scanner-secret'
+    })).toEqual({
+      envId: 'env-test',
+      cloudbaseRegion: 'ap-singapore',
+      cloudbaseSdkTimeoutMs: 15_000,
+      cloudbaseApiKey: 'service-role-key',
+      privateBucketId: 'ai-pet-private',
       tencentCloudSecretId: 'secret-id',
       tencentCloudSecretKey: 'secret-key',
       tencentCloudSessionToken: 'session-token',
@@ -44,118 +52,71 @@ describe('loadCloudConfig', () => {
       tmsBizType: 'ai-pet-text',
       imsBizType: 'ai-pet-image',
       scannerUrl: 'https://scanner.example.com',
-      scannerHmacSecret: 'scanner-secret',
-      sharedPackageSubmissionsEnabled: false
+      scannerHmacSecret: 'scanner-secret'
     });
-    expect(config.cloudbaseRegion).toBe('ap-singapore');
-    expect(config.cloudbaseSdkTimeoutMs).toBe(15_000);
-    expect(config).not.toHaveProperty('cloudbaseAiBaseUrl');
-    expect(config).not.toHaveProperty('cloudbaseAiApiKey');
-    expect(config).not.toHaveProperty('relevanceModel');
+  });
+
+  it('cleanup loader 不要求管理员、审核或 Scanner 变量', () => {
+    expect(configModule.loadCleanupConfig).toBeTypeOf('function');
+    expect(configModule.loadCleanupConfig(baseEnv)).toEqual({
+      envId: 'env-test',
+      cloudbaseRegion: 'ap-singapore',
+      cloudbaseSdkTimeoutMs: 15_000,
+      cloudbaseApiKey: 'service-role-key',
+      privateBucketId: 'ai-pet-private'
+    });
   });
 
   it.each([
-    [undefined, false],
-    ['', false],
-    ['false', false],
-    ['true', true]
+    [undefined, false], ['', false], ['false', false], ['true', true]
   ] as const)('投稿开关 %s 解析为 %s', (raw, expected) => {
-    const config = loadCloudConfig({
-      ...validEnv,
-      ...(raw === undefined
-        ? {}
-        : { SHARED_PACKAGE_SUBMISSIONS_ENABLED: raw })
+    const config = configModule.loadApiConfig({
+      ...baseEnv,
+      ADMIN_EMAIL: 'admin@example.com',
+      ABUSE_HMAC_SECRET: 'abuse-secret',
+      ...(raw === undefined ? {} : { SHARED_PACKAGE_SUBMISSIONS_ENABLED: raw })
     });
-
     expect(config.sharedPackageSubmissionsEnabled).toBe(expected);
   });
 
   it('投稿开关拒绝模糊值', () => {
-    expect(() => loadCloudConfig({
-      ...validEnv,
+    expect(() => configModule.loadApiConfig({
+      ...baseEnv,
+      ADMIN_EMAIL: 'admin@example.com',
+      ABUSE_HMAC_SECRET: 'abuse-secret',
       SHARED_PACKAGE_SUBMISSIONS_ENABLED: 'yes'
     })).toThrow('SHARED_PACKAGE_SUBMISSIONS_ENABLED 必须为 true 或 false');
   });
 
-  it('从 SCF 允许配置的别名加载审核凭据', () => {
-    const {
-      TENCENTCLOUD_SECRETID: _secretId,
-      TENCENTCLOUD_SECRETKEY: _secretKey,
-      TENCENTCLOUD_SESSIONTOKEN: _sessionToken,
-      ...baseEnv
-    } = validEnv;
-
-    const config = loadCloudConfig({
+  it('审核显式密钥不会混用平台临时 Token', () => {
+    const config = configModule.loadModerationWorkerConfig({
       ...baseEnv,
-      MODERATION_SECRET_ID: 'moderation-secret-id',
-      MODERATION_SECRET_KEY: 'moderation-secret-key',
-      MODERATION_SESSION_TOKEN: 'moderation-session-token'
+      TENCENTCLOUD_SECRETID: 'platform-id',
+      TENCENTCLOUD_SECRETKEY: 'platform-key',
+      TENCENTCLOUD_SESSIONTOKEN: 'platform-token',
+      MODERATION_SECRET_ID: 'moderation-id',
+      MODERATION_SECRET_KEY: 'moderation-key',
+      MODERATION_REGION: 'ap-shanghai',
+      TMS_BIZ_TYPE: 'ai-pet-text',
+      IMS_BIZ_TYPE: 'ai-pet-image',
+      SCANNER_URL: 'https://scanner.example.com',
+      SCANNER_HMAC_SECRET: 'scanner-secret'
     });
-
-    expect(config.tencentCloudSecretId).toBe('moderation-secret-id');
-    expect(config.tencentCloudSecretKey).toBe('moderation-secret-key');
-    expect(config.tencentCloudSessionToken).toBe('moderation-session-token');
-  });
-
-  it('显式审核密钥不会混用平台临时 Token', () => {
-    const config = loadCloudConfig({
-      ...validEnv,
-      MODERATION_SECRET_ID: 'moderation-secret-id',
-      MODERATION_SECRET_KEY: 'moderation-secret-key'
-    });
-
-    expect(config.tencentCloudSecretId).toBe('moderation-secret-id');
-    expect(config.tencentCloudSecretKey).toBe('moderation-secret-key');
+    expect(config.tencentCloudSecretId).toBe('moderation-id');
+    expect(config.tencentCloudSecretKey).toBe('moderation-key');
     expect(config.tencentCloudSessionToken).toBeUndefined();
   });
 
-  it('拒绝与已购买环境不一致的地域', () => {
-    expect(() => loadCloudConfig({
-      ...validEnv,
+  it('所有 loader 都拒绝与已购买环境不一致的地域', () => {
+    expect(() => configModule.loadCleanupConfig({
+      ...baseEnv,
       CLOUDBASE_REGION: 'ap-shanghai'
     })).toThrow('CLOUDBASE_REGION 必须为 ap-singapore');
   });
 
-  it('缺少服务端数据库 API Key 时拒绝启动', () => {
-    expect(() => loadCloudConfig({
-      CLOUDBASE_ENV_ID: 'env-test',
-      PRIVATE_BUCKET_ID: 'ai-pet-private',
-      ADMIN_EMAIL: 'admin@example.com',
-      ABUSE_HMAC_SECRET: 'abuse-hmac-secret',
-      TENCENTCLOUD_SECRETID: 'secret-id',
-      TENCENTCLOUD_SECRETKEY: 'secret-key',
-      MODERATION_REGION: 'ap-shanghai',
-      TMS_BIZ_TYPE: 'ai-pet-text',
-      IMS_BIZ_TYPE: 'ai-pet-image',
-      SCANNER_URL: 'https://scanner.example.com',
-      SCANNER_HMAC_SECRET: 'scanner-secret'
-    })).toThrow('CLOUDBASE_API_KEY');
-  });
-
-  it('腾讯云访问凭据为空时拒绝启动', () => {
-    expect(() => loadCloudConfig({
-      CLOUDBASE_ENV_ID: 'env-test',
-      CLOUDBASE_API_KEY: 'service-role-key',
-      PRIVATE_BUCKET_ID: 'ai-pet-private',
-      ADMIN_EMAIL: 'admin@example.com',
-      ABUSE_HMAC_SECRET: 'abuse-hmac-secret',
-      TENCENTCLOUD_SECRETID: ' ',
-      TENCENTCLOUD_SECRETKEY: 'secret-key',
-      MODERATION_REGION: 'ap-shanghai',
-      TMS_BIZ_TYPE: 'ai-pet-text',
-      IMS_BIZ_TYPE: 'ai-pet-image',
-      SCANNER_URL: 'https://scanner.example.com',
-      SCANNER_HMAC_SECRET: 'scanner-secret'
-    })).toThrow('TENCENTCLOUD_SECRETID');
-  });
-
-  it('扫描服务地址必须使用 HTTPS', () => {
-    expect(() => loadCloudConfig({
-      CLOUDBASE_ENV_ID: 'env-test',
-      CLOUDBASE_API_KEY: 'service-role-key',
-      PRIVATE_BUCKET_ID: 'ai-pet-private',
-      ADMIN_EMAIL: 'admin@example.com',
-      ABUSE_HMAC_SECRET: 'abuse-hmac-secret',
+  it('Scanner 地址必须使用 HTTPS', () => {
+    expect(() => configModule.loadModerationWorkerConfig({
+      ...baseEnv,
       TENCENTCLOUD_SECRETID: 'secret-id',
       TENCENTCLOUD_SECRETKEY: 'secret-key',
       MODERATION_REGION: 'ap-shanghai',

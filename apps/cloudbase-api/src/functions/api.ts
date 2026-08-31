@@ -12,8 +12,9 @@ import {
   CloudBasePostgresStore
 } from '../adapters/cloudbase-postgres.js';
 import { createCloudBaseServerRuntime } from '../adapters/cloudbase-runtime.js';
+import type { CloudBaseFunctionContext } from '../adapters/cloudbase-runtime.js';
 import { CloudBaseStorage } from '../adapters/cloudbase-storage.js';
-import { loadCloudConfig } from '../config.js';
+import { loadApiConfig } from '../config.js';
 import {
   ApiError,
   jsonResponse,
@@ -543,16 +544,13 @@ function invalidRequest(): ApiError {
   return new ApiError('INVALID_REQUEST', 400);
 }
 
-let productionHandler: ApiHandler | undefined;
-
 /** CloudBase 函数入口；初始化失败同样返回稳定的失败关闭信封。 */
 export async function main(
   event: ApiHttpEvent,
-  context: ApiContext
+  context: ApiContext & CloudBaseFunctionContext
 ): Promise<CloudBaseHttpResponse> {
   try {
-    productionHandler ??= createProductionHandler();
-    return await productionHandler(event, context);
+    return await createProductionHandler(context)(event, context);
   } catch {
     const error = new ApiError('SERVICE_UNAVAILABLE', 503);
     return jsonResponse(
@@ -564,10 +562,12 @@ export async function main(
   }
 }
 
-/** 仅用于组合测试的生产依赖工厂，部署入口仍通过 main 保持惰性单例。 */
-export function createProductionHandler(): ApiHandler {
-  const config = loadCloudConfig(process.env);
-  const runtime = createCloudBaseServerRuntime(config);
+/** 组合公开 API 的生产依赖；每次调用绑定本次临时身份。 */
+export function createProductionHandler(
+  context: CloudBaseFunctionContext
+): ApiHandler {
+  const config = loadApiConfig(process.env);
+  const runtime = createCloudBaseServerRuntime(config, context);
   const store = new CloudBasePostgresStore(
     runtime.rdb,
     new CloudBasePostgresRpcClient(config.envId, config.cloudbaseApiKey)

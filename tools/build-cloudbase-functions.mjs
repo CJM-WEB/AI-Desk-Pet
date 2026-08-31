@@ -3,7 +3,8 @@ import { createRequire } from 'node:module';
 import { dirname, isAbsolute, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const workspaceRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+const scriptPath = fileURLToPath(import.meta.url);
+const workspaceRoot = resolve(dirname(scriptPath), '..');
 const apiRoot = resolve(workspaceRoot, 'apps', 'cloudbase-api');
 const distRoot = resolve(apiRoot, 'dist');
 const requireFromApi = createRequire(resolve(apiRoot, 'package.json'));
@@ -18,39 +19,50 @@ const functions = {
   ),
   cleanup: resolve(apiRoot, 'src', 'functions', 'cleanup.ts')
 };
+const dynamicDependencies = [
+  [['w', 's'], 'ws'],
+  [['@cloudbase', '/', 'signature-nodejs'], '@cloudbase/signature-nodejs'],
+  [['json', 'webtoken'], 'jsonwebtoken']
+];
+
+/** 只改写已锁定 V3 3.6.8 的三个 Node 动态依赖，缺一即失败关闭。 */
+export function rewriteCloudBaseV3NodeRuntime(source) {
+  let contents = source;
+  for (const [segments, packageName] of dynamicDependencies) {
+    const arrayLiteral = escapeRegExp(JSON.stringify(segments));
+    const optionalRequireCall = new RegExp(
+      `\\(0,[\\w$]+\\.(?:optionalRequire|a)\\)\\(${arrayLiteral},`
+        + `"(?:\\\\.|[^"\\\\])*"\\)`,
+      'g'
+    );
+    const rewritten = contents.replace(
+      optionalRequireCall,
+      `require(${JSON.stringify(packageName)})`
+    );
+    if (rewritten === contents) {
+      throw new Error(`未找到 CloudBase 动态依赖：${packageName}`);
+    }
+    contents = rewritten;
+  }
+  return contents;
+}
+
 const cloudBaseNodeRuntimePlugin = {
   name: 'bundle-cloudbase-node-runtime-dependencies',
   setup(buildContext) {
-    buildContext.onLoad({ filter: /index\.node\.cjs\.js$/ }, async args => {
-      const cloudBaseSdkSegment = `${sep}@cloudbase${sep}js-sdk${sep}dist${sep}`;
-      if (!args.path.includes(cloudBaseSdkSegment)) return null;
+    buildContext.onLoad(
+      { filter: /index\.node\.(?:cjs|esm)\.js$/ },
+      async args => {
+        const cloudBaseSdkSegment = `${sep}@cloudbase${sep}js-sdk${sep}dist${sep}`;
+        if (!args.path.includes(cloudBaseSdkSegment)) return null;
 
-      let contents = await readFile(args.path, 'utf8');
-      const dynamicDependencies = [
-        [['w', 's'], 'ws'],
-        [['@cloudbase', '/', 'signature-nodejs'], '@cloudbase/signature-nodejs'],
-        [['json', 'webtoken'], 'jsonwebtoken']
-      ];
-
-      for (const [segments, packageName] of dynamicDependencies) {
-        const arrayLiteral = escapeRegExp(JSON.stringify(segments));
-        const optionalRequireCall = new RegExp(
-          `\\(0,[\\w$]+\\.optionalRequire\\)\\(${arrayLiteral},`
-            + `"(?:\\\\.|[^"\\\\])*"\\)`,
-          'g'
-        );
-        const rewritten = contents.replace(
-          optionalRequireCall,
-          `require(${JSON.stringify(packageName)})`
-        );
-        if (rewritten === contents) {
-          throw new Error(`未找到 CloudBase 动态依赖：${packageName}`);
-        }
-        contents = rewritten;
+        const source = await readFile(args.path, 'utf8');
+        return {
+          contents: rewriteCloudBaseV3NodeRuntime(source),
+          loader: 'js'
+        };
       }
-
-      return { contents, loader: 'js' };
-    });
+    );
   }
 };
 
@@ -71,31 +83,38 @@ function assertDistRootIsSafe() {
   }
 }
 
-assertDistRootIsSafe();
-await rm(distRoot, { recursive: true, force: true });
+/** 构建三个可独立部署的 CloudBase 函数目录。 */
+export async function buildCloudBaseFunctions() {
+  assertDistRootIsSafe();
+  await rm(distRoot, { recursive: true, force: true });
 
-await build({
-  entryPoints: Object.fromEntries(
-    Object.entries(functions).map(([name, source]) => [`${name}/index`, source])
-  ),
-  outdir: distRoot,
-  bundle: true,
-  platform: 'node',
-  target: 'node20',
-  format: 'cjs',
-  sourcemap: false,
-  minify: false,
-  plugins: [cloudBaseNodeRuntimePlugin],
-  banner: { js: '/* AI Pet CloudBase 云函数部署产物 */' }
-});
+  await build({
+    entryPoints: Object.fromEntries(
+      Object.entries(functions).map(([name, source]) => [`${name}/index`, source])
+    ),
+    outdir: distRoot,
+    bundle: true,
+    platform: 'node',
+    target: 'node20',
+    format: 'cjs',
+    sourcemap: false,
+    minify: false,
+    plugins: [cloudBaseNodeRuntimePlugin],
+    banner: { js: '/* AI Pet CloudBase 云函数部署产物 */' }
+  });
 
-// 每个目录会独立部署，显式声明 CommonJS，避免被源码包的 ESM 配置继承。
-for (const name of Object.keys(functions)) {
-  const functionRoot = resolve(distRoot, name);
-  await mkdir(functionRoot, { recursive: true });
-  await writeFile(
-    resolve(functionRoot, 'package.json'),
-    `${JSON.stringify({ type: 'commonjs' }, null, 2)}\n`,
-    'utf8'
-  );
+  // 每个目录会独立部署，显式声明 CommonJS，避免继承源码包的 ESM 配置。
+  for (const name of Object.keys(functions)) {
+    const functionRoot = resolve(distRoot, name);
+    await mkdir(functionRoot, { recursive: true });
+    await writeFile(
+      resolve(functionRoot, 'package.json'),
+      `${JSON.stringify({ type: 'commonjs' }, null, 2)}\n`,
+      'utf8'
+    );
+  }
+}
+
+if (process.argv[1] && resolve(process.argv[1]) === scriptPath) {
+  await buildCloudBaseFunctions();
 }

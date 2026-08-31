@@ -40,6 +40,8 @@ export const ALLOWED_WEBSITE_SCOPE_PATHS = Object.freeze([
   'tests/playwright.website.config.ts',
   'tools/cloudbase-migration-inventory.mjs',
   'tools/cloudbase-migration-inventory.test.mjs',
+  'tools/build-cloudbase-functions.mjs',
+  'tools/build-cloudbase-functions.test.mjs',
   'tools/plan-cloudbase-migrations.mjs',
   'tools/plan-cloudbase-migrations.test.mjs',
   /** 仅允许基线中已有的两个文件作为删除差异出现；恢复由退役不变量拒绝。 */

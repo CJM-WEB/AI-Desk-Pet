@@ -12,7 +12,7 @@ import { ApiError } from '../src/errors.js';
 import { AbuseControl } from '../src/services/abuse-control.js';
 import {
   createFakeRuntime,
-  stubCloudConfig
+  stubApiConfig
 } from './support/cloudbase-production.js';
 
 const productionSdk = vi.hoisted(() => ({
@@ -166,6 +166,7 @@ function event(
 }
 
 const context = {
+  eventID: 'event-1',
   requestId: 'request-1',
   sourceIp
 };
@@ -184,24 +185,34 @@ afterEach(() => {
 
 describe('API 生产组合', () => {
   it('使用有效 Bucket 和 Auth 创建共享运行时组合', () => {
-    stubCloudConfig();
+    stubApiConfig();
 
-    const handler = createProductionHandler();
+    const handler = createProductionHandler(context);
 
     expect(productionSdk.createRuntime).toHaveBeenCalledTimes(1);
     expect(productionSdk.createRuntime).toHaveBeenCalledWith(
-      expect.objectContaining({ envId: 'env-test' })
+      expect.objectContaining({ envId: 'env-test' }),
+      context
     );
     expect(handler).toBeTypeOf('function');
   });
 
-  it('主入口重复调用时复用同一个不触网的组合', async () => {
-    stubCloudConfig();
+  it('主入口每次使用本次函数 context，避免复用过期临时凭据', async () => {
+    stubApiConfig();
 
     const first = await productionMain(event('GET', '/api/v1/missing'), context);
-    const second = await productionMain(event('GET', '/api/v1/missing'), context);
+    const nextContext = { ...context, eventID: 'event-2' };
+    const second = await productionMain(
+      event('GET', '/api/v1/missing'),
+      nextContext
+    );
 
-    expect(productionSdk.createRuntime).toHaveBeenCalledTimes(1);
+    expect(productionSdk.createRuntime).toHaveBeenCalledTimes(2);
+    expect(productionSdk.createRuntime).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({ envId: 'env-test' }),
+      nextContext
+    );
     expect(first.statusCode).toBe(404);
     expect(second.statusCode).toBe(404);
   });

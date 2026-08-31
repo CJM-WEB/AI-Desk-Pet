@@ -1,8 +1,15 @@
-import cloudbase from '@cloudbase/node-sdk';
+import cloudbase from '@cloudbase/js-sdk';
 
 import type { CloudBaseRdbClient } from './cloudbase-postgres.js';
 import type { CloudBaseStorageBucket } from './cloudbase-storage.js';
-import type { CloudConfig } from '../config.js';
+import type { CloudBaseRuntimeConfig } from '../config.js';
+
+type CloudBaseInitConfig = NonNullable<Parameters<typeof cloudbase.init>[0]>;
+
+/** 直接收窄自 V3 Node 入口，避免维护第二份云函数 context。 */
+export type CloudBaseFunctionContext = NonNullable<
+  CloudBaseInitConfig['context']
+>;
 
 export interface CloudBaseServerRuntime {
   rdb: CloudBaseRdbClient;
@@ -14,29 +21,30 @@ export interface CloudBaseServerSdk {
     env: string;
     region: 'ap-singapore';
     timeout: number;
-    accessKey: string;
+    context: CloudBaseFunctionContext;
   }): {
     rdb(): CloudBaseRdbClient;
     storage: { from(bucketId: string): CloudBaseStorageBucket };
   };
 }
 
-/** 仅在已安装 SDK 边界收窄其缺失或宽泛的类型。 */
 const installedSdk: CloudBaseServerSdk = {
-  init: options => cloudbase.init(
-    options as unknown as Parameters<typeof cloudbase.init>[0]
-  ) as unknown as ReturnType<CloudBaseServerSdk['init']>
+  init: options => cloudbase.init(options) as unknown as ReturnType<
+    CloudBaseServerSdk['init']
+  >
 };
 
+/** 使用本次调用的临时身份创建 V3 运行时，不接收 PostgreSQL API Key。 */
 export function createCloudBaseServerRuntime(
-  config: CloudConfig,
+  config: CloudBaseRuntimeConfig,
+  context: CloudBaseFunctionContext,
   sdk: CloudBaseServerSdk = installedSdk
 ): CloudBaseServerRuntime {
   const app = sdk.init({
     env: config.envId,
     region: config.cloudbaseRegion,
     timeout: config.cloudbaseSdkTimeoutMs,
-    accessKey: config.cloudbaseApiKey
+    context
   });
   return {
     rdb: app.rdb(),

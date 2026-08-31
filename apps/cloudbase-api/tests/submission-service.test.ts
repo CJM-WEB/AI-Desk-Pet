@@ -1,4 +1,4 @@
-import cloudbase from '@cloudbase/node-sdk';
+import cloudbase from '@cloudbase/js-sdk';
 import { describe, expect, it, vi } from 'vitest';
 
 import {

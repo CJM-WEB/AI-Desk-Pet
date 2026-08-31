@@ -17,7 +17,7 @@ describe('CloudBase 函数构建产物', () => {
     }
   });
 
-  it('三个部署入口均内嵌 Node SDK 动态加载的运行时依赖', () => {
+  it('三个部署入口均内嵌 V3 Node 动态加载的运行时依赖', () => {
     for (const name of ['api', 'moderation-worker', 'cleanup']) {
       const source = readFileSync(resolve(distRoot, name, 'index.js'), 'utf8');
 

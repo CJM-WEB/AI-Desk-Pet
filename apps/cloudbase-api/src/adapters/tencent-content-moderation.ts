@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 
 import { ims, tms } from 'tencentcloud-sdk-nodejs';
 
-import type { CloudConfig } from '../config.js';
+import type { ModerationWorkerConfig } from '../config.js';
 import type {
   ContentModerator,
   ModerationImageInput,
@@ -27,7 +27,10 @@ export interface TencentImsClient {
   ): Promise<ImsResponse>;
 }
 
-type ModerationConfig = Pick<CloudConfig, 'tmsBizType' | 'imsBizType'>;
+type ModerationConfig = Pick<
+  ModerationWorkerConfig,
+  'tmsBizType' | 'imsBizType'
+>;
 
 const forbiddenLabel = /politic|polity|dirtywords|abuse|hate|discrimination|porn|sex|violence|illegal|terror|advert|qr|gambling|fraud|privacy|二维码|政治|辱骂|脏话|仇恨|歧视|色情|暴力|违法|广告|赌博|诈骗|隐私/iu;
 const maxTmsChunkBytes = 8 * 1024;
@@ -135,7 +138,7 @@ export class TencentContentModerator implements ContentModerator {
 /** 使用运行身份凭据创建真实 SDK 客户端，密钥不进入代码或日志。 */
 export function createTencentContentModerator(
   config: Pick<
-    CloudConfig,
+    ModerationWorkerConfig,
     'moderationRegion'
     | 'tmsBizType'
     | 'imsBizType'

@@ -103,6 +103,21 @@ test('阶段二三本地闭环只放行已建立的规格与计划', () => {
   });
 });
 
+test('阶段二 V3 迁移只额外放行现有 CloudBase 构建工具', () => {
+  assert.deepEqual(classifyChangedPaths([
+    'tools/build-cloudbase-functions.mjs',
+    'tools/build-cloudbase-functions.test.mjs',
+    'tools/cloudbase-user-migrations.mjs',
+  ]), {
+    allowed: [
+      'tools/build-cloudbase-functions.mjs',
+      'tools/build-cloudbase-functions.test.mjs',
+    ],
+    forbidden: [],
+    outside: ['tools/cloudbase-user-migrations.mjs'],
+  });
+});
+
 test('阶段一只放行获批的 CloudBase 发布止血路径', () => {
   const phaseOnePaths = [
     'apps/cloudbase-api/src/services/submission-service.ts',
