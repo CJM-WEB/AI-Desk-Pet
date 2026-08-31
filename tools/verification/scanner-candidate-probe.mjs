@@ -1,6 +1,6 @@
 import { execFileSync } from 'node:child_process';
 import { createHash, createHmac } from 'node:crypto';
-import { copyFile, mkdir, rm, writeFile } from 'node:fs/promises';
+import { copyFile, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
 import {
@@ -72,7 +72,14 @@ function dependencies(directory, fixture, clamav, scanTimeoutMs) {
         labels: [],
       }),
     },
-    download: async (_url, destination) => copyFile(fixture, destination),
+    download: async (_url, destination) => {
+      await copyFile(fixture, destination);
+      const bytes = await readFile(fixture);
+      return {
+        sizeBytes: bytes.byteLength,
+        sha256: createHash('sha256').update(bytes).digest('hex'),
+      };
+    },
     ...(scanTimeoutMs === undefined ? {} : { scanTimeoutMs }),
   };
 }
