@@ -1,12 +1,12 @@
 import { createHmac, randomUUID } from 'node:crypto';
 
+import type { SubmissionStatus } from '@myself/shared-types';
 import {
-  adminActionSchema,
-  submissionStatusSchema
-} from '@myself/shared-types';
-import {
+  adminActionRequestSchema,
   adminActionResponseSchema,
+  adminDetailRequestSchema,
   adminDetailResponseSchema,
+  adminQueueRequestSchema,
   adminQueueResponseSchema,
   feedbackSubmissionRequestSchema,
   feedbackSubmissionResponseSchema,
@@ -16,9 +16,14 @@ import {
   prepareSubmissionResponseSchema,
   publicCommunityItemSchema,
   publicCommunityPageSchema,
+  publicDetailRequestSchema,
+  publicDownloadRequestSchema,
   publicDownloadResponseSchema,
+  publicFeedbackListRequestSchema,
   publicFeedbackPageSchema,
+  publicLikeRequestSchema,
   publicLikeResponseSchema,
+  publicListRequestSchema,
   submissionStatusRequestSchema,
   submissionStatusResponseSchema
 } from '@myself/shared-types/website-http';
@@ -111,13 +116,13 @@ interface AdminApi {
   listQueue(input: {
     limit: number;
     cursor?: number | null;
-    status?: ReturnType<typeof submissionStatusSchema.parse>;
+    status?: SubmissionStatus;
   }): Promise<unknown>;
   getDetail(id: string): Promise<unknown>;
   applyAction(
     identity: { uid: string; email: string },
     id: string,
-    action: ReturnType<typeof adminActionSchema.parse>
+    action: ReturnType<typeof adminActionRequestSchema.parse>
   ): Promise<unknown>;
 }
 
@@ -188,7 +193,7 @@ async function dispatch(
     const identity = await dependencies.adminIdentity.requireAdmin(
       requireAdminToken(event)
     );
-    const action = adminActionSchema.safeParse(requestRecord(event));
+    const action = adminActionRequestSchema.safeParse(requestRecord(event));
     if (!action.success) throw invalidRequest();
     return adminActionResponseSchema.parse(
       await dependencies.admin.applyAction(identity, adminActionId, action.data)
@@ -203,6 +208,8 @@ async function dispatch(
     ''
   );
   if (adminDetailId !== null) {
+    const request = adminDetailRequestSchema.safeParse({ id: adminDetailId });
+    if (!request.success) throw invalidRequest();
     await dependencies.adminIdentity.requireAdmin(requireAdminToken(event));
     return adminDetailResponseSchema.parse(
       await dependencies.admin.getDetail(adminDetailId)
@@ -270,10 +277,9 @@ async function dispatch(
   }
 
   if (method === 'GET' && path === '/api/v1/feedback') {
-    const kind = event.queryStringParameters?.kind;
-    if (kind !== 'feedback' && kind !== 'suggestion') throw invalidRequest();
+    const query = publicFeedbackListQuery(event);
     return publicFeedbackPageSchema.parse(
-      await dependencies.publicContent.listFeedback(kind, publicListQuery(event))
+      await dependencies.publicContent.listFeedback(query.kind, query.page)
     );
   }
 
@@ -285,7 +291,7 @@ async function dispatch(
     '/like'
   );
   if (feedbackLikeId !== null) {
-    const body = finalizeSubmissionRequestSchema.safeParse(requestRecord(event));
+    const body = publicLikeRequestSchema.safeParse(requestRecord(event));
     if (!body.success) throw invalidRequest();
     const deviceHash = deviceFingerprint(
       requireSourceIp(event, context),
@@ -306,7 +312,7 @@ async function dispatch(
     '/like'
   );
   if (likeId !== null) {
-    const body = finalizeSubmissionRequestSchema.safeParse(requestRecord(event));
+    const body = publicLikeRequestSchema.safeParse(requestRecord(event));
     if (!body.success) throw invalidRequest();
     const deviceHash = deviceFingerprint(
       requireSourceIp(event, context),
@@ -327,7 +333,7 @@ async function dispatch(
     '/download'
   );
   if (downloadId !== null) {
-    const body = finalizeSubmissionRequestSchema.safeParse(requestRecord(event));
+    const body = publicDownloadRequestSchema.safeParse(requestRecord(event));
     if (!body.success) throw invalidRequest();
     const deviceHash = deviceFingerprint(
       requireSourceIp(event, context),
@@ -351,6 +357,8 @@ async function dispatch(
     ''
   );
   if (communityId !== null) {
+    const request = publicDetailRequestSchema.safeParse({ id: communityId });
+    if (!request.success) throw invalidRequest();
     return publicCommunityItemSchema.parse(
       await dependencies.publicContent.getCommunity(communityId)
     );
@@ -379,38 +387,46 @@ function publicListQuery(event: ApiHttpEvent): {
   limit: number;
   cursor?: number | null;
 } {
-  const rawLimit = event.queryStringParameters?.limit;
-  const rawCursor = event.queryStringParameters?.cursor;
-  const limit = rawLimit === undefined ? 20 : Number(rawLimit);
-  const cursor = rawCursor === undefined ? undefined : Number(rawCursor);
-  if (
-    !Number.isSafeInteger(limit)
-    || limit < 1
-    || limit > 100
-    || (
-      cursor !== undefined
-      && (!Number.isSafeInteger(cursor) || cursor < 0)
-    )
-  ) {
-    throw invalidRequest();
-  }
-  return {
-    limit,
-    ...(cursor === undefined ? {} : { cursor })
-  };
+  const query = publicListRequestSchema.safeParse(numericQuery(event));
+  if (!query.success) throw invalidRequest();
+  return query.data.cursor === undefined
+    ? { limit: query.data.limit }
+    : { limit: query.data.limit, cursor: query.data.cursor };
+}
+
+function publicFeedbackListQuery(event: ApiHttpEvent): {
+  kind: 'feedback' | 'suggestion';
+  page: { limit: number; cursor?: number };
+} {
+  const query = publicFeedbackListRequestSchema.safeParse(numericQuery(event));
+  if (!query.success) throw invalidRequest();
+  const page = query.data.cursor === undefined
+    ? { limit: query.data.limit }
+    : { limit: query.data.limit, cursor: query.data.cursor };
+  return { kind: query.data.kind, page };
 }
 
 function adminListQuery(event: ApiHttpEvent): {
   limit: number;
   cursor?: number | null;
-  status?: ReturnType<typeof submissionStatusSchema.parse>;
+  status?: SubmissionStatus;
 } {
-  const page = publicListQuery(event);
-  const rawStatus = event.queryStringParameters?.status;
-  if (rawStatus === undefined) return page;
-  const status = submissionStatusSchema.safeParse(rawStatus);
-  if (!status.success) throw invalidRequest();
-  return { ...page, status: status.data };
+  const query = adminQueueRequestSchema.safeParse(numericQuery(event));
+  if (!query.success) throw invalidRequest();
+  return {
+    limit: query.data.limit,
+    ...(query.data.cursor === undefined ? {} : { cursor: query.data.cursor }),
+    ...(query.data.status === undefined ? {} : { status: query.data.status })
+  };
+}
+
+function numericQuery(event: ApiHttpEvent): Record<string, unknown> {
+  const query: Record<string, unknown> = {
+    ...(event.queryStringParameters ?? {})
+  };
+  query.limit = query.limit === undefined ? 20 : Number(query.limit);
+  if (query.cursor !== undefined) query.cursor = Number(query.cursor);
+  return query;
 }
 
 function dynamicId(

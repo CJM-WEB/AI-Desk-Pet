@@ -25,6 +25,7 @@ describe('公开 REST 客户端', () => {
   it.each([
     ['非 JSON', 'not-json', 200],
     ['空 body', '', 200],
+    ['成功信封缺少 data', JSON.stringify({ requestId: 'request-1' }), 200],
     ['成功 HTTP 携带错误信封', JSON.stringify({ requestId: 'request-1', error: { code: 'FAILED' } }), 200],
     ['错误 HTTP 携带成功信封', JSON.stringify({ requestId: 'request-1', data: { liked: true, likeCount: 1 } }), 500],
     ['畸形成功 data', JSON.stringify({ requestId: 'request-1', data: { liked: 'yes', likeCount: 1 } }), 200],

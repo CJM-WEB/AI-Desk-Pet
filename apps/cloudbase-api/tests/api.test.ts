@@ -471,6 +471,25 @@ describe('公开 HTTP API', () => {
       .toBe('admin_override');
   });
 
+  it('公开与管理员 query 额外字段按共享请求 Schema 失败关闭', async () => {
+    const dependencies = createDependencies();
+    const main = createApi(dependencies);
+
+    const community = await main({
+      ...event('GET', '/api/v1/community'),
+      queryStringParameters: { limit: '20', privateCursor: 'secret' }
+    }, context);
+    const admin = await main({
+      ...event('GET', '/api/v1/admin/submissions'),
+      queryStringParameters: { status: 'system_reviewing', adminEmail: 'secret' }
+    }, context);
+
+    expect(community.statusCode).toBe(400);
+    expect(admin.statusCode).toBe(400);
+    expect(dependencies.publicContent.listCommunity).not.toHaveBeenCalled();
+    expect(dependencies.admin.listQueue).not.toHaveBeenCalled();
+  });
+
   it('点赞和下载分别按设备哈希与资源 ID 限流', async () => {
     const dependencies = createDependencies();
     const main = createApi(dependencies);

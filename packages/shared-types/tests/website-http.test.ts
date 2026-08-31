@@ -1,9 +1,12 @@
 import { describe, expect, it } from 'vitest';
+import { z } from 'zod';
 
 import {
   adminActionRequestSchema,
   adminActionResponseSchema,
+  adminDetailRequestSchema,
   adminDetailResponseSchema,
+  adminQueueRequestSchema,
   adminQueueResponseSchema,
   errorEnvelopeSchema,
   feedbackSubmissionRequestSchema,
@@ -14,9 +17,14 @@ import {
   prepareSubmissionResponseSchema,
   publicCommunityItemSchema,
   publicCommunityPageSchema,
+  publicDetailRequestSchema,
   publicDownloadResponseSchema,
+  publicDownloadRequestSchema,
+  publicFeedbackListRequestSchema,
   publicFeedbackPageSchema,
+  publicLikeRequestSchema,
   publicLikeResponseSchema,
+  publicListRequestSchema,
   submissionStatusRequestSchema,
   submissionStatusResponseSchema,
   successEnvelopeSchema
@@ -34,6 +42,7 @@ describe('网站 HTTP 信封', () => {
     expect(success.parse({ requestId, data: { liked: true, likeCount: 1 } }))
       .toEqual({ requestId, data: { liked: true, likeCount: 1 } });
     expect(success.safeParse({ data: { liked: true, likeCount: 1 } }).success).toBe(false);
+    expect(successEnvelopeSchema(z.unknown()).safeParse({ requestId }).success).toBe(false);
     expect(success.safeParse({ requestId, data: { liked: true, likeCount: 1 }, error: null }).success)
       .toBe(false);
     expect(success.safeParse({ requestId, data: { liked: true, likeCount: 1 }, privateKey: 'x' }).success)
@@ -130,6 +139,17 @@ describe('公开 endpoint 契约', () => {
     expect(publicFeedbackPageSchema.safeParse({ ...page, internalCursor: 'x' }).success).toBe(false);
     expect(publicLikeResponseSchema.safeParse({ liked: true, likeCount: 1, fingerprint: 'x' }).success)
       .toBe(false);
+  });
+
+  it('公开与管理员路径、query 和空 body 请求拒绝额外字段', () => {
+    expect(publicListRequestSchema.parse({ limit: 20, cursor: 0 })).toEqual({ limit: 20, cursor: 0 });
+    expect(publicListRequestSchema.safeParse({ limit: 20, private: true }).success).toBe(false);
+    expect(publicFeedbackListRequestSchema.parse({ kind: 'feedback', limit: 20 })).toEqual({ kind: 'feedback', limit: 20 });
+    expect(publicDetailRequestSchema.safeParse({ id: 'pet-1', extra: true }).success).toBe(false);
+    expect(publicLikeRequestSchema.safeParse({ force: true }).success).toBe(false);
+    expect(publicDownloadRequestSchema.safeParse({ token: 'private' }).success).toBe(false);
+    expect(adminQueueRequestSchema.safeParse({ limit: 20, status: 'system_reviewing', extra: true }).success).toBe(false);
+    expect(adminDetailRequestSchema.safeParse({ id: 'submission-1', extra: true }).success).toBe(false);
   });
 });
 

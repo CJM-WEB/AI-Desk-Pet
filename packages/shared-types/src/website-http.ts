@@ -22,7 +22,16 @@ export const websiteHttpErrorSchema = z.object({
 
 /** 成功和错误使用互斥信封，避免 null 占位掩盖 wire 形状错误。 */
 export function successEnvelopeSchema<T extends z.ZodTypeAny>(dataSchema: T) {
-  return z.object({ requestId: requestIdSchema, data: dataSchema }).strict();
+  return z.object({ requestId: requestIdSchema, data: dataSchema }).strict()
+    .superRefine((value, context) => {
+      if (!Object.prototype.hasOwnProperty.call(value, 'data')) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['data'],
+          message: '成功信封必须包含 data'
+        });
+      }
+    });
 }
 
 export const errorEnvelopeSchema = z.object({
@@ -89,6 +98,9 @@ export const submissionStatusResponseSchema = submissionStatusViewSchema;
 export const publicListRequestSchema = z.object({
   limit: z.number().int().min(1).max(100),
   cursor: z.number().int().nonnegative().optional()
+}).strict();
+export const publicFeedbackListRequestSchema = publicListRequestSchema.extend({
+  kind: z.enum(['feedback', 'suggestion'])
 }).strict();
 export const publicDetailRequestSchema = z.object({
   id: z.string().min(1).max(128)
