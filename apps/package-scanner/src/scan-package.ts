@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { createReadStream } from 'node:fs';
 import { open as openFile, stat } from 'node:fs/promises';
 import { TextDecoder } from 'node:util';
 import {
@@ -73,6 +74,10 @@ export type PackageFileSummary =
 
 export type PackageScanResult = {
   code: 'CHARACTER_PACKAGE_SCAN_PASSED';
+  archive: {
+    sizeBytes: number;
+    sha256: string;
+  };
   summary: {
     fileCount: number;
     totalUncompressedBytes: number;
@@ -349,6 +354,11 @@ export async function scanPackage(
     throw packageError('CHARACTER_PACKAGE_ARCHIVE_SIZE_REJECTED');
   }
   throwIfScanAborted(input.signal);
+  const archiveHash = createHash('sha256');
+  for await (const chunk of createReadStream(input.archivePath)) {
+    throwIfScanAborted(input.signal);
+    archiveHash.update(chunk);
+  }
   await assertSingleDiskZip(input.archivePath);
 
   const zipFile = await openZip(input.archivePath);
@@ -467,6 +477,10 @@ export async function scanPackage(
 
     const result: PackageScanResult = {
       code: 'CHARACTER_PACKAGE_SCAN_PASSED',
+      archive: {
+        sizeBytes: archiveInformation.size,
+        sha256: archiveHash.digest('hex')
+      },
       summary: {
         fileCount: validation.fileCount,
         totalUncompressedBytes: validation.totalUncompressedBytes,

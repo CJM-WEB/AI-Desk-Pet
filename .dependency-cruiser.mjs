@@ -35,7 +35,7 @@ export default {
         dependencyTypes: ['unknown', 'undetermined', 'npm-no-pkg', 'npm-unknown'],
         // 工作区公开入口由下方五条目标专属规则校验声明关系，避免合法别名产生重复告警。
         pathNot:
-          '^packages/(agent-core|character-assets|character-runtime|file-tools|shared-types)/src/index\\.[cm]?[jt]s$',
+          '^packages/(agent-core|character-assets|character-runtime|file-tools|shared-types)/src/index\\.[cm]?[jt]s$|^packages/shared-types/src/scanner-protocol\\.[cm]?[jt]s$',
       },
     },
     {
@@ -86,10 +86,10 @@ export default {
       severity: 'warn',
       from: {
         pathNot:
-          '^(apps/(cloudbase-api|desktop|website)|packages/(agent-core|character-runtime|file-tools))/',
+          '^(apps/(cloudbase-api|desktop|package-scanner|website)|packages/(agent-core|character-runtime|file-tools))/',
       },
       to: {
-        path: '^packages/shared-types/src/index\\.[cm]?[jt]s$',
+        path: '^packages/shared-types/src/(index|scanner-protocol)\\.[cm]?[jt]s$',
         dependencyTypes: ['undetermined'],
       },
     },
@@ -266,6 +266,19 @@ export default {
       to: { path: '^packages/(?!shared-types/)' },
     },
     {
+      name: 'scanner-protocol-only-in-server-chain',
+      comment: 'Scanner 远程协议只允许 CloudBase、扫描器和共享协议测试消费。',
+      severity: 'error',
+      from: {
+        pathNot:
+          '^(apps/(cloudbase-api|package-scanner)/|packages/shared-types/tests/)',
+      },
+      to: {
+        path: '^packages/shared-types/src/scanner-protocol\\.[cm]?[jt]s$',
+        reachable: true,
+      },
+    },
+    {
       name: 'file-tools-dependency-direction',
       comment: '文件工具只能依赖自身和共享类型。',
       severity: 'warn',
@@ -410,7 +423,7 @@ export default {
       comment: '跨工作区依赖 shared-types 必须经过包入口，不得绕入内部源码。',
       severity: 'warn',
       from: { pathNot: '^packages/shared-types/' },
-      to: { path: '^packages/shared-types/src/(?!index\\.[cm]?[jt]s$)' },
+      to: { path: '^packages/shared-types/src/(?!(index|scanner-protocol)\\.[cm]?[jt]s$)' },
     },
     {
       name: 'no-website-to-cloud-source',

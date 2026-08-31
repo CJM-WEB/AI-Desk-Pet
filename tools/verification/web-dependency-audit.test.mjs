@@ -47,8 +47,13 @@ async function createRuleFixture() {
     'apps/website/lib/sdk-offender.ts': "import cloudbase from '@cloudbase/js-sdk';\nexport { cloudbase };\n",
     'apps/website/lib/cloud-offender.ts':
       "import { internal } from '../../cloudbase-api/src/internal.ts';\nexport { internal };\n",
+    'apps/website/lib/scanner-protocol-offender.ts':
+      "import { protocol } from '../../../packages/shared-types/src/scanner-protocol.ts';\nexport { protocol };\n",
+    'apps/desktop/src/renderer/scanner-protocol-offender.ts':
+      "import { protocol } from '../../../../packages/shared-types/src/scanner-protocol.ts';\nexport { protocol };\n",
     'apps/website/lib/migration-target.ts': 'export const website = true;\n',
     'apps/cloudbase-api/src/internal.ts': 'export const internal = true;\nexport const cloud = true;\n',
+    'packages/shared-types/src/scanner-protocol.ts': 'export const protocol = true;\n',
     'apps/cloudbase-api/src/services/offender.ts':
       "import { runtime } from '../adapters/cloudbase-runtime.ts';\nexport { runtime };\n",
     'apps/cloudbase-api/src/adapters/cloudbase-runtime.ts': 'export const runtime = true;\n',
@@ -153,7 +158,7 @@ test('网站专属规则阻止跨应用、服务反向依赖与越界 SDK 调用
   const fixtureRoot = await createRuleFixture();
   t.after(async () => rm(fixtureRoot, { recursive: true, force: true }));
   const cliPath = resolveDependencyCruiserCli();
-  const stdout = runNode(
+  const result = runNodeResult(
     [
       cliPath,
       '--config',
@@ -161,13 +166,16 @@ test('网站专属规则阻止跨应用、服务反向依赖与越界 SDK 调用
       '--output-type',
       'json',
       'apps/website',
+      'apps/desktop',
       'apps/cloudbase-api',
       'tools/plan-cloudbase-migrations.mjs',
       'tools/cloudbase-migration-inventory.mjs',
     ],
     { cwd: fixtureRoot },
   );
-  const report = JSON.parse(stdout);
+  assert.equal(result.status, 0, result.stderr);
+  const report = JSON.parse(result.stdout);
+  assert.equal(report.summary.error, 2);
   const hasViolation = (ruleName, from) =>
     report.summary.violations.some(
       violation => violation.rule.name === ruleName && violation.from === from,
@@ -192,6 +200,15 @@ test('网站专属规则阻止跨应用、服务反向依赖与越界 SDK 调用
     ),
     false,
   );
+  for (const offender of [
+    'apps/website/lib/scanner-protocol-offender.ts',
+    'apps/desktop/src/renderer/scanner-protocol-offender.ts',
+  ]) {
+    assert.ok(
+      hasViolation('scanner-protocol-only-in-server-chain', offender),
+      offender,
+    );
+  }
   for (const entryPoint of [
     'tools/plan-cloudbase-migrations.mjs',
     'tools/cloudbase-migration-inventory.mjs',

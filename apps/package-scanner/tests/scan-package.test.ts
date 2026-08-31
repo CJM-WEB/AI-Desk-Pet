@@ -1,4 +1,5 @@
 import { Buffer } from 'node:buffer';
+import { createHash } from 'node:crypto';
 import { readFile, rm } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -460,6 +461,7 @@ describe('ZIP 隔离扫描', () => {
   it('合法包仅返回摘要、JSON 文本和图片审核信号', async () => {
     const entries = validPackageEntries();
     const archivePath = await createArchive(entries);
+    const archiveBytes = await readFile(archivePath);
 
     const result = await scanPackage({
       archivePath,
@@ -469,6 +471,10 @@ describe('ZIP 隔离扫描', () => {
 
     expect(result).toMatchObject({
       code: 'CHARACTER_PACKAGE_SCAN_PASSED',
+      archive: {
+        sizeBytes: archiveBytes.byteLength,
+        sha256: createHash('sha256').update(archiveBytes).digest('hex')
+      },
       summary: {
         fileCount: 5,
         files: expect.arrayContaining([

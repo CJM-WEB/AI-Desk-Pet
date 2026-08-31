@@ -1,5 +1,12 @@
-import { createHash, createHmac } from 'node:crypto';
-import { z } from 'zod';
+import {
+  SCANNER_MAX_RESPONSE_BYTES,
+  SCANNER_PROTOCOL_VERSION,
+  SCANNER_REQUEST_TIMEOUT_MS,
+  createScannerSignature,
+  scannerErrorResponseSchema,
+  scannerRequestSchema,
+  scannerSuccessResponseSchema
+} from '@myself/shared-types/scanner-protocol';
 
 import type {
   PackageScanResult,
@@ -9,58 +16,6 @@ import type {
 
 type FetchLike = (input: string, init: RequestInit) => Promise<Response>;
 type Now = () => Date;
-
-const maxJsonTextBytes = 2 * 1024 * 1024;
-const maxJsonTextsBytes = 8 * 1024 * 1024;
-const maxImageSignalsBytes = 4 * 1024 * 1024;
-const maxResponseBytes = 12 * 1024 * 1024;
-
-const scanResponseSchema = z.object({
-  code: z.literal('CHARACTER_PACKAGE_SCAN_PASSED'),
-  summary: z.object({
-    fileCount: z.number().int().min(1).max(500),
-    totalUncompressedBytes: z.number().int().min(1).max(300 * 1024 * 1024),
-    files: z.array(z.object({
-      path: z.string().min(1).max(1024),
-      kind: z.enum(['json', 'image']),
-      uncompressedBytes: z.number().int().min(1).max(10 * 1024 * 1024),
-      sha256: z.string().regex(/^[a-f0-9]{64}$/u),
-      mime: z.enum(['image/png', 'image/webp']).optional()
-    }).strict()).max(500)
-  }).strict(),
-  jsonTexts: z.array(z.object({
-    path: z.string().min(1).max(1024),
-    text: z.string().max(maxJsonTextBytes).refine(
-      text => Buffer.byteLength(text, 'utf8') <= maxJsonTextBytes
-    )
-  }).strict()).max(500),
-  imageSignals: z.array(z.object({
-    path: z.string().min(1).max(1024),
-    provider: z.string().min(1).max(100),
-    suggestion: z.enum(['pass', 'review', 'block']),
-    labels: z.array(z.string().max(100)).max(50),
-    ocrText: z.string().max(maxImageSignalsBytes).optional()
-  }).strict()).max(500)
-}).strict().superRefine((value, context) => {
-  const jsonBytes = value.jsonTexts.reduce(
-    (total, item) => total + Buffer.byteLength(item.text, 'utf8'),
-    0
-  );
-  const imageBytes = Buffer.byteLength(
-    JSON.stringify(value.imageSignals),
-    'utf8'
-  );
-  if (jsonBytes > maxJsonTextsBytes) {
-    context.addIssue({ code: 'custom', message: 'JSON 审核文本总量超限' });
-  }
-  if (imageBytes > maxImageSignalsBytes) {
-    context.addIssue({ code: 'custom', message: '图片审核信号总量超限' });
-  }
-});
-
-const errorSchema = z.object({
-  code: z.string().min(1).max(200)
-}).strict();
 
 /** 调用 Task 7 隔离扫描服务，并严格验证其结构化边界。 */
 export class ScannerClient implements PackageScanner {
@@ -80,15 +35,19 @@ export class ScannerClient implements PackageScanner {
     ) {
       throw new Error('SCANNER_SIGNED_URL_INVALID');
     }
-    const body = JSON.stringify({
+    const body = JSON.stringify(scannerRequestSchema.parse({
+      protocolVersion: SCANNER_PROTOCOL_VERSION,
+      submissionId: input.submissionId,
       downloadUrl: input.downloadUrl,
-      expiresAt: expiresAt.getTime()
-    });
+      expiresAt: input.expiresAt
+    }));
     const timestamp = String(this.now().getTime());
-    const digest = createHash('sha256').update(body).digest('hex');
-    const signature = createHmac('sha256', this.secret)
-      .update(`${timestamp}\n${digest}`)
-      .digest('hex');
+    const signature = createScannerSignature(
+      SCANNER_PROTOCOL_VERSION,
+      timestamp,
+      Buffer.from(body),
+      this.secret
+    );
 
     let response: Response;
     try {
@@ -102,7 +61,7 @@ export class ScannerClient implements PackageScanner {
             'x-internal-signature': signature
           },
           body,
-          signal: AbortSignal.timeout(130_000)
+          signal: AbortSignal.timeout(SCANNER_REQUEST_TIMEOUT_MS)
         }
       );
     } catch {
@@ -111,15 +70,16 @@ export class ScannerClient implements PackageScanner {
 
     const payload = await readJson(response);
     if (response.status === 422) {
-      const rejected = errorSchema.safeParse(payload);
+      const rejected = scannerErrorResponseSchema.safeParse(payload);
       if (
         rejected.success
-        && rejected.data.code.startsWith('CHARACTER_PACKAGE_')
+        && ['invalid', 'dangerous'].includes(rejected.data.code)
+        && rejected.data.detailCode?.startsWith('CHARACTER_PACKAGE_')
       ) {
         return {
           complete: true,
           safe: false,
-          code: rejected.data.code,
+          code: rejected.data.detailCode,
           summary: { fileCount: 0, totalUncompressedBytes: 0 },
           jsonTexts: [],
           imageSignals: []
@@ -129,12 +89,22 @@ export class ScannerClient implements PackageScanner {
     }
     if (!response.ok) throw new Error('SCANNER_UNAVAILABLE');
 
-    const parsed = scanResponseSchema.safeParse(payload);
-    if (!parsed.success) throw new Error('SCANNER_RESPONSE_INVALID');
+    const parsed = scannerSuccessResponseSchema.safeParse(payload);
+    if (
+      !parsed.success
+      || parsed.data.submissionId !== input.submissionId
+    ) {
+      throw new Error('SCANNER_RESPONSE_INVALID');
+    }
     return {
       complete: true,
       safe: true,
       code: parsed.data.code,
+      protocolVersion: parsed.data.protocolVersion,
+      ruleVersion: parsed.data.ruleVersion,
+      submissionId: parsed.data.submissionId,
+      completedAt: parsed.data.completedAt,
+      archive: parsed.data.archive,
       summary: {
         fileCount: parsed.data.summary.fileCount,
         totalUncompressedBytes: parsed.data.summary.totalUncompressedBytes
@@ -164,7 +134,7 @@ async function readJson(response: Response): Promise<unknown> {
       const item = await reader.read();
       if (item.done) break;
       totalBytes += item.value.byteLength;
-      if (totalBytes > maxResponseBytes) {
+      if (totalBytes > SCANNER_MAX_RESPONSE_BYTES) {
         await reader.cancel();
         throw new Error('SCANNER_RESPONSE_INVALID');
       }

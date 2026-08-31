@@ -1,8 +1,10 @@
 import {
-  createHash,
-  createHmac,
   timingSafeEqual
 } from 'node:crypto';
+import {
+  SCANNER_PROTOCOL_VERSION,
+  createScannerSignature
+} from '@myself/shared-types/scanner-protocol';
 import {
   closeSync,
   mkdirSync,
@@ -121,10 +123,12 @@ export function verifyInternalSignature(
     unauthorized();
   }
 
-  const bodyHash = createHash('sha256').update(request.rawBody).digest('hex');
-  const expectedSignature = createHmac('sha256', secret)
-    .update(`${timestampText}\n${bodyHash}`)
-    .digest('hex');
+  const expectedSignature = createScannerSignature(
+    SCANNER_PROTOCOL_VERSION,
+    timestampText,
+    request.rawBody,
+    secret
+  );
   const expected = Buffer.from(expectedSignature, 'hex');
   const supplied = Buffer.from(suppliedSignature, 'hex');
   if (

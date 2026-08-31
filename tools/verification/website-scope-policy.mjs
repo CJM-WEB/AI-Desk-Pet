@@ -5,8 +5,19 @@ export const WEBSITE_SCOPE_BASELINE = '0dab17de8863a7c726a5bb5fceff35a1713daad1'
 export const ALLOWED_WEBSITE_SCOPE_PATHS = Object.freeze([
   '.dependency-cruiser.mjs',
   '.dependency-cruiser.web.mjs',
+  'packages/shared-types/package.json',
+  'packages/shared-types/src/scanner-protocol.ts',
+  'packages/shared-types/tests/scanner-protocol.test.ts',
+  'apps/package-scanner/package.json',
+  'apps/package-scanner/README.md',
+  'apps/package-scanner/src/server.ts',
+  'apps/package-scanner/src/request-signature.ts',
+  'apps/package-scanner/src/scan-package.ts',
+  'apps/package-scanner/tests/server.test.ts',
+  'apps/package-scanner/tests/request-signature.test.ts',
+  'apps/package-scanner/tests/scan-package.test.ts',
   'apps/website/**',
-  /** 阶段二 Task 1 沿用已有 CloudBase 范围；Scanner 和共享协议由后续 Task 逐项放行。 */
+  /** 阶段二沿用 CloudBase 范围，并只为当前任务精确放行 Scanner 与共享协议。 */
   'apps/cloudbase-api/**',
   'cloudbase/migrations/20260815000000_shared_package_publication_guard.sql',
   'package.json',

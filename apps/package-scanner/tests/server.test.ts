@@ -1,8 +1,12 @@
-import { createHash, createHmac } from 'node:crypto';
 import { copyFile, mkdtemp, readdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
+import {
+  SCANNER_PROTOCOL_VERSION,
+  SCANNER_RULE_VERSION,
+  createScannerSignature
+} from '@myself/shared-types/scanner-protocol';
 import {
   createScannerServer,
   scanRemotePackage
@@ -13,6 +17,7 @@ const directories: string[] = [];
 const TEST_NOW = new Date('2026-07-31T00:00:00.000Z');
 const TEST_EXPIRES_AT = TEST_NOW.getTime() + 300_000;
 const TEST_SECRET = 'scanner-test-secret';
+const TEST_SUBMISSION_ID = '3d594650-3436-4ad0-a9a8-80ca4388824b';
 
 async function temporaryDirectory(prefix: string): Promise<string> {
   const directory = await mkdtemp(join(tmpdir(), prefix));
@@ -22,14 +27,25 @@ async function temporaryDirectory(prefix: string): Promise<string> {
 
 function signedHeaders(body: string): Record<string, string> {
   const timestamp = String(TEST_NOW.getTime());
-  const bodyHash = createHash('sha256').update(body).digest('hex');
   return {
     'content-type': 'application/json',
     'x-internal-timestamp': timestamp,
-    'x-internal-signature': createHmac('sha256', TEST_SECRET)
-      .update(`${timestamp}\n${bodyHash}`)
-      .digest('hex')
+    'x-internal-signature': createScannerSignature(
+      SCANNER_PROTOCOL_VERSION,
+      timestamp,
+      Buffer.from(body),
+      TEST_SECRET
+    )
   };
+}
+
+function scanRequest(downloadUrl: string): string {
+  return JSON.stringify({
+    protocolVersion: SCANNER_PROTOCOL_VERSION,
+    submissionId: TEST_SUBMISSION_ID,
+    downloadUrl,
+    expiresAt: new Date(TEST_EXPIRES_AT).toISOString()
+  });
 }
 
 async function listen(server: ReturnType<typeof createScannerServer>): Promise<number> {
@@ -95,6 +111,7 @@ describe('扫描服务隔离边界', () => {
         if (shouldFail) throw new Error('SCANNER_TEST_FAILURE');
         return {
           code: 'CHARACTER_PACKAGE_SCAN_PASSED' as const,
+          archive: { sizeBytes: 1, sha256: 'a'.repeat(64) },
           summary: {
             fileCount: 0,
             totalUncompressedBytes: 0,
@@ -188,7 +205,9 @@ describe('扫描服务隔离边界', () => {
       });
       expect(response.status).toBe(400);
       await expect(response.json()).resolves.toEqual({
-        code: 'SCANNER_REQUEST_INVALID'
+        protocolVersion: SCANNER_PROTOCOL_VERSION,
+        code: 'invalid',
+        detailCode: 'SCANNER_REQUEST_INVALID'
       });
     } finally {
       await close(server);
@@ -204,10 +223,9 @@ describe('扫描服务隔离边界', () => {
       }
     });
     const port = await listen(server);
-    const body = JSON.stringify({
-      downloadUrl: 'https://storage.example.test/file.zip?signature=present',
-      expiresAt: TEST_EXPIRES_AT
-    });
+    const body = scanRequest(
+      'https://storage.example.test/file.zip?signature=present'
+    );
 
     try {
       const response = await fetch(`http://127.0.0.1:${port}/internal/scan`, {
@@ -217,7 +235,9 @@ describe('扫描服务隔离边界', () => {
       });
       expect(response.status).toBe(503);
       await expect(response.json()).resolves.toEqual({
-        code: 'SCANNER_UNAVAILABLE'
+        protocolVersion: SCANNER_PROTOCOL_VERSION,
+        code: 'scanner_error',
+        detailCode: 'SCANNER_UNAVAILABLE'
       });
     } finally {
       await close(server);
@@ -235,14 +255,12 @@ describe('扫描服务隔离边界', () => {
       download: async () => downloadStarted
     });
     const port = await listen(server);
-    const firstBody = JSON.stringify({
-      downloadUrl: 'https://storage.example.test/first.zip?signature=first',
-      expiresAt: TEST_EXPIRES_AT
-    });
-    const secondBody = JSON.stringify({
-      downloadUrl: 'https://storage.example.test/second.zip?signature=second',
-      expiresAt: TEST_EXPIRES_AT
-    });
+    const firstBody = scanRequest(
+      'https://storage.example.test/first.zip?signature=first'
+    );
+    const secondBody = scanRequest(
+      'https://storage.example.test/second.zip?signature=second'
+    );
 
     try {
       const firstRequest = fetch(`http://127.0.0.1:${port}/internal/scan`, {
@@ -258,7 +276,9 @@ describe('扫描服务隔离边界', () => {
       });
       expect(secondResponse.status).toBe(503);
       await expect(secondResponse.json()).resolves.toEqual({
-        code: 'SCANNER_BUSY'
+        protocolVersion: SCANNER_PROTOCOL_VERSION,
+        code: 'busy',
+        detailCode: 'SCANNER_BUSY'
       });
       releaseDownload();
       await firstRequest;
@@ -295,14 +315,12 @@ describe('扫描服务隔离边界', () => {
       }
     });
     const port = await listen(server);
-    const firstBody = JSON.stringify({
-      downloadUrl: 'https://storage.example.test/first.zip?signature=first',
-      expiresAt: TEST_EXPIRES_AT
-    });
-    const secondBody = JSON.stringify({
-      downloadUrl: 'https://storage.example.test/second.zip?signature=second',
-      expiresAt: TEST_EXPIRES_AT
-    });
+    const firstBody = scanRequest(
+      'https://storage.example.test/first.zip?signature=first'
+    );
+    const secondBody = scanRequest(
+      'https://storage.example.test/second.zip?signature=second'
+    );
 
     try {
       const firstResponse = await fetch(
@@ -315,7 +333,9 @@ describe('扫描服务隔离边界', () => {
       );
       expect(firstResponse.status).toBe(503);
       await expect(firstResponse.json()).resolves.toEqual({
-        code: 'SCANNER_SCAN_TIMEOUT'
+        protocolVersion: SCANNER_PROTOCOL_VERSION,
+        code: 'timeout',
+        detailCode: 'SCANNER_SCAN_TIMEOUT'
       });
 
       const secondResponse = await fetch(
@@ -328,7 +348,105 @@ describe('扫描服务隔离边界', () => {
       );
       expect(secondResponse.status).toBe(200);
       await expect(secondResponse.json()).resolves.toMatchObject({
-        code: 'CHARACTER_PACKAGE_SCAN_PASSED'
+        protocolVersion: SCANNER_PROTOCOL_VERSION,
+        ruleVersion: SCANNER_RULE_VERSION,
+        submissionId: TEST_SUBMISSION_ID,
+        code: 'CHARACTER_PACKAGE_SCAN_PASSED',
+        archive: {
+          sizeBytes: expect.any(Number),
+          sha256: expect.stringMatching(/^[a-f0-9]{64}$/u)
+        }
+      });
+    } finally {
+      await close(server);
+    }
+  });
+
+  it.each([
+    ['错误协议版本', 'protocol', 400, 'invalid'],
+    ['错误 HMAC', 'signature', 401, 'unauthorized']
+  ] as const)('%s 被真实临时 server 拒绝', async (
+    _name,
+    failure,
+    expectedStatus,
+    expectedCode
+  ) => {
+    const server = createScannerServer(await serverDependencies());
+    const port = await listen(server);
+    const validBody = scanRequest(
+      'https://storage.example.test/file.zip?signature=present'
+    );
+    const body = failure === 'protocol'
+      ? JSON.stringify({
+          ...JSON.parse(validBody),
+          protocolVersion: '2026-08-14'
+        })
+      : validBody;
+    const headers = signedHeaders(body);
+    if (failure === 'signature') {
+      headers['x-internal-signature'] = '0'.repeat(64);
+    }
+
+    try {
+      const response = await fetch(`http://127.0.0.1:${port}/internal/scan`, {
+        method: 'POST',
+        headers,
+        body
+      });
+      expect(response.status).toBe(expectedStatus);
+      await expect(response.json()).resolves.toMatchObject({
+        protocolVersion: SCANNER_PROTOCOL_VERSION,
+        code: expectedCode
+      });
+    } finally {
+      await close(server);
+    }
+  });
+
+  it.each([
+    {
+      name: '恶意软件',
+      entries: validPackageEntries(),
+      infected: true,
+      code: 'dangerous',
+      detailCode: 'CHARACTER_PACKAGE_MALWARE_DETECTED'
+    },
+    {
+      name: '越界路径',
+      entries: [{ path: '../evil.json' }],
+      infected: false,
+      code: 'invalid',
+      detailCode: 'CHARACTER_PACKAGE_PATH_REJECTED'
+    }
+  ] as const)('真实临时 server 将$name归入 $code', async testCase => {
+    const sourceArchive = await zipFixture(testCase.entries);
+    directories.push(dirname(sourceArchive));
+    const dependencies = await serverDependencies();
+    const server = createScannerServer({
+      ...dependencies,
+      download: async (_url, destination) => {
+        await copyFile(sourceArchive, destination);
+      },
+      clamav: {
+        scan: async () => ({ infected: testCase.infected })
+      }
+    });
+    const port = await listen(server);
+    const body = scanRequest(
+      'https://storage.example.test/file.zip?signature=present'
+    );
+
+    try {
+      const response = await fetch(`http://127.0.0.1:${port}/internal/scan`, {
+        method: 'POST',
+        headers: signedHeaders(body),
+        body
+      });
+      expect(response.status).toBe(422);
+      await expect(response.json()).resolves.toEqual({
+        protocolVersion: SCANNER_PROTOCOL_VERSION,
+        code: testCase.code,
+        detailCode: testCase.detailCode
       });
     } finally {
       await close(server);

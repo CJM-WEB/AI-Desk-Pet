@@ -284,11 +284,19 @@ export interface PackageImageSignal {
   ocrText?: string;
 }
 
-/** 隔离扫描服务经过边界校验后的有限结构化结论。 */
+/** 隔离扫描服务经过共享协议校验后的有限结构化结论。 */
 export interface PackageScanResult {
   complete: boolean;
   safe: boolean;
   code: string;
+  protocolVersion?: string;
+  ruleVersion?: string;
+  submissionId?: string;
+  completedAt?: string;
+  archive?: {
+    sizeBytes: number;
+    sha256: string;
+  };
   summary: {
     fileCount: number;
     totalUncompressedBytes: number;

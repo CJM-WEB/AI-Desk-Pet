@@ -151,6 +151,9 @@ importers:
       '@myself/character-runtime':
         specifier: workspace:*
         version: link:../../packages/character-runtime
+      '@myself/shared-types':
+        specifier: workspace:*
+        version: link:../../packages/shared-types
       sharp:
         specifier: 0.34.5
         version: 0.34.5

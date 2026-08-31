@@ -19,18 +19,22 @@
 - `PORT`：可选，默认 `8080`。
 
 内部请求使用 `x-internal-timestamp` 和 `x-internal-signature` 请求头。签名原文固定为
-`timestamp + "\n" + sha256(rawBody)`，算法为 HMAC-SHA256。
+`protocolVersion + "\n" + timestamp + "\n" + sha256(rawBody)`，算法为
+HMAC-SHA256。协议版本固定为 `2026-08-15`，规则版本固定为
+`character-package-2026-08-15`。
 
 扫描接口固定为 `POST /internal/scan`，请求体为：
 
 ```json
 {
+  "protocolVersion": "2026-08-15",
+  "submissionId": "3d594650-3436-4ad0-a9a8-80ca4388824b",
   "downloadUrl": "https://已配置的对象存储主机/私有对象?实际签名参数=值",
-  "expiresAt": 1785437100000
+  "expiresAt": "2026-08-15T02:05:00.000Z"
 }
 ```
 
-`expiresAt` 是下载地址的毫秒级过期时间，必须晚于服务端当前时间且最多只允许未来
+`expiresAt` 是带时区的 ISO 8601 下载地址过期时间，必须晚于服务端当前时间且最多只允许未来
 五分钟。服务同时校验 HTTPS、默认 443 端口、主机白名单和配置的必需签名参数。
 
 ## 部署约束

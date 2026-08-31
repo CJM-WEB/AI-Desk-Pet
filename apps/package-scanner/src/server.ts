@@ -16,6 +16,14 @@ import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { ims } from 'tencentcloud-sdk-nodejs';
 import {
+  SCANNER_PROTOCOL_VERSION,
+  SCANNER_RULE_VERSION,
+  scannerErrorResponseSchema,
+  scannerRequestSchema,
+  scannerSuccessResponseSchema,
+  type ScannerErrorResponse
+} from '@myself/shared-types/scanner-protocol';
+import {
   FileReplayGuard,
   InternalSignatureError,
   verifyInternalSignature
@@ -207,6 +215,14 @@ function sendJson(
   response.end(JSON.stringify(value));
 }
 
+function sendScannerError(
+  response: ServerResponse<IncomingMessage>,
+  statusCode: number,
+  error: ScannerErrorResponse
+): void {
+  sendJson(response, statusCode, error);
+}
+
 export function createScannerServer(
   dependencies: ScannerServerDependencies
 ): Server {
@@ -221,7 +237,11 @@ export function createScannerServer(
       return;
     }
     if (request.method !== 'POST' || request.url !== '/internal/scan') {
-      sendJson(response, 404, { code: 'SCANNER_NOT_FOUND' });
+      sendScannerError(response, 404, {
+        protocolVersion: SCANNER_PROTOCOL_VERSION,
+        code: 'not_found',
+        detailCode: 'SCANNER_NOT_FOUND'
+      });
       return;
     }
 
@@ -236,24 +256,22 @@ export function createScannerServer(
         }
       }, dependencies.secret, requestNow, replayGuard);
 
-      let body: unknown;
+      let payload: unknown;
       try {
-        body = JSON.parse(rawBody.toString('utf8'));
+        payload = JSON.parse(rawBody.toString('utf8'));
       } catch {
         throw scannerError('SCANNER_REQUEST_INVALID');
       }
-      if (
-        typeof body !== 'object'
-        || body === null
-        || !('downloadUrl' in body)
-        || typeof body.downloadUrl !== 'string'
-        || !('expiresAt' in body)
-        || typeof body.expiresAt !== 'number'
-      ) {
+      const requestResult = scannerRequestSchema.safeParse(payload);
+      if (!requestResult.success) {
         throw scannerError('SCANNER_REQUEST_INVALID');
       }
       if (scanActive) {
-        sendJson(response, 503, { code: 'SCANNER_BUSY' });
+        sendScannerError(response, 503, {
+          protocolVersion: SCANNER_PROTOCOL_VERSION,
+          code: 'busy',
+          detailCode: 'SCANNER_BUSY'
+        });
         return;
       }
       scanActive = true;
@@ -268,8 +286,8 @@ export function createScannerServer(
         let result: PackageScanResult;
         try {
           result = await scanRemotePackage({
-            downloadUrl: body.downloadUrl,
-            expiresAtMs: body.expiresAt,
+            downloadUrl: requestResult.data.downloadUrl,
+            expiresAtMs: Date.parse(requestResult.data.expiresAt),
             now: requestNow,
             workRoot: dependencies.workRoot,
             allowedDownloadHosts: dependencies.allowedDownloadHosts,
@@ -290,21 +308,47 @@ export function createScannerServer(
           }
           throw error;
         }
-        sendJson(response, 200, result);
+        const wireResult = scannerSuccessResponseSchema.safeParse({
+          protocolVersion: SCANNER_PROTOCOL_VERSION,
+          ruleVersion: SCANNER_RULE_VERSION,
+          submissionId: requestResult.data.submissionId,
+          completedAt: now().toISOString(),
+          ...result
+        });
+        if (!wireResult.success) {
+          throw scannerError('SCANNER_RESPONSE_INVALID', wireResult.error);
+        }
+        sendJson(response, 200, wireResult.data);
       } finally {
         clearTimeout(scanTimeout);
         scanActive = false;
       }
     } catch (error) {
       if (error instanceof InternalSignatureError) {
-        sendJson(response, 401, { code: error.code });
+        sendScannerError(response, 401, {
+          protocolVersion: SCANNER_PROTOCOL_VERSION,
+          code: 'unauthorized',
+          detailCode: error.code
+        });
         return;
       }
       const code = error instanceof Error
         ? error.message
         : 'SCANNER_UNAVAILABLE';
       if (code.startsWith('CHARACTER_PACKAGE_')) {
-        sendJson(response, 422, { code });
+        if (code === 'CHARACTER_PACKAGE_MALWARE_DETECTED') {
+          sendScannerError(response, 422, {
+            protocolVersion: SCANNER_PROTOCOL_VERSION,
+            code: 'dangerous',
+            detailCode: code
+          });
+          return;
+        }
+        sendScannerError(response, 422, scannerErrorResponseSchema.parse({
+          protocolVersion: SCANNER_PROTOCOL_VERSION,
+          code: 'invalid',
+          detailCode: code
+        }));
         return;
       }
       if (
@@ -312,14 +356,26 @@ export function createScannerServer(
         || code === 'SCANNER_REQUEST_TOO_LARGE'
         || code === 'SCANNER_DOWNLOAD_URL_REJECTED'
       ) {
-        sendJson(response, 400, { code });
+        sendScannerError(response, 400, scannerErrorResponseSchema.parse({
+          protocolVersion: SCANNER_PROTOCOL_VERSION,
+          code: 'invalid',
+          detailCode: code
+        }));
         return;
       }
       if (code === 'SCANNER_SCAN_TIMEOUT') {
-        sendJson(response, 503, { code });
+        sendScannerError(response, 503, {
+          protocolVersion: SCANNER_PROTOCOL_VERSION,
+          code: 'timeout',
+          detailCode: code
+        });
         return;
       }
-      sendJson(response, 503, { code: 'SCANNER_UNAVAILABLE' });
+      sendScannerError(response, 503, {
+        protocolVersion: SCANNER_PROTOCOL_VERSION,
+        code: 'scanner_error',
+        detailCode: 'SCANNER_UNAVAILABLE'
+      });
     }
   });
 }

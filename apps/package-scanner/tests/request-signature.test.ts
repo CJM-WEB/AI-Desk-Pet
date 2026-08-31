@@ -4,6 +4,10 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
+  SCANNER_PROTOCOL_VERSION,
+  createScannerSignature
+} from '@myself/shared-types/scanner-protocol';
+import {
   FileReplayGuard,
   InternalSignatureError,
   verifyInternalSignature
@@ -30,10 +34,12 @@ function signedRequest(
   timestamp = String(NOW.getTime()),
   signatureOverride?: string
 ) {
-  const digest = createHash('sha256').update(body).digest('hex');
-  const signature = signatureOverride ?? createHmac('sha256', SECRET)
-    .update(`${timestamp}\n${digest}`)
-    .digest('hex');
+  const signature = signatureOverride ?? createScannerSignature(
+    SCANNER_PROTOCOL_VERSION,
+    timestamp,
+    body,
+    SECRET
+  );
   return {
     rawBody: body,
     headers: {
@@ -65,6 +71,23 @@ describe('内部请求签名', () => {
 
     expect(() => verifyInternalSignature(
       signedRequest(Buffer.from('{}'), timestamp, signature),
+      SECRET,
+      NOW,
+      guard
+    )).toThrowError(new InternalSignatureError());
+  });
+
+  it('拒绝遗漏协议版本的旧签名格式', async () => {
+    const body = Buffer.from('{}');
+    const timestamp = String(NOW.getTime());
+    const guard = await replayGuard();
+    const digest = createHash('sha256').update(body).digest('hex');
+    const legacySignature = createHmac('sha256', SECRET)
+      .update(`${timestamp}\n${digest}`)
+      .digest('hex');
+
+    expect(() => verifyInternalSignature(
+      signedRequest(body, timestamp, legacySignature),
       SECRET,
       NOW,
       guard

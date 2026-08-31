@@ -21,6 +21,7 @@ const WEB_RULE_NAMES = new Set([
   'no-relative-cross-workspace-import-packages-shared-types',
   'no-relative-cross-workspace-import-tools-release',
   'shared-types-is-foundational',
+  'scanner-protocol-only-in-server-chain',
   'no-internal-source-import-shared-types',
   'no-website-to-cloud-source',
   'no-cloud-to-website-source',

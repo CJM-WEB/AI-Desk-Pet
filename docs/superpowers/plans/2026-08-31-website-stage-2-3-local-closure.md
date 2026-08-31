@@ -65,12 +65,15 @@
 
 ## Task 2：唯一 ScannerProtocol
 
+> 状态：2026-08-31 已完成；shared-types 37/37、Scanner 69/69、CloudBase API 211/211，三包 typecheck、CloudBase build、scope 与依赖审查通过。独立规格和质量复审无阻塞项。
+
 **Files:**
 - Create: `packages/shared-types/src/scanner-protocol.ts`, `packages/shared-types/tests/scanner-protocol.test.ts`
 - Modify: `packages/shared-types/package.json`, `.dependency-cruiser.mjs`, `.dependency-cruiser.web.mjs`
-- Modify: `apps/package-scanner/package.json`
+- Modify: `apps/package-scanner/package.json`, `apps/package-scanner/README.md`
 - Modify: `apps/package-scanner/src/server.ts`, `request-signature.ts`, `scan-package.ts` 及对应测试
 - Modify: `apps/cloudbase-api/src/adapters/scanner-client.ts`, `apps/cloudbase-api/src/ports.ts`, `apps/cloudbase-api/tests/scanner-client.test.ts`
+- Modify: `tools/verification/web-dependency-audit.test.mjs`
 
 **依赖：** Task 1。
 

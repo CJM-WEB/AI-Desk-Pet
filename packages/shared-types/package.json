@@ -2,7 +2,10 @@
   "name": "@myself/shared-types",
   "private": true,
   "type": "module",
-  "exports": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./scanner-protocol": "./src/scanner-protocol.ts"
+  },
   "scripts": {
     "test": "vitest run",
     "typecheck": "tsc --noEmit"
