@@ -411,6 +411,21 @@ describe('管理员审核服务', () => {
         statusVersion: 4,
         preQuarantineStatus: null
       })
+    },
+    {
+      name: '文本恢复到已发布',
+      action: 'restore' as const,
+      initial: submission('deleted_quarantined', {
+        kind: 'feedback',
+        assets: [],
+        preQuarantineStatus: 'published'
+      }),
+      changed: submission('published', {
+        kind: 'feedback',
+        assets: [],
+        statusVersion: 4,
+        preQuarantineStatus: null
+      })
     }
   ])('$name 首次成功后相同请求交给数据库回放且新 key 仍被拒绝', async ({
     action,

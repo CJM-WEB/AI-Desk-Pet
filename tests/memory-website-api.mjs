@@ -109,7 +109,7 @@ export function createMemoryWebsiteApi({ runId }) {
           return sendData(response, 200, { status: 'system_reviewing' });
         }
         if (record.status !== 'uploading') {
-          return sendError(response, 409, 'UPLOAD_STATE_CONFLICT');
+          return sendError(response, 404, 'NOT_FOUND');
         }
         if (!uploads.has(`${record.id}:cover`) || !uploads.has(`${record.id}:package`)) {
           return sendError(response, 409, 'UPLOAD_INCOMPLETE');
@@ -527,7 +527,7 @@ function applyAdminAction(response, record, body, now) {
   const previous = record.idempotency.get(body.idempotencyKey);
   if (previous) {
     if (JSON.stringify(previous.request) !== JSON.stringify(requestPayload)) {
-      return sendError(response, 409, 'IDEMPOTENCY_KEY_REUSED');
+      return sendError(response, 409, 'IDEMPOTENCY_CONFLICT');
     }
     return sendData(response, 200, {
       ...structuredClone(previous.result),

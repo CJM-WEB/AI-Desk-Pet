@@ -94,7 +94,7 @@ export async function runCloudBaseMigrationBehaviorGate({
       postgresVersion: postgresVersion.version,
       postgresMajorVersion: postgresVersion.major,
       migrationsApplied: migrations.length,
-      behaviorsVerified: 8
+      behaviorsVerified: 9
     };
   } finally {
     if (started) {
@@ -263,6 +263,7 @@ DECLARE
   v_status text;
   v_version bigint;
   v_count bigint;
+  v_result jsonb;
 BEGIN
   -- 1. 上传完成只进入系统审核。
   PERFORM gate_seed('gate-valid');
@@ -413,6 +414,35 @@ BEGIN
       IS NOT NULL THEN
     RAISE EXCEPTION '行为门失败：恢复未重扫';
   END IF;
+
+  -- 9. 文本恢复后同 key 回放首次快照，新 key 仍由 SQL 状态机拒绝。
+  INSERT INTO submissions (
+    id, kind, status, status_token_hash, pre_quarantine_status, quarantined_at
+  ) VALUES (
+    'gate-text-restore', 'feedback', 'deleted_quarantined', repeat('e', 64),
+    'published', now()
+  );
+  v_result := apply_admin_action(
+    'gate-text-restore', 'admin-1', 'restore', 'published', 0,
+    'gate-text-restore-replay', '恢复文本'
+  );
+  v_result := apply_admin_action(
+    'gate-text-restore', 'admin-1', 'restore', 'published', 0,
+    'gate-text-restore-replay', '恢复文本'
+  );
+  IF COALESCE((v_result ->> 'replayed')::boolean, false) IS NOT TRUE
+    OR v_result #>> '{submission,status}' <> 'published' THEN
+    RAISE EXCEPTION '行为门失败：文本恢复未回放首次快照';
+  END IF;
+  BEGIN
+    PERFORM apply_admin_action(
+      'gate-text-restore', 'admin-1', 'restore', 'published', 0,
+      'gate-text-restore-new-key', '恢复文本'
+    );
+    RAISE EXCEPTION '行为门失败：文本恢复新 key 绕过状态机';
+  EXCEPTION WHEN SQLSTATE 'P1002' THEN
+    NULL;
+  END;
 END
 $gate$;
 `;

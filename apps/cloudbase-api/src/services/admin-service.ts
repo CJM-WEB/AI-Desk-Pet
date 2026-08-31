@@ -141,7 +141,11 @@ function nextStatusFor(
       submission.statusVersion !== requestedVersion
       && (
         (submission.kind === 'shared_package' && status === 'system_reviewing')
-        || (submission.kind !== 'shared_package' && status === 'manual_review_pending')
+        || (
+          submission.kind !== 'shared_package'
+          && status !== 'deleted_quarantined'
+          && status !== 'purged'
+        )
       )
     ) {
       // 恢复成功会清空 preQuarantineStatus，目标状态仍可由当前版本安全重建。

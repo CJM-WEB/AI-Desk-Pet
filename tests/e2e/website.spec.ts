@@ -586,8 +586,8 @@ test('安全共享包经系统与管理员审核后才在真实网页公开', as
     `/api/v1/submissions/${encodeURIComponent(receipt.submissionId)}/finalize`,
     { data: {} }
   );
-  expect(invalidFinalize.status()).toBe(409);
-  expect((await invalidFinalize.json()).error.code).toBe('UPLOAD_STATE_CONFLICT');
+  expect(invalidFinalize.status()).toBe(404);
+  expect((await invalidFinalize.json()).error.code).toBe('NOT_FOUND');
 });
 
 test('管理员幂等回放返回首次结果快照且拒绝同 key 异参', async ({ request }) => {
@@ -631,7 +631,7 @@ test('管理员幂等回放返回首次结果快照且拒绝同 key 异参', asy
     data: { ...approveRequest, reason: '复用 key 改写理由' }
   });
   expect(conflict.status()).toBe(409);
-  expect((await conflict.json()).error.code).toBe('IDEMPOTENCY_KEY_REUSED');
+  expect((await conflict.json()).error.code).toBe('IDEMPOTENCY_CONFLICT');
 });
 
 test('匿名反馈批准前隐藏且批准后进入真实网页列表', async ({ page, request }) => {
