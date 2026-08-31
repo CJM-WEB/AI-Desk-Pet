@@ -479,6 +479,16 @@ export function SharedPetChapter({
     try {
       const payload = await repository.getDownload(item.id);
       if (!mountedRef.current) return;
+      if (
+        payload.publicationBasis !== undefined
+        && payload.publicationBasis !== item.publicationBasis
+      ) {
+        replaceVisibleItem({
+          ...item,
+          publicationBasis: payload.publicationBasis
+        });
+        return;
+      }
       if (!payload.url) throw new Error('DOWNLOAD_URL_MISSING');
       const anchor = document.createElement('a');
       anchor.href = payload.url;

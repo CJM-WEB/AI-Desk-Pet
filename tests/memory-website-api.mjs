@@ -1,4 +1,12 @@
 import { createHash } from 'node:crypto';
+import { createRequire } from 'node:module';
+import { pathToFileURL } from 'node:url';
+
+const websiteRequire = createRequire(new URL('../apps/website/package.json', import.meta.url));
+const moderationModuleUrl = pathToFileURL(
+  websiteRequire.resolve('@myself/shared-types/moderation')
+).href;
+const { adminActionSchema } = await import(moderationModuleUrl);
 
 const ADMIN_TOKEN = 'e2e-admin-session';
 const MAX_BODY_BYTES = 2 * 1024 * 1024;
@@ -8,12 +16,14 @@ export function createMemoryWebsiteApi({ runId }) {
   const submissions = new Map();
   const tokenIndex = new Map();
   const uploads = new Map();
+  const adminIdempotency = new Map();
   let sequence = 0;
 
   const reset = () => {
     submissions.clear();
     tokenIndex.clear();
     uploads.clear();
+    adminIdempotency.clear();
     sequence = 0;
   };
 
@@ -28,6 +38,18 @@ export function createMemoryWebsiteApi({ runId }) {
       reset();
       return sendData(response, 200, { reset: true });
     }
+    const moderationClaimId = matchId(pathname, '/__e2e/moderation/', '/claim');
+    if (request.method === 'POST' && moderationClaimId) {
+      const record = requireSubmission(moderationClaimId);
+      const claimedVersion = Number(searchParams.get('claimedVersion'));
+      if (
+        record.status !== 'system_reviewing'
+        || !Number.isInteger(claimedVersion)
+        || claimedVersion !== record.statusVersion
+      ) return sendError(response, 409, 'MODERATION_JOB_STALE');
+      record.moderationLeaseUntil = plusMinutes(now(), 10);
+      return sendData(response, 200, { claimedVersion });
+    }
     const moderationId = matchId(pathname, '/__e2e/moderation/', '');
     if (request.method === 'POST' && moderationId) {
       const record = requireSubmission(moderationId);
@@ -38,7 +60,9 @@ export function createMemoryWebsiteApi({ runId }) {
         && record.publicationBasis === 'admin_override'
         && rawClaimedVersion !== null
         && Number.isInteger(claimedVersion)
-        && record.statusVersion === claimedVersion + 2;
+        && record.statusVersion === claimedVersion + 2
+        && record.moderationLeaseUntil !== null
+        && Date.parse(record.moderationLeaseUntil) > Date.parse(now());
       if (record.status !== 'system_reviewing' && !lateResult) {
         return sendError(response, 409, 'MODERATION_JOB_STALE');
       }
@@ -90,7 +114,6 @@ export function createMemoryWebsiteApi({ runId }) {
           ],
           moderationResults: [],
           auditLogs: [],
-          idempotency: new Map(),
           moderationLeaseUntil: null,
           purgeAfter: null,
           preQuarantineStatus: null,
@@ -165,7 +188,6 @@ export function createMemoryWebsiteApi({ runId }) {
           assets: [],
           moderationResults: [],
           auditLogs: [],
-          idempotency: new Map(),
           moderationLeaseUntil: null,
           purgeAfter: null,
           preQuarantineStatus: null,
@@ -262,7 +284,13 @@ export function createMemoryWebsiteApi({ runId }) {
         const actionId = matchId(pathname, '/api/v1/admin/submissions/', '/actions');
         if (request.method === 'POST' && actionId) {
           const body = await readJson(request);
-          return applyAdminAction(response, requireSubmission(actionId), body, now);
+          return applyAdminAction(
+            response,
+            requireSubmission(actionId),
+            body,
+            now,
+            adminIdempotency
+          );
         }
 
         const detailId = matchId(pathname, '/api/v1/admin/submissions/', '');
@@ -408,11 +436,15 @@ async function readJson(request) {
 
 function requireAdmin(request, response) {
   const authorization = request.headers.authorization;
-  if (!authorization) {
+  const forwardedToken = request.headers['x-ai-pet-admin-token'];
+  if (!authorization && !forwardedToken) {
     sendError(response, 401, 'ADMIN_SESSION_REQUIRED');
     return false;
   }
-  if (authorization !== `Bearer ${ADMIN_TOKEN}`) {
+  if (
+    authorization !== `Bearer ${ADMIN_TOKEN}`
+    && forwardedToken !== ADMIN_TOKEN
+  ) {
     sendError(response, 403, 'ADMIN_FORBIDDEN');
     return false;
   }
@@ -573,25 +605,19 @@ function toggleLike(record) {
   return { liked: record.liked, likeCount: record.likeCount };
 }
 
-function applyAdminAction(response, record, body, now) {
-  if (!body || typeof body.reason !== 'string' || !body.reason.trim()
-    || typeof body.idempotencyKey !== 'string' || body.idempotencyKey.length < 8) {
-    return sendError(response, 400, 'INVALID_REQUEST');
-  }
-  const forcePublish = body.action === 'force_publish';
-  if (
-    (forcePublish && body.riskAcknowledgement !== 'ADMIN_OVERRIDE_ACCEPTED')
-    || (!forcePublish && Object.hasOwn(body, 'riskAcknowledgement'))
-  ) {
-    return sendError(response, 400, 'INVALID_REQUEST');
-  }
+function applyAdminAction(response, record, body, now, adminIdempotency) {
+  const parsed = adminActionSchema.safeParse(body);
+  if (!parsed.success) return sendError(response, 400, 'INVALID_REQUEST');
+  const actionRequest = parsed.data;
+  const forcePublish = actionRequest.action === 'force_publish';
   const requestPayload = {
-    action: body.action,
-    version: body.version,
-    reason: body.reason.trim(),
-    ...(forcePublish ? { riskAcknowledgement: body.riskAcknowledgement } : {})
+    submissionId: record.id,
+    action: actionRequest.action,
+    version: actionRequest.version,
+    reason: actionRequest.reason,
+    ...(forcePublish ? { riskAcknowledgement: actionRequest.riskAcknowledgement } : {})
   };
-  const previous = record.idempotency.get(body.idempotencyKey);
+  const previous = adminIdempotency.get(actionRequest.idempotencyKey);
   if (previous) {
     if (JSON.stringify(previous.request) !== JSON.stringify(requestPayload)) {
       return sendError(response, 409, 'IDEMPOTENCY_CONFLICT');
@@ -601,9 +627,9 @@ function applyAdminAction(response, record, body, now) {
       replayed: true
     });
   }
-  if (body.version !== record.statusVersion) return sendError(response, 409, 'VERSION_CONFLICT');
+  if (actionRequest.version !== record.statusVersion) return sendError(response, 409, 'VERSION_CONFLICT');
   const beforeStatus = record.status;
-  const action = body.action;
+  const action = actionRequest.action;
   if (action === 'approve' && record.kind === 'shared_package'
     && !hasCurrentTechnicalEvidence(record, now())) {
     return sendError(response, 409, 'TECHNICAL_SCAN_REQUIRED');
@@ -625,7 +651,7 @@ function applyAdminAction(response, record, body, now) {
     record.status = 'published';
     record.publishedAt = now();
     record.publicationBasis = 'admin_override';
-    record.riskAcknowledgement = body.riskAcknowledgement;
+    record.riskAcknowledgement = actionRequest.riskAcknowledgement;
     record.purgeAfter = null;
   } else if (action === 'reject' && record.status === 'manual_review_pending') {
     record.status = 'admin_rejected';
@@ -647,7 +673,10 @@ function applyAdminAction(response, record, body, now) {
     record.status = record.kind === 'shared_package'
       ? 'system_reviewing'
       : record.preQuarantineStatus;
-    record.publicationBasis = null;
+    record.publicationBasis = record.kind !== 'shared_package'
+      && record.preQuarantineStatus === 'published'
+      ? 'standard'
+      : null;
     record.quarantinedAt = null;
     record.preQuarantineStatus = null;
     record.purgeAfter = null;
@@ -657,16 +686,16 @@ function applyAdminAction(response, record, body, now) {
 
   record.statusVersion += 1;
   record.updatedAt = now();
-  record.publicReason = body.reason.trim();
+  record.publicReason = action === 'reject' ? actionRequest.reason : null;
   record.auditLogs.push({
     action,
     beforeStatus,
     afterStatus: record.status,
-    reason: body.reason.trim(),
+    reason: actionRequest.reason,
     createdAt: record.updatedAt
   });
   const result = { submission: adminActionSnapshot(record), replayed: false };
-  record.idempotency.set(body.idempotencyKey, {
+  adminIdempotency.set(actionRequest.idempotencyKey, {
     request: requestPayload,
     result: structuredClone(result)
   });

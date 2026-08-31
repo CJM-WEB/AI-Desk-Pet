@@ -4,6 +4,7 @@
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
+    "./moderation": "./src/moderation.ts",
     "./scanner-protocol": "./src/scanner-protocol.ts"
   },
   "scripts": {

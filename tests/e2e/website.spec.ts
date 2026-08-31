@@ -143,6 +143,18 @@ async function adminItems(
   return (await response.json()).data.items;
 }
 
+async function adminDetail(
+  request: APIRequestContext,
+  submissionId: string
+): Promise<Record<string, unknown>> {
+  const response = await request.get(
+    `/api/v1/admin/submissions/${encodeURIComponent(submissionId)}`,
+    { headers: { authorization: `Bearer ${E2E_ADMIN_TOKEN}` } }
+  );
+  expect(response.ok(), await response.text()).toBe(true);
+  return (await response.json()).data;
+}
+
 async function applyAdminAction(
   request: APIRequestContext,
   item: Record<string, unknown>,
@@ -607,6 +619,10 @@ test('无有效证据共享包经两步管理员强制发布后在卡片、详�
   const reviewing = (await adminItems(request, 'system_reviewing'))
     .find(item => item.id === receipt.submissionId)!;
   const claimedVersion = Number(reviewing.statusVersion);
+  const claim = await request.post(
+    `/__e2e/moderation/${encodeURIComponent(receipt.submissionId)}/claim?claimedVersion=${claimedVersion}`
+  );
+  expect(claim.ok(), await claim.text()).toBe(true);
   await applyAdminAction(request, reviewing, 'move_to_manual', '转交管理员复核');
 
   const pending = (await adminItems(request, 'manual_review_pending'))
@@ -670,6 +686,16 @@ test('无有效证据共享包经两步管理员强制发布后在卡片、详�
     publicationBasis: 'admin_override',
     riskSummary: { labels: ['blocked'] }
   });
+  const lateDetail = await adminDetail(request, receipt.submissionId);
+  const lateResultCount = (lateDetail.moderationResults as unknown[]).length;
+  const duplicateLate = await request.post(
+    `/__e2e/moderation/${encodeURIComponent(receipt.submissionId)}?claimedVersion=${claimedVersion}`
+  );
+  expect(duplicateLate.status()).toBe(409);
+  expect((await duplicateLate.json()).error.code).toBe('MODERATION_JOB_STALE');
+  const afterDuplicate = await adminDetail(request, receipt.submissionId);
+  expect((afterDuplicate.moderationResults as unknown[]).length).toBe(lateResultCount);
+  expect(afterDuplicate.riskSummary).toEqual(lateDetail.riskSummary);
 
   const replay = await request.post(actionUrl, {
     headers: { authorization: `Bearer ${E2E_ADMIN_TOKEN}` },
@@ -708,6 +734,67 @@ test('无有效证据共享包经两步管理员强制发布后在卡片、详�
     .toContainText('管理员人工放行，未通过系统安全验证');
   await expect(dialog.getByRole('note', { name: '下载风险提示' }))
     .toContainText('管理员人工放行，未通过系统安全验证');
+});
+
+test('真实管理员页面忽略长按重复 Enter，非重复二次确认与双击各只发送一次', async ({ page, request }) => {
+  const firstReceipt = await submitSharedPackageViaApi(
+    request,
+    'E2E 键盘强制发布',
+    'technical-fail-keyboard.zip',
+    false
+  );
+  const firstReviewing = (await adminItems(request, 'system_reviewing'))
+    .find(item => item.id === firstReceipt.submissionId)!;
+  await applyAdminAction(request, firstReviewing, 'move_to_manual', '进入键盘复核');
+  let actionRequests = 0;
+  page.on('request', browserRequest => {
+    if (
+      browserRequest.method() === 'POST'
+      && browserRequest.url().includes(`/admin/submissions/${firstReceipt.submissionId}/actions`)
+    ) actionRequests += 1;
+  });
+
+  await page.goto('/admin/');
+  await page.getByRole('button', { name: /E2E 键盘强制发布/u }).click();
+  await page.getByLabel('审核理由').fill('管理员接受键盘确认风险');
+  await page.getByRole('button', { name: '强制发布', exact: true }).focus();
+  await page.keyboard.down('Enter');
+  await page.keyboard.down('Enter');
+  await page.keyboard.up('Enter');
+
+  await expect(page.getByRole('alertdialog', { name: '确认强制发布风险' })).toBeVisible();
+  expect(actionRequests).toBe(0);
+  await expect(page.getByText('该文件未通过安全扫描，发布后用户可能下载危险文件'))
+    .toBeFocused();
+  expect(await page.getByText('该文件未通过安全扫描，发布后用户可能下载危险文件')
+    .evaluate(element => getComputedStyle(element).outlineStyle)).not.toBe('none');
+
+  await page.getByRole('button', { name: '确认强制发布' }).focus();
+  await page.keyboard.press('Enter');
+  await expect.poll(() => actionRequests).toBe(1);
+
+  const secondReceipt = await submitSharedPackageViaApi(
+    request,
+    'E2E 双击强制发布',
+    'technical-fail-double.zip',
+    false
+  );
+  const secondReviewing = (await adminItems(request, 'system_reviewing'))
+    .find(item => item.id === secondReceipt.submissionId)!;
+  await applyAdminAction(request, secondReviewing, 'move_to_manual', '进入双击复核');
+  let doubleClickRequests = 0;
+  page.on('request', browserRequest => {
+    if (
+      browserRequest.method() === 'POST'
+      && browserRequest.url().includes(`/admin/submissions/${secondReceipt.submissionId}/actions`)
+    ) doubleClickRequests += 1;
+  });
+  await page.reload();
+  await page.getByRole('button', { name: /E2E 双击强制发布/u }).click();
+  await page.getByLabel('审核理由').fill('管理员接受双击确认风险');
+  await page.getByRole('button', { name: '强制发布', exact: true }).click();
+  await page.getByRole('button', { name: '确认强制发布' }).dblclick();
+  await expect.poll(() => doubleClickRequests).toBe(1);
 });
 
 test('管理员幂等回放返回首次结果快照且拒绝同 key 异参', async ({ request }) => {
@@ -752,6 +839,127 @@ test('管理员幂等回放返回首次结果快照且拒绝同 key 异参', asy
   });
   expect(conflict.status()).toBe(409);
   expect((await conflict.json()).error.code).toBe('IDEMPOTENCY_CONFLICT');
+});
+
+test('管理员幂等键跨投稿全局唯一，严格 Schema 拒绝越界和额外字段', async ({ request }) => {
+  const first = await submitFeedbackViaApi(request, 'E2E 全局幂等投稿一。');
+  const second = await submitFeedbackViaApi(request, 'E2E 全局幂等投稿二。');
+  const firstPending = (await adminItems(request, 'manual_review_pending'))
+    .find(item => item.id === first.submissionId)!;
+  const secondPending = (await adminItems(request, 'manual_review_pending'))
+    .find(item => item.id === second.submissionId)!;
+  const sharedKey = 'e2e-global-idempotency-key';
+  const firstResponse = await request.post(
+    `/api/v1/admin/submissions/${encodeURIComponent(first.submissionId)}/actions`,
+    {
+      headers: { authorization: `Bearer ${E2E_ADMIN_TOKEN}` },
+      data: {
+        action: 'approve',
+        version: firstPending.statusVersion,
+        reason: '全局幂等首次请求',
+        idempotencyKey: sharedKey
+      }
+    }
+  );
+  expect(firstResponse.ok()).toBe(true);
+  const crossSubmission = await request.post(
+    `/api/v1/admin/submissions/${encodeURIComponent(second.submissionId)}/actions`,
+    {
+      headers: { authorization: `Bearer ${E2E_ADMIN_TOKEN}` },
+      data: {
+        action: 'approve',
+        version: secondPending.statusVersion,
+        reason: '全局幂等首次请求',
+        idempotencyKey: sharedKey
+      }
+    }
+  );
+  expect(crossSubmission.status()).toBe(409);
+  expect((await crossSubmission.json()).error.code).toBe('IDEMPOTENCY_CONFLICT');
+
+  for (const [label, mutate] of [
+    ['reason', (body: Record<string, unknown>) => ({ ...body, reason: '理'.repeat(501) })],
+    ['idempotencyKey', (body: Record<string, unknown>) => ({ ...body, idempotencyKey: 'k'.repeat(129) })],
+    ['version', (body: Record<string, unknown>) => ({ ...body, version: 1.5 })],
+    ['extra', (body: Record<string, unknown>) => ({ ...body, extra: true })]
+  ] as const) {
+    const receipt = await submitFeedbackViaApi(request, `E2E Schema ${label}。`);
+    const pending = (await adminItems(request, 'manual_review_pending'))
+      .find(item => item.id === receipt.submissionId)!;
+    const response = await request.post(
+      `/api/v1/admin/submissions/${encodeURIComponent(receipt.submissionId)}/actions`,
+      {
+        headers: { authorization: `Bearer ${E2E_ADMIN_TOKEN}` },
+        data: mutate({
+          action: 'approve',
+          version: pending.statusVersion,
+          reason: '合法理由',
+          idempotencyKey: `e2e-schema-${label}`
+        })
+      }
+    );
+    expect(response.status(), label).toBe(400);
+    expect((await response.json()).error.code).toBe('INVALID_REQUEST');
+  }
+});
+
+test('反馈恢复已发布状态保留 standard，强制发布快照逐字段匹配生产语义', async ({ request }) => {
+  const feedback = await submitFeedbackViaApi(request, 'E2E 恢复已发布反馈。');
+  const pendingFeedback = (await adminItems(request, 'manual_review_pending'))
+    .find(item => item.id === feedback.submissionId)!;
+  await applyAdminAction(request, pendingFeedback, 'approve', '批准反馈');
+  const publishedFeedback = (await adminItems(request, 'published'))
+    .find(item => item.id === feedback.submissionId)!;
+  await applyAdminAction(request, publishedFeedback, 'delete', '隔离反馈');
+  const quarantinedFeedback = (await adminItems(request, 'deleted_quarantined'))
+    .find(item => item.id === feedback.submissionId)!;
+  await applyAdminAction(request, quarantinedFeedback, 'restore', '恢复反馈');
+  const restoredFeedback = (await adminItems(request, 'published'))
+    .find(item => item.id === feedback.submissionId)!;
+  expect(restoredFeedback.publicationBasis).toBe('standard');
+
+  const shared = await submitSharedPackageViaApi(
+    request,
+    'E2E 精确快照共享包',
+    'technical-fail-snapshot.zip',
+    false
+  );
+  const reviewing = (await adminItems(request, 'system_reviewing'))
+    .find(item => item.id === shared.submissionId)!;
+  await applyAdminAction(request, reviewing, 'move_to_manual', '转人工');
+  const pending = (await adminItems(request, 'manual_review_pending'))
+    .find(item => item.id === shared.submissionId)!;
+  const response = await request.post(
+    `/api/v1/admin/submissions/${encodeURIComponent(shared.submissionId)}/actions`,
+    {
+      headers: { authorization: `Bearer ${E2E_ADMIN_TOKEN}` },
+      data: {
+        action: 'force_publish',
+        version: pending.statusVersion,
+        reason: '接受精确快照风险',
+        idempotencyKey: `e2e-exact-${shared.submissionId}`,
+        riskAcknowledgement: 'ADMIN_OVERRIDE_ACCEPTED'
+      }
+    }
+  );
+  expect(response.ok(), await response.text()).toBe(true);
+  const result = (await response.json()).data;
+  expect(result).toEqual({
+    submission: {
+      id: shared.submissionId,
+      kind: 'shared_package',
+      status: 'published',
+      statusVersion: Number(pending.statusVersion) + 1,
+      publicationBasis: 'admin_override',
+      publicReason: null,
+      publishedAt: expect.any(String),
+      rejectedAt: null,
+      quarantinedAt: null,
+      createdAt: pending.createdAt,
+      updatedAt: expect.any(String)
+    },
+    replayed: false
+  });
 });
 
 test('匿名反馈批准前隐藏且批准后进入真实网页列表', async ({ page, request }) => {

@@ -37,7 +37,7 @@ export function AdminApp({ auth, api }: AdminAppProps) {
     if (runtime || initializationFailed) return;
     try {
       setRuntime({
-        auth: auth ?? createAdminAuth(),
+        auth: auth ?? createRuntimeAdminAuth(),
         api: api ?? new AdminApiClient(new ApiClient(
           process.env.NEXT_PUBLIC_API_BASE_URL ?? '/api/v1'
         ))
@@ -55,6 +55,17 @@ export function AdminApp({ auth, api }: AdminAppProps) {
     return <main className={styles.centerPage}><p role="status">{t('admin.initializing')}</p></main>;
   }
   return <AdminWorkspace auth={runtime.auth} api={runtime.api} />;
+}
+
+/** E2E 静态构建只连接同源 Memory API；常规构建不含令牌时仍走 CloudBase 会话。 */
+function createRuntimeAdminAuth(): AdminAuthClient {
+  const e2eToken = process.env.NEXT_PUBLIC_WEBSITE_E2E_ADMIN_TOKEN;
+  if (!e2eToken) return createAdminAuth();
+  return {
+    requestEmailOtp: async () => { throw new Error('E2E_ADMIN_SESSION_ONLY'); },
+    getAccessToken: async () => e2eToken,
+    signOut: async () => undefined
+  };
 }
 
 function AdminWorkspace({

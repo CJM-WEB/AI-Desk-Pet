@@ -27,11 +27,11 @@ export function AdminDetail({ detail, loading, acting, onAction }: AdminDetailPr
   const confirmationRegionId = useId();
   const confirmationTitleId = useId();
   const confirmationWarningId = useId();
-  const confirmButtonRef = useRef<HTMLButtonElement>(null);
+  const confirmationWarningRef = useRef<HTMLParagraphElement>(null);
   const forceButtonRef = useRef<HTMLButtonElement>(null);
 
   useEffect(() => {
-    if (confirmingOverride && !acting) confirmButtonRef.current?.focus();
+    if (confirmingOverride && !acting) confirmationWarningRef.current?.focus();
   }, [acting, confirmingOverride]);
 
   if (loading) return <section className={styles.detailPanel}><p role="status">{t('admin.detail.loading')}</p></section>;
@@ -142,6 +142,9 @@ export function AdminDetail({ detail, loading, acting, onAction }: AdminDetailPr
                 title={blockedApprove ? t('admin.detail.technicalBlocked') : undefined}
                 aria-expanded={action === 'force_publish' ? confirmingOverride : undefined}
                 aria-controls={action === 'force_publish' ? confirmationRegionId : undefined}
+                onKeyDown={event => {
+                  if (event.repeat) event.preventDefault();
+                }}
                 onClick={() => {
                   if (action === 'force_publish') {
                     setConfirmingOverride(true);
@@ -165,13 +168,21 @@ export function AdminDetail({ detail, loading, acting, onAction }: AdminDetailPr
             aria-describedby={confirmationWarningId}
           >
             <h3 id={confirmationTitleId}>{t('admin.override.title')}</h3>
-            <p id={confirmationWarningId}>{t('admin.override.warning')}</p>
+            <p
+              ref={confirmationWarningRef}
+              id={confirmationWarningId}
+              tabIndex={-1}
+            >
+              {t('admin.override.warning')}
+            </p>
             <div className={styles.confirmationActions}>
               <button
-                ref={confirmButtonRef}
                 type="button"
                 className={styles.dangerButton}
                 disabled={actionDisabled}
+                onKeyDown={event => {
+                  if (event.repeat) event.preventDefault();
+                }}
                 onClick={() => onAction('force_publish', reason.trim())}
               >
                 {t('admin.override.confirm')}
@@ -180,6 +191,9 @@ export function AdminDetail({ detail, loading, acting, onAction }: AdminDetailPr
                 type="button"
                 className={styles.secondaryButton}
                 disabled={acting}
+                onKeyDown={event => {
+                  if (event.repeat) event.preventDefault();
+                }}
                 onClick={() => {
                   setConfirmingOverride(false);
                   queueMicrotask(() => forceButtonRef.current?.focus());

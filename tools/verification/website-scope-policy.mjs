@@ -60,6 +60,7 @@ export const ALLOWED_WEBSITE_SCOPE_PATHS = Object.freeze([
   'docs/superpowers/plans/2026-08-31-admin-override-publication.md',
   'docs/superpowers/specs/2026-08-31-website-stage-2-3-local-closure-design.md',
   'docs/superpowers/specs/2026-08-31-admin-override-publication-design.md',
+  'tests/build-website-export.mjs',
   'tests/e2e/website.spec.ts',
   'tests/memory-website-api.mjs',
   'tests/playwright.website.config.ts',

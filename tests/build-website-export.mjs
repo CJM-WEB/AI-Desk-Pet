@@ -11,7 +11,8 @@ const child = spawn(
     cwd: process.cwd(),
     env: {
       ...process.env,
-      NEXT_PUBLIC_API_BASE_URL: '/api/v1'
+      NEXT_PUBLIC_API_BASE_URL: '/api/v1',
+      NEXT_PUBLIC_WEBSITE_E2E_ADMIN_TOKEN: 'e2e-admin-session'
     },
     stdio: 'inherit'
   }

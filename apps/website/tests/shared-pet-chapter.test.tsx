@@ -841,6 +841,66 @@ describe('共享仓库章节', () => {
     expect(harness.recordDownload).not.toHaveBeenCalled();
   });
 
+  it('下载响应从标准发布变为人工放行时首次阻断并刷新三处警告，第二次才下载', async () => {
+    const harness = createRepository(1);
+    harness.listPage.mockResolvedValueOnce(createPage([{
+      ...createItem(1),
+      publicationBasis: 'standard'
+    }], 1, 1));
+    harness.getDownload.mockResolvedValue({
+      url: 'https://storage.example/pet.zip',
+      fileName: 'pet.zip',
+      expiresAt: '2026-08-01T00:00:00.000Z',
+      publicationBasis: 'admin_override'
+    });
+    const click = vi.spyOn(HTMLAnchorElement.prototype, 'click')
+      .mockImplementation(() => undefined);
+    renderChapter(harness.repository);
+    await screen.findByText('Pet 1');
+    fireEvent.click(screen.getByRole('button', { name: '打开 Pet 1 的详情' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Pet 1' });
+
+    fireEvent.click(within(dialog).getByRole('button', { name: '下载 Pet 1' }));
+
+    await waitFor(() => expect(harness.getDownload).toHaveBeenCalledTimes(1));
+    expect(click).not.toHaveBeenCalled();
+    expect(screen.getByRole('note', { name: '共享包风险提示' })).toBeTruthy();
+    expect(within(dialog).getByRole('note', { name: '详情风险提示' })).toBeTruthy();
+    expect(within(dialog).getByRole('note', { name: '下载风险提示' })).toBeTruthy();
+
+    fireEvent.click(within(dialog).getByRole('button', { name: '下载 Pet 1' }));
+    await waitFor(() => expect(click).toHaveBeenCalledTimes(1));
+    expect(harness.getDownload).toHaveBeenCalledTimes(2);
+  });
+
+  it('下载响应从人工放行变为标准发布时首次阻断并移除警告，第二次才下载', async () => {
+    const harness = createRepository(1);
+    harness.listPage.mockResolvedValueOnce(createPage([{
+      ...createItem(1),
+      publicationBasis: 'admin_override'
+    }], 1, 1));
+    harness.getDownload.mockResolvedValue({
+      url: 'https://storage.example/pet.zip',
+      fileName: 'pet.zip',
+      expiresAt: '2026-08-01T00:00:00.000Z',
+      publicationBasis: 'standard'
+    });
+    const click = vi.spyOn(HTMLAnchorElement.prototype, 'click')
+      .mockImplementation(() => undefined);
+    renderChapter(harness.repository);
+    await screen.findByRole('note', { name: '共享包风险提示' });
+
+    fireEvent.click(screen.getByRole('button', { name: '下载 Pet 1' }));
+
+    await waitFor(() => expect(harness.getDownload).toHaveBeenCalledTimes(1));
+    expect(click).not.toHaveBeenCalled();
+    expect(screen.queryByRole('note', { name: '共享包风险提示' })).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: '下载 Pet 1' }));
+    await waitFor(() => expect(click).toHaveBeenCalledTimes(1));
+    expect(harness.getDownload).toHaveBeenCalledTimes(2);
+  });
+
   it('下载失败时不记录次数并显示本地化错误', async () => {
     const harness = createRepository(1);
     harness.getDownload.mockRejectedValueOnce(new Error('download failed'));

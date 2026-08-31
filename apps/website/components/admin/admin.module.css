@@ -353,6 +353,7 @@
 .secondaryButton:focus-visible,
 .dangerButton:focus-visible,
 .textButton:focus-visible,
+.overrideConfirmation p:focus-visible,
 .field input:focus-visible,
 .field textarea:focus-visible {
   outline: 3px solid #9aa5ff;

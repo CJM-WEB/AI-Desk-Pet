@@ -320,7 +320,9 @@ describe('管理员审核工作台', () => {
     const cancel = screen.getByRole('button', { name: '取消强制发布' });
     expect(confirm.tagName).toBe('BUTTON');
     expect(cancel.tagName).toBe('BUTTON');
-    expect(document.activeElement).toBe(confirm);
+    expect(document.activeElement).toBe(
+      screen.getByText('该文件未通过安全扫描，发布后用户可能下载危险文件')
+    );
 
     fireEvent.click(cancel);
     expect(screen.queryByRole('alertdialog', { name: '确认强制发布风险' })).toBeNull();
