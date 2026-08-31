@@ -5,6 +5,7 @@ import { Download } from 'lucide-react';
 import { interpolateMessage, useI18n } from '../../i18n/I18nProvider';
 import type { SharedPetPackageSummary } from './shared-pet-types';
 import { SharedPetDialogShell } from './SharedPetDialogShell';
+import { SharedPetOverrideWarning } from './SharedPetOverrideWarning';
 import { useObjectUrl } from './use-object-url';
 import styles from './community.module.css';
 
@@ -58,14 +59,7 @@ export function SharedPetDetailDialog({
       footer={(
         <div className={styles.downloadAction}>
           {item.publicationBasis === 'admin_override' ? (
-            <div
-              className={styles.overrideWarning}
-              role="note"
-              aria-label={t('sharedPet.override.downloadLabel')}
-            >
-              <strong>{t('sharedPet.override.label')}</strong>
-              <span>{t('sharedPet.override.warning')}</span>
-            </div>
+            <SharedPetOverrideWarning ariaLabel={t('sharedPet.override.downloadLabel')} />
           ) : null}
           <button
             type="button"
@@ -89,14 +83,7 @@ export function SharedPetDetailDialog({
         ) : null}
         <p className={styles.detailDescription}>{item.description}</p>
         {item.publicationBasis === 'admin_override' ? (
-          <div
-            className={styles.overrideWarning}
-            role="note"
-            aria-label={t('sharedPet.override.detailLabel')}
-          >
-            <strong>{t('sharedPet.override.label')}</strong>
-            <span>{t('sharedPet.override.warning')}</span>
-          </div>
+          <SharedPetOverrideWarning ariaLabel={t('sharedPet.override.detailLabel')} />
         ) : null}
         <dl className={styles.detailMetadata}>
           <div><dt>{t('sharedPet.detail.fileName')}</dt><dd>{item.packageFileName}</dd></div>

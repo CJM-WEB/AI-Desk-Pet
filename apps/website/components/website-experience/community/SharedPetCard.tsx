@@ -3,6 +3,7 @@
 import { Download, ThumbsUp } from 'lucide-react';
 import { useI18n } from '../../i18n/I18nProvider';
 import type { SharedPetPackageSummary } from './shared-pet-types';
+import { SharedPetOverrideWarning } from './SharedPetOverrideWarning';
 import { useObjectUrl } from './use-object-url';
 import styles from './community.module.css';
 
@@ -55,14 +56,7 @@ export function SharedPetCard({
           <h3>{item.name}</h3>
           <p>{item.description}</p>
           {item.publicationBasis === 'admin_override' ? (
-            <div
-              className={styles.overrideWarning}
-              role="note"
-              aria-label={t('sharedPet.override.cardLabel')}
-            >
-              <strong>{t('sharedPet.override.label')}</strong>
-              <span>{t('sharedPet.override.warning')}</span>
-            </div>
+            <SharedPetOverrideWarning ariaLabel={t('sharedPet.override.cardLabel')} />
           ) : null}
         </div>
       </button>
