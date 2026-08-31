@@ -114,6 +114,7 @@ test('阶段三只放行专属合同目录和配置，不放行桌面测试配�
     'tests/website-contract/website-api-contract.ts',
     'tests/website-contract/production-driver.test.ts',
     'tests/website-contract/memory-driver.test.ts',
+    'tests/tsconfig.web-chain.json',
     'tests/vitest.web-chain.config.ts',
   ];
 
@@ -292,7 +293,7 @@ test('根 manifest 接受全部精确阶段 0 脚本和 dependency-cruiser', () 
     'plan:cloudbase-migrations': 'node tools/plan-cloudbase-migrations.mjs --dry-run',
     'test:cloudbase-tools': 'node --test tools/cloudbase-migration-inventory.test.mjs tools/cloudbase-user-migrations.test.mjs tools/cloudbase-user-migration-adapter.test.mjs tools/plan-cloudbase-migrations.test.mjs tools/build-cloudbase-functions.test.mjs',
     'verify:scanner-candidate': 'node tools/verification/verify-scanner-candidate.mjs',
-    'test:website-contract': 'vitest run --config tests/vitest.web-chain.config.ts',
+    'test:website-contract': 'tsc --project tests/tsconfig.web-chain.json --noEmit && vitest run --config tests/vitest.web-chain.config.ts',
   });
   allowedChange.devDependencies['dependency-cruiser'] = '18.2.0';
 

@@ -27,7 +27,8 @@ import {
   publicListRequestSchema,
   submissionStatusRequestSchema,
   submissionStatusResponseSchema,
-  successEnvelopeSchema
+  successEnvelopeSchema,
+  websiteHttpEnvelopeSchema
 } from '../src/website-http';
 
 const requestId = 'request-1';
@@ -59,6 +60,22 @@ describe('网站 HTTP 信封', () => {
       .toBe(false);
     expect(errorEnvelopeSchema.safeParse({ requestId, error: { code: 'FAILED', message: '内部信息' } }).success)
       .toBe(false);
+  });
+
+  it('unknown data 联合信封仍复用唯一 requestId 与互斥规则', () => {
+    expect(websiteHttpEnvelopeSchema.parse({
+      requestId,
+      data: { nested: ['任意 endpoint 数据'] }
+    })).toEqual({ requestId, data: { nested: ['任意 endpoint 数据'] } });
+    expect(websiteHttpEnvelopeSchema.safeParse({
+      requestId,
+      data: {},
+      error: { code: 'FAILED' }
+    }).success).toBe(false);
+    expect(websiteHttpEnvelopeSchema.safeParse({
+      requestId: '含 空格',
+      data: {}
+    }).success).toBe(false);
   });
 });
 

@@ -33,6 +33,12 @@ interface ContractRecord {
   publishedAt: string | null;
 }
 
+type PublishedContractRecord = Omit<ContractRecord, 'status' | 'publicationBasis' | 'publishedAt'> & {
+  status: 'published';
+  publicationBasis: 'standard' | 'admin_override';
+  publishedAt: string;
+};
+
 interface ProductionFixtureState {
   records: Map<string, ContractRecord>;
   idempotency: Map<string, { payload: string; result: unknown }>;
@@ -72,7 +78,13 @@ function createState(): ProductionFixtureState {
   };
 }
 
-function publicCommunity(record: ContractRecord) {
+function isPublished(record: ContractRecord): record is PublishedContractRecord {
+  return record.status === 'published'
+    && record.publicationBasis !== null
+    && record.publishedAt !== null;
+}
+
+function publicCommunity(record: PublishedContractRecord) {
   return {
     id: record.id,
     name: record.title,
@@ -214,13 +226,13 @@ function createDependencies(state: ProductionFixtureState): ApiDependencies {
     publicContent: {
       listCommunity: async () => ({
         items: [...state.records.values()]
-          .filter(record => record.status === 'published')
+          .filter(isPublished)
           .map(publicCommunity),
         nextCursor: null,
       }),
       getCommunity: async id => {
         const record = state.records.get(id);
-        if (!record || record.status !== 'published') throw new ApiError('NOT_FOUND', 404);
+        if (!record || !isPublished(record)) throw new ApiError('NOT_FOUND', 404);
         return publicCommunity(record);
       },
       listFeedback: async () => ({
@@ -241,7 +253,7 @@ function createDependencies(state: ProductionFixtureState): ApiDependencies {
       toggleFeedbackLike: async () => ({ liked: true, likeCount: 1 }),
       getDownload: async id => {
         const record = state.records.get(id);
-        if (!record || record.status !== 'published') throw new ApiError('NOT_FOUND', 404);
+        if (!record || !isPublished(record)) throw new ApiError('NOT_FOUND', 404);
         return {
           url: `https://storage.example/${id}/pet.zip`,
           expiresAt: '2026-07-31T00:05:00.000Z',

@@ -1,0 +1,18 @@
+{
+  "extends": "../tsconfig.base.json",
+  "compilerOptions": {
+    "allowJs": true,
+    "customConditions": ["node"],
+    "noEmit": true,
+    "baseUrl": "..",
+    "paths": {
+      "@myself/shared-types": ["packages/shared-types/src/index.ts"],
+      "@myself/shared-types/*": ["packages/shared-types/src/*"]
+    },
+    "types": ["node", "vitest/globals"]
+  },
+  "include": [
+    "vitest.web-chain.config.ts",
+    "website-contract/**/*.ts"
+  ]
+}

@@ -1,7 +1,6 @@
 import {
   adminActionResponseSchema,
   adminQueueResponseSchema,
-  errorEnvelopeSchema,
   feedbackSubmissionResponseSchema,
   finalizeSubmissionResponseSchema,
   prepareSubmissionResponseSchema,
@@ -11,6 +10,8 @@ import {
   publicFeedbackPageSchema,
   publicLikeResponseSchema,
   submissionStatusResponseSchema,
+  websiteHttpEnvelopeSchema,
+  type WebsiteHttpEnvelope,
 } from '@myself/shared-types/website-http';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
@@ -21,13 +22,9 @@ export interface ContractRequest {
   body?: unknown;
 }
 
-export type ContractEnvelope =
-  | { requestId: string; data: unknown }
-  | { requestId: string; error: { code: string; retryAfterSeconds?: number } };
-
 export interface ContractResponse {
   status: number;
-  envelope: ContractEnvelope;
+  envelope: WebsiteHttpEnvelope;
 }
 
 export interface ContractFixtureRefs {
@@ -50,24 +47,7 @@ export interface WebsiteApiDriver {
 
 /** 两个 driver 共用同一个严格信封解码边界。 */
 export function decodeContractResponse(status: number, body: unknown): ContractResponse {
-  if (typeof body !== 'object' || body === null || Array.isArray(body)) {
-    throw new Error('合同响应不是 JSON 对象');
-  }
-  const record = body as Record<string, unknown>;
-  if (Object.prototype.hasOwnProperty.call(record, 'error')) {
-    return { status, envelope: errorEnvelopeSchema.parse(record) };
-  }
-  if (
-    Object.keys(record).sort().join(',') !== 'data,requestId'
-    || typeof record.requestId !== 'string'
-    || !/^[A-Za-z0-9._:-]{1,128}$/u.test(record.requestId)
-  ) {
-    throw new Error('合同成功信封形状无效');
-  }
-  return {
-    status,
-    envelope: { requestId: record.requestId, data: record.data },
-  };
+  return { status, envelope: websiteHttpEnvelopeSchema.parse(body) };
 }
 
 function success<T>(
@@ -75,8 +55,7 @@ function success<T>(
   schema: { parse(value: unknown): T },
 ): T {
   expect(response.status).toBe(200);
-  expect(response.envelope.requestId).toMatch(/^[A-Za-z0-9._:-]{1,128}$/u);
-  if (!('data' in response.envelope)) {
+  if ('error' in response.envelope) {
     throw new Error(`预期成功信封，实际为 ${response.envelope.error.code}`);
   }
   return schema.parse(response.envelope.data);
@@ -84,7 +63,6 @@ function success<T>(
 
 function failure(response: ContractResponse, status: number, code: string): void {
   expect(response.status).toBe(status);
-  expect(response.envelope.requestId).toMatch(/^[A-Za-z0-9._:-]{1,128}$/u);
   if (!('error' in response.envelope)) throw new Error('预期错误信封');
   expect(response.envelope.error).toEqual({ code });
 }

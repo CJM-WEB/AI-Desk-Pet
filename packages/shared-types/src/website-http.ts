@@ -42,6 +42,14 @@ export const errorEnvelopeSchema = z.object({
   error: websiteHttpErrorSchema
 }).strict();
 
+/** 合同驱动在 endpoint Schema 解析前先用同一共享边界验证未知 data 信封。 */
+export const unknownDataSuccessEnvelopeSchema = successEnvelopeSchema(z.unknown());
+export const websiteHttpEnvelopeSchema = z.union([
+  unknownDataSuccessEnvelopeSchema,
+  errorEnvelopeSchema
+]);
+export type WebsiteHttpEnvelope = z.infer<typeof websiteHttpEnvelopeSchema>;
+
 const uploadFileSchema = z.object({
   fileName: z.string().min(1),
   sizeBytes: z.number().int().positive(),
