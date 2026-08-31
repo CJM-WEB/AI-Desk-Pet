@@ -42,6 +42,7 @@ export interface ContractFixtureRefs {
 export interface WebsiteApiDriver {
   request(input: ContractRequest): Promise<ContractResponse>;
   reset(): Promise<ContractFixtureRefs>;
+  advanceTime(milliseconds: number): Promise<void>;
   close(): Promise<void>;
 }
 
@@ -210,6 +211,36 @@ export function runWebsiteApiContract(
       expect(feedback.items).toContainEqual(expect.objectContaining({
         id: refs.publicFeedbackId,
       }));
+    });
+
+    it('点赞 operation UUID 大小写等价且在精确 24 小时后失效', async () => {
+      const uppercase = '00000000-0000-4000-8000-00000000ABCD';
+      const lowercase = uppercase.toLowerCase();
+      const path = `/api/v1/community/${refs.publicCommunityId}/like`;
+      const first = success(await driver.request({
+        method: 'POST',
+        path,
+        body: { liked: true, operationId: uppercase },
+      }), publicLikeResponseSchema);
+      expect(first).toEqual({ liked: true, likeCount: 1 });
+      expect(success(await driver.request({
+        method: 'POST',
+        path,
+        body: { liked: true, operationId: lowercase },
+      }), publicLikeResponseSchema)).toEqual(first);
+      failure(await driver.request({
+        method: 'POST',
+        path,
+        body: { liked: false, operationId: lowercase },
+      }), 409, 'IDEMPOTENCY_CONFLICT');
+
+      await driver.advanceTime(24 * 60 * 60 * 1000);
+
+      expect(success(await driver.request({
+        method: 'POST',
+        path,
+        body: { liked: false, operationId: lowercase },
+      }), publicLikeResponseSchema)).toEqual({ liked: false, likeCount: 0 });
     });
 
     it('三条列表只回传 scoped opaque token 且第二页不重复第一项', async () => {

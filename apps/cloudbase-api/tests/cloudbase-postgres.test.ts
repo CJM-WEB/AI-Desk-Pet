@@ -1043,6 +1043,41 @@ describe('CloudBase PostgreSQL 安全与公开互动存储', () => {
     });
   });
 
+  it('desired-state 点赞把原子 RPC 的首次写配额耗尽映射为稳定 429', async () => {
+    const rpc = {
+      rpc: vi.fn(async () => ({
+        data: { rate_limited: true, retry_after_seconds: 18 },
+        error: null
+      }))
+    };
+    const store = new CloudBasePostgresStore({ from: vi.fn() } as never, rpc);
+
+    await expect(store.setPublicLike({
+      submissionId: 'community-1',
+      fingerprintHash: 'd'.repeat(64),
+      desiredLiked: true,
+      operationId: '00000000-0000-4000-8000-000000000203'
+    })).rejects.toMatchObject({
+      code: 'RATE_LIMITED',
+      statusCode: 429,
+      retryAfterSeconds: 18
+    });
+  });
+
+  it('desired-state 点赞把已计入配额的首次状态失败映射为稳定 404', async () => {
+    const rpc = {
+      rpc: vi.fn(async () => ({ data: { not_found: true }, error: null }))
+    };
+    const store = new CloudBasePostgresStore({ from: vi.fn() } as never, rpc);
+
+    await expect(store.setPublicLike({
+      submissionId: 'pending-feedback',
+      fingerprintHash: 'd'.repeat(64),
+      desiredLiked: true,
+      operationId: '00000000-0000-4000-8000-000000000204'
+    })).rejects.toMatchObject({ code: 'NOT_FOUND', statusCode: 404 });
+  });
+
   it('过期互动账本清理调用唯一 RPC 并映射删除数量', async () => {
     const rpc = {
       rpc: vi.fn(async () => ({ data: 500, error: null }))

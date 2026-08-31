@@ -140,7 +140,7 @@ export async function runCloudBaseMigrationBehaviorGate({
       postgresVersion: postgresVersion.version,
       postgresMajorVersion: postgresVersion.major,
       migrationsApplied: migrations.length,
-      behaviorsVerified: 62
+      behaviorsVerified: 66
     };
   } finally {
     if (started) {
@@ -1826,6 +1826,8 @@ DO $interaction_gate$
 DECLARE
   v_first jsonb;
   v_replay jsonb;
+  v_rate_limited jsonb;
+  v_not_found jsonb;
   v_purged integer;
   v_index integer;
 BEGIN
@@ -1835,9 +1837,11 @@ BEGIN
   ) VALUES
     ('gate-like-one', 'feedback', '点赞一', '点赞一', 'published', md5('gate-like-one') || md5('gate-like-one'), now(), 'standard'),
     ('gate-like-devices', 'suggestion', '点赞二', '点赞二', 'published', md5('gate-like-devices') || md5('gate-like-devices'), now(), 'standard'),
-    ('gate-like-expiry', 'feedback', '点赞过期', '点赞过期', 'published', md5('gate-like-expiry') || md5('gate-like-expiry'), now(), 'standard');
+    ('gate-like-expiry', 'feedback', '点赞过期', '点赞过期', 'published', md5('gate-like-expiry') || md5('gate-like-expiry'), now(), 'standard'),
+    ('gate-like-rate', 'feedback', '点赞限流', '点赞限流', 'published', md5('gate-like-rate') || md5('gate-like-rate'), now(), 'standard'),
+    ('gate-like-unpublished', 'feedback', '未发布点赞', '未发布点赞', 'manual_review_pending', md5('gate-like-unpublished') || md5('gate-like-unpublished'), NULL, NULL);
   INSERT INTO public_engagement (submission_id)
-  VALUES ('gate-like-one'), ('gate-like-devices'), ('gate-like-expiry');
+  VALUES ('gate-like-one'), ('gate-like-devices'), ('gate-like-expiry'), ('gate-like-rate');
 
   v_first := set_public_like(
     'gate-like-one', repeat('a', 64), true,
@@ -1918,6 +1922,56 @@ BEGIN
     OR (SELECT like_count FROM public_engagement
         WHERE submission_id = 'gate-like-expiry') <> 0 THEN
     RAISE EXCEPTION '行为门失败：到期但未 cleanup 的 operation 仍被回放或冲突';
+  END IF;
+
+  FOR v_index IN 1..10 LOOP
+    PERFORM set_public_like(
+      'gate-like-rate', repeat('f', 64), true,
+      ('00000000-0000-4000-8002-' || lpad(to_hex(v_index), 12, '0'))::uuid
+    );
+  END LOOP;
+  v_rate_limited := set_public_like(
+    'gate-like-rate', repeat('f', 64), false,
+    '00000000-0000-4000-8002-000000000011'::uuid
+  );
+  IF v_rate_limited IS DISTINCT FROM jsonb_build_object(
+      'rate_limited', true,
+      'retry_after_seconds', (v_rate_limited ->> 'retry_after_seconds')::integer
+    ) THEN
+    RAISE EXCEPTION '行为门失败：新 operation 未受原子点赞配额保护';
+  END IF;
+  UPDATE submissions
+  SET status = 'manual_review_pending',
+      publication_basis = NULL,
+      published_at = NULL
+  WHERE id = 'gate-like-rate';
+  v_replay := set_public_like(
+    'gate-like-rate', repeat('f', 64), true,
+    '00000000-0000-4000-8002-000000000001'::uuid
+  );
+  IF v_replay IS DISTINCT FROM jsonb_build_object('liked', true, 'like_count', 1) THEN
+    RAISE EXCEPTION '行为门失败：配额耗尽或取消发布阻断同 operation 首次结果回放';
+  END IF;
+
+  FOR v_index IN 1..10 LOOP
+    BEGIN
+      v_not_found := set_public_like(
+        'gate-like-unpublished', repeat('9', 64), true,
+        ('00000000-0000-4000-8003-' || lpad(to_hex(v_index), 12, '0'))::uuid
+      );
+      IF v_not_found IS DISTINCT FROM jsonb_build_object('not_found', true) THEN
+        RAISE EXCEPTION '行为门失败：未发布首次点赞没有返回私有 not-found 事实';
+      END IF;
+    EXCEPTION WHEN SQLSTATE 'P0002' THEN
+      RAISE EXCEPTION '行为门失败：未发布首次点赞抛错并回滚限流计数';
+    END;
+  END LOOP;
+  v_rate_limited := set_public_like(
+    'gate-like-unpublished', repeat('9', 64), true,
+    '00000000-0000-4000-8003-000000000011'::uuid
+  );
+  IF v_rate_limited ->> 'rate_limited' IS DISTINCT FROM 'true' THEN
+    RAISE EXCEPTION '行为门失败：未发布投稿可用新 UUID 绕过首次限流';
   END IF;
 
   IF EXISTS (

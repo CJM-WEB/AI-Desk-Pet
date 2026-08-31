@@ -596,7 +596,7 @@ describe('公开 HTTP API', () => {
     expect(dependencies.admin.getDetail).not.toHaveBeenCalled();
   });
 
-  it('点赞和下载分别按设备哈希与资源 ID 限流', async () => {
+  it('点赞由原子 Store 限流，下载仍由 API 按设备与资源 ID 限流', async () => {
     const dependencies = createDependencies();
     const main = createApi(dependencies);
 
@@ -613,10 +613,6 @@ describe('公开 HTTP API', () => {
       .update(`${sourceIp}\ntest-agent`)
       .digest('hex');
     expect(dependencies.abuseControl.consume.mock.calls).toContainEqual([
-      'like:community-1',
-      deviceHash
-    ]);
-    expect(dependencies.abuseControl.consume.mock.calls).toContainEqual([
       'download:community-1',
       deviceHash
     ]);
@@ -632,7 +628,7 @@ describe('公开 HTTP API', () => {
     });
   });
 
-  it('反馈点赞使用独立公开路由并复用设备限流', async () => {
+  it('反馈点赞使用独立公开路由并把设备哈希传给原子 Store', async () => {
     const dependencies = createDependencies();
     const main = createApi(dependencies);
 
@@ -648,13 +644,33 @@ describe('公开 HTTP API', () => {
       .update(`${sourceIp}\ntest-agent`)
       .digest('hex');
     expect(response.statusCode).toBe(200);
-    expect(dependencies.abuseControl.consume).toHaveBeenCalledWith(
-      'like:feedback-1',
-      deviceHash
-    );
+    expect(dependencies.abuseControl.consume).not.toHaveBeenCalled();
     expect(dependencies.publicContent.setFeedbackLike)
       .toHaveBeenCalledWith('feedback-1', deviceHash, false, likeOperationId);
     expect(dependencies.publicContent.setCommunityLike).not.toHaveBeenCalled();
+  });
+
+  it('同 operation 重放不被 API 层已耗尽配额抢先拒绝', async () => {
+    const dependencies = createDependencies();
+    dependencies.abuseControl.consume.mockRejectedValue(
+      new ApiError('RATE_LIMITED', 429, '配额已耗尽', 18)
+    );
+
+    const main = createApi(dependencies);
+    const first = await main(
+      event('POST', '/api/v1/community/community-1/like', likeRequest),
+      context
+    );
+    const replay = await main(
+      event('POST', '/api/v1/community/community-1/like', likeRequest),
+      context
+    );
+
+    expect(first.statusCode).toBe(200);
+    expect(replay.statusCode).toBe(200);
+    expect(JSON.parse(replay.body).data).toEqual({ liked: true, likeCount: 3 });
+    expect(dependencies.abuseControl.consume).not.toHaveBeenCalled();
+    expect(dependencies.publicContent.setCommunityLike).toHaveBeenCalledTimes(2);
   });
 
   it.each([

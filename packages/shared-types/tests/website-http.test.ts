@@ -172,6 +172,13 @@ describe('公开 endpoint 契约', () => {
     ]) expect(publicLikeRequestSchema.safeParse(invalid).success).toBe(false);
   });
 
+  it('点赞操作号按 PostgreSQL UUID 语义规范为小写', () => {
+    expect(publicLikeRequestSchema.parse({
+      liked: true,
+      operationId: '00000000-0000-4000-8000-00000000ABCD'
+    }).operationId).toBe('00000000-0000-4000-8000-00000000abcd');
+  });
+
   it('公开与管理员路径、query 和空 body 请求拒绝额外字段', () => {
     expect(publicListRequestSchema.parse({ limit: 8, cursor: 'v1.abc' }).cursor)
       .toBe('v1.abc');

@@ -42,8 +42,13 @@ type PublishedContractRecord = Omit<ContractRecord, 'status' | 'publicationBasis
 interface ProductionFixtureState {
   records: Map<string, ContractRecord>;
   idempotency: Map<string, { payload: string; result: unknown }>;
-  interactionOperations: Map<string, { payload: string; result: { liked: boolean; likeCount: number } }>;
+  interactionOperations: Map<string, {
+    payload: string;
+    result: { liked: boolean; likeCount: number };
+    expiresAtMs: number;
+  }>;
   interactionVotes: Set<string>;
+  nowMs: number;
 }
 
 function createState(): ProductionFixtureState {
@@ -93,6 +98,7 @@ function createState(): ProductionFixtureState {
     idempotency: new Map(),
     interactionOperations: new Map(),
     interactionVotes: new Set(),
+    nowMs: Date.parse(CREATED_AT),
   };
 }
 
@@ -335,14 +341,17 @@ function setContractLike(
   desiredLiked: boolean,
   operationId: string,
 ): { liked: boolean; likeCount: number } {
+  const canonicalOperationId = operationId.toLowerCase();
   const payload = JSON.stringify({
     action: 'like',
     submissionId,
     fingerprint,
     desiredLiked,
   });
-  const previous = state.interactionOperations.get(operationId);
-  if (previous) {
+  const previous = state.interactionOperations.get(canonicalOperationId);
+  if (previous && previous.expiresAtMs <= state.nowMs) {
+    state.interactionOperations.delete(canonicalOperationId);
+  } else if (previous) {
     if (previous.payload !== payload) throw new ApiError('IDEMPOTENCY_CONFLICT', 409);
     return structuredClone(previous.result);
   }
@@ -352,9 +361,10 @@ function setContractLike(
   const likeCount = [...state.interactionVotes]
     .filter(key => key.endsWith(`:${submissionId}`)).length;
   const result = { liked: desiredLiked, likeCount };
-  state.interactionOperations.set(operationId, {
+  state.interactionOperations.set(canonicalOperationId, {
     payload,
     result: structuredClone(result),
+    expiresAtMs: state.nowMs + 24 * 60 * 60 * 1000,
   });
   return result;
 }
@@ -479,13 +489,21 @@ function eventFrom(input: ContractRequest) {
 
 async function createProductionDriver(): Promise<WebsiteApiDriver> {
   let handler: ApiHandler;
+  let state: ProductionFixtureState;
   const reset = async () => {
-    handler = createApi(createDependencies(createState()));
+    state = createState();
+    handler = createApi(createDependencies(state));
     return structuredClone(FIXTURE_REFS);
   };
   await reset();
   return {
     reset,
+    advanceTime: async milliseconds => {
+      if (!Number.isSafeInteger(milliseconds) || milliseconds < 0) {
+        throw new Error('INVALID_CLOCK_ADVANCE');
+      }
+      state.nowMs += milliseconds;
+    },
     close: async () => undefined,
     request: async input => {
       const response = await handler(eventFrom(input), {

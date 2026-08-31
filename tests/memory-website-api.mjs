@@ -12,7 +12,7 @@ const { z } = websiteRequire('zod');
 /** Memory 保持与生产共享 wire 同形，避免测试服务器直接装载含内部源码依赖的 TS 聚合模块。 */
 const publicLikeRequestSchema = z.object({
   liked: z.boolean(),
-  operationId: z.string().uuid()
+  operationId: z.string().uuid().transform(value => value.toLowerCase())
 }).strict();
 
 const ADMIN_TOKEN = 'e2e-admin-session';
@@ -39,6 +39,7 @@ export function createMemoryWebsiteApi({ runId }) {
   const interactionOperations = new Map();
   const interactionVotes = new Set();
   let sequence = 0;
+  let clockOffsetMs = 0;
 
   const reset = () => {
     submissions.clear();
@@ -48,12 +49,21 @@ export function createMemoryWebsiteApi({ runId }) {
     interactionOperations.clear();
     interactionVotes.clear();
     sequence = 0;
+    clockOffsetMs = 0;
     seedContractFixtures(submissions, tokenIndex, uploads);
     return structuredClone(CONTRACT_REFS);
   };
 
   const nextId = () => `e2e-${++sequence}`;
-  const now = () => new Date(Date.UTC(2026, 6, 30, 12, 0, sequence)).toISOString();
+  const now = () => new Date(
+    Date.UTC(2026, 6, 30, 12, 0, sequence) + clockOffsetMs
+  ).toISOString();
+  const advanceTime = milliseconds => {
+    if (!Number.isSafeInteger(milliseconds) || milliseconds < 0) {
+      throw new Error('INVALID_CLOCK_ADVANCE');
+    }
+    clockOffsetMs += milliseconds;
+  };
   const tokenFor = id => createHash('sha256').update(`${runId}:${id}`).digest('base64url');
 
   async function handle(request, response) {
@@ -268,7 +278,8 @@ export function createMemoryWebsiteApi({ runId }) {
         const body = publicLikeRequestSchema.safeParse(await readJson(request));
         if (!body.success) return sendError(response, 400, 'INVALID_REQUEST');
         return sendData(response, 200, setLike({
-          record: requirePublished(communityLikeId, 'shared_package'),
+          record: requireSubmission(communityLikeId),
+          allowedKinds: ['shared_package'],
           deviceHash: memoryDeviceHash(request),
           request: body.data,
           interactionOperations,
@@ -306,7 +317,8 @@ export function createMemoryWebsiteApi({ runId }) {
         const body = publicLikeRequestSchema.safeParse(await readJson(request));
         if (!body.success) return sendError(response, 400, 'INVALID_REQUEST');
         return sendData(response, 200, setLike({
-          record: requirePublished(feedbackLikeId, ['feedback', 'suggestion']),
+          record: requireSubmission(feedbackLikeId),
+          allowedKinds: ['feedback', 'suggestion'],
           deviceHash: memoryDeviceHash(request),
           request: body.data,
           interactionOperations,
@@ -395,7 +407,7 @@ export function createMemoryWebsiteApi({ runId }) {
     return record;
   }
 
-  return { handle, reset };
+  return { handle, reset, advanceTime };
 }
 
 /** 固定合同种子只表达 HTTP 可观察事实，不暴露内部 Map 或数据库 port。 */
@@ -884,6 +896,7 @@ function adminDetail(record, request) {
 /** Memory 与生产共用 desired-state 语义，并按设备和投稿保存独立 vote。 */
 function setLike({
   record,
+  allowedKinds,
   deviceHash,
   request,
   interactionOperations,
@@ -901,6 +914,10 @@ function setLike({
       || existing.desiredLiked !== request.liked
     ) throw new MemoryApiError('IDEMPOTENCY_CONFLICT', 409);
     return structuredClone(existing.result);
+  }
+
+  if (record.status !== 'published' || !allowedKinds.includes(record.kind)) {
+    throw new MemoryApiError('NOT_FOUND', 404);
   }
 
   const voteKey = `${deviceHash}:${record.id}`;

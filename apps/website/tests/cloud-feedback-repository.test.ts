@@ -269,6 +269,137 @@ describe('云端反馈仓库', () => {
     expect(retryBody).toEqual(firstBody);
   });
 
+  it('多页刷新期间完成的点赞不会被最终批量提交覆盖', async () => {
+    const secondPage = deferred<unknown>();
+    let rootReads = 0;
+    const api = {
+      request: vi.fn((path: string) => {
+        if (path.includes('cursor=v1.feedback-next')) return secondPage.promise;
+        if (path.endsWith('/like')) {
+          const likeCalls = vi.mocked(api.request).mock.calls
+            .filter(([calledPath]) => String(calledPath).endsWith('/like')).length;
+          return Promise.resolve(likeCalls === 1
+            ? { liked: true, likeCount: 4 }
+            : { liked: false, likeCount: 3 });
+        }
+        rootReads += 1;
+        return Promise.resolve({
+          items: [{
+            id: 'published-race', kind: 'feedback', authorName: '公开用户',
+            content: '刷新交错反馈。', likeCount: 3,
+            createdAt: '2026-08-01T00:00:00.000Z'
+          }],
+          nextCursor: rootReads === 1 ? null : 'v1.feedback-next'
+        });
+      })
+    } as unknown as ApiClient;
+    const repository = new CloudFeedbackRepository(api);
+    await repository.refresh('feedback');
+
+    const refresh = repository.refresh('feedback');
+    await vi.waitFor(() => {
+      expect(vi.mocked(api.request).mock.calls.some(
+        ([path]) => String(path).includes('cursor=v1.feedback-next')
+      )).toBe(true);
+    });
+    await repository.toggleLike('published-race');
+    secondPage.resolve({ items: [], nextCursor: null });
+    await refresh;
+
+    expect(repository.list('feedback')).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: 'published-race', likedByCurrentBrowser: true, likeCount: 4
+      })
+    ]));
+    await repository.toggleLike('published-race');
+    const lastBody = JSON.parse(String(vi.mocked(api.request).mock.calls.at(-1)?.[2]?.body));
+    expect(lastBody.liked).toBe(false);
+  });
+
+  it('刷新保留 pending 目标但采用更新的服务端计数', async () => {
+    const pendingLike = deferred<unknown>();
+    let reads = 0;
+    const api = {
+      request: vi.fn((path: string) => {
+        if (path.endsWith('/like')) return pendingLike.promise;
+        reads += 1;
+        return Promise.resolve({
+          items: [{
+            id: 'published-pending', kind: 'feedback', authorName: '公开用户',
+            content: '等待点赞反馈。', likeCount: reads === 1 ? 3 : 9,
+            createdAt: '2026-08-01T00:00:00.000Z'
+          }],
+          nextCursor: null
+        });
+      })
+    } as unknown as ApiClient;
+    const repository = new CloudFeedbackRepository(api);
+    await repository.refresh('feedback');
+
+    const like = repository.toggleLike('published-pending');
+    await vi.waitFor(() => {
+      expect(vi.mocked(api.request).mock.calls.some(
+        ([path]) => String(path).endsWith('/like')
+      )).toBe(true);
+    });
+    await repository.refresh('feedback');
+
+    expect(repository.list('feedback')).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: 'published-pending', likedByCurrentBrowser: true, likeCount: 9
+      })
+    ]));
+    pendingLike.reject(new Error('NETWORK_FAILED'));
+    await expect(like).rejects.toThrow('NETWORK_FAILED');
+  });
+
+  it('刷新保留已成功计数并叠加后续 pending 目标', async () => {
+    const secondPage = deferred<unknown>();
+    const secondLike = deferred<unknown>();
+    let rootReads = 0;
+    let likeCalls = 0;
+    const api = {
+      request: vi.fn((path: string) => {
+        if (path.includes('cursor=v1.feedback-next')) return secondPage.promise;
+        if (path.endsWith('/like')) {
+          likeCalls += 1;
+          return likeCalls === 1
+            ? Promise.resolve({ liked: true, likeCount: 4 })
+            : secondLike.promise;
+        }
+        rootReads += 1;
+        return Promise.resolve({
+          items: [{
+            id: 'published-stacked', kind: 'feedback', authorName: '公开用户',
+            content: '连续互动反馈。', likeCount: 3,
+            createdAt: '2026-08-01T00:00:00.000Z'
+          }],
+          nextCursor: rootReads === 1 ? null : 'v1.feedback-next'
+        });
+      })
+    } as unknown as ApiClient;
+    const repository = new CloudFeedbackRepository(api);
+    await repository.refresh('feedback');
+
+    const refresh = repository.refresh('feedback');
+    await vi.waitFor(() => expect(vi.mocked(api.request).mock.calls.some(
+      ([path]) => String(path).includes('cursor=v1.feedback-next')
+    )).toBe(true));
+    await repository.toggleLike('published-stacked');
+    const pending = repository.toggleLike('published-stacked');
+    await vi.waitFor(() => expect(likeCalls).toBe(2));
+    secondPage.resolve({ items: [], nextCursor: null });
+    await refresh;
+
+    expect(repository.list('feedback')).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: 'published-stacked', likedByCurrentBrowser: false, likeCount: 4
+      })
+    ]));
+    secondLike.reject(new Error('NETWORK_FAILED'));
+    await expect(pending).rejects.toThrow('NETWORK_FAILED');
+  });
+
   it('公开读取失败时清空网络快照，仅保留官方示例', async () => {
     const api = createApi(
       { items: [{

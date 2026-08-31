@@ -24,6 +24,7 @@ async function createMemoryDriver(): Promise<WebsiteApiDriver> {
 
   return {
     reset: async () => memoryApi.reset(),
+    advanceTime: async milliseconds => memoryApi.advanceTime(milliseconds),
     request: async input => {
       const response = await fetch(new URL(input.path, origin), {
         method: input.method,

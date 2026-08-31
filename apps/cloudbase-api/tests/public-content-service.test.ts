@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import { PublicContentService } from '../src/services/public-content-service.js';
+import { ApiError } from '../src/errors.js';
 
 function createFixture(status: string | null): {
   store: {
@@ -109,10 +110,13 @@ describe('公开列表与互动服务', () => {
     ['suggestion', 'published', true],
     ['shared_package', 'published', false],
     ['feedback', 'system_reviewing', false]
-  ] as const)('反馈点赞仅接受已发布的反馈或建议：%s/%s', async (kind, status, allowed) => {
+  ] as const)('反馈点赞保留 endpoint kind 并由 Store 裁决首次状态：%s/%s', async (kind, status, allowed) => {
     const store = {
       findById: vi.fn(async () => ({ id: 'submission-1', kind, status })),
-      setPublicLike: vi.fn(async () => ({ liked: true, likeCount: 2 }))
+      setPublicLike: vi.fn(async () => {
+        if (status !== 'published') throw new ApiError('NOT_FOUND', 404);
+        return { liked: true, likeCount: 2 };
+      })
     };
     const service = new PublicContentService(store as never, {} as never);
     const operationId = '00000000-0000-4000-8000-000000000001';
@@ -134,7 +138,11 @@ describe('公开列表与互动服务', () => {
       });
     } else {
       await expect(result).rejects.toMatchObject({ code: 'NOT_FOUND' });
-      expect(store.setPublicLike).not.toHaveBeenCalled();
+      if (kind !== 'shared_package') {
+        expect(store.setPublicLike).toHaveBeenCalledOnce();
+      } else {
+        expect(store.setPublicLike).not.toHaveBeenCalled();
+      }
     }
   });
 
@@ -160,6 +168,33 @@ describe('公开列表与互动服务', () => {
       desiredLiked: false,
       operationId
     });
+  });
+
+  it('同 operation 在内容取消发布后仍由原子 Store 回放首次结果', async () => {
+    let status = 'published';
+    const store = {
+      findById: vi.fn(async () => ({
+        id: 'community-1', kind: 'shared_package', status
+      })),
+      setPublicLike: vi.fn(async () => ({ liked: true, likeCount: 4 }))
+    };
+    const service = new PublicContentService(store as never, {} as never);
+    const operationId = '00000000-0000-4000-8000-000000000004';
+
+    await expect(service.setCommunityLike(
+      'community-1',
+      'b'.repeat(64),
+      true,
+      operationId
+    )).resolves.toEqual({ liked: true, likeCount: 4 });
+    status = 'manual_review_pending';
+    await expect(service.setCommunityLike(
+      'community-1',
+      'b'.repeat(64),
+      true,
+      operationId
+    )).resolves.toEqual({ liked: true, likeCount: 4 });
+    expect(store.setPublicLike).toHaveBeenCalledTimes(2);
   });
 
   it('社区点赞拒绝已发布但类型错误的反馈', async () => {

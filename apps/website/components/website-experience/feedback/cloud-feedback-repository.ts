@@ -32,6 +32,8 @@ export class CloudFeedbackRepository implements FeedbackRepository {
   private readonly refreshGenerations = new Map<FeedbackKind, number>();
   private readonly likeQueues = new Map<string, Promise<void>>();
   private readonly pendingLikes = new Map<string, PendingFeedbackLike>();
+  private readonly likeRevisions = new Map<string, number>();
+  private likeRevision = 0;
 
   constructor(private readonly api: ApiClient) {}
 
@@ -43,6 +45,7 @@ export class CloudFeedbackRepository implements FeedbackRepository {
 
   async refresh(kind: FeedbackKind): Promise<void> {
     const generation = (this.refreshGenerations.get(kind) ?? 0) + 1;
+    const interactionRevisionAtStart = this.likeRevision;
     this.refreshGenerations.set(kind, generation);
     try {
       const records: FeedbackEntry[] = [];
@@ -58,7 +61,9 @@ export class CloudFeedbackRepository implements FeedbackRepository {
           .map(item => this.toEntry(item)));
         if (page.nextCursor === null) {
           if (!this.isLatestRefresh(kind, generation)) return;
-          this.entries.set(kind, records);
+          this.entries.set(kind, records.map(record =>
+            this.preserveConcurrentLike(record, interactionRevisionAtStart)
+          ));
           this.statusNotices.delete(kind);
           this.notify();
           return;
@@ -107,7 +112,8 @@ export class CloudFeedbackRepository implements FeedbackRepository {
 
   private async toggleLikeNow(id: string): Promise<FeedbackEntry> {
     const current = this.findPublishedEntry(id);
-    const pending = this.pendingLikes.get(id) ?? {
+    const existingPending = this.pendingLikes.get(id);
+    const pending = existingPending ?? {
       desiredLiked: !current.likedByCurrentBrowser,
       operationId: globalThis.crypto.randomUUID()
     };
@@ -132,6 +138,7 @@ export class CloudFeedbackRepository implements FeedbackRepository {
     if (this.pendingLikes.get(id)?.operationId === pending.operationId) {
       this.pendingLikes.delete(id);
     }
+    this.markLikeRevision(id);
     this.notify();
     return updated;
   }
@@ -173,6 +180,33 @@ export class CloudFeedbackRepository implements FeedbackRepository {
       source: 'local-user',
       likedByCurrentBrowser: existing?.likedByCurrentBrowser ?? false
     };
+  }
+
+  /** 最终批量提交只覆盖未发生互动的记录，避免首屏旧快照回滚后续点赞。 */
+  private preserveConcurrentLike(
+    record: FeedbackEntry,
+    interactionRevisionAtStart: number
+  ): FeedbackEntry {
+    const pending = this.pendingLikes.get(record.id);
+    const changedDuringRefresh = (this.likeRevisions.get(record.id) ?? 0)
+      > interactionRevisionAtStart;
+    if (!pending && !changedDuringRefresh) return record;
+    const current = (this.entries.get(record.kind) ?? [])
+      .find(entry => entry.id === record.id);
+    return {
+      ...record,
+      likeCount: changedDuringRefresh
+        ? current?.likeCount ?? record.likeCount
+        : record.likeCount,
+      likedByCurrentBrowser: pending?.desiredLiked
+        ?? current?.likedByCurrentBrowser
+        ?? record.likedByCurrentBrowser
+    };
+  }
+
+  private markLikeRevision(id: string): void {
+    this.likeRevision += 1;
+    this.likeRevisions.set(id, this.likeRevision);
   }
 
   private notify(): void {

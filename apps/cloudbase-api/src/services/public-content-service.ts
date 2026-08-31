@@ -95,8 +95,8 @@ export class PublicContentService {
     desiredLiked: boolean,
     operationId: string
   ): Promise<PublicLikeResult> {
-    await this.requirePublishedKind(id, ['feedback', 'suggestion']);
-    return this.setPublishedLike(id, fingerprint, desiredLiked, operationId);
+    await this.requireKind(id, ['feedback', 'suggestion']);
+    return this.setPublicLike(id, fingerprint, desiredLiked, operationId);
   }
 
   async setCommunityLike(
@@ -105,8 +105,8 @@ export class PublicContentService {
     desiredLiked: boolean,
     operationId: string
   ): Promise<PublicLikeResult> {
-    await this.requirePublishedKind(id, ['shared_package']);
-    return this.setPublishedLike(id, fingerprint, desiredLiked, operationId);
+    await this.requireKind(id, ['shared_package']);
+    return this.setPublicLike(id, fingerprint, desiredLiked, operationId);
   }
 
   async getDownload(
@@ -179,15 +179,14 @@ export class PublicContentService {
     };
   }
 
-  /** 点赞前在业务层再次约束公开状态和内容种类。 */
-  private async requirePublishedKind(
+  /** endpoint 只约束不可变种类；Store 在同一事务中先回放，再校验首次写的发布状态。 */
+  private async requireKind(
     id: string,
     kinds: readonly string[]
   ): Promise<void> {
     const submission = await this.store.findById(id);
     if (
       !submission
-      || submission.status !== 'published'
       || !submission.kind
       || !kinds.includes(submission.kind)
     ) {
@@ -195,7 +194,7 @@ export class PublicContentService {
     }
   }
 
-  private async setPublishedLike(
+  private async setPublicLike(
     id: string,
     fingerprint: string,
     desiredLiked: boolean,

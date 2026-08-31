@@ -121,7 +121,7 @@ export const publicDetailRequestSchema = z.object({
 }).strict();
 export const publicLikeRequestSchema = z.object({
   liked: z.boolean(),
-  operationId: z.string().uuid()
+  operationId: z.string().uuid().transform(value => value.toLowerCase())
 }).strict();
 export const publicDownloadRequestSchema = emptyRequestSchema;
 

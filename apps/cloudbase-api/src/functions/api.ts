@@ -311,7 +311,6 @@ async function dispatch(
       header(event.headers, 'user-agent'),
       dependencies.fingerprintSecret
     );
-    await dependencies.abuseControl.consume(`like:${feedbackLikeId}`, deviceHash);
     return publicLikeResponseSchema.parse(
       await dependencies.publicContent.setFeedbackLike(
         feedbackLikeId,
@@ -337,7 +336,6 @@ async function dispatch(
       header(event.headers, 'user-agent'),
       dependencies.fingerprintSecret
     );
-    await dependencies.abuseControl.consume(`like:${likeId}`, deviceHash);
     return publicLikeResponseSchema.parse(
       await dependencies.publicContent.setCommunityLike(
         likeId,

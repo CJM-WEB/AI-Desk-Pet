@@ -41,6 +41,7 @@ DECLARE
   v_changed integer;
   v_like_count bigint;
   v_result jsonb;
+  v_limit jsonb;
   v_now timestamptz := now();
 BEGIN
   IF COALESCE(
@@ -81,13 +82,28 @@ BEGIN
     END IF;
   END IF;
 
+  /** 仅首次 operation 消费固定点赞配额；回放在相同事务 seam 中先返回。 */
+  v_limit := consume_abuse_limit(
+    'like:' || p_submission_id,
+    p_fingerprint_hash,
+    10,
+    60
+  );
+  IF NOT (v_limit ->> 'allowed')::boolean THEN
+    RETURN jsonb_build_object(
+      'rate_limited', true,
+      'retry_after_seconds', (v_limit ->> 'retry_after_seconds')::integer
+    );
+  END IF;
+
   SELECT status, kind INTO v_status, v_kind
   FROM submissions
   WHERE id = p_submission_id
   FOR SHARE;
   IF v_status IS DISTINCT FROM 'published'
     OR v_kind NOT IN ('shared_package', 'feedback', 'suggestion') THEN
-    RAISE EXCEPTION 'published submission not found' USING ERRCODE = 'P0002';
+    /** 返回私有失败事实以提交首次限流计数；Adapter 仍只公开稳定 404。 */
+    RETURN jsonb_build_object('not_found', true);
   END IF;
 
   INSERT INTO public_engagement (submission_id)
