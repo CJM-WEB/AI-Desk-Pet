@@ -102,15 +102,28 @@ test('阶段二 ScannerProtocol 只放行共享协议和扫描器路径', () => 
     'apps/package-scanner/tests/scan-package.test.ts',
   ];
 
-  assert.deepEqual(classifyChangedPaths([
-    ...approvedStagePaths,
-    'tests/website-contract/production-driver.test.ts',
-  ]), {
+  assert.deepEqual(classifyChangedPaths(approvedStagePaths), {
     allowed: approvedStagePaths,
     forbidden: [],
-    outside: [
-      'tests/website-contract/production-driver.test.ts',
-    ],
+    outside: [],
+  });
+});
+
+test('阶段三只放行专属合同目录和配置，不放行桌面测试配置', () => {
+  const contractPaths = [
+    'tests/website-contract/website-api-contract.ts',
+    'tests/website-contract/production-driver.test.ts',
+    'tests/website-contract/memory-driver.test.ts',
+    'tests/vitest.web-chain.config.ts',
+  ];
+
+  assert.deepEqual(classifyChangedPaths([
+    ...contractPaths,
+    'tests/vitest.config.ts',
+  ]), {
+    allowed: contractPaths,
+    forbidden: ['tests/vitest.config.ts'],
+    outside: [],
   });
 });
 
@@ -279,6 +292,7 @@ test('根 manifest 接受全部精确阶段 0 脚本和 dependency-cruiser', () 
     'plan:cloudbase-migrations': 'node tools/plan-cloudbase-migrations.mjs --dry-run',
     'test:cloudbase-tools': 'node --test tools/cloudbase-migration-inventory.test.mjs tools/cloudbase-user-migrations.test.mjs tools/cloudbase-user-migration-adapter.test.mjs tools/plan-cloudbase-migrations.test.mjs tools/build-cloudbase-functions.test.mjs',
     'verify:scanner-candidate': 'node tools/verification/verify-scanner-candidate.mjs',
+    'test:website-contract': 'vitest run --config tests/vitest.web-chain.config.ts',
   });
   allowedChange.devDependencies['dependency-cruiser'] = '18.2.0';
 

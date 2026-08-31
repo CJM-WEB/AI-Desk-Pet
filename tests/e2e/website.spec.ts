@@ -137,7 +137,7 @@ async function adminItems(
 ): Promise<Array<Record<string, unknown>>> {
   const response = await request.get(
     `/api/v1/admin/submissions?status=${status}&limit=100`,
-    { headers: { authorization: `Bearer ${E2E_ADMIN_TOKEN}` } }
+    { headers: { 'x-ai-pet-admin-token': E2E_ADMIN_TOKEN } }
   );
   expect(response.ok()).toBe(true);
   return (await response.json()).data.items;
@@ -149,7 +149,7 @@ async function adminDetail(
 ): Promise<Record<string, unknown>> {
   const response = await request.get(
     `/api/v1/admin/submissions/${encodeURIComponent(submissionId)}`,
-    { headers: { authorization: `Bearer ${E2E_ADMIN_TOKEN}` } }
+    { headers: { 'x-ai-pet-admin-token': E2E_ADMIN_TOKEN } }
   );
   expect(response.ok(), await response.text()).toBe(true);
   return (await response.json()).data;
@@ -164,7 +164,7 @@ async function applyAdminAction(
   const response = await request.post(
     `/api/v1/admin/submissions/${encodeURIComponent(String(item.id))}/actions`,
     {
-      headers: { authorization: `Bearer ${E2E_ADMIN_TOKEN}` },
+      headers: { 'x-ai-pet-admin-token': E2E_ADMIN_TOKEN },
       data: {
         action,
         version: item.statusVersion,
@@ -629,7 +629,7 @@ test('无有效证据共享包经两步管理员强制发布后在卡片、详�
     .find(item => item.id === receipt.submissionId)!;
   const actionUrl = `/api/v1/admin/submissions/${encodeURIComponent(receipt.submissionId)}/actions`;
   const ordinaryApprove = await request.post(actionUrl, {
-    headers: { authorization: `Bearer ${E2E_ADMIN_TOKEN}` },
+    headers: { 'x-ai-pet-admin-token': E2E_ADMIN_TOKEN },
     data: {
       action: 'approve',
       version: pending.statusVersion,
@@ -648,7 +648,7 @@ test('无有效证据共享包经两步管理员强制发布后在卡片、详�
     riskAcknowledgement: 'ADMIN_OVERRIDE_ACCEPTED'
   };
   const first = await request.post(actionUrl, {
-    headers: { authorization: `Bearer ${E2E_ADMIN_TOKEN}` },
+    headers: { 'x-ai-pet-admin-token': E2E_ADMIN_TOKEN },
     data: overrideRequest
   });
   expect(first.ok(), await first.text()).toBe(true);
@@ -702,13 +702,13 @@ test('无有效证据共享包经两步管理员强制发布后在卡片、详�
   expect(afterDuplicate.riskSummary).toEqual(lateDetail.riskSummary);
 
   const replay = await request.post(actionUrl, {
-    headers: { authorization: `Bearer ${E2E_ADMIN_TOKEN}` },
+    headers: { 'x-ai-pet-admin-token': E2E_ADMIN_TOKEN },
     data: overrideRequest
   });
   expect(replay.ok()).toBe(true);
   expect((await replay.json()).data).toEqual({ ...firstResult, replayed: true });
   const conflict = await request.post(actionUrl, {
-    headers: { authorization: `Bearer ${E2E_ADMIN_TOKEN}` },
+    headers: { 'x-ai-pet-admin-token': E2E_ADMIN_TOKEN },
     data: { ...overrideRequest, reason: '同键异参' }
   });
   expect(conflict.status()).toBe(409);
@@ -892,7 +892,7 @@ test('管理员幂等回放返回首次结果快照且拒绝同 key 异参', asy
   };
   const actionUrl = `/api/v1/admin/submissions/${encodeURIComponent(receipt.submissionId)}/actions`;
   const first = await request.post(actionUrl, {
-    headers: { authorization: `Bearer ${E2E_ADMIN_TOKEN}` },
+    headers: { 'x-ai-pet-admin-token': E2E_ADMIN_TOKEN },
     data: approveRequest
   });
   expect(first.ok()).toBe(true);
@@ -907,7 +907,7 @@ test('管理员幂等回放返回首次结果快照且拒绝同 key 异参', asy
   await applyAdminAction(request, published, 'delete', '随后隔离');
 
   const replay = await request.post(actionUrl, {
-    headers: { authorization: `Bearer ${E2E_ADMIN_TOKEN}` },
+    headers: { 'x-ai-pet-admin-token': E2E_ADMIN_TOKEN },
     data: approveRequest
   });
   expect(replay.ok()).toBe(true);
@@ -917,7 +917,7 @@ test('管理员幂等回放返回首次结果快照且拒绝同 key 异参', asy
   });
 
   const conflict = await request.post(actionUrl, {
-    headers: { authorization: `Bearer ${E2E_ADMIN_TOKEN}` },
+    headers: { 'x-ai-pet-admin-token': E2E_ADMIN_TOKEN },
     data: { ...approveRequest, reason: '复用 key 改写理由' }
   });
   expect(conflict.status()).toBe(409);
@@ -935,7 +935,7 @@ test('管理员幂等键跨投稿全局唯一，严格 Schema 拒绝越界和额
   const firstResponse = await request.post(
     `/api/v1/admin/submissions/${encodeURIComponent(first.submissionId)}/actions`,
     {
-      headers: { authorization: `Bearer ${E2E_ADMIN_TOKEN}` },
+      headers: { 'x-ai-pet-admin-token': E2E_ADMIN_TOKEN },
       data: {
         action: 'approve',
         version: firstPending.statusVersion,
@@ -948,7 +948,7 @@ test('管理员幂等键跨投稿全局唯一，严格 Schema 拒绝越界和额
   const crossSubmission = await request.post(
     `/api/v1/admin/submissions/${encodeURIComponent(second.submissionId)}/actions`,
     {
-      headers: { authorization: `Bearer ${E2E_ADMIN_TOKEN}` },
+      headers: { 'x-ai-pet-admin-token': E2E_ADMIN_TOKEN },
       data: {
         action: 'approve',
         version: secondPending.statusVersion,
@@ -972,7 +972,7 @@ test('管理员幂等键跨投稿全局唯一，严格 Schema 拒绝越界和额
     const response = await request.post(
       `/api/v1/admin/submissions/${encodeURIComponent(receipt.submissionId)}/actions`,
       {
-        headers: { authorization: `Bearer ${E2E_ADMIN_TOKEN}` },
+        headers: { 'x-ai-pet-admin-token': E2E_ADMIN_TOKEN },
         data: mutate({
           action: 'approve',
           version: pending.statusVersion,
@@ -1015,7 +1015,7 @@ test('反馈恢复已发布状态保留 standard，强制发布快照逐字段�
   const response = await request.post(
     `/api/v1/admin/submissions/${encodeURIComponent(shared.submissionId)}/actions`,
     {
-      headers: { authorization: `Bearer ${E2E_ADMIN_TOKEN}` },
+      headers: { 'x-ai-pet-admin-token': E2E_ADMIN_TOKEN },
       data: {
         action: 'force_publish',
         version: pending.statusVersion,

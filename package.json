@@ -10,6 +10,7 @@
     "verify:web-chain:scope": "node tools/verification/verify-website-scope.mjs",
     "verify:web-chain:fast": "node tools/verification/verify-web-chain.mjs --profile fast",
     "verify:web-chain": "node tools/verification/verify-web-chain.mjs --profile full",
+    "test:website-contract": "vitest run --config tests/vitest.web-chain.config.ts",
     "verify:scanner-candidate": "node tools/verification/verify-scanner-candidate.mjs",
     "plan:cloudbase-migrations": "node tools/plan-cloudbase-migrations.mjs --dry-run",
     "test:cloudbase-tools": "node --test tools/cloudbase-migration-inventory.test.mjs tools/cloudbase-user-migrations.test.mjs tools/cloudbase-user-migration-adapter.test.mjs tools/plan-cloudbase-migrations.test.mjs tools/build-cloudbase-functions.test.mjs",

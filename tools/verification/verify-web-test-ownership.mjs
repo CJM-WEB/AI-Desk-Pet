@@ -9,7 +9,8 @@ const OWNED_TEST_DIRECTORIES = Object.freeze([
   'apps/cloudbase-api/tests',
   'apps/package-scanner/tests',
   'tools/release/tests',
-  'tools/verification'
+  'tools/verification',
+  'tests/website-contract'
 ]);
 
 const EXACT_TEST_FILES = Object.freeze([

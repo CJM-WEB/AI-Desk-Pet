@@ -11,7 +11,8 @@ test('快速与完整 profile 只按批准顺序执行网站链目标', () => {
     'shared-types-test', 'website-typecheck', 'website-test',
     'cloudbase-typecheck', 'cloudbase-test', 'scanner-typecheck',
     'scanner-test', 'release-typecheck', 'release-test',
-    'migration-tool-test', 'migration-behavior-gate', 'dependency-audit',
+    'migration-tool-test', 'migration-behavior-gate', 'website-contract',
+    'dependency-audit',
   ]);
 
   const fullIds = createWebChainSteps('full').map(step => step.id);

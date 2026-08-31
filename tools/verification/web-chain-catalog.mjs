@@ -20,6 +20,8 @@ export const WEB_AUDIT_INPUTS = Object.freeze([
   'tests/build-website-export.mjs',
   'tests/serve-website-export.mjs',
   'tests/memory-website-api.mjs',
+  'tests/website-contract',
+  'tests/vitest.web-chain.config.ts',
   'tests/e2e/website.spec.ts',
   'tests/playwright.website.config.ts'
 ]);
@@ -33,6 +35,7 @@ export const WEB_TEST_OWNERS = Object.freeze([
   { id: 'release-tools', pattern: /^tools\/release\/tests\/.*\.test\.ts$/u },
   { id: 'root-cloudbase-tools', pattern: /^tools\/(cloudbase-migration-inventory|cloudbase-user-migrations|cloudbase-user-migration-adapter|plan-cloudbase-migrations|build-cloudbase-functions|test-cloudbase-migrations)\.test\.mjs$/u },
   { id: 'website-e2e', pattern: /^tests\/e2e\/website\.spec\.ts$/u },
+  { id: 'website-contract', pattern: /^tests\/website-contract\/.*\.test\.ts$/u },
   { id: 'website-verification', pattern: /^tools\/verification\/.*\.test\.mjs$/u }
 ]);
 
@@ -75,6 +78,7 @@ const fastSteps = Object.freeze([
   defineStep('migration-behavior-gate', process.execPath, [
     'tools/test-cloudbase-migrations.mjs',
   ]),
+  defineStep('website-contract', 'pnpm.cmd', ['test:website-contract']),
   defineStep('dependency-audit', process.execPath, ['tools/verification/run-web-dependency-audit.mjs']),
 ]);
 

@@ -33,11 +33,25 @@ test('目录和命令不扫描或执行桌宠目标', () => {
   assert.doesNotMatch(serialized, /apps\/desktop|agent-core|file-tools|character-runtime|character-assets|test:e2e:desktop|verify:desktop/u);
 });
 
-test('合同测试建立前不提前登记目录、owner 或执行步骤', () => {
+test('双 Adapter 合同测试进入审计、唯一 owner 与快速门', () => {
   const serialized = JSON.stringify({ WEB_AUDIT_INPUTS, WEB_CHAIN_PROFILES });
 
-  assert.doesNotMatch(serialized, /tests\/website-contract|website-contract/u);
-  assert.deepEqual(findTestOwners('tests/website-contract/production-driver.test.ts'), []);
+  assert.ok(WEB_AUDIT_INPUTS.includes('tests/website-contract'));
+  assert.deepEqual(findTestOwners('tests/website-contract/production-driver.test.ts'), [
+    'website-contract'
+  ]);
+  assert.deepEqual(findTestOwners('tests/website-contract/memory-driver.test.ts'), [
+    'website-contract'
+  ]);
+  assert.deepEqual(
+    WEB_CHAIN_PROFILES.fast.find(step => step.id === 'website-contract'),
+    {
+      id: 'website-contract',
+      command: 'pnpm.cmd',
+      args: ['test:website-contract']
+    }
+  );
+  assert.match(serialized, /tests\/vitest\.web-chain\.config\.ts/u);
 });
 
 test('当前网站链测试均恰有一个 owner', async () => {

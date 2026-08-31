@@ -9,6 +9,18 @@ const moderationModuleUrl = pathToFileURL(
 const { adminActionSchema } = await import(moderationModuleUrl);
 
 const ADMIN_TOKEN = 'e2e-admin-session';
+const CONTRACT_ADMIN_TOKEN = 'contract-admin-token';
+const CONTRACT_REFS = Object.freeze({
+  adminToken: CONTRACT_ADMIN_TOKEN,
+  uploadedSubmissionId: 'contract-uploaded',
+  uploadedStatusToken: 'c'.repeat(43),
+  adminSubmissionId: 'contract-uploaded',
+  adminSubmissionVersion: 1,
+  overrideSubmissionId: 'contract-override',
+  overrideSubmissionVersion: 2,
+  publicCommunityId: 'contract-community',
+  publicFeedbackId: 'contract-feedback'
+});
 const MAX_BODY_BYTES = 2 * 1024 * 1024;
 
 /** 为单次 Playwright worker 创建完全隔离的确定性 API 状态。 */
@@ -25,6 +37,8 @@ export function createMemoryWebsiteApi({ runId }) {
     uploads.clear();
     adminIdempotency.clear();
     sequence = 0;
+    seedContractFixtures(submissions, tokenIndex, uploads);
+    return structuredClone(CONTRACT_REFS);
   };
 
   const nextId = () => `e2e-${++sequence}`;
@@ -35,8 +49,7 @@ export function createMemoryWebsiteApi({ runId }) {
     const url = new URL(request.url ?? '/', `http://${request.headers.host ?? '127.0.0.1'}`);
     const { pathname, searchParams } = url;
     if (request.method === 'POST' && pathname === '/__e2e/reset') {
-      reset();
-      return sendData(response, 200, { reset: true });
+      return sendData(response, 200, { reset: true, fixtures: reset() });
     }
     const moderationClaimId = matchId(pathname, '/__e2e/moderation/', '/claim');
     if (request.method === 'POST' && moderationClaimId) {
@@ -348,7 +361,86 @@ export function createMemoryWebsiteApi({ runId }) {
     return record;
   }
 
-  return { handle };
+  return { handle, reset };
+}
+
+/** 固定合同种子只表达 HTTP 可观察事实，不暴露内部 Map 或数据库 port。 */
+function seedContractFixtures(submissions, tokenIndex, uploads) {
+  const createdAt = '2026-07-31T00:00:00.000Z';
+  const updatedAt = '2026-07-31T00:01:00.000Z';
+  const sharedRecord = (id, title, status, statusVersion, publicationBasis) => ({
+    id,
+    kind: 'shared_package',
+    title,
+    body: '合同资源说明',
+    status,
+    statusVersion,
+    statusToken: id === CONTRACT_REFS.uploadedSubmissionId
+      ? CONTRACT_REFS.uploadedStatusToken
+      : null,
+    publicReason: null,
+    autoRejectionReason: null,
+    riskSummary: { summary: '合同固定种子', labels: [] },
+    assets: [
+      assetFrom({ fileName: 'cover.webp', sizeBytes: 12, contentType: 'image/webp' }, 'cover', `${id}/cover`),
+      assetFrom({ fileName: 'pet.zip', sizeBytes: 24, contentType: 'application/zip' }, 'package', `${id}/package`)
+    ].map(asset => ({ ...asset, actualBytes: asset.role === 'cover' ? 12 : 24 })),
+    moderationResults: [],
+    auditLogs: [],
+    moderationLeaseUntil: null,
+    purgeAfter: null,
+    preQuarantineStatus: null,
+    publishedAt: status === 'published' ? createdAt : null,
+    rejectedAt: null,
+    quarantinedAt: null,
+    publicationBasis,
+    riskAcknowledgement: null,
+    createdAt,
+    updatedAt,
+    likeCount: 0,
+    downloadCount: 0,
+    liked: false
+  });
+  const uploaded = sharedRecord(
+    CONTRACT_REFS.uploadedSubmissionId,
+    '待审核合同投稿',
+    'system_reviewing',
+    CONTRACT_REFS.adminSubmissionVersion,
+    null
+  );
+  const community = sharedRecord(
+    CONTRACT_REFS.publicCommunityId,
+    '公开合同资源',
+    'published',
+    3,
+    'standard'
+  );
+  const override = sharedRecord(
+    CONTRACT_REFS.overrideSubmissionId,
+    '待强制发布合同投稿',
+    'manual_review_pending',
+    CONTRACT_REFS.overrideSubmissionVersion,
+    null
+  );
+  const feedback = {
+    ...sharedRecord(CONTRACT_REFS.publicFeedbackId, '合同用户', 'published', 1, 'standard'),
+    kind: 'feedback',
+    body: '公开合同反馈',
+    assets: [],
+    publicationBasis: null
+  };
+  for (const record of [uploaded, community, override, feedback]) {
+    submissions.set(record.id, record);
+  }
+  tokenIndex.set(CONTRACT_REFS.uploadedStatusToken, CONTRACT_REFS.uploadedSubmissionId);
+  uploads.set(`${CONTRACT_REFS.uploadedSubmissionId}:cover`, {
+    sizeBytes: 12,
+    sha256: createHash('sha256').update('contract-cover').digest('hex')
+  });
+  uploads.set(`${CONTRACT_REFS.uploadedSubmissionId}:package`, {
+    sizeBytes: 24,
+    sha256: createHash('sha256').update('contract-package').digest('hex')
+  });
 }
 
 function completeModeration(record, completedAt, archive, lateResult = false) {
@@ -442,17 +534,13 @@ async function readJson(request) {
 }
 
 function requireAdmin(request, response) {
-  const authorization = request.headers.authorization;
   const forwardedToken = request.headers['x-ai-pet-admin-token'];
-  if (!authorization && !forwardedToken) {
-    sendError(response, 401, 'ADMIN_SESSION_REQUIRED');
+  if (!forwardedToken) {
+    sendError(response, 401, 'UNAUTHORIZED');
     return false;
   }
-  if (
-    authorization !== `Bearer ${ADMIN_TOKEN}`
-    && forwardedToken !== ADMIN_TOKEN
-  ) {
-    sendError(response, 403, 'ADMIN_FORBIDDEN');
+  if (forwardedToken !== ADMIN_TOKEN && forwardedToken !== CONTRACT_ADMIN_TOKEN) {
+    sendError(response, 403, 'FORBIDDEN');
     return false;
   }
   return true;
