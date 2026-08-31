@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useId, useRef, useState } from 'react';
 import {
   TECHNICAL_SCAN_PROTOCOL_VERSION,
   TECHNICAL_SCAN_RULE_VERSION,
@@ -23,11 +23,22 @@ interface AdminDetailProps {
 export function AdminDetail({ detail, loading, acting, onAction }: AdminDetailProps) {
   const { t } = useI18n();
   const [reason, setReason] = useState('');
+  const [confirmingOverride, setConfirmingOverride] = useState(false);
+  const confirmationRegionId = useId();
+  const confirmationTitleId = useId();
+  const confirmationWarningId = useId();
+  const confirmButtonRef = useRef<HTMLButtonElement>(null);
+  const forceButtonRef = useRef<HTMLButtonElement>(null);
+
+  useEffect(() => {
+    if (confirmingOverride && !acting) confirmButtonRef.current?.focus();
+  }, [acting, confirmingOverride]);
+
   if (loading) return <section className={styles.detailPanel}><p role="status">{t('admin.detail.loading')}</p></section>;
   if (!detail) return <section className={styles.detailPanel}><p className={styles.empty}>{t('admin.detail.empty')}</p></section>;
 
-  const actions = availableActions(detail);
   const technicalPass = hasCurrentTechnicalPass(detail);
+  const actions = availableActions(detail, technicalPass);
   const technicalScanRequired = detail.kind === 'shared_package'
     && detail.status !== 'published'
     && !technicalPass;
@@ -124,17 +135,61 @@ export function AdminDetail({ detail, loading, acting, onAction }: AdminDetailPr
             return (
               <button
                 key={action}
+                ref={action === 'force_publish' ? forceButtonRef : undefined}
                 type="button"
                 className={action === 'approve' || action === 'restore' ? styles.primaryButton : styles.dangerButton}
                 disabled={actionDisabled || blockedApprove}
                 title={blockedApprove ? t('admin.detail.technicalBlocked') : undefined}
-                onClick={() => onAction(action, reason.trim())}
+                aria-expanded={action === 'force_publish' ? confirmingOverride : undefined}
+                aria-controls={action === 'force_publish' ? confirmationRegionId : undefined}
+                onClick={() => {
+                  if (action === 'force_publish') {
+                    setConfirmingOverride(true);
+                    return;
+                  }
+                  onAction(action, reason.trim());
+                }}
               >
                 {actionLabel(action, t)}
               </button>
             );
           })}
         </div>
+        {confirmingOverride ? (
+          <div
+            id={confirmationRegionId}
+            className={styles.overrideConfirmation}
+            role="alertdialog"
+            aria-modal="false"
+            aria-labelledby={confirmationTitleId}
+            aria-describedby={confirmationWarningId}
+          >
+            <h3 id={confirmationTitleId}>{t('admin.override.title')}</h3>
+            <p id={confirmationWarningId}>{t('admin.override.warning')}</p>
+            <div className={styles.confirmationActions}>
+              <button
+                ref={confirmButtonRef}
+                type="button"
+                className={styles.dangerButton}
+                disabled={actionDisabled}
+                onClick={() => onAction('force_publish', reason.trim())}
+              >
+                {t('admin.override.confirm')}
+              </button>
+              <button
+                type="button"
+                className={styles.secondaryButton}
+                disabled={acting}
+                onClick={() => {
+                  setConfirmingOverride(false);
+                  queueMicrotask(() => forceButtonRef.current?.focus());
+                }}
+              >
+                {t('admin.override.cancel')}
+              </button>
+            </div>
+          </div>
+        ) : null}
         {technicalScanRequired && actions.includes('approve') ? (
           <p className={styles.warningText}>{t('admin.detail.technicalBlocked')}</p>
         ) : null}
@@ -143,9 +198,16 @@ export function AdminDetail({ detail, loading, acting, onAction }: AdminDetailPr
   );
 }
 
-function availableActions(detail: AdminSubmissionDetail): AdminAction['action'][] {
-  if (detail.status === 'system_reviewing') return ['delete'];
-  if (detail.status === 'manual_review_pending') return ['approve', 'reject', 'delete'];
+function availableActions(
+  detail: AdminSubmissionDetail,
+  technicalPass: boolean
+): AdminAction['action'][] {
+  if (detail.status === 'system_reviewing') return ['move_to_manual', 'delete'];
+  if (detail.status === 'manual_review_pending') {
+    return detail.kind === 'shared_package' && !technicalPass
+      ? ['approve', 'force_publish', 'reject', 'delete']
+      : ['approve', 'reject', 'delete'];
+  }
   if (detail.status === 'auto_rejected') return ['move_to_manual', 'delete'];
   if (detail.status === 'published') return ['delete'];
   if (detail.status === 'deleted_quarantined') return ['restore'];

@@ -31,10 +31,23 @@ export function createMemoryWebsiteApi({ runId }) {
     const moderationId = matchId(pathname, '/__e2e/moderation/', '');
     if (request.method === 'POST' && moderationId) {
       const record = requireSubmission(moderationId);
-      if (record.status !== 'system_reviewing') {
+      const rawClaimedVersion = searchParams.get('claimedVersion');
+      const claimedVersion = Number(rawClaimedVersion);
+      const lateResult = record.kind === 'shared_package'
+        && record.status === 'published'
+        && record.publicationBasis === 'admin_override'
+        && rawClaimedVersion !== null
+        && Number.isInteger(claimedVersion)
+        && record.statusVersion === claimedVersion + 2;
+      if (record.status !== 'system_reviewing' && !lateResult) {
         return sendError(response, 409, 'MODERATION_JOB_STALE');
       }
-      completeModeration(record, now(), uploads.get(`${record.id}:package`));
+      completeModeration(
+        record,
+        now(),
+        uploads.get(`${record.id}:package`),
+        lateResult
+      );
       return sendData(response, 200, { status: record.status });
     }
     if (pathname.startsWith('/__e2e/upload/')) {
@@ -82,6 +95,10 @@ export function createMemoryWebsiteApi({ runId }) {
           purgeAfter: null,
           preQuarantineStatus: null,
           publishedAt: null,
+          rejectedAt: null,
+          quarantinedAt: null,
+          publicationBasis: null,
+          riskAcknowledgement: null,
           createdAt,
           updatedAt: createdAt,
           likeCount: 0,
@@ -153,6 +170,10 @@ export function createMemoryWebsiteApi({ runId }) {
           purgeAfter: null,
           preQuarantineStatus: null,
           publishedAt: null,
+          rejectedAt: null,
+          quarantinedAt: null,
+          publicationBasis: null,
+          riskAcknowledgement: null,
           createdAt,
           updatedAt: createdAt,
           likeCount: 0,
@@ -204,7 +225,8 @@ export function createMemoryWebsiteApi({ runId }) {
         record.downloadCount += 1;
         return sendData(response, 200, {
           url: `http://${request.headers.host}/__e2e/download/${record.id}`,
-          expiresAt: plusMinutes(now(), 5)
+          expiresAt: plusMinutes(now(), 5),
+          publicationBasis: record.publicationBasis
         });
       }
 
@@ -296,7 +318,7 @@ export function createMemoryWebsiteApi({ runId }) {
   return { handle };
 }
 
-function completeModeration(record, completedAt, archive) {
+function completeModeration(record, completedAt, archive, lateResult = false) {
   if (record.kind !== 'shared_package') {
     const blocked = record.body.includes('自动驳回');
     record.status = blocked ? 'auto_rejected' : 'manual_review_pending';
@@ -326,6 +348,24 @@ function completeModeration(record, completedAt, archive) {
   const blocked = marker.includes('auto-reject')
     || marker.includes('自动驳回')
     || !technicalPass;
+  if (lateResult) {
+    const technicalResult = packageScan(
+      record,
+      packageAsset,
+      archive,
+      technicalPass,
+      completedAt
+    );
+    record.updatedAt = completedAt;
+    record.riskSummary = {
+      summary: blocked ? '后到技术扫描发现风险' : '后到技术扫描完成',
+      labels: blocked ? ['blocked'] : ['reviewed']
+    };
+    record.autoRejectionReason = blocked ? '后到技术扫描发现风险' : null;
+    record.moderationResults.push(technicalResult);
+    record.moderationLeaseUntil = null;
+    return;
+  }
   record.status = blocked ? 'auto_rejected' : 'manual_review_pending';
   record.statusVersion += 1;
   record.updatedAt = completedAt;
@@ -448,7 +488,8 @@ function publicCommunity(record) {
     packageSizeBytes: packageAsset.actualBytes ?? packageAsset.declaredBytes,
     likeCount: record.likeCount,
     downloadCount: record.downloadCount,
-    publishedAt: record.publishedAt
+    publishedAt: record.publishedAt,
+    publicationBasis: record.publicationBasis
   };
 }
 
@@ -485,6 +526,7 @@ function adminBase(record) {
     purgeAfter: record.purgeAfter,
     preQuarantineStatus: record.preQuarantineStatus,
     publishedAt: record.publishedAt,
+    publicationBasis: record.publicationBasis,
     createdAt: record.createdAt,
     updatedAt: record.updatedAt
   };
@@ -492,6 +534,23 @@ function adminBase(record) {
 
 function adminSummary(record) {
   return { ...adminBase(record), riskSummary: record.riskSummary, autoRejectionReason: record.autoRejectionReason };
+}
+
+/** 管理员动作只快照稳定裁决事实，避免把正文、租约或风险证据固化进幂等结果。 */
+function adminActionSnapshot(record) {
+  return {
+    id: record.id,
+    kind: record.kind,
+    status: record.status,
+    statusVersion: record.statusVersion,
+    publicationBasis: record.publicationBasis,
+    publicReason: record.publicReason,
+    publishedAt: record.publishedAt,
+    rejectedAt: record.rejectedAt,
+    quarantinedAt: record.quarantinedAt,
+    createdAt: record.createdAt,
+    updatedAt: record.updatedAt
+  };
 }
 
 function adminDetail(record, request) {
@@ -519,10 +578,18 @@ function applyAdminAction(response, record, body, now) {
     || typeof body.idempotencyKey !== 'string' || body.idempotencyKey.length < 8) {
     return sendError(response, 400, 'INVALID_REQUEST');
   }
+  const forcePublish = body.action === 'force_publish';
+  if (
+    (forcePublish && body.riskAcknowledgement !== 'ADMIN_OVERRIDE_ACCEPTED')
+    || (!forcePublish && Object.hasOwn(body, 'riskAcknowledgement'))
+  ) {
+    return sendError(response, 400, 'INVALID_REQUEST');
+  }
   const requestPayload = {
     action: body.action,
     version: body.version,
-    reason: body.reason.trim()
+    reason: body.reason.trim(),
+    ...(forcePublish ? { riskAcknowledgement: body.riskAcknowledgement } : {})
   };
   const previous = record.idempotency.get(body.idempotencyKey);
   if (previous) {
@@ -541,27 +608,47 @@ function applyAdminAction(response, record, body, now) {
     && !hasCurrentTechnicalEvidence(record, now())) {
     return sendError(response, 409, 'TECHNICAL_SCAN_REQUIRED');
   }
+  if (action === 'force_publish' && hasCurrentTechnicalEvidence(record, now())) {
+    return sendError(response, 409, 'INVALID_ADMIN_ACTION');
+  }
 
   if (action === 'approve' && record.status === 'manual_review_pending') {
     record.status = 'published';
     record.publishedAt = now();
+    record.publicationBasis = 'standard';
+    record.purgeAfter = null;
+  } else if (
+    action === 'force_publish'
+    && record.kind === 'shared_package'
+    && record.status === 'manual_review_pending'
+  ) {
+    record.status = 'published';
+    record.publishedAt = now();
+    record.publicationBasis = 'admin_override';
+    record.riskAcknowledgement = body.riskAcknowledgement;
     record.purgeAfter = null;
   } else if (action === 'reject' && record.status === 'manual_review_pending') {
     record.status = 'admin_rejected';
+    record.rejectedAt = now();
     record.purgeAfter = plusDays(now(), 3);
-  } else if (action === 'move_to_manual' && record.status === 'auto_rejected') {
-    record.status = record.kind === 'shared_package'
-      ? 'system_reviewing'
-      : 'manual_review_pending';
+  } else if (
+    action === 'move_to_manual'
+    && (record.status === 'system_reviewing' || record.status === 'auto_rejected')
+  ) {
+    record.status = 'manual_review_pending';
     record.purgeAfter = null;
   } else if (action === 'delete' && record.status !== 'purged') {
     record.preQuarantineStatus = record.status;
     record.status = 'deleted_quarantined';
+    record.quarantinedAt = now();
+    record.publicationBasis = null;
     record.purgeAfter = plusDays(now(), 3);
   } else if (action === 'restore' && record.status === 'deleted_quarantined' && record.preQuarantineStatus) {
     record.status = record.kind === 'shared_package'
       ? 'system_reviewing'
       : record.preQuarantineStatus;
+    record.publicationBasis = null;
+    record.quarantinedAt = null;
     record.preQuarantineStatus = null;
     record.purgeAfter = null;
   } else {
@@ -578,7 +665,7 @@ function applyAdminAction(response, record, body, now) {
     reason: body.reason.trim(),
     createdAt: record.updatedAt
   });
-  const result = { submission: adminBase(record), replayed: false };
+  const result = { submission: adminActionSnapshot(record), replayed: false };
   record.idempotency.set(body.idempotencyKey, {
     request: requestPayload,
     result: structuredClone(result)

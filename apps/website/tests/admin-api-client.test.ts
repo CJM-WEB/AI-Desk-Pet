@@ -123,6 +123,7 @@ function adminDetailDto() {
     purgeAfter: null,
     preQuarantineStatus: null,
     publishedAt: null,
+    publicationBasis: null,
     createdAt: '2026-07-31T00:00:00.000Z',
     updatedAt: '2026-07-31T00:01:00.000Z',
     riskSummary: {},

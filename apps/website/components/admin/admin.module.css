@@ -304,6 +304,27 @@
   margin-top: 0.75rem;
 }
 
+.overrideConfirmation {
+  display: grid;
+  gap: 0.75rem;
+  margin-top: 0.85rem;
+  padding: 1rem;
+  border: 2px solid #b95b67;
+  border-radius: 0.8rem;
+  background: #301820;
+}
+
+.overrideConfirmation h3,
+.overrideConfirmation p { margin: 0; }
+.overrideConfirmation h3 { font-size: 1rem; }
+.overrideConfirmation p { line-height: 1.55; }
+
+.confirmationActions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.75rem;
+}
+
 .primaryButton,
 .secondaryButton,
 .dangerButton,
@@ -379,5 +400,6 @@
   .sidebar { padding: 0.75rem; }
   .topbar { align-items: flex-start; }
   .topbar h1 { font-size: 1.35rem; }
-  .actionGrid { grid-template-columns: 1fr; }
+  .actionGrid,
+  .confirmationActions { grid-template-columns: 1fr; }
 }

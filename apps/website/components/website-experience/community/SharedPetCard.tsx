@@ -54,6 +54,16 @@ export function SharedPetCard({
         <div className={styles.cardBody}>
           <h3>{item.name}</h3>
           <p>{item.description}</p>
+          {item.publicationBasis === 'admin_override' ? (
+            <div
+              className={styles.overrideWarning}
+              role="note"
+              aria-label={t('sharedPet.override.cardLabel')}
+            >
+              <strong>{t('sharedPet.override.label')}</strong>
+              <span>{t('sharedPet.override.warning')}</span>
+            </div>
+          ) : null}
         </div>
       </button>
       <div className={styles.cardActions}>

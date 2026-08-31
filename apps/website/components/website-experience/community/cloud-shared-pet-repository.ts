@@ -1,4 +1,4 @@
-import type { SubmissionReceipt } from '@myself/shared-types';
+import { publicationBasisSchema, type SubmissionReceipt } from '@myself/shared-types';
 import { ApiClient } from '../../../lib/api-client';
 import {
   SHARED_PET_PAGE_SIZE,
@@ -19,6 +19,7 @@ interface PublicCommunityItem {
   likeCount: number;
   downloadCount: number;
   publishedAt: string;
+  publicationBasis: unknown;
 }
 
 interface PublicCommunityPage {
@@ -165,11 +166,20 @@ export class CloudSharedPetRepository implements SharedPetRepository {
   async getDownload(id: string): Promise<SharedPetDownload> {
     const current = this.records.get(id) ?? await this.getById(id);
     if (!current) throw new Error('PACKAGE_NOT_FOUND');
-    const result = await this.api.request<{ url: string; expiresAt: string }>(
+    const result = await this.api.request<{
+      url: string;
+      expiresAt: string;
+      publicationBasis: unknown;
+    }>(
       `/community/${encodeURIComponent(id)}/download`,
       { method: 'POST', body: '{}' }
     );
-    return { ...result, fileName: current.packageFileName };
+    return {
+      url: result.url,
+      expiresAt: result.expiresAt,
+      fileName: current.packageFileName,
+      publicationBasis: publicationBasisSchema.parse(result.publicationBasis)
+    };
   }
 
   subscribe(listener: () => void): () => void {
@@ -189,7 +199,8 @@ export class CloudSharedPetRepository implements SharedPetRepository {
       downloadCount: item.downloadCount,
       createdAt: item.publishedAt,
       updatedAt: item.publishedAt,
-      likedByCurrentUser: this.records.get(item.id)?.likedByCurrentUser ?? false
+      likedByCurrentUser: this.records.get(item.id)?.likedByCurrentUser ?? false,
+      publicationBasis: publicationBasisSchema.parse(item.publicationBasis)
     };
     this.records.set(summary.id, summary);
     return summary;

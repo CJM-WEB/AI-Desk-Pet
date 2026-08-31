@@ -30,6 +30,7 @@ function detail(overrides: Partial<AdminSubmissionDetail> = {}): AdminSubmission
     purgeAfter: null,
     preQuarantineStatus: null,
     publishedAt: null,
+    publicationBasis: null,
     createdAt: '2026-07-30T12:00:00.000Z',
     updatedAt: '2026-07-30T12:01:00.000Z',
     riskSummary: { labels: ['ai-pet'], summary: '与产品相关' },
@@ -268,8 +269,108 @@ describe('管理员审核工作台', () => {
 
     expect((screen.getByRole('button', { name: '批准发布' }) as HTMLButtonElement).disabled)
       .toBe(true);
-    expect(screen.queryByRole('button', { name: '强制发布' })).toBeNull();
+    expect((screen.getByRole('button', { name: '强制发布' }) as HTMLButtonElement).disabled)
+      .toBe(false);
     expect(screen.getByText('技术扫描未明确通过，不能批准共享包。')).toBeTruthy();
+  });
+
+  it('系统审核中的投稿提供独立转人工动作', async () => {
+    const reviewing = detail({
+      id: 'reviewing-feedback',
+      status: 'system_reviewing',
+      title: '系统审核中的反馈'
+    });
+    setup({
+      listQueue: vi.fn().mockResolvedValue(queuePage(reviewing)),
+      getDetail: vi.fn().mockResolvedValue(reviewing)
+    });
+
+    fireEvent.click(await screen.findByText('系统审核中的反馈'));
+    fireEvent.change(await screen.findByLabelText('审核理由'), {
+      target: { value: '需要管理员人工复核' }
+    });
+
+    expect((screen.getByRole('button', { name: '转人工审核' }) as HTMLButtonElement).disabled)
+      .toBe(false);
+  });
+
+  it('强制发布第一次只展开可访问确认区，取消不发送，第二次确认才提交精确风险值', async () => {
+    const pending = detail({
+      id: 'override-package',
+      kind: 'shared_package',
+      status: 'manual_review_pending',
+      title: '待强制发布共享包'
+    });
+    const { api } = setup({
+      listQueue: vi.fn().mockResolvedValue(queuePage(pending)),
+      getDetail: vi.fn().mockResolvedValue(pending)
+    });
+    fireEvent.click(await screen.findByText('待强制发布共享包'));
+    fireEvent.change(await screen.findByLabelText('审核理由'), {
+      target: { value: '管理员已核对来源并接受下载风险' }
+    });
+
+    const openConfirmation = screen.getByRole('button', { name: '强制发布' });
+    fireEvent.click(openConfirmation);
+    expect(api.applyAction).not.toHaveBeenCalled();
+    const confirmation = screen.getByRole('alertdialog', { name: '确认强制发布风险' });
+    expect(confirmation.getAttribute('aria-describedby')).toBeTruthy();
+    expect(confirmation.textContent).toContain('该文件未通过安全扫描，发布后用户可能下载危险文件');
+    const confirm = screen.getByRole('button', { name: '确认强制发布' });
+    const cancel = screen.getByRole('button', { name: '取消强制发布' });
+    expect(confirm.tagName).toBe('BUTTON');
+    expect(cancel.tagName).toBe('BUTTON');
+    expect(document.activeElement).toBe(confirm);
+
+    fireEvent.click(cancel);
+    expect(screen.queryByRole('alertdialog', { name: '确认强制发布风险' })).toBeNull();
+    expect(api.applyAction).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole('button', { name: '强制发布' }));
+    fireEvent.click(screen.getByRole('button', { name: '确认强制发布' }));
+    await waitFor(() => expect(api.applyAction).toHaveBeenCalledWith(
+      'access-token',
+      'override-package',
+      expect.objectContaining({
+        action: 'force_publish',
+        version: 3,
+        reason: '管理员已核对来源并接受下载风险',
+        riskAcknowledgement: 'ADMIN_OVERRIDE_ACCEPTED',
+        idempotencyKey: expect.stringMatching(/^[0-9a-f-]{36}$/u)
+      })
+    ));
+  });
+
+  it('强制发布提交期间锁住确认区并阻止重复请求', async () => {
+    const pending = detail({
+      id: 'acting-override-package',
+      kind: 'shared_package',
+      status: 'manual_review_pending',
+      title: '提交中的强制发布'
+    });
+    let resolveAction: (() => void) | undefined;
+    const applyAction = vi.fn().mockReturnValue(new Promise(resolve => {
+      resolveAction = () => resolve({ submission: detail(), replayed: false });
+    }));
+    setup({
+      listQueue: vi.fn().mockResolvedValue(queuePage(pending)),
+      getDetail: vi.fn().mockResolvedValue(pending),
+      applyAction
+    });
+    fireEvent.click(await screen.findByText('提交中的强制发布'));
+    fireEvent.change(await screen.findByLabelText('审核理由'), {
+      target: { value: '接受风险' }
+    });
+    fireEvent.click(screen.getByRole('button', { name: '强制发布' }));
+    const confirm = screen.getByRole('button', { name: '确认强制发布' });
+    fireEvent.click(confirm);
+    fireEvent.click(confirm);
+
+    expect(applyAction).toHaveBeenCalledTimes(1);
+    expect((confirm as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole('button', { name: '取消强制发布' }) as HTMLButtonElement).disabled)
+      .toBe(true);
+    resolveAction?.();
   });
 
   it('人工审核共享包的过期技术证据不能解除批准门禁', async () => {
@@ -354,6 +455,7 @@ describe('管理员审核工作台', () => {
 
     expect((screen.getByRole('button', { name: '批准发布' }) as HTMLButtonElement).disabled)
       .toBe(false);
+    expect(screen.queryByRole('button', { name: '强制发布' })).toBeNull();
     expect(screen.queryByText('技术扫描未明确通过，不能批准共享包。')).toBeNull();
   });
 

@@ -1,4 +1,4 @@
-import type { SubmissionReceipt } from '@myself/shared-types';
+import type { PublicationBasis, SubmissionReceipt } from '@myself/shared-types';
 
 /** 共享仓库列表固定使用八个展示槽位。 */
 export const SHARED_PET_PAGE_SIZE = 8 as const;
@@ -40,6 +40,8 @@ export interface SharedPetPackageSummary {
   createdAt: string;
   updatedAt: string;
   likedByCurrentUser: boolean;
+  /** 本地历史适配器没有云端发布裁决，云端仓储会严格补齐。 */
+  publicationBasis?: PublicationBasis;
 }
 
 export interface CreateSharedPetInput {
@@ -76,6 +78,7 @@ export interface SharedPetDownload {
   expiresAt?: string;
   file?: Blob;
   mimeType?: string;
+  publicationBasis?: PublicationBasis;
 }
 
 export interface SharedPetRepository {

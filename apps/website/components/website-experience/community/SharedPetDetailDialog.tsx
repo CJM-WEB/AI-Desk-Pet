@@ -56,15 +56,27 @@ export function SharedPetDetailDialog({
       closeLabel={t('sharedPet.detail.close')}
       onRequestClose={onRequestClose}
       footer={(
-        <button
-          type="button"
-          title={downloadLabel}
-          disabled={downloadDisabled}
-          onClick={() => onDownload(item)}
-        >
-          <Download aria-hidden="true" />
-          <span>{downloadLabel}</span>
-        </button>
+        <div className={styles.downloadAction}>
+          {item.publicationBasis === 'admin_override' ? (
+            <div
+              className={styles.overrideWarning}
+              role="note"
+              aria-label={t('sharedPet.override.downloadLabel')}
+            >
+              <strong>{t('sharedPet.override.label')}</strong>
+              <span>{t('sharedPet.override.warning')}</span>
+            </div>
+          ) : null}
+          <button
+            type="button"
+            title={downloadLabel}
+            disabled={downloadDisabled}
+            onClick={() => onDownload(item)}
+          >
+            <Download aria-hidden="true" />
+            <span>{downloadLabel}</span>
+          </button>
+        </div>
       )}
     >
       <div className={styles.detailContent}>
@@ -76,6 +88,16 @@ export function SharedPetDetailDialog({
           />
         ) : null}
         <p className={styles.detailDescription}>{item.description}</p>
+        {item.publicationBasis === 'admin_override' ? (
+          <div
+            className={styles.overrideWarning}
+            role="note"
+            aria-label={t('sharedPet.override.detailLabel')}
+          >
+            <strong>{t('sharedPet.override.label')}</strong>
+            <span>{t('sharedPet.override.warning')}</span>
+          </div>
+        ) : null}
         <dl className={styles.detailMetadata}>
           <div><dt>{t('sharedPet.detail.fileName')}</dt><dd>{item.packageFileName}</dd></div>
           <div><dt>{t('sharedPet.detail.fileSize')}</dt><dd>{formatSize(item.packageSizeBytes, locale)}</dd></div>

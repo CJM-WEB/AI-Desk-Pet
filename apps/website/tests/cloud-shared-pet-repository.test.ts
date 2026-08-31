@@ -130,13 +130,16 @@ describe('云端共享仓库', () => {
         id: 'pet-1', name: '宠物', description: '描述',
         cover: { url: 'https://storage.example/cover?signature=secret', expiresAt: '2026-08-01T00:00:00.000Z' },
         packageFileName: 'pet.zip', packageSizeBytes: 7, likeCount: 1, downloadCount: 2,
-        publishedAt: '2026-08-01T00:00:00.000Z'
+        publishedAt: '2026-08-01T00:00:00.000Z', publicationBasis: 'admin_override'
       }], nextCursor: 8
     });
     const api = { request } as unknown as ApiClient;
     const page = await new CloudSharedPetRepository(api).listPage(1);
     expect(page).toMatchObject({ page: 1, totalKnown: false, hasNext: true });
-    expect(page.items[0]).toMatchObject({ coverUrl: 'https://storage.example/cover?signature=secret' });
+    expect(page.items[0]).toMatchObject({
+      coverUrl: 'https://storage.example/cover?signature=secret',
+      publicationBasis: 'admin_override'
+    });
     expect(page.items[0]?.coverFileName).toBeUndefined();
     expect(request).toHaveBeenCalledWith('/community?limit=8&cursor=0');
   });
@@ -147,7 +150,7 @@ describe('云端共享仓库', () => {
         id: 'pet-9', name: '宠物', description: '描述',
         cover: { url: 'https://storage.example/cover', expiresAt: '2026-08-01T00:00:00.000Z' },
         packageFileName: 'pet.zip', packageSizeBytes: 7, likeCount: 0, downloadCount: 0,
-        publishedAt: '2026-08-01T00:00:00.000Z'
+        publishedAt: '2026-08-01T00:00:00.000Z', publicationBasis: 'standard'
       }], nextCursor: null
     });
     const api = { request } as unknown as ApiClient;
@@ -164,18 +167,39 @@ describe('云端共享仓库', () => {
         id: 'pet-1', name: '宠物', description: '描述',
         cover: { url: 'https://storage.example/cover', expiresAt: '2026-08-01T00:00:00.000Z' },
         packageFileName: 'pet.zip', packageSizeBytes: 7, likeCount: 1, downloadCount: 2,
-        publishedAt: '2026-08-01T00:00:00.000Z'
+        publishedAt: '2026-08-01T00:00:00.000Z', publicationBasis: 'admin_override'
       })
       .mockResolvedValueOnce({ liked: true, likeCount: 2 })
-      .mockResolvedValueOnce({ url: 'https://storage.example/package', expiresAt: '2026-08-01T00:00:00.000Z' })
+      .mockResolvedValueOnce({
+        url: 'https://storage.example/package',
+        expiresAt: '2026-08-01T00:00:00.000Z',
+        publicationBasis: 'admin_override'
+      })
     } as unknown as ApiClient;
     const repository = new CloudSharedPetRepository(api);
     await expect(repository.getById('missing')).resolves.toBeNull();
     await repository.getById('pet-1');
     await expect(repository.toggleLike('pet-1')).resolves.toMatchObject({ likedByCurrentUser: true, likeCount: 2 });
     await expect(repository.getDownload('pet-1')).resolves.toEqual({
-      url: 'https://storage.example/package', expiresAt: '2026-08-01T00:00:00.000Z', fileName: 'pet.zip'
+      url: 'https://storage.example/package', expiresAt: '2026-08-01T00:00:00.000Z',
+      fileName: 'pet.zip', publicationBasis: 'admin_override'
     });
+  });
+
+  it.each([undefined, 'unsafe'])('公开列表对非法发布依据失败关闭：%s', async publicationBasis => {
+    const request = vi.fn().mockResolvedValue({
+      items: [{
+        id: 'pet-invalid', name: '宠物', description: '描述',
+        cover: { url: 'https://storage.example/cover', expiresAt: '2026-08-01T00:00:00.000Z' },
+        packageFileName: 'pet.zip', packageSizeBytes: 7, likeCount: 0, downloadCount: 0,
+        publishedAt: '2026-08-01T00:00:00.000Z', publicationBasis
+      }],
+      nextCursor: null
+    });
+
+    await expect(
+      new CloudSharedPetRepository({ request } as unknown as ApiClient).listPage(1)
+    ).rejects.toThrow();
   });
 
   it('封面上传失败时只请求 prepare 且不上传 ZIP', async () => {

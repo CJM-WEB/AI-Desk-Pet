@@ -79,7 +79,8 @@ async function submitFeedbackViaApi(
 async function submitSharedPackageViaApi(
   request: APIRequestContext,
   title: string,
-  packageFileName = 'safe-pet.zip'
+  packageFileName = 'safe-pet.zip',
+  runModeration = true
 ): Promise<E2eReceipt> {
   const preparedResponse = await request.post('/api/v1/submissions/prepare', {
     data: {
@@ -121,10 +122,12 @@ async function submitSharedPackageViaApi(
     data: { statusToken: prepared.statusToken }
   });
   expect((await hiddenStatus.json()).data.status).toBe('system_reviewing');
-  const moderated = await request.post(
-    `/__e2e/moderation/${encodeURIComponent(prepared.submissionId)}`
-  );
-  expect(moderated.ok()).toBe(true);
+  if (runModeration) {
+    const moderated = await request.post(
+      `/__e2e/moderation/${encodeURIComponent(prepared.submissionId)}`
+    );
+    expect(moderated.ok()).toBe(true);
+  }
   return prepared as E2eReceipt;
 }
 
@@ -143,7 +146,7 @@ async function adminItems(
 async function applyAdminAction(
   request: APIRequestContext,
   item: Record<string, unknown>,
-  action: 'approve' | 'reject' | 'move_to_manual' | 'delete' | 'restore',
+  action: 'approve' | 'force_publish' | 'reject' | 'move_to_manual' | 'delete' | 'restore',
   reason: string
 ): Promise<void> {
   const response = await request.post(
@@ -154,7 +157,10 @@ async function applyAdminAction(
         action,
         version: item.statusVersion,
         reason,
-        idempotencyKey: `e2e-${item.id}-${action}-${item.statusVersion}`
+        idempotencyKey: `e2e-${item.id}-${action}-${item.statusVersion}`,
+        ...(action === 'force_publish'
+          ? { riskAcknowledgement: 'ADMIN_OVERRIDE_ACCEPTED' }
+          : {})
       }
     }
   );
@@ -588,6 +594,120 @@ test('安全共享包经系统与管理员审核后才在真实网页公开', as
   );
   expect(invalidFinalize.status()).toBe(404);
   expect((await invalidFinalize.json()).error.code).toBe('NOT_FOUND');
+});
+
+test('无有效证据共享包经两步管理员强制发布后在卡片、详情和下载入口披露风险', async ({ page, request }) => {
+  const title = 'E2E 管理员人工放行共享包';
+  const receipt = await submitSharedPackageViaApi(
+    request,
+    title,
+    'technical-fail.zip',
+    false
+  );
+  const reviewing = (await adminItems(request, 'system_reviewing'))
+    .find(item => item.id === receipt.submissionId)!;
+  const claimedVersion = Number(reviewing.statusVersion);
+  await applyAdminAction(request, reviewing, 'move_to_manual', '转交管理员复核');
+
+  const pending = (await adminItems(request, 'manual_review_pending'))
+    .find(item => item.id === receipt.submissionId)!;
+  const actionUrl = `/api/v1/admin/submissions/${encodeURIComponent(receipt.submissionId)}/actions`;
+  const ordinaryApprove = await request.post(actionUrl, {
+    headers: { authorization: `Bearer ${E2E_ADMIN_TOKEN}` },
+    data: {
+      action: 'approve',
+      version: pending.statusVersion,
+      reason: '不得绕过技术证据',
+      idempotencyKey: `e2e-ordinary-${receipt.submissionId}`
+    }
+  });
+  expect(ordinaryApprove.status()).toBe(409);
+  expect((await ordinaryApprove.json()).error.code).toBe('TECHNICAL_SCAN_REQUIRED');
+
+  const overrideRequest = {
+    action: 'force_publish',
+    version: pending.statusVersion,
+    reason: '管理员已接受下载危险文件风险',
+    idempotencyKey: `e2e-override-${receipt.submissionId}`,
+    riskAcknowledgement: 'ADMIN_OVERRIDE_ACCEPTED'
+  };
+  const first = await request.post(actionUrl, {
+    headers: { authorization: `Bearer ${E2E_ADMIN_TOKEN}` },
+    data: overrideRequest
+  });
+  expect(first.ok(), await first.text()).toBe(true);
+  const firstResult = (await first.json()).data;
+  expect(Object.keys(firstResult.submission).sort()).toEqual([
+    'createdAt',
+    'id',
+    'kind',
+    'publicReason',
+    'publicationBasis',
+    'publishedAt',
+    'quarantinedAt',
+    'rejectedAt',
+    'status',
+    'statusVersion',
+    'updatedAt'
+  ]);
+  expect(firstResult).toMatchObject({
+    submission: {
+      status: 'published',
+      statusVersion: Number(pending.statusVersion) + 1,
+      publicationBasis: 'admin_override'
+    },
+    replayed: false
+  });
+
+  const lateResult = await request.post(
+    `/__e2e/moderation/${encodeURIComponent(receipt.submissionId)}?claimedVersion=${claimedVersion}`
+  );
+  expect(lateResult.ok(), await lateResult.text()).toBe(true);
+  const afterLate = (await adminItems(request, 'published'))
+    .find(item => item.id === receipt.submissionId)!;
+  expect(afterLate).toMatchObject({
+    statusVersion: Number(pending.statusVersion) + 1,
+    publicationBasis: 'admin_override',
+    riskSummary: { labels: ['blocked'] }
+  });
+
+  const replay = await request.post(actionUrl, {
+    headers: { authorization: `Bearer ${E2E_ADMIN_TOKEN}` },
+    data: overrideRequest
+  });
+  expect(replay.ok()).toBe(true);
+  expect((await replay.json()).data).toEqual({ ...firstResult, replayed: true });
+  const conflict = await request.post(actionUrl, {
+    headers: { authorization: `Bearer ${E2E_ADMIN_TOKEN}` },
+    data: { ...overrideRequest, reason: '同键异参' }
+  });
+  expect(conflict.status()).toBe(409);
+  expect((await conflict.json()).error.code).toBe('IDEMPOTENCY_CONFLICT');
+
+  const publicList = await request.get('/api/v1/community?limit=100');
+  expect((await publicList.json()).data.items).toContainEqual(expect.objectContaining({
+    id: receipt.submissionId,
+    publicationBasis: 'admin_override'
+  }));
+  const download = await request.post(
+    `/api/v1/community/${encodeURIComponent(receipt.submissionId)}/download`,
+    { data: {} }
+  );
+  expect((await download.json()).data.publicationBasis).toBe('admin_override');
+
+  await page.goto('/?seed=42');
+  await enterChapter(page, 'community');
+  const card = page.locator('article').filter({ hasText: title });
+  await expect(card.getByRole('note', { name: '共享包风险提示' }))
+    .toContainText('管理员人工放行，未通过系统安全验证');
+  const detailButton = card.getByRole('button', { name: `打开 ${title} 的详情` });
+  await detailButton.focus();
+  await page.keyboard.press('Enter');
+  const dialog = page.getByRole('dialog', { name: title });
+  await expect(dialog.getByRole('note', { name: '详情风险提示' }))
+    .toContainText('管理员人工放行，未通过系统安全验证');
+  await expect(dialog.getByRole('note', { name: '下载风险提示' }))
+    .toContainText('管理员人工放行，未通过系统安全验证');
 });
 
 test('管理员幂等回放返回首次结果快照且拒绝同 key 异参', async ({ request }) => {

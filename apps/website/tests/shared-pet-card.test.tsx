@@ -122,4 +122,25 @@ describe('共享包卡片', () => {
     expect(onLike).toHaveBeenCalledTimes(1);
     expect(onDownload).toHaveBeenCalledTimes(1);
   });
+
+  it('只有管理员人工放行的卡片显示固定风险提示', () => {
+    const renderCard = (publicationBasis: 'standard' | 'admin_override') => render(
+      <I18nProvider initialLocale="zh-CN">
+        <SharedPetCard
+          item={{ ...item, publicationBasis } as SharedPetPackageSummary & { publicationBasis: typeof publicationBasis }}
+          onOpen={vi.fn()}
+          onLike={vi.fn()}
+          onDownload={vi.fn()}
+        />
+      </I18nProvider>
+    );
+
+    const override = renderCard('admin_override');
+    expect(screen.getByRole('note', { name: '共享包风险提示' }).textContent)
+      .toContain('管理员人工放行，未通过系统安全验证');
+    override.unmount();
+
+    renderCard('standard');
+    expect(screen.queryByText('管理员人工放行，未通过系统安全验证')).toBeNull();
+  });
 });

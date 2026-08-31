@@ -333,6 +333,39 @@ describe('共享包弹窗', () => {
     expect(screen.getByRole('dialog', { name: 'My Pet' }).textContent).toContain('1 MB');
   });
 
+  it('管理员人工放行的详情与下载入口分别显示固定风险提示', () => {
+    render(
+      <I18nProvider initialLocale="zh-CN">
+        <SharedPetDetailDialog
+          item={{ ...item, publicationBasis: 'admin_override' } as SharedPetPackageSummary & { publicationBasis: 'admin_override' }}
+          downloadDisabled={false}
+          onDownload={vi.fn()}
+          onRequestClose={vi.fn()}
+        />
+      </I18nProvider>
+    );
+
+    expect(screen.getByRole('note', { name: '详情风险提示' }).textContent)
+      .toContain('管理员人工放行，未通过系统安全验证');
+    expect(screen.getByRole('note', { name: '下载风险提示' }).textContent)
+      .toContain('管理员人工放行，未通过系统安全验证');
+  });
+
+  it('标准发布详情不显示管理员人工放行提示', () => {
+    render(
+      <I18nProvider initialLocale="zh-CN">
+        <SharedPetDetailDialog
+          item={{ ...item, publicationBasis: 'standard' } as SharedPetPackageSummary & { publicationBasis: 'standard' }}
+          downloadDisabled={false}
+          onDownload={vi.fn()}
+          onRequestClose={vi.fn()}
+        />
+      </I18nProvider>
+    );
+
+    expect(screen.queryByText('管理员人工放行，未通过系统安全验证')).toBeNull();
+  });
+
   it('云端封面缺少文件名时使用安全替代文本，不泄露签名查询参数', () => {
     const { coverFile: _coverFile, coverFileName: _coverFileName, ...cloudItem } = item;
     render(

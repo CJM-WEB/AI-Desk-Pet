@@ -2,6 +2,7 @@ import {
   adminActionNameSchema,
   adminActionResultSchema,
   adminActionSchema,
+  publicationBasisSchema,
   submissionStatusSchema,
   type AdminAction,
   type AdminActionResult,
@@ -31,6 +32,7 @@ const adminSubmissionBaseSchema = z.object({
   preQuarantineStatus: submissionStatusSchema.nullable(),
   cleanupStartedAt: nullableText.optional(),
   publishedAt: nullableText,
+  publicationBasis: publicationBasisSchema.nullable(),
   createdAt: dateTime,
   updatedAt: dateTime
 }).strict();
