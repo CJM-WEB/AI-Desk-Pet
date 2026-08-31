@@ -158,6 +158,58 @@ describe('管理员审核工作台', () => {
     expect((screen.getByLabelText('审核理由') as HTMLTextAreaElement).value).toBe('');
   });
 
+  it('动作成功替换队列后允许复用新一代页面返回的相同游标', async () => {
+    const first = detail({ id: 'first', title: '第一页', body: '待审核正文' });
+    const second = detail({ id: 'second', title: '第二页' });
+    const listQueue = vi.fn()
+      .mockResolvedValueOnce({ items: [queuePage(first).items[0]!], nextCursor: 'v1.same-next' })
+      .mockResolvedValueOnce({ items: [queuePage(second).items[0]!], nextCursor: null })
+      .mockResolvedValueOnce({ items: [queuePage(first).items[0]!], nextCursor: 'v1.same-next' })
+      .mockResolvedValueOnce({ items: [queuePage(second).items[0]!], nextCursor: null });
+    setup({ listQueue, getDetail: vi.fn().mockResolvedValue(first) });
+    await screen.findByText('第一页');
+    fireEvent.click(screen.getByRole('button', { name: '加载更多' }));
+    await screen.findByText('第二页');
+
+    fireEvent.click(screen.getByText('第一页'));
+    await screen.findByText('待审核正文');
+    fireEvent.change(screen.getByLabelText('审核理由'), { target: { value: '审核通过' } });
+    fireEvent.click(screen.getByRole('button', { name: '批准发布' }));
+    await waitFor(() => expect(listQueue).toHaveBeenCalledTimes(3));
+    fireEvent.click(screen.getByRole('button', { name: '加载更多' }));
+
+    await waitFor(() => expect(listQueue).toHaveBeenCalledTimes(4));
+    expect(listQueue.mock.calls[3]?.[2]).toBe('v1.same-next');
+  });
+
+  it('版本冲突替换队列后允许复用新一代页面返回的相同游标', async () => {
+    const first = detail({ id: 'first', title: '冲突第一页', body: '冲突正文' });
+    const second = detail({ id: 'second', title: '冲突第二页' });
+    const listQueue = vi.fn()
+      .mockResolvedValueOnce({ items: [queuePage(first).items[0]!], nextCursor: 'v1.same-next' })
+      .mockResolvedValueOnce({ items: [queuePage(second).items[0]!], nextCursor: null })
+      .mockResolvedValueOnce({ items: [queuePage(first).items[0]!], nextCursor: 'v1.same-next' })
+      .mockResolvedValueOnce({ items: [queuePage(second).items[0]!], nextCursor: null });
+    setup({
+      listQueue,
+      getDetail: vi.fn().mockResolvedValue(first),
+      applyAction: vi.fn().mockRejectedValue(new ApiClientError('VERSION_CONFLICT', 409))
+    });
+    await screen.findByText('冲突第一页');
+    fireEvent.click(screen.getByRole('button', { name: '加载更多' }));
+    await screen.findByText('冲突第二页');
+
+    fireEvent.click(screen.getByText('冲突第一页'));
+    await screen.findByText('冲突正文');
+    fireEvent.change(screen.getByLabelText('审核理由'), { target: { value: '重新复核' } });
+    fireEvent.click(screen.getByRole('button', { name: '批准发布' }));
+    await waitFor(() => expect(listQueue).toHaveBeenCalledTimes(3));
+    fireEvent.click(screen.getByRole('button', { name: '加载更多' }));
+
+    await waitFor(() => expect(listQueue).toHaveBeenCalledTimes(4));
+    expect(listQueue.mock.calls[3]?.[2]).toBe('v1.same-next');
+  });
+
   it('分页失败可重试且成功后阻止服务端重复游标', async () => {
     const first = detail({ id: 'first', title: '第一页' });
     const second = detail({ id: 'second', title: '第二页' });

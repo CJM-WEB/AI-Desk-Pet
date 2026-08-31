@@ -30,6 +30,12 @@ function createApi(...values: unknown[]) {
   } as unknown as ApiClient;
 }
 
+function deferred<T>() {
+  let resolve: ((value: T) => void) | undefined;
+  const promise = new Promise<T>(done => { resolve = done; });
+  return { promise, resolve: (value: T) => resolve?.(value) };
+}
+
 describe('云端共享仓库', () => {
   it('投稿接口只接收输入和可选进度回调', () => {
     expect(CloudSharedPetRepository.prototype.submit.length).toBe(2);
@@ -188,6 +194,48 @@ describe('云端共享仓库', () => {
       '/community?limit=8&cursor=v1.new-page-2',
       expect.anything()
     );
+  });
+
+  it('较旧的第一页响应不能覆盖较新刷新拥有的游标', async () => {
+    const stale = deferred<{ items: never[]; nextCursor: string }>();
+    const fresh = deferred<{ items: never[]; nextCursor: string }>();
+    const request = vi.fn()
+      .mockReturnValueOnce(stale.promise)
+      .mockReturnValueOnce(fresh.promise)
+      .mockResolvedValueOnce({ items: [], nextCursor: null });
+    const repository = new CloudSharedPetRepository({ request } as unknown as ApiClient);
+
+    const stalePage = repository.listPage(1);
+    const freshPage = repository.listPage(1);
+    fresh.resolve({ items: [], nextCursor: 'v1.fresh-page-2' });
+    await freshPage;
+    stale.resolve({ items: [], nextCursor: 'v1.stale-page-2' });
+    await stalePage;
+    await repository.listPage(2);
+
+    expect(request).toHaveBeenNthCalledWith(
+      3,
+      '/community?limit=8&cursor=v1.fresh-page-2',
+      expect.anything()
+    );
+  });
+
+  it('较旧的续页响应不能向新刷新代际写入后续游标', async () => {
+    const staleContinuation = deferred<{ items: never[]; nextCursor: string }>();
+    const request = vi.fn()
+      .mockResolvedValueOnce({ items: [], nextCursor: 'v1.old-page-2' })
+      .mockReturnValueOnce(staleContinuation.promise)
+      .mockResolvedValueOnce({ items: [], nextCursor: 'v1.fresh-page-2' });
+    const repository = new CloudSharedPetRepository({ request } as unknown as ApiClient);
+
+    await repository.listPage(1);
+    const stalePage = repository.listPage(2);
+    await repository.listPage(1);
+    staleContinuation.resolve({ items: [], nextCursor: 'v1.stale-page-3' });
+    await stalePage;
+
+    await expect(repository.listPage(3)).rejects.toThrow('PAGE_CURSOR_UNAVAILABLE');
+    expect(request).toHaveBeenCalledTimes(3);
   });
 
   it('详情 404 返回 null，点赞和下载仅使用公开 API', async () => {

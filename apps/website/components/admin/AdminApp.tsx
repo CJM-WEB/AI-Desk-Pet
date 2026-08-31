@@ -155,9 +155,16 @@ function AdminWorkspace({
     append = false
   ): Promise<void> => {
     if (!accessToken) return;
+    // 替换刷新开启新的分页代际，相同 opaque token 在新快照中必须可以再次消费。
+    if (!append) {
+      seenCursors.current = new Set();
+      pendingCursors.current = new Set();
+    }
+    const seenCursorGeneration = seenCursors.current;
+    const pendingCursorGeneration = pendingCursors.current;
     if (append && cursor !== undefined) {
-      if (seenCursors.current.has(cursor) || pendingCursors.current.has(cursor)) return;
-      pendingCursors.current.add(cursor);
+      if (seenCursorGeneration.has(cursor) || pendingCursorGeneration.has(cursor)) return;
+      pendingCursorGeneration.add(cursor);
     }
     const epoch = sessionEpoch.current;
     const sequence = ++queueSequence.current;
@@ -179,7 +186,7 @@ function AdminWorkspace({
       ) return;
       setItems(previous => append ? mergeById(previous, page.items) : [...page.items]);
       setNextCursor(page.nextCursor);
-      if (append && cursor !== undefined) seenCursors.current.add(cursor);
+      if (append && cursor !== undefined) seenCursorGeneration.add(cursor);
     } catch (error) {
       if (epoch !== sessionEpoch.current || isAbort(error)) return;
       // 仅记录稳定错误元数据，线上诊断不得包含访问令牌或投稿内容。
@@ -190,7 +197,7 @@ function AdminWorkspace({
       }
       if (!await handleApiError(error)) setNotice(t('admin.error.queue'));
     } finally {
-      if (append && cursor !== undefined) pendingCursors.current.delete(cursor);
+      if (append && cursor !== undefined) pendingCursorGeneration.delete(cursor);
       if (epoch === sessionEpoch.current && sequence === queueSequence.current) {
         setQueueLoading(false);
       }

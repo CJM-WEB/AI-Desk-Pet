@@ -186,6 +186,7 @@ export function runWebsiteApiContract(
         path: '/api/v1/community?limit=1',
       }), publicCommunityPageSchema);
       expect(first.items).toHaveLength(1);
+      expect(first.items[0]?.id).toBe(refs.publicCommunityId);
       expect(first.nextCursor).toMatch(/^v1\.[A-Za-z0-9_-]+$/u);
 
       const second = success(await driver.request({
@@ -201,6 +202,7 @@ export function runWebsiteApiContract(
         path: '/api/v1/feedback?kind=feedback&limit=1',
       }), publicFeedbackPageSchema);
       expect(firstFeedback.nextCursor).toMatch(/^v1\.[A-Za-z0-9_-]+$/u);
+      expect(firstFeedback.items[0]?.id).toBe(refs.publicFeedbackId);
       const secondFeedback = success(await driver.request({
         method: 'GET',
         path: `/api/v1/feedback?kind=feedback&limit=1&cursor=${encodeURIComponent(firstFeedback.nextCursor!)}`,
@@ -233,6 +235,36 @@ export function runWebsiteApiContract(
       failure(await driver.request({
         method: 'GET',
         path: `/api/v1/community?limit=1&cursor=${'x'.repeat(513)}`,
+      }), 400, 'INVALID_CURSOR');
+
+      const impossibleDate = Buffer.from(JSON.stringify({
+        scope: 'community',
+        sortTime: '2026-02-30T03:00:00.000Z',
+        id: 'contract-community',
+      })).toString('base64url');
+      failure(await driver.request({
+        method: 'GET',
+        path: `/api/v1/community?limit=1&cursor=v1.${impossibleDate}`,
+      }), 400, 'INVALID_CURSOR');
+
+      const impossibleOffset = Buffer.from(JSON.stringify({
+        scope: 'community',
+        sortTime: '2026-08-31T03:00:00+14:01',
+        id: 'contract-community',
+      })).toString('base64url');
+      failure(await driver.request({
+        method: 'GET',
+        path: `/api/v1/community?limit=1&cursor=v1.${impossibleOffset}`,
+      }), 400, 'INVALID_CURSOR');
+
+      const invalidUtf8 = Buffer.concat([
+        Buffer.from(`{"scope":"community","sortTime":"2026-07-31T00:00:00.000Z","id":"`),
+        Buffer.from([0xff]),
+        Buffer.from('"}'),
+      ]).toString('base64url');
+      failure(await driver.request({
+        method: 'GET',
+        path: `/api/v1/community?limit=1&cursor=v1.${invalidUtf8}`,
       }), 400, 'INVALID_CURSOR');
     });
 

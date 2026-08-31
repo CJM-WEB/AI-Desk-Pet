@@ -424,15 +424,15 @@ function seedContractFixtures(submissions, tokenIndex, uploads) {
     3,
     'standard'
   );
-  const olderCommunity = {
+  const offsetCommunity = {
     ...sharedRecord(
-      'contract-community-older',
-      '较早公开合同资源',
+      'contract-a',
+      '等价时区合同资源',
       'published',
       1,
       'standard'
     ),
-    publishedAt: '2026-07-30T23:59:00.000Z'
+    publishedAt: '2026-07-31T08:00:00.000+08:00'
   };
   const override = sharedRecord(
     CONTRACT_REFS.overrideSubmissionId,
@@ -448,20 +448,20 @@ function seedContractFixtures(submissions, tokenIndex, uploads) {
     assets: [],
     publicationBasis: null
   };
-  const olderFeedback = {
+  const sameTimeFeedback = {
     ...feedback,
-    id: 'contract-feedback-older',
-    title: '较早合同用户',
-    body: '较早公开合同反馈',
-    publishedAt: '2026-07-30T23:59:00.000Z'
+    id: 'Z-feedback',
+    title: '同时间合同用户',
+    body: '同时间公开合同反馈',
+    publishedAt: createdAt
   };
   for (const record of [
     uploaded,
     community,
-    olderCommunity,
+    offsetCommunity,
     override,
     feedback,
-    olderFeedback
+    sameTimeFeedback
   ]) {
     submissions.set(record.id, record);
   }
@@ -638,12 +638,14 @@ function pageOf(records, searchParams, project, scope, sortField) {
   const boundary = cursor === null ? null : decodeMemoryCursor(cursor, scope);
   const sorted = [...records]
     .filter(record => boundary === null
-      || record[sortField] < boundary.sortTime
-      || (record[sortField] === boundary.sortTime && record.id < boundary.id))
-    .sort((left, right) =>
-      String(right[sortField]).localeCompare(String(left[sortField]))
-      || right.id.localeCompare(left.id)
-    );
+      || compareMemoryPosition(
+        { sortTime: String(record[sortField]), id: record.id },
+        boundary
+      ) < 0)
+    .sort((left, right) => compareMemoryPosition(
+      { sortTime: String(right[sortField]), id: right.id },
+      { sortTime: String(left[sortField]), id: left.id }
+    ));
   const rows = sorted.slice(0, limit + 1);
   const items = rows.slice(0, limit).map(project);
   const last = rows[limit - 1];
@@ -653,6 +655,32 @@ function pageOf(records, searchParams, project, scope, sortField) {
       ? encodeMemoryCursor(scope, last[sortField], last.id)
       : null
   };
+}
+
+function compareMemoryPosition(left, right) {
+  const instantDifference = parseMemoryInstant(left.sortTime) - parseMemoryInstant(right.sortTime);
+  if (instantDifference !== 0) return instantDifference;
+  return left.id < right.id ? -1 : left.id > right.id ? 1 : 0;
+}
+
+function parseMemoryInstant(value) {
+  const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(Z|([+-])(\d{2}):(\d{2}))$/u.exec(value);
+  if (!match) throw new Error('INVALID_DATETIME');
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const leapYear = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
+  const monthDays = [31, leapYear ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+  const offsetHour = match[7] === 'Z' ? 0 : Number(match[9]);
+  const offsetMinute = match[7] === 'Z' ? 0 : Number(match[10]);
+  const instant = Date.parse(value);
+  if (
+    year < 1 || month < 1 || month > 12 || day < 1 || day > monthDays[month - 1]
+    || Number(match[4]) > 23 || Number(match[5]) > 59 || Number(match[6]) > 59
+    || offsetHour > 14 || offsetMinute > 59 || (offsetHour === 14 && offsetMinute !== 0)
+    || !Number.isFinite(instant)
+  ) throw new Error('INVALID_DATETIME');
+  return instant;
 }
 
 /** Memory 合同独立实现同一 opaque wire，不导入生产数据库或适配器代码。 */
@@ -670,13 +698,12 @@ function decodeMemoryCursor(cursor, expectedScope) {
     const encoded = cursor.slice(3);
     const bytes = Buffer.from(encoded, 'base64url');
     if (bytes.toString('base64url') !== encoded) throw new Error();
-    const payload = JSON.parse(bytes.toString('utf8'));
+    const payload = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes));
     if (
       Object.keys(payload).sort().join(',') !== 'id,scope,sortTime'
       || payload.scope !== expectedScope
       || typeof payload.sortTime !== 'string'
-      || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/u.test(payload.sortTime)
-      || !Number.isFinite(Date.parse(payload.sortTime))
+      || !Number.isFinite(parseMemoryInstant(payload.sortTime))
       || typeof payload.id !== 'string'
       || payload.id.length < 1
       || payload.id.length > 128

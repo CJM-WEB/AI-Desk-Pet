@@ -45,6 +45,9 @@ describe('键集游标 codec', () => {
 
   it.each([
     ['not-a-date', 'valid-id'],
+    ['2026-02-30T03:00:00.000Z', 'valid-id'],
+    ['2026-08-31T03:00:00+99:99', 'valid-id'],
+    ['2026-08-31T03:00:00+14:01', 'valid-id'],
     [sortTime, ''],
     [sortTime, 'x'.repeat(129)]
   ])('拒绝非法日期或 id：%s / %s', (invalidTime, invalidId) => {
@@ -53,6 +56,21 @@ describe('键集游标 codec', () => {
       sortTime: invalidTime,
       id: invalidId
     })).toString('base64url');
+    expect(() => decodeKeysetCursor(`v1.${payload}`, 'community'))
+      .toThrow('INVALID_CURSOR');
+  });
+
+  it('拒绝会被默认解码器替换为 U+FFFD 的非法 UTF-8', () => {
+    const prefix = Buffer.from(
+      `{"scope":"community","sortTime":"${sortTime}","id":"`,
+      'utf8'
+    );
+    const payload = Buffer.concat([
+      prefix,
+      Buffer.from([0xff]),
+      Buffer.from('"}', 'utf8')
+    ]).toString('base64url');
+
     expect(() => decodeKeysetCursor(`v1.${payload}`, 'community'))
       .toThrow('INVALID_CURSOR');
   });

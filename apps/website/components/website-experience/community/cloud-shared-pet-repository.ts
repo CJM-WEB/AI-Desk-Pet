@@ -31,6 +31,7 @@ export class CloudSharedPetRepository implements SharedPetRepository {
   private readonly listeners = new Set<() => void>();
   private readonly records = new Map<string, SharedPetPackageSummary>();
   private readonly pageCursors = new Map<number, string>();
+  private pageGeneration = 0;
 
   constructor(
     private readonly api: ApiClient,
@@ -42,6 +43,8 @@ export class CloudSharedPetRepository implements SharedPetRepository {
     pageSize: typeof SHARED_PET_PAGE_SIZE = SHARED_PET_PAGE_SIZE
   ): Promise<SharedPetPage> {
     const selectedPage = Number.isFinite(page) ? Math.max(1, Math.floor(page)) : 1;
+    // 第一页刷新取得游标缓存所有权；旧代际响应只可返回给原调用方，不得回写仓库状态。
+    const generation = selectedPage === 1 ? ++this.pageGeneration : this.pageGeneration;
     if (selectedPage === 1) this.pageCursors.clear();
     const cursor = selectedPage === 1 ? undefined : this.pageCursors.get(selectedPage);
     if (selectedPage > 1 && cursor === undefined) throw new Error('PAGE_CURSOR_UNAVAILABLE');
@@ -49,14 +52,17 @@ export class CloudSharedPetRepository implements SharedPetRepository {
       `/community?limit=${pageSize}${cursor === undefined ? '' : `&cursor=${encodeURIComponent(cursor)}`}`,
       publicCommunityPageSchema
     );
-    const items = result.items.map(item => this.remember(item));
+    const ownsState = generation === this.pageGeneration;
+    const items = result.items.map(item => this.remember(item, ownsState));
     const hasNext = result.nextCursor !== null;
     const total = (selectedPage - 1) * pageSize + items.length;
-    for (const cachedPage of this.pageCursors.keys()) {
-      if (cachedPage > selectedPage + 1) this.pageCursors.delete(cachedPage);
+    if (ownsState) {
+      for (const cachedPage of this.pageCursors.keys()) {
+        if (cachedPage > selectedPage + 1) this.pageCursors.delete(cachedPage);
+      }
+      if (result.nextCursor === null) this.pageCursors.delete(selectedPage + 1);
+      else this.pageCursors.set(selectedPage + 1, result.nextCursor);
     }
-    if (result.nextCursor === null) this.pageCursors.delete(selectedPage + 1);
-    else this.pageCursors.set(selectedPage + 1, result.nextCursor);
     return {
       items,
       page: selectedPage,
@@ -181,7 +187,10 @@ export class CloudSharedPetRepository implements SharedPetRepository {
     return () => this.listeners.delete(listener);
   }
 
-  private remember(item: PublicCommunityItem): SharedPetPackageSummary {
+  private remember(
+    item: PublicCommunityItem,
+    persist = true
+  ): SharedPetPackageSummary {
     const summary: SharedPetPackageSummary = {
       id: item.id,
       name: item.name,
@@ -196,7 +205,7 @@ export class CloudSharedPetRepository implements SharedPetRepository {
       likedByCurrentUser: this.records.get(item.id)?.likedByCurrentUser ?? false,
       publicationBasis: item.publicationBasis
     };
-    this.records.set(summary.id, summary);
+    if (persist) this.records.set(summary.id, summary);
     return summary;
   }
 

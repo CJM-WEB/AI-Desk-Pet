@@ -72,13 +72,13 @@ function createState(): ProductionFixtureState {
         publicationBasis: 'standard',
         publishedAt: CREATED_AT,
       }],
-      ['contract-community-older', {
-        id: 'contract-community-older',
+      ['contract-a', {
+        id: 'contract-a',
         status: 'published',
         statusVersion: 1,
-        title: '较早公开合同资源',
+        title: '等价时区合同资源',
         publicationBasis: 'standard',
-        publishedAt: '2026-07-30T23:59:00.000Z',
+        publishedAt: '2026-07-31T08:00:00.000+08:00',
       }],
     ]),
     idempotency: new Map(),
@@ -252,12 +252,12 @@ function createDependencies(state: ProductionFixtureState): ApiDependencies {
           likeCount: 0,
           createdAt: CREATED_AT,
         }, {
-          id: 'contract-feedback-older',
+          id: 'Z-feedback',
           kind: 'feedback' as const,
-          authorName: '较早合同用户',
-          content: '较早公开合同反馈',
+          authorName: '同时间合同用户',
+          content: '同时间公开合同反馈',
           likeCount: 0,
-          createdAt: '2026-07-30T23:59:00.000Z',
+          createdAt: CREATED_AT,
         }].filter(item => item.kind === kind), input, `feedback:${kind}`,
         item => item.createdAt, item => item),
       toggleCommunityLike: async () => {
@@ -329,11 +329,14 @@ function contractPage<T extends { id: string }, R>(
   const boundary = input.cursor ? decodeContractCursor(input.cursor, scope) : null;
   const rows = [...records]
     .filter(record => boundary === null
-      || sortTime(record) < boundary.sortTime
-      || (sortTime(record) === boundary.sortTime && record.id < boundary.id))
-    .sort((left, right) =>
-      sortTime(right).localeCompare(sortTime(left)) || right.id.localeCompare(left.id)
-    )
+      || compareContractPosition(
+        { sortTime: sortTime(record), id: record.id },
+        boundary,
+      ) < 0)
+    .sort((left, right) => compareContractPosition(
+      { sortTime: sortTime(right), id: right.id },
+      { sortTime: sortTime(left), id: left.id },
+    ))
     .slice(0, input.limit + 1);
   const last = rows[input.limit - 1];
   return {
@@ -342,6 +345,35 @@ function contractPage<T extends { id: string }, R>(
       ? encodeContractCursor(scope, sortTime(last), last.id)
       : null,
   };
+}
+
+function compareContractPosition(
+  left: { sortTime: string; id: string },
+  right: { sortTime: string; id: string },
+): number {
+  const instantDifference = parseContractInstant(left.sortTime) - parseContractInstant(right.sortTime);
+  if (instantDifference !== 0) return instantDifference;
+  return left.id < right.id ? -1 : left.id > right.id ? 1 : 0;
+}
+
+function parseContractInstant(value: string): number {
+  const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(Z|([+-])(\d{2}):(\d{2}))$/u.exec(value);
+  if (!match) throw new Error('INVALID_DATETIME');
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const leapYear = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
+  const monthDays = [31, leapYear ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+  const offsetHour = match[7] === 'Z' ? 0 : Number(match[9]);
+  const offsetMinute = match[7] === 'Z' ? 0 : Number(match[10]);
+  const instant = Date.parse(value);
+  if (
+    year < 1 || month < 1 || month > 12 || day < 1 || day > monthDays[month - 1]!
+    || Number(match[4]) > 23 || Number(match[5]) > 59 || Number(match[6]) > 59
+    || offsetHour > 14 || offsetMinute > 59 || (offsetHour === 14 && offsetMinute !== 0)
+    || !Number.isFinite(instant)
+  ) throw new Error('INVALID_DATETIME');
+  return instant;
 }
 
 function encodeContractCursor(scope: string, sortTime: string, id: string): string {
@@ -357,12 +389,13 @@ function decodeContractCursor(cursor: string, expectedScope: string): {
     const encoded = cursor.slice(3);
     const bytes = Buffer.from(encoded, 'base64url');
     if (bytes.toString('base64url') !== encoded) throw new Error();
-    const payload = JSON.parse(bytes.toString('utf8')) as Record<string, unknown>;
+    const payload = JSON.parse(
+      new TextDecoder('utf-8', { fatal: true }).decode(bytes),
+    ) as Record<string, unknown>;
     if (
       payload.scope !== expectedScope
       || typeof payload.sortTime !== 'string'
-      || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/u.test(payload.sortTime)
-      || !Number.isFinite(Date.parse(payload.sortTime))
+      || !Number.isFinite(parseContractInstant(payload.sortTime))
       || typeof payload.id !== 'string'
       || payload.id.length < 1
       || payload.id.length > 128
