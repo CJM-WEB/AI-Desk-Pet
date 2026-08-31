@@ -5,6 +5,7 @@ dist/
 out/
 coverage/
 .next/
+.e2e-out/
 *.tsbuildinfo
 
 # Electron Builder 生成产物

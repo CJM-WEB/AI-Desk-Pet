@@ -3,6 +3,7 @@ export const WEBSITE_SCOPE_BASELINE = '0dab17de8863a7c726a5bb5fceff35a1713daad1'
 
 /** 当前网站优化阶段只允许官网业务、验证基础设施及其精确获批文档。 */
 export const ALLOWED_WEBSITE_SCOPE_PATHS = Object.freeze([
+  '.gitignore',
   'AGENTS.md',
   'CONTEXT.md',
   '.dependency-cruiser.mjs',
@@ -64,6 +65,7 @@ export const ALLOWED_WEBSITE_SCOPE_PATHS = Object.freeze([
   'tests/e2e/website.spec.ts',
   'tests/memory-website-api.mjs',
   'tests/playwright.website.config.ts',
+  'tests/serve-website-export.mjs',
   'tools/cloudbase-migration-inventory.mjs',
   'tools/cloudbase-migration-inventory.test.mjs',
   'tools/cloudbase-user-migrations.mjs',

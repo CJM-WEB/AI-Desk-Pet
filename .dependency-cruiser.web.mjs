@@ -43,6 +43,10 @@ export default {
     ...baseConfiguration.options,
     doNotFollow: {
       path: '(^|/)node_modules/|^packages/(character-assets|character-runtime)/'
+    },
+    // E2E 静态导出属于测试生成物，不得进入网站源码依赖审计。
+    exclude: {
+      path: [...baseConfiguration.options.exclude.path, '^apps/website/\\.e2e-out/']
     }
   }
 };

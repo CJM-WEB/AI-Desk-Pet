@@ -4,6 +4,11 @@ import { readFile, stat } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { extname, resolve, sep } from 'node:path';
 import { createMemoryWebsiteApi } from './memory-website-api.mjs';
+import {
+  E2E_EXPORT_ROOT,
+  assertCanonicalExportClean,
+  assertE2eExportReady
+} from '../tools/verification/website-export-isolation.mjs';
 
 const host = '127.0.0.1';
 const configuredPort = Number.parseInt(process.env.PORT ?? '4173', 10);
@@ -11,7 +16,9 @@ const port = Number.isInteger(configuredPort) && configuredPort >= 0
   ? configuredPort
   : 4173;
 const testRunId = process.env.WEBSITE_TEST_RUN_ID ?? 'manual';
-const exportRoot = resolve(process.cwd(), 'apps/website/out');
+await assertCanonicalExportClean();
+await assertE2eExportReady();
+const exportRoot = E2E_EXPORT_ROOT;
 const exportedIndex = await readFile(resolve(exportRoot, 'index.html'));
 const buildMarker = createHash('sha256')
   .update(exportedIndex)
