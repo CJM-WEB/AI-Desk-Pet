@@ -57,6 +57,21 @@ test('按版本排序并对 SQL 原始字节计算 SHA-256', async (t) => {
   assert.deepEqual(items[0].content, Buffer.from('SELECT 1;\n'));
 });
 
+test('真实仓库迁移清单保持六个不可变前向版本', async () => {
+  const items = await inventoryCloudBaseMigrations(
+    new URL('../cloudbase/migrations/', import.meta.url)
+  );
+
+  assert.deepEqual(items.map((item) => item.fileName), [
+    '20260730000000_moderation.sql',
+    '20260807000000_public_like_kinds.sql',
+    '20260808000000_direct_manual_review.sql',
+    '20260815000000_shared_package_publication_guard.sql',
+    '20260831000000_restore_scanned_submission_flow.sql',
+    '20260831010000_admin_override_publication.sql'
+  ]);
+});
+
 test('拒绝 manager SDK 不接受的含数字迁移名称', async (t) => {
   const root = await createMigrationDirectory(t);
   await writeFile(join(root, '20260808000000_phase_2.sql'), 'SELECT 1;\n');

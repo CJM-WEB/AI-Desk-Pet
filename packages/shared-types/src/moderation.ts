@@ -15,6 +15,10 @@ export const submissionStatuses = [
 export const submissionStatusSchema = z.enum(submissionStatuses);
 export type SubmissionStatus = z.infer<typeof submissionStatusSchema>;
 
+/** 发布依据独立于技术扫描结论，后到扫描不得改写该事实。 */
+export const publicationBasisSchema = z.enum(['standard', 'admin_override']);
+export type PublicationBasis = z.infer<typeof publicationBasisSchema>;
+
 export const submissionReceiptSchema = z.object({
   submissionId: z.string().min(1).max(128),
   statusToken: z.string().regex(/^[A-Za-z0-9_-]{43}$/),
@@ -51,10 +55,21 @@ export const submissionStatusViewSchema = z.object({
 }).strict();
 export type SubmissionStatusView = z.infer<typeof submissionStatusViewSchema>;
 
-export const adminActionSchema = z.object({
-  action: z.enum(['approve', 'reject', 'move_to_manual', 'delete', 'restore']),
+const adminActionBase = z.object({
   version: z.number().int().nonnegative(),
   idempotencyKey: z.string().min(8).max(128),
   reason: z.string().trim().min(1).max(500)
 }).strict();
+
+const normalAdminActionSchema = adminActionBase.extend({
+  action: z.enum(['approve', 'reject', 'move_to_manual', 'delete', 'restore'])
+});
+
+export const adminActionSchema = z.discriminatedUnion('action', [
+  normalAdminActionSchema,
+  adminActionBase.extend({
+    action: z.literal('force_publish'),
+    riskAcknowledgement: z.literal('ADMIN_OVERRIDE_ACCEPTED')
+  })
+]);
 export type AdminAction = z.infer<typeof adminActionSchema>;

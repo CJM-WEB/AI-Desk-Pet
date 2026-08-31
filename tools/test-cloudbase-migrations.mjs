@@ -94,7 +94,7 @@ export async function runCloudBaseMigrationBehaviorGate({
       postgresVersion: postgresVersion.version,
       postgresMajorVersion: postgresVersion.major,
       migrationsApplied: migrations.length,
-      behaviorsVerified: 9
+      behaviorsVerified: 19
     };
   } finally {
     if (started) {
@@ -257,15 +257,63 @@ RETURNS jsonb LANGUAGE sql AS $result$
   ));
 $result$;
 
+/** 行为门用危险结果，证明后到技术事实不被改写为通过。 */
+CREATE OR REPLACE FUNCTION gate_block_result(
+  p_id text,
+  p_completed_at timestamptz
+)
+RETURNS jsonb LANGUAGE sql AS $result$
+  SELECT jsonb_build_array(jsonb_build_object(
+    'kind', 'package_scan',
+    'provider', 'isolated-scanner',
+    'rule_version', 'character-package-2026-08-15',
+    'suggestion', 'Block',
+    'label', '技术检查：MALWARE_DETECTED',
+    'score', 1,
+    'evidence', jsonb_build_object('scanCode', 'MALWARE_DETECTED'),
+    'requested_at', p_completed_at - interval '1 minute',
+    'completed_at', p_completed_at,
+    'error_message', NULL
+  ));
+$result$;
+
+/** 故障注入只拦截指定幂等键，用于证明审计写入失败会回滚状态变更。 */
+CREATE OR REPLACE FUNCTION gate_fail_audit_insert()
+RETURNS trigger LANGUAGE plpgsql AS $trigger$
+BEGIN
+  IF NEW.idempotency_key = 'gate-late-audit-failure' THEN
+    RAISE EXCEPTION '行为门注入的审计写入失败'
+      USING ERRCODE = 'P9001';
+  END IF;
+  RETURN NEW;
+END
+$trigger$;
+CREATE TRIGGER gate_fail_audit_insert
+BEFORE INSERT ON admin_audit_logs
+FOR EACH ROW EXECUTE FUNCTION gate_fail_audit_insert();
+
 DO $gate$
 DECLARE
   v_now timestamptz := clock_timestamp();
   v_status text;
   v_version bigint;
+  v_claimed_version bigint;
   v_count bigint;
   v_result jsonb;
 BEGIN
-  -- 1. 上传完成只进入系统审核。
+  -- 1. 数据库约束直接拒绝 published + NULL，不依赖服务层。
+  BEGIN
+    INSERT INTO submissions (
+      id, kind, status, status_token_hash, publication_basis
+    ) VALUES (
+      'gate-invalid-basis', 'feedback', 'published', repeat('0', 64), NULL
+    );
+    RAISE EXCEPTION '行为门失败：published 接受了空发布依据';
+  EXCEPTION WHEN SQLSTATE '23514' THEN
+    NULL;
+  END;
+
+  -- 2. 上传完成只进入系统审核。
   PERFORM gate_seed('gate-valid');
   SELECT status, status_version INTO v_status, v_version
   FROM submissions WHERE id = 'gate-valid';
@@ -369,12 +417,25 @@ BEGIN
     RAISE EXCEPTION '行为门失败：TTL 等号边界';
   END IF;
 
-  -- 6. 有效证据允许人工批准，数据库版本和审计同时推进。
+  -- 6. 有效证据存在时不允许错标为强制发布。
+  BEGIN
+    PERFORM apply_admin_action(
+      'gate-valid', 'admin-1', 'force_publish', 'published', 2,
+      'gate-valid-force', '应走普通批准', 'ADMIN_OVERRIDE_ACCEPTED'
+    );
+    RAISE EXCEPTION '行为门失败：有效证据被错标为强制发布';
+  EXCEPTION WHEN SQLSTATE 'P1002' THEN
+    NULL;
+  END;
+
+  -- 7. 有效证据允许普通批准，并原子写入 standard 发布依据。
   PERFORM apply_admin_action(
     'gate-valid', 'admin-1', 'approve', 'published', 2,
     'gate-valid-approve', '人工复核通过'
   );
   IF (SELECT status FROM submissions WHERE id = 'gate-valid') <> 'published'
+    OR (SELECT publication_basis FROM submissions WHERE id = 'gate-valid')
+      <> 'standard'
     OR NOT EXISTS (
       SELECT 1 FROM admin_audit_logs
       WHERE idempotency_key = 'gate-valid-approve'
@@ -382,40 +443,236 @@ BEGIN
     RAISE EXCEPTION '行为门失败：有效批准';
   END IF;
 
-  -- 7. 自动驳回转人工必须回系统审核，不重绑旧证据。
-  INSERT INTO submissions (
-    id, kind, status, status_token_hash, auto_rejection_reason
-  ) VALUES (
-    'gate-move', 'shared_package', 'auto_rejected', repeat('b', 64), '自动驳回'
-  );
+  -- 8. 共享包可以从系统审核直接转入人工待审。
+  PERFORM gate_seed('gate-move');
   PERFORM apply_admin_action(
-    'gate-move', 'admin-1', 'move_to_manual', 'system_reviewing', 0,
-    'gate-move-rescan', '请求复核'
+    'gate-move', 'admin-1', 'move_to_manual', 'manual_review_pending', 1,
+    'gate-move-manual', '请求人工复核'
   );
   IF (SELECT status FROM submissions WHERE id = 'gate-move')
-    <> 'system_reviewing' THEN
-    RAISE EXCEPTION '行为门失败：转人工未重扫';
+    <> 'manual_review_pending' THEN
+    RAISE EXCEPTION '行为门失败：共享包未直接转人工';
   END IF;
 
-  -- 8. 隔离共享包恢复同样回系统审核，人工批准不会被复用。
+  -- 危险共享包转人工只改管理状态，不改写原技术结论。
   INSERT INTO submissions (
-    id, kind, status, status_token_hash, pre_quarantine_status, quarantined_at
+    id, kind, status, status_token_hash, auto_rejection_reason, risk_summary
   ) VALUES (
-    'gate-restore', 'shared_package', 'deleted_quarantined', repeat('c', 64),
-    'published', now()
+    'gate-auto-move', 'shared_package', 'auto_rejected', repeat('f', 64),
+    '检测到危险文件', '{"blocked":true,"severity":"high"}'::jsonb
+  );
+  INSERT INTO moderation_results (
+    submission_id, kind, provider, rule_version, suggestion, label,
+    evidence, requested_at, completed_at
+  ) VALUES (
+    'gate-auto-move', 'package_scan', 'isolated-scanner',
+    'character-package-2026-08-15', 'Block', '技术检查：MALWARE_DETECTED',
+    '{"scanCode":"MALWARE_DETECTED"}'::jsonb, v_now, v_now
   );
   PERFORM apply_admin_action(
-    'gate-restore', 'admin-1', 'restore', 'system_reviewing', 0,
-    'gate-restore-rescan', '恢复并重扫'
+    'gate-auto-move', 'admin-1', 'move_to_manual',
+    'manual_review_pending', 0, 'gate-auto-move-manual', '转人工复核'
   );
-  IF (SELECT status FROM submissions WHERE id = 'gate-restore')
+  IF (SELECT status FROM submissions WHERE id = 'gate-auto-move')
+      <> 'manual_review_pending'
+    OR (SELECT auto_rejection_reason FROM submissions
+        WHERE id = 'gate-auto-move') <> '检测到危险文件'
+    OR (SELECT risk_summary ->> 'severity' FROM submissions
+        WHERE id = 'gate-auto-move') <> 'high'
+    OR NOT EXISTS (
+      SELECT 1 FROM moderation_results
+      WHERE submission_id = 'gate-auto-move' AND suggestion = 'Block'
+    )
+    OR EXISTS (
+      SELECT 1 FROM moderation_results
+      WHERE submission_id = 'gate-auto-move' AND suggestion = 'Pass'
+    ) THEN
+    RAISE EXCEPTION '行为门失败：危险共享包转人工改写了技术事实';
+  END IF;
+
+  -- 9. 已领取的审核任务先转人工，为后到结果保留真实租约事实。
+  PERFORM gate_seed('gate-late');
+  UPDATE submissions
+  SET created_at = v_now - interval '1 day'
+  WHERE id = 'gate-late';
+  SELECT claimed.status_version INTO v_claimed_version
+  FROM claim_moderation_jobs(1, v_now + interval '5 minutes') AS claimed
+  WHERE claimed.id = 'gate-late';
+  IF v_claimed_version <> 2 THEN
+    RAISE EXCEPTION '行为门失败：未真实领取后到审核任务';
+  END IF;
+  INSERT INTO moderation_results (
+    submission_id, kind, provider, rule_version, suggestion, label,
+    evidence, requested_at, completed_at
+  ) VALUES (
+    'gate-late', 'package_scan', 'isolated-scanner',
+    'character-package-2026-08-15', 'Review', '待人工确认',
+    '{}'::jsonb, v_now - interval '2 minutes', v_now - interval '1 minute'
+  );
+  PERFORM apply_admin_action(
+    'gate-late', 'admin-1', 'move_to_manual', 'manual_review_pending', 2,
+    'gate-late-manual', '人工接管已领取任务'
+  );
+
+  -- 10. 缺少通过证据时普通批准必须失败且不产生状态或审计写入。
+  BEGIN
+    PERFORM apply_admin_action(
+      'gate-late', 'admin-1', 'approve', 'published', 3,
+      'gate-late-approve', '普通批准不得绕过扫描'
+    );
+    RAISE EXCEPTION '行为门失败：无通过证据仍可普通批准';
+  EXCEPTION WHEN SQLSTATE 'P1003' THEN
+    NULL;
+  END;
+  IF (SELECT status_version FROM submissions WHERE id = 'gate-late') <> 3
+    OR EXISTS (
+      SELECT 1 FROM admin_audit_logs
+      WHERE idempotency_key = 'gate-late-approve'
+    ) THEN
+    RAISE EXCEPTION '行为门失败：普通批准拒绝未回滚';
+  END IF;
+
+  -- 11. 强制发布缺少专用风险确认时必须回滚。
+  BEGIN
+    PERFORM apply_admin_action(
+      'gate-late', 'admin-1', 'force_publish', 'published', 3,
+      'gate-late-missing-ack', '缺少风险确认', NULL
+    );
+    RAISE EXCEPTION '行为门失败：缺少风险确认仍可强制发布';
+  EXCEPTION WHEN SQLSTATE 'P1002' THEN
+    NULL;
+  END;
+  IF (SELECT status_version FROM submissions WHERE id = 'gate-late') <> 3
+    OR (SELECT publication_basis FROM submissions WHERE id = 'gate-late')
+      IS NOT NULL THEN
+    RAISE EXCEPTION '行为门失败：缺少确认的强制发布未回滚';
+  END IF;
+
+  -- 12. 审计写入失败必须回滚已更新的状态和发布依据。
+  BEGIN
+    PERFORM apply_admin_action(
+      'gate-late', 'admin-1', 'force_publish', 'published', 3,
+      'gate-late-audit-failure', '验证原子回滚',
+      'ADMIN_OVERRIDE_ACCEPTED'
+    );
+    RAISE EXCEPTION '行为门失败：审计故障未阻止强制发布';
+  EXCEPTION WHEN SQLSTATE 'P9001' THEN
+    NULL;
+  END;
+  IF (SELECT status FROM submissions WHERE id = 'gate-late')
+      <> 'manual_review_pending'
+    OR (SELECT status_version FROM submissions WHERE id = 'gate-late') <> 3
+    OR (SELECT publication_basis FROM submissions WHERE id = 'gate-late')
+      IS NOT NULL THEN
+    RAISE EXCEPTION '行为门失败：审计故障后状态未原子回滚';
+  END IF;
+
+  -- 13. 合法强制发布原子写入状态、发布依据和完整审计。
+  v_result := apply_admin_action(
+    'gate-late', 'admin-1', 'force_publish', 'published', 3,
+    'gate-late-force', '管理员确认承担风险',
+    'ADMIN_OVERRIDE_ACCEPTED'
+  );
+  IF (SELECT status FROM submissions WHERE id = 'gate-late') <> 'published'
+    OR (SELECT status_version FROM submissions WHERE id = 'gate-late') <> 4
+    OR (SELECT publication_basis FROM submissions WHERE id = 'gate-late')
+      <> 'admin_override'
+    OR v_result #>> '{submission,publication_basis}' <> 'admin_override'
+    OR NOT EXISTS (
+      SELECT 1 FROM admin_audit_logs
+      WHERE idempotency_key = 'gate-late-force'
+        AND action = 'force_publish'
+        AND request_payload ->> 'riskAcknowledgement'
+          = 'ADMIN_OVERRIDE_ACCEPTED'
+        AND request_payload #>> '{latestScanSummary,suggestion}' = 'Review'
+    )
+    OR EXISTS (
+      SELECT 1 FROM moderation_results
+      WHERE submission_id = 'gate-late' AND suggestion = 'Pass'
+    ) THEN
+    RAISE EXCEPTION '行为门失败：强制发布原子事实不完整';
+  END IF;
+
+  -- 14. 后到危险结果只追加扫描事实和风险，不改发布状态、版本或依据。
+  v_result := apply_moderation_decision(
+    'gate-late', 2, 'auto_rejected', gate_block_result('gate-late', v_now),
+    '{"blocked":true,"severity":"high"}'::jsonb, '检测到危险文件'
+  );
+  IF COALESCE((v_result ->> 'applied')::boolean, false) IS NOT TRUE
+    OR COALESCE((v_result ->> 'lateResult')::boolean, false) IS NOT TRUE
+    OR (SELECT status FROM submissions WHERE id = 'gate-late') <> 'published'
+    OR (SELECT status_version FROM submissions WHERE id = 'gate-late') <> 4
+    OR (SELECT publication_basis FROM submissions WHERE id = 'gate-late')
+      <> 'admin_override'
+    OR (SELECT risk_summary ->> 'severity' FROM submissions
+        WHERE id = 'gate-late') <> 'high'
+    OR NOT EXISTS (
+      SELECT 1 FROM moderation_results
+      WHERE submission_id = 'gate-late' AND suggestion = 'Block'
+    )
+    OR (SELECT count(*) FROM moderation_results
+        WHERE submission_id = 'gate-late') <> 2
+    OR (SELECT count(*) FROM moderation_results
+        WHERE submission_id = 'gate-late' AND suggestion = 'Review') <> 1 THEN
+    RAISE EXCEPTION '行为门失败：后到危险结果破坏发布事实';
+  END IF;
+
+  -- 15. 同键同请求在扫描摘要变化后仍回放首次快照。
+  v_result := apply_admin_action(
+    'gate-late', 'admin-1', 'force_publish', 'published', 3,
+    'gate-late-force', '管理员确认承担风险',
+    'ADMIN_OVERRIDE_ACCEPTED'
+  );
+  IF COALESCE((v_result ->> 'replayed')::boolean, false) IS NOT TRUE
+    OR v_result #>> '{submission,status_version}' <> '4'
+    OR v_result #>> '{submission,publication_basis}' <> 'admin_override'
+    OR (SELECT count(*) FROM admin_audit_logs
+        WHERE idempotency_key = 'gate-late-force') <> 1
+    OR (SELECT request_payload #>> '{latestScanSummary,suggestion}'
+        FROM admin_audit_logs
+        WHERE idempotency_key = 'gate-late-force') <> 'Review' THEN
+    RAISE EXCEPTION '行为门失败：幂等回放未保留首次快照';
+  END IF;
+
+  -- 16. 同一幂等键携带不同输入必须冲突且不改数据。
+  BEGIN
+    PERFORM apply_admin_action(
+      'gate-late', 'admin-1', 'force_publish', 'published', 3,
+      'gate-late-force', '更换理由', 'ADMIN_OVERRIDE_ACCEPTED'
+    );
+    RAISE EXCEPTION '行为门失败：幂等键异参未冲突';
+  EXCEPTION WHEN SQLSTATE 'P1001' THEN
+    NULL;
+  END;
+  IF (SELECT status_version FROM submissions WHERE id = 'gate-late') <> 4
+    OR (SELECT count(*) FROM admin_audit_logs
+        WHERE idempotency_key = 'gate-late-force') <> 1 THEN
+    RAISE EXCEPTION '行为门失败：幂等冲突修改了数据';
+  END IF;
+
+  -- 17. 已发布共享包删除后发布依据必须置空，恢复后仍回系统审核。
+  PERFORM apply_admin_action(
+    'gate-late', 'admin-1', 'delete', 'deleted_quarantined', 4,
+    'gate-late-delete', '主动下架高风险共享包'
+  );
+  IF (SELECT publication_basis FROM submissions WHERE id = 'gate-late')
+      IS NOT NULL THEN
+    RAISE EXCEPTION '行为门失败：非发布状态仍保留发布依据';
+  END IF;
+  PERFORM apply_admin_action(
+    'gate-late', 'admin-1', 'restore', 'system_reviewing', 5,
+    'gate-late-restore', '恢复并重扫'
+  );
+  IF (SELECT status FROM submissions WHERE id = 'gate-late')
       <> 'system_reviewing'
-    OR (SELECT pre_quarantine_status FROM submissions WHERE id = 'gate-restore')
+    OR (SELECT pre_quarantine_status FROM submissions WHERE id = 'gate-late')
+      IS NOT NULL
+    OR (SELECT publication_basis FROM submissions WHERE id = 'gate-late')
       IS NOT NULL THEN
     RAISE EXCEPTION '行为门失败：恢复未重扫';
   END IF;
 
-  -- 9. 文本恢复后同 key 回放首次快照，新 key 仍由 SQL 状态机拒绝。
+  -- 补充兼容门：文本恢复保持既有七参数 RPC 调用及幂等快照语义。
   INSERT INTO submissions (
     id, kind, status, status_token_hash, pre_quarantine_status, quarantined_at
   ) VALUES (
@@ -434,6 +691,15 @@ BEGIN
     OR v_result #>> '{submission,status}' <> 'published' THEN
     RAISE EXCEPTION '行为门失败：文本恢复未回放首次快照';
   END IF;
+  BEGIN
+    PERFORM apply_admin_action(
+      'gate-text-restore', 'admin-1', 'restore', 'published', 0,
+      'gate-text-restore-replay', '恢复文本', ''
+    );
+    RAISE EXCEPTION '行为门失败：普通动作在幂等回放时接受了额外确认';
+  EXCEPTION WHEN SQLSTATE 'P1002' THEN
+    NULL;
+  END;
   BEGIN
     PERFORM apply_admin_action(
       'gate-text-restore', 'admin-1', 'restore', 'published', 0,

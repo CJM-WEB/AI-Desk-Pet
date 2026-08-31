@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   adminActionSchema,
+  publicationBasisSchema,
   submissionReceiptSchema,
   submissionStatusSchema,
   submissionStatusViewSchema,
@@ -20,6 +21,35 @@ describe('投稿审核契约', () => {
       idempotencyKey: 'idem-00000001',
       reason: '系统误判，人工复核通过'
     }).version).toBe(3);
+  });
+
+  it('强制发布必须提交专用风险确认且普通动作不得携带', () => {
+    expect(adminActionSchema.safeParse({
+      action: 'force_publish',
+      version: 3,
+      idempotencyKey: 'override-0001',
+      reason: '人工确认可发布'
+    }).success).toBe(false);
+    expect(adminActionSchema.parse({
+      action: 'force_publish',
+      version: 3,
+      idempotencyKey: 'override-0001',
+      reason: '人工确认可发布',
+      riskAcknowledgement: 'ADMIN_OVERRIDE_ACCEPTED'
+    }).action).toBe('force_publish');
+    expect(adminActionSchema.safeParse({
+      action: 'approve',
+      version: 3,
+      idempotencyKey: 'approve-0001',
+      reason: '普通批准',
+      riskAcknowledgement: 'ADMIN_OVERRIDE_ACCEPTED'
+    }).success).toBe(false);
+  });
+
+  it('发布依据只接受标准发布或管理员强制发布', () => {
+    expect(publicationBasisSchema.parse('standard')).toBe('standard');
+    expect(publicationBasisSchema.parse('admin_override')).toBe('admin_override');
+    expect(publicationBasisSchema.safeParse('scanner_pass').success).toBe(false);
   });
 
   it('状态查询令牌必须恰好为 43 个 URL 安全字符', () => {

@@ -3,6 +3,8 @@ export const WEBSITE_SCOPE_BASELINE = '0dab17de8863a7c726a5bb5fceff35a1713daad1'
 
 /** 当前网站优化阶段只允许官网业务、验证基础设施及其精确获批文档。 */
 export const ALLOWED_WEBSITE_SCOPE_PATHS = Object.freeze([
+  'AGENTS.md',
+  'CONTEXT.md',
   '.dependency-cruiser.mjs',
   '.dependency-cruiser.web.mjs',
   'packages/shared-types/package.json',
@@ -27,9 +29,11 @@ export const ALLOWED_WEBSITE_SCOPE_PATHS = Object.freeze([
   'apps/cloudbase-api/**',
   'cloudbase/migrations/20260815000000_shared_package_publication_guard.sql',
   'cloudbase/migrations/20260831000000_restore_scanned_submission_flow.sql',
+  'cloudbase/migrations/20260831010000_admin_override_publication.sql',
   'package.json',
   'pnpm-lock.yaml',
   'tools/verification/**',
+  'docs/adr/0001-admin-override-publication.md',
   'docs/operations/website-chain-verification.md',
   'docs/operations/website-chain-verification-acceptance.md',
   'docs/operations/content-moderation.md',
@@ -53,7 +57,9 @@ export const ALLOWED_WEBSITE_SCOPE_PATHS = Object.freeze([
   'docs/superpowers/plans/2026-08-21-website-gpu-e2e-responsibility-subtraction.md',
   'docs/superpowers/specs/2026-08-21-website-gpu-e2e-responsibility-subtraction-design.md',
   'docs/superpowers/plans/2026-08-31-website-stage-2-3-local-closure.md',
+  'docs/superpowers/plans/2026-08-31-admin-override-publication.md',
   'docs/superpowers/specs/2026-08-31-website-stage-2-3-local-closure-design.md',
+  'docs/superpowers/specs/2026-08-31-admin-override-publication-design.md',
   'tests/e2e/website.spec.ts',
   'tests/memory-website-api.mjs',
   'tests/playwright.website.config.ts',
