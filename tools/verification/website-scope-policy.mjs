@@ -6,7 +6,7 @@ export const ALLOWED_WEBSITE_SCOPE_PATHS = Object.freeze([
   '.dependency-cruiser.mjs',
   '.dependency-cruiser.web.mjs',
   'apps/website/**',
-  /** 阶段一获批的发布止血边界：不恢复 Scanner，也不扩展到其他 CloudBase 模块。 */
+  /** 阶段二 Task 1 沿用已有 CloudBase 范围；Scanner 和共享协议由后续 Task 逐项放行。 */
   'apps/cloudbase-api/**',
   'cloudbase/migrations/20260815000000_shared_package_publication_guard.sql',
   'package.json',
@@ -34,6 +34,8 @@ export const ALLOWED_WEBSITE_SCOPE_PATHS = Object.freeze([
   'docs/superpowers/specs/2026-08-20-website-liquid-glass-deep-module-reduction-design.md',
   'docs/superpowers/plans/2026-08-21-website-gpu-e2e-responsibility-subtraction.md',
   'docs/superpowers/specs/2026-08-21-website-gpu-e2e-responsibility-subtraction-design.md',
+  'docs/superpowers/plans/2026-08-31-website-stage-2-3-local-closure.md',
+  'docs/superpowers/specs/2026-08-31-website-stage-2-3-local-closure-design.md',
   'tests/e2e/website.spec.ts',
   'tests/playwright.website.config.ts',
   'tools/cloudbase-migration-inventory.mjs',

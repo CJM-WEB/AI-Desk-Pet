@@ -26,14 +26,13 @@
 **Files:**
 - Modify: `tools/verification/website-scope-policy.mjs`
 - Modify: `tools/verification/verify-website-scope.test.mjs`
-- Modify: `tools/verification/web-chain-catalog.mjs`
 - Modify: `tools/verification/web-chain-catalog.test.mjs`
 - Modify: `docs/superpowers/plans/2026-08-15-website-optimization-index.md`
 
 **依赖：** 无。
 
 1. RED：只为本 Task 实际存在或新增的精确路径写范围期望。运行 `node --test tools/verification/verify-website-scope.test.mjs tools/verification/web-chain-catalog.test.mjs`，确认因阶段 2/3 文档和最小基础路径尚未登记而失败。
-2. GREEN：只放行本 Task 与下一 Task 已确定的精确路径；后续每个 Task 先为自己的精确文件写 scope RED，再添加最小白名单。禁止目录保持优先拒绝。
+2. GREEN：历史策略中的 `apps/website/**`、`apps/cloudbase-api/**` 继续按网站业务域放行；Scanner、shared-types、contract、migration 工具等新增根目录必须由所属 Task 先写 scope RED，再增加精确文件或最小文件簇。禁止目录保持优先拒绝。
 3. 时序约束：Task 0 不提前激活尚不存在的 `tests/website-contract` 目录或 catalog step；Task 7 在同一 GREEN 中创建合同测试、修改 `verify-web-test-ownership.mjs` 并登记活跃 owner/目录/step。
 4. 完成标准：上述测试及 `pnpm.cmd verify:web-chain:scope` 通过；不修改任何桌面测试配置。
 

@@ -81,6 +81,28 @@ test('当前网站优化阶段只放行官网业务与精确获批文档', () =>
   });
 });
 
+test('阶段二三本地闭环只放行已建立的规格与计划', () => {
+  const approvedStagePaths = [
+    'docs/superpowers/specs/2026-08-31-website-stage-2-3-local-closure-design.md',
+    'docs/superpowers/plans/2026-08-31-website-stage-2-3-local-closure.md',
+  ];
+
+  assert.deepEqual(classifyChangedPaths([
+    ...approvedStagePaths,
+    'packages/shared-types/src/scanner-protocol.ts',
+    'apps/package-scanner/src/server.ts',
+    'tests/website-contract/production-driver.test.ts',
+  ]), {
+    allowed: approvedStagePaths,
+    forbidden: [],
+    outside: [
+      'packages/shared-types/src/scanner-protocol.ts',
+      'apps/package-scanner/src/server.ts',
+      'tests/website-contract/production-driver.test.ts',
+    ],
+  });
+});
+
 test('阶段一只放行获批的 CloudBase 发布止血路径', () => {
   const phaseOnePaths = [
     'apps/cloudbase-api/src/services/submission-service.ts',

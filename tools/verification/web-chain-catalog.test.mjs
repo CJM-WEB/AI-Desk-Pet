@@ -31,6 +31,13 @@ test('目录和命令不扫描或执行桌宠目标', () => {
   assert.doesNotMatch(serialized, /apps\/desktop|agent-core|file-tools|character-runtime|character-assets|test:e2e:desktop|verify:desktop/u);
 });
 
+test('合同测试建立前不提前登记目录、owner 或执行步骤', () => {
+  const serialized = JSON.stringify({ WEB_AUDIT_INPUTS, WEB_CHAIN_PROFILES });
+
+  assert.doesNotMatch(serialized, /tests\/website-contract|website-contract/u);
+  assert.deepEqual(findTestOwners('tests/website-contract/production-driver.test.ts'), []);
+});
+
 test('当前网站链测试均恰有一个 owner', async () => {
   await verifyWebTestOwnership(process.cwd());
 });
