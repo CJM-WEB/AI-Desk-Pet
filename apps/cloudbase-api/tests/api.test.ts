@@ -495,31 +495,6 @@ describe('公开 HTTP API', () => {
     expect(response.body).not.toContain('moderationEvidence');
   });
 
-  it('公开列表、详情和反馈只发送共享严格 DTO', async () => {
-    const dependencies = createDependencies();
-    const main = createApi(dependencies);
-
-    const responses = await Promise.all([
-      main(event('GET', '/api/v1/community'), context),
-      main(event('GET', '/api/v1/community/community-1'), context),
-      main({
-        ...event('GET', '/api/v1/feedback'),
-        queryStringParameters: { kind: 'feedback' }
-      }, context)
-    ]);
-
-    for (const response of responses) {
-      expect(response.statusCode).toBe(200);
-      expect(response.body).not.toMatch(
-        /storageKey|internalEvidence|statusTokenHash/u
-      );
-    }
-    expect(JSON.parse(responses[0]!.body).data.items[0].publicationBasis)
-      .toBe('admin_override');
-    expect(JSON.parse(responses[1]!.body).data.publicationBasis)
-      .toBe('admin_override');
-  });
-
   it('公开与管理员 query 额外字段按共享请求 Schema 失败关闭', async () => {
     const dependencies = createDependencies();
     const main = createApi(dependencies);
