@@ -1,6 +1,7 @@
 import type {
   AdminAction,
   AdminActionResult,
+  PublicationBasis,
   SubmissionStatus,
   SubmissionStatusView
 } from '@myself/shared-types';
@@ -56,6 +57,7 @@ export interface SubmissionRow {
   preQuarantineStatus?: SubmissionStatus | null;
   cleanupStartedAt?: string | null;
   publishedAt?: string | null;
+  publicationBasis?: PublicationBasis | null;
   createdAt?: string;
   updatedAt?: string;
 }
@@ -118,6 +120,7 @@ export interface AdminActionInput {
   expectedVersion: number;
   idempotencyKey: string;
   reason: string;
+  riskAcknowledgement?: 'ADMIN_OVERRIDE_ACCEPTED';
 }
 
 /** 公开列表允许返回的裁剪字段。 */
@@ -198,6 +201,7 @@ export interface PublishedCommunityRecord {
   likeCount: number;
   downloadCount: number;
   publishedAt: string;
+  publicationBasis: PublicationBasis;
 }
 
 export interface PublishedFeedbackRecord {
@@ -407,6 +411,7 @@ export interface ModerationJobStore {
   claimModerationJobs(limit: number, leaseUntil: string): Promise<SubmissionRow[]>;
   findById(id: string): Promise<SubmissionWithAssets | null>;
   applyModerationDecision(input: ApplyModerationDecisionInput): Promise<boolean>;
+  recordLateModerationResult(input: ApplyModerationDecisionInput): Promise<boolean>;
   recordModerationFailure(input: RecordModerationFailureInput): Promise<void>;
 }
 

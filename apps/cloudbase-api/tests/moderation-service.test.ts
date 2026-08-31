@@ -12,7 +12,9 @@ import type {
 
 const now = new Date('2026-07-31T00:00:00.000Z');
 
-function sharedSubmission(): SubmissionWithAssets {
+function sharedSubmission(
+  overrides: Partial<SubmissionWithAssets> = {}
+): SubmissionWithAssets {
   return {
     id: 'submission-1',
     kind: 'shared_package',
@@ -20,6 +22,7 @@ function sharedSubmission(): SubmissionWithAssets {
     body: '用于 AI Pet 的资源',
     status: 'system_reviewing',
     statusVersion: 2,
+    publicationBasis: null,
     assets: [
       {
         role: 'cover',
@@ -37,7 +40,8 @@ function sharedSubmission(): SubmissionWithAssets {
         actualBytes: 20,
         contentType: 'application/zip'
       }
-    ]
+    ],
+    ...overrides
   };
 }
 
@@ -68,6 +72,7 @@ function createStore(submission = sharedSubmission()) {
     claimModerationJobs: vi.fn().mockResolvedValue([submission]),
     findById: vi.fn().mockResolvedValue(submission),
     applyModerationDecision: vi.fn().mockResolvedValue(true),
+    recordLateModerationResult: vi.fn().mockResolvedValue(true),
     recordModerationFailure: vi.fn().mockResolvedValue(undefined)
   } satisfies ModerationJobStore;
 }
@@ -83,7 +88,7 @@ function createStorage() {
 
 function createService(overrides: {
   signal?: ModerationSignal;
-  scan?: PackageScanResult;
+  scan?: PackageScanResult | (() => Promise<PackageScanResult>);
   store?: ReturnType<typeof createStore>;
   reviewText?: (input: { text: string }) => Promise<ModerationSignal>;
 } = {}) {
@@ -98,7 +103,9 @@ function createService(overrides: {
   };
   const scanner = {
     scan: vi.fn(async (input: { submissionId: string }) => (
-      overrides.scan ?? { ...safeScan, submissionId: input.submissionId }
+      typeof overrides.scan === 'function'
+        ? overrides.scan()
+        : overrides.scan ?? { ...safeScan, submissionId: input.submissionId }
     ))
   };
   const storage = createStorage();
@@ -178,6 +185,78 @@ describe('自动审核编排', () => {
         nextStatus: 'auto_rejected'
       })
     );
+  });
+
+  it('已领取任务被强制发布后完成危险扫描时只记录后到技术事实', async () => {
+    const claimed = sharedSubmission();
+    const published = sharedSubmission({
+      status: 'published',
+      statusVersion: 4,
+      publicationBasis: 'admin_override'
+    });
+    const store = createStore(published);
+    store.claimModerationJobs.mockResolvedValue([claimed]);
+    const { service } = createService({
+      store,
+      scan: {
+        ...safeScan,
+        safe: false,
+        code: 'CHARACTER_PACKAGE_MALWARE_DETECTED'
+      }
+    });
+
+    await expect(service.processNextBatch(1)).resolves.toEqual({
+      claimed: 1,
+      succeeded: 1,
+      failed: 0
+    });
+    expect(store.recordLateModerationResult).toHaveBeenCalledWith({
+      submissionId: claimed.id,
+      expectedVersion: 2,
+      nextStatus: 'auto_rejected',
+      results: [expect.objectContaining({
+        kind: 'package_scan',
+        provider: 'isolated-scanner',
+        suggestion: 'Block',
+        label: '技术检查：CHARACTER_PACKAGE_MALWARE_DETECTED'
+      })],
+      riskSummary: {
+        blocked: true,
+        signalCount: 1,
+        blockedLabels: ['技术检查：CHARACTER_PACKAGE_MALWARE_DETECTED']
+      },
+      autoRejectionReason: '技术检查：CHARACTER_PACKAGE_MALWARE_DETECTED'
+    });
+    expect(store.applyModerationDecision).not.toHaveBeenCalled();
+    expect(store.recordModerationFailure).not.toHaveBeenCalled();
+  });
+
+  it('初读系统审核后并发强制发布仍提交完整结果交由原子 RPC 筛选', async () => {
+    const store = createStore();
+    let forcePublishedDuringScan = false;
+    const { service } = createService({
+      store,
+      scan: async () => {
+        forcePublishedDuringScan = true;
+        return safeScan;
+      }
+    });
+
+    await expect(service.process('submission-1')).resolves.toEqual({
+      status: 'manual_review_pending',
+      applied: true
+    });
+    expect(forcePublishedDuringScan).toBe(true);
+    expect(store.findById).toHaveBeenCalledTimes(1);
+    const results = store.applyModerationDecision.mock.calls[0]![0].results;
+    expect(results).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        kind: 'package_scan',
+        provider: 'isolated-scanner'
+      }),
+      expect.objectContaining({ kind: 'package_json_text' })
+    ]));
+    expect(store.recordLateModerationResult).not.toHaveBeenCalled();
   });
 
   it('技术扫描未完成时保持系统审核并进入持久化重试', async () => {

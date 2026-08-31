@@ -78,6 +78,7 @@ function createDependencies() {
           likeCount: 2,
           downloadCount: 3,
           publishedAt: '2026-07-31T00:00:00.000Z',
+          publicationBasis: 'admin_override' as const,
           storageKey: '不得公开'
         }],
         nextCursor: null
@@ -95,6 +96,7 @@ function createDependencies() {
         likeCount: 2,
         downloadCount: 3,
         publishedAt: '2026-07-31T00:00:00.000Z',
+        publicationBasis: 'admin_override' as const,
         internalEvidence: '不得公开'
       })),
       listFeedback: vi.fn(async () => ({
@@ -113,7 +115,9 @@ function createDependencies() {
       toggleFeedbackLike: vi.fn(async () => ({ liked: true, likeCount: 3 })),
       getDownload: vi.fn(async () => ({
         url: 'https://storage.example/download',
-        expiresAt: '2026-07-31T00:05:00.000Z'
+        expiresAt: '2026-07-31T00:05:00.000Z',
+        publicationBasis: 'admin_override' as const,
+        internalEvidence: '不得公开'
       }))
     },
     abuseControl: {
@@ -422,6 +426,10 @@ describe('公开 HTTP API', () => {
         /storageKey|internalEvidence|statusTokenHash/u
       );
     }
+    expect(JSON.parse(responses[0]!.body).data.items[0].publicationBasis)
+      .toBe('admin_override');
+    expect(JSON.parse(responses[1]!.body).data.publicationBasis)
+      .toBe('admin_override');
   });
 
   it('点赞和下载分别按设备哈希与资源 ID 限流', async () => {
@@ -432,7 +440,7 @@ describe('公开 HTTP API', () => {
       event('POST', '/api/v1/community/community-1/like', {}),
       context
     );
-    await main(
+    const downloadResponse = await main(
       event('POST', '/api/v1/community/community-1/download', {}),
       context
     );
@@ -453,6 +461,11 @@ describe('公开 HTTP API', () => {
     expect(dependencies.publicContent.toggleFeedbackLike).not.toHaveBeenCalled();
     expect(dependencies.publicContent.getDownload)
       .toHaveBeenCalledWith('community-1');
+    expect(JSON.parse(downloadResponse.body).data).toEqual({
+      url: 'https://storage.example/download',
+      expiresAt: '2026-07-31T00:05:00.000Z',
+      publicationBasis: 'admin_override'
+    });
   });
 
   it('反馈点赞使用独立公开路由并复用设备限流', async () => {

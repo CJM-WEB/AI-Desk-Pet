@@ -230,6 +230,7 @@ interface MemorySubmission {
   cleanup_lease_until: string | null;
   cleanup_started_at: string | null;
   published_at: string | null;
+  publication_basis: 'standard' | 'admin_override' | null;
   purge_after: string | null;
   created_at: string;
   updated_at: string;
@@ -702,6 +703,7 @@ function makeSubmission(
     cleanup_lease_until: input.cleanup_lease_until ?? null,
     cleanup_started_at: input.cleanup_started_at ?? null,
     published_at: input.published_at ?? null,
+    publication_basis: input.publication_basis ?? null,
     purge_after: input.purge_after ?? null,
     created_at: input.created_at ?? '2026-07-30T00:00:00.000Z',
     updated_at: input.updated_at ?? '2026-07-30T00:00:00.000Z'
@@ -886,6 +888,7 @@ describe('CloudBase PostgreSQL 安全与公开互动存储', () => {
             moderation_lease_until: null,
             purge_after: null,
             published_at: null,
+            publication_basis: null,
             created_at: '2026-07-31T00:00:00.000Z',
             updated_at: '2026-07-31T00:00:00.000Z'
           },
@@ -932,6 +935,7 @@ describe('CloudBase PostgreSQL 安全与公开互动存储', () => {
         title: '共享名称',
         body: '共享说明',
         published_at: '2026-07-31T00:00:00.000Z',
+        publication_basis: 'admin_override',
         assets: [
           {
             object_key: 'submissions/community-1/cover.webp',
@@ -989,9 +993,57 @@ describe('CloudBase PostgreSQL 安全与公开互动存储', () => {
         ],
         likeCount: 2,
         downloadCount: 3,
-        publishedAt: '2026-07-31T00:00:00.000Z'
+        publishedAt: '2026-07-31T00:00:00.000Z',
+        publicationBasis: 'admin_override'
       }],
       nextCursor: null
+    });
+  });
+
+  it('公开社区详情只披露发布依据枚举而不泄漏管理员与扫描字段', async () => {
+    const detail = {
+      id: 'community-detail',
+      title: '人工放行资源',
+      body: '公开说明',
+      published_at: '2026-08-31T00:00:00.000Z',
+      publication_basis: 'admin_override',
+      assets: [{
+        object_key: 'submissions/community-detail/package.zip',
+        original_name: 'pet.zip',
+        actual_size: 1024,
+        mime_type: 'application/zip',
+        role: 'package'
+      }],
+      public_engagement: { like_count: 0, download_count: 0 },
+      admin_id: '不得公开',
+      reason: '不得公开',
+      risk_summary: { internal: true }
+    };
+    const query: Record<string, ReturnType<typeof vi.fn>> = {};
+    for (const method of ['select', 'eq']) {
+      query[method] = vi.fn(() => query);
+    }
+    query.maybeSingle = vi.fn(async () => ({ data: detail, error: null }));
+    const store = new CloudBasePostgresStore(
+      { from: vi.fn(() => query) } as never,
+      { rpc: vi.fn() }
+    );
+
+    await expect(store.findPublicCommunity('community-detail')).resolves.toEqual({
+      id: 'community-detail',
+      title: '人工放行资源',
+      body: '公开说明',
+      assets: [{
+        role: 'package',
+        storageKey: 'submissions/community-detail/package.zip',
+        fileName: 'pet.zip',
+        sizeBytes: 1024,
+        contentType: 'application/zip'
+      }],
+      likeCount: 0,
+      downloadCount: 0,
+      publishedAt: '2026-08-31T00:00:00.000Z',
+      publicationBasis: 'admin_override'
     });
   });
 });
@@ -1002,6 +1054,7 @@ describe('CloudBase PostgreSQL 仓储', () => {
     database.submissions.push(makeSubmission({
       id: 'review-risk',
       status: 'auto_rejected',
+      publication_basis: null,
       risk_summary: { labels: ['politics'], summary: '命中政治内容规则' },
       auto_rejection_reason: '系统检测到禁止内容'
     }));
@@ -1017,7 +1070,63 @@ describe('CloudBase PostgreSQL 仓储', () => {
       summary: '命中政治内容规则'
     });
     expect(page.items[0]?.autoRejectionReason).toBe('系统检测到禁止内容');
+    expect(page.items[0]?.publicationBasis).toBeNull();
     expect(page.nextCursor).toBeNull();
+  });
+
+  it('管理员详情保留投稿发布依据与原始审核结果', async () => {
+    const row = makeSubmission({
+      id: 'admin-detail-override',
+      kind: 'shared_package',
+      status: 'published',
+      status_version: 4,
+      publication_basis: 'admin_override',
+      published_at: '2026-08-31T00:00:00.000Z'
+    });
+    const tableCalls = new Map<string, number>();
+    const database = {
+      from: vi.fn((table: string) => {
+        const call = tableCalls.get(table) ?? 0;
+        tableCalls.set(table, call + 1);
+        const data = table === 'submissions'
+          ? (call === 0 ? row : {
+              risk_summary: { blocked: true },
+              auto_rejection_reason: '技术检查：恶意文件'
+            })
+          : table === 'moderation_results'
+            ? [{
+                kind: 'package_scan',
+                provider: 'isolated-scanner',
+                suggestion: 'Block',
+                label: '技术检查：恶意文件',
+                score: null,
+                evidence: { scanCode: 'MALWARE_DETECTED' },
+                created_at: '2026-08-31T00:01:00.000Z'
+              }]
+            : [];
+        const query: Record<string, ReturnType<typeof vi.fn> | ((...args: never[]) => never)> = {};
+        for (const method of ['select', 'eq', 'order']) {
+          query[method] = vi.fn(() => query);
+        }
+        query.maybeSingle = vi.fn(async () => ({ data, error: null }));
+        query.then = (resolve: (value: unknown) => unknown) => Promise.resolve({
+          data,
+          error: null
+        }).then(resolve) as never;
+        return query;
+      })
+    };
+    const store = new CloudBasePostgresStore(database as never, { rpc: vi.fn() });
+
+    await expect(store.findAdminSubmission('admin-detail-override'))
+      .resolves.toMatchObject({
+        id: 'admin-detail-override',
+        publicationBasis: 'admin_override',
+        moderationResults: [{
+          suggestion: 'Block',
+          evidence: { scanCode: 'MALWARE_DETECTED' }
+        }]
+      });
   });
 
   it('创建投稿后只能用令牌哈希查询裁剪状态', async () => {
@@ -1331,6 +1440,34 @@ describe('CloudBase PostgreSQL 仓储', () => {
     expect(database.audits).toHaveLength(1);
   });
 
+  it('下载前读取的投稿元数据映射不可变发布依据', async () => {
+    const database = new MemoryRdb();
+    database.submissions.push(makeSubmission({
+      id: 'override-download',
+      kind: 'shared_package',
+      status: 'published',
+      status_version: 4,
+      publication_basis: 'admin_override',
+      published_at: '2026-08-31T00:00:00.000Z'
+    }));
+    database.assets.push({
+      submission_id: 'override-download',
+      object_key: 'submissions/override-download/package.zip',
+      original_name: 'pet.zip',
+      declared_size: 1024,
+      actual_size: 1024,
+      mime_type: 'application/zip',
+      role: 'package'
+    });
+    const { store } = createStore(database);
+
+    await expect(store.findById('override-download')).resolves.toMatchObject({
+      id: 'override-download',
+      status: 'published',
+      publicationBasis: 'admin_override'
+    });
+  });
+
   it.each([false, true])(
     '管理员动作安全 RPC 快照可映射首次与重放结果（replayed=%s）',
     async (replayed) => {
@@ -1360,11 +1497,12 @@ describe('CloudBase PostgreSQL 仓储', () => {
       await expect(store.applyAdminAction({
         submissionId: 'safe-admin-result',
         adminId: 'admin-1',
-        action: 'approve',
+        action: 'force_publish',
         nextStatus: 'published',
         expectedVersion: 3,
         idempotencyKey: 'safe-admin-result-key',
-        reason: '安全响应映射'
+        reason: '安全响应映射',
+        riskAcknowledgement: 'ADMIN_OVERRIDE_ACCEPTED'
       })).resolves.toEqual({
         submission: {
           id: 'safe-admin-result',
@@ -1381,8 +1519,125 @@ describe('CloudBase PostgreSQL 仓储', () => {
         },
         replayed
       });
+      expect(rpcClient.rpc).toHaveBeenCalledWith('apply_admin_action', {
+        p_submission_id: 'safe-admin-result',
+        p_admin_id: 'admin-1',
+        p_action: 'force_publish',
+        p_next_status: 'published',
+        p_expected_version: 3,
+        p_idempotency_key: 'safe-admin-result-key',
+        p_reason: '安全响应映射',
+        p_risk_acknowledgement: 'ADMIN_OVERRIDE_ACCEPTED'
+      });
     }
   );
+
+  it('后到扫描端口复用原子审核 RPC 并只返回 applied 事实', async () => {
+    const rpcClient = {
+      rpc: vi.fn(async () => ({
+        data: { applied: true, lateResult: true },
+        error: null
+      }))
+    };
+    const store = new CloudBasePostgresStore(new MemoryRdb(), rpcClient);
+    const input = {
+      submissionId: 'late-result',
+      expectedVersion: 2,
+      nextStatus: 'auto_rejected' as const,
+      results: [{
+        submissionId: 'late-result',
+        kind: 'package_scan',
+        provider: 'isolated-scanner',
+        ruleVersion: 'character-package-2026-08-15',
+        suggestion: 'Block' as const,
+        label: '技术检查：CHARACTER_PACKAGE_MALWARE_DETECTED',
+        score: null,
+        evidence: { scanCode: 'CHARACTER_PACKAGE_MALWARE_DETECTED' },
+        requestedAt: '2026-08-31T00:00:00.000Z',
+        completedAt: '2026-08-31T00:00:01.000Z',
+        errorMessage: null
+      }],
+      riskSummary: {
+        blocked: true,
+        signalCount: 1,
+        blockedLabels: ['技术检查：CHARACTER_PACKAGE_MALWARE_DETECTED']
+      },
+      autoRejectionReason: '技术检查：CHARACTER_PACKAGE_MALWARE_DETECTED'
+    };
+
+    await expect(store.recordLateModerationResult(input)).resolves.toBe(true);
+    expect(rpcClient.rpc).toHaveBeenCalledWith('apply_moderation_decision', {
+      p_submission_id: 'late-result',
+      p_expected_version: 2,
+      p_next_status: 'auto_rejected',
+      p_results: [expect.objectContaining({
+        kind: 'package_scan',
+        provider: 'isolated-scanner'
+      })],
+      p_risk_summary: input.riskSummary,
+      p_auto_rejection_reason: '技术检查：CHARACTER_PACKAGE_MALWARE_DETECTED'
+    });
+  });
+
+  it('并发强制发布时把混合审核结果原样交给原子 RPC 裁决', async () => {
+    const rpcClient = {
+      rpc: vi.fn(async () => ({
+        data: { applied: true, lateResult: true },
+        error: null
+      }))
+    };
+    const store = new CloudBasePostgresStore(new MemoryRdb(), rpcClient);
+    const technical = {
+      submissionId: 'late-mixed-result',
+      kind: 'package_scan',
+      provider: 'isolated-scanner',
+      ruleVersion: 'character-package-2026-08-15',
+      suggestion: 'Pass' as const,
+      label: '技术检查：CHARACTER_PACKAGE_SCAN_PASSED',
+      score: null,
+      evidence: { scanCode: 'CHARACTER_PACKAGE_SCAN_PASSED' },
+      requestedAt: '2026-08-31T00:00:00.000Z',
+      completedAt: '2026-08-31T00:00:01.000Z',
+      errorMessage: null
+    };
+    const content = {
+      ...technical,
+      kind: 'package_json_text',
+      provider: 'tencent-tms',
+      label: 'Normal'
+    };
+    const input = {
+      submissionId: 'late-mixed-result',
+      expectedVersion: 2,
+      nextStatus: 'manual_review_pending' as const,
+      results: [technical, content],
+      riskSummary: {
+        blocked: false,
+        signalCount: 2,
+        blockedLabels: []
+      },
+      autoRejectionReason: null
+    };
+
+    await expect(store.applyModerationDecision(input)).resolves.toBe(true);
+    expect(rpcClient.rpc).toHaveBeenCalledWith('apply_moderation_decision', {
+      p_submission_id: 'late-mixed-result',
+      p_expected_version: 2,
+      p_next_status: 'manual_review_pending',
+      p_results: [
+        expect.objectContaining({
+          kind: 'package_scan',
+          provider: 'isolated-scanner'
+        }),
+        expect.objectContaining({
+          kind: 'package_json_text',
+          provider: 'tencent-tms'
+        })
+      ],
+      p_risk_summary: input.riskSummary,
+      p_auto_rejection_reason: null
+    });
+  });
 
   it('管理员动作可映射旧 purge 升级后仅含可证明字段的重放快照', async () => {
     const rpcClient = {

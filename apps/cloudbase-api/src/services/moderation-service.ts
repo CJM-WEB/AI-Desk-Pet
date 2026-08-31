@@ -31,6 +31,8 @@ const leaseMilliseconds = 10 * 60 * 1000;
 // 为跨地域请求预留一分钟时钟偏差，避免扫描器把临界的五分钟链接误判为超时。
 const signedUrlSeconds = 4 * 60;
 const technicalEvidenceTtlMilliseconds = 24 * 60 * 60 * 1000;
+// 已领取版本只允许经过“转人工、强制发布”两个审计动作后进入后到结果分支。
+const adminOverridePublicationVersionAdvances = 2;
 
 class ModerationDependencyError extends Error {
   constructor(
@@ -51,17 +53,29 @@ export class ModerationService {
     private readonly clock: Clock
   ) {}
 
-  async process(submissionId: string): Promise<ModerationProcessResult> {
+  async process(
+    submissionId: string,
+    claimedVersion?: number
+  ): Promise<ModerationProcessResult> {
     const submission = await this.store.findById(submissionId);
-    if (!submission || submission.status !== 'system_reviewing') {
+    const lateResult = submission !== null
+      && submission.kind === 'shared_package'
+      && submission.status === 'published'
+      && submission.publicationBasis === 'admin_override'
+      && claimedVersion !== undefined
+      && submission.statusVersion
+        === claimedVersion + adminOverridePublicationVersionAdvances;
+    if (!submission || (submission.status !== 'system_reviewing' && !lateResult)) {
       throw new Error('MODERATION_JOB_STALE');
     }
-    const expectedVersion = submission.statusVersion ?? 0;
+    const expectedVersion = lateResult
+      ? claimedVersion
+      : submission.statusVersion ?? 0;
     const results: ModerationRecord[] = [];
 
     try {
       const fileSignals = submission.kind === 'shared_package'
-        ? await this.reviewSharedPackage(submission, results)
+        ? await this.reviewSharedPackage(submission, results, lateResult)
         : [];
       const technicalBlocked = fileSignals.some(signal => (
         signal.suggestion === 'Block'
@@ -72,7 +86,8 @@ export class ModerationService {
           submission,
           expectedVersion,
           results,
-          fileSignals
+          fileSignals,
+          lateResult
         );
       }
       const textSignals = await this.reviewBaseText(submission, results);
@@ -81,7 +96,8 @@ export class ModerationService {
         submission,
         expectedVersion,
         results,
-        signals
+        signals,
+        lateResult
       );
     } catch (error) {
       if (error instanceof ModerationDependencyError) throw error;
@@ -100,7 +116,7 @@ export class ModerationService {
 
     for (const job of jobs) {
       try {
-        await this.process(job.id);
+        await this.process(job.id, job.statusVersion ?? 0);
         succeeded += 1;
       } catch (error) {
         failed += 1;
@@ -145,7 +161,8 @@ export class ModerationService {
 
   private async reviewSharedPackage(
     submission: SubmissionWithAssets,
-    results: ModerationRecord[]
+    results: ModerationRecord[],
+    technicalOnly = false
   ): Promise<ModerationSignal[]> {
     const packageAsset = submission.assets.find(asset => asset.role === 'package');
     const coverAsset = submission.assets.find(asset => asset.role === 'cover');
@@ -193,7 +210,7 @@ export class ModerationService {
       scan.safe ? scan.completedAt : undefined
     ));
     signals.push(technicalSignal);
-    if (!scan.safe) return signals;
+    if (!scan.safe || technicalOnly) return signals;
 
     const jsonReviews = await this.dependency(
       () => mapConcurrentOrdered(
@@ -377,7 +394,8 @@ export class ModerationService {
     submission: SubmissionWithAssets,
     expectedVersion: number,
     results: readonly ModerationRecord[],
-    signals: readonly ModerationSignal[]
+    signals: readonly ModerationSignal[],
+    lateResult = false
   ): Promise<ModerationProcessResult> {
     const blocked = signals.some(signal => signal.suggestion === 'Block');
     const status = blocked ? 'auto_rejected' as const : 'manual_review_pending' as const;
@@ -385,7 +403,7 @@ export class ModerationService {
       .filter(signal => signal.suggestion === 'Block')
       .map(signal => signal.label)
       .slice(0, 20);
-    const applied = await this.store.applyModerationDecision({
+    const input = {
       submissionId: submission.id,
       expectedVersion,
       nextStatus: status,
@@ -396,7 +414,10 @@ export class ModerationService {
         blockedLabels
       },
       autoRejectionReason: blockedLabels[0] ?? null
-    });
+    };
+    const applied = lateResult
+      ? await this.store.recordLateModerationResult(input)
+      : await this.store.applyModerationDecision(input);
     return { status, applied };
   }
 }

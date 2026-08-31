@@ -54,6 +54,12 @@ export class AdminService {
   ): Promise<AdminActionResult> {
     const submission = await this.store.findAdminSubmission(id);
     if (!submission) throw new ApiError('SUBMISSION_NOT_FOUND', 404);
+    if (
+      action.action === 'force_publish'
+      && action.riskAcknowledgement !== 'ADMIN_OVERRIDE_ACCEPTED'
+    ) {
+      throw new ApiError('INVALID_ADMIN_ACTION', 409);
+    }
     const nextStatus = nextStatusFor(
       submission,
       action.action,
@@ -67,7 +73,10 @@ export class AdminService {
       nextStatus,
       expectedVersion: action.version,
       idempotencyKey: action.idempotencyKey,
-      reason: action.reason
+      reason: action.reason,
+      ...(action.action === 'force_publish' ? {
+        riskAcknowledgement: action.riskAcknowledgement
+      } : {})
     });
   }
 }
@@ -103,6 +112,23 @@ function nextStatusFor(
     if (status === 'manual_review_pending') return 'published';
     if (status === 'published') return 'published';
   }
+  if (action === 'force_publish') {
+    if (
+      submission.kind === 'shared_package'
+      && submission.statusVersion !== requestedVersion
+    ) {
+      // 版本已变化时只重建首次请求目标，由数据库在生命周期变化前裁定幂等回放。
+      return 'published';
+    }
+    if (
+      submission.kind === 'shared_package'
+      && status === 'manual_review_pending'
+      && !hasCurrentTechnicalPass(submission, now)
+    ) {
+      return 'published';
+    }
+    throw new ApiError('INVALID_ADMIN_ACTION', 409);
+  }
   if (
     action === 'reject'
     && (status === 'manual_review_pending' || status === 'admin_rejected')
@@ -111,22 +137,13 @@ function nextStatusFor(
   }
   if (
     action === 'move_to_manual'
-    && (status === 'auto_rejected' || status === 'manual_review_pending')
-  ) {
-    return submission.kind === 'shared_package'
-      ? 'system_reviewing'
-      : 'manual_review_pending';
-  }
-  if (
-    action === 'move_to_manual'
-    && submission.statusVersion !== requestedVersion
     && (
-      (submission.kind === 'shared_package' && status === 'system_reviewing')
-      || (submission.kind !== 'shared_package' && status === 'manual_review_pending')
+      status === 'system_reviewing'
+      || status === 'auto_rejected'
+      || status === 'manual_review_pending'
     )
   ) {
-    // 只重建首次请求的确定目标，让数据库按原幂等键决定回放或拒绝新键。
-    return status;
+    return 'manual_review_pending';
   }
   if (action === 'delete' && status !== 'purged') {
     return 'deleted_quarantined';

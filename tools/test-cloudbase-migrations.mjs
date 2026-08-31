@@ -940,6 +940,122 @@ BEGIN
     RAISE EXCEPTION '行为门失败：危险共享包转人工改写了技术事实';
   END IF;
 
+  -- Worker 初读后管理员两步强制发布；数据库必须从混合结果中只保留唯一技术事实。
+  PERFORM gate_seed('gate-late-mixed');
+  UPDATE submissions
+  SET created_at = v_now - interval '2 days'
+  WHERE id = 'gate-late-mixed';
+  SELECT claimed.status_version INTO v_claimed_version
+  FROM claim_moderation_jobs(3, v_now + interval '5 minutes') AS claimed
+  WHERE claimed.id = 'gate-late-mixed';
+  IF v_claimed_version <> 2 THEN
+    RAISE EXCEPTION '行为门失败：未真实领取混合后到审核任务';
+  END IF;
+  PERFORM apply_admin_action(
+    'gate-late-mixed', 'admin-1', 'move_to_manual',
+    'manual_review_pending', 2, 'gate-late-mixed-manual', '人工接管扫描中任务'
+  );
+  PERFORM apply_admin_action(
+    'gate-late-mixed', 'admin-1', 'force_publish', 'published', 3,
+    'gate-late-mixed-force', '管理员承担扫描中发布风险',
+    'ADMIN_OVERRIDE_ACCEPTED'
+  );
+
+  BEGIN
+    PERFORM apply_moderation_decision(
+      'gate-late-mixed', 2, 'manual_review_pending',
+      jsonb_build_array(jsonb_build_object(
+        'kind', 'package_json_text',
+        'provider', 'tencent-tms',
+        'rule_version', '2026-07-31',
+        'suggestion', 'Pass',
+        'label', 'Normal',
+        'score', NULL,
+        'evidence', jsonb_build_object('path', 'manifest.json'),
+        'requested_at', v_now,
+        'completed_at', v_now,
+        'error_message', NULL
+      )),
+      '{"blocked":false}'::jsonb, NULL
+    );
+    RAISE EXCEPTION '行为门失败：混合后到接受缺失技术记录';
+  EXCEPTION WHEN SQLSTATE '22023' THEN
+    NULL;
+  END;
+  BEGIN
+    PERFORM apply_moderation_decision(
+      'gate-late-mixed', 2, 'auto_rejected',
+      gate_block_result('gate-late-mixed', v_now)
+        || gate_block_result('gate-late-mixed', v_now),
+      '{"blocked":false}'::jsonb, '重复技术记录'
+    );
+    RAISE EXCEPTION '行为门失败：混合后到接受重复技术记录';
+  EXCEPTION WHEN SQLSTATE '22023' THEN
+    NULL;
+  END;
+  BEGIN
+    PERFORM apply_moderation_decision(
+      'gate-late-mixed', 2, 'auto_rejected',
+      jsonb_set(
+        gate_block_result('gate-late-mixed', v_now),
+        '{0,label}',
+        'null'::jsonb
+      ),
+      '{"blocked":false}'::jsonb, '畸形技术记录'
+    );
+    RAISE EXCEPTION '行为门失败：混合后到接受畸形技术记录';
+  EXCEPTION WHEN SQLSTATE '22023' THEN
+    NULL;
+  END;
+  IF (SELECT moderation_lease_until FROM submissions
+      WHERE id = 'gate-late-mixed') IS NULL
+    OR EXISTS (
+      SELECT 1 FROM moderation_results
+      WHERE submission_id = 'gate-late-mixed'
+    ) THEN
+    RAISE EXCEPTION '行为门失败：无效混合后到修改了原子事实';
+  END IF;
+
+  v_result := apply_moderation_decision(
+    'gate-late-mixed', 2, 'auto_rejected',
+    gate_block_result('gate-late-mixed', v_now)
+      || jsonb_build_array(jsonb_build_object(
+        'kind', 'package_json_text',
+        'provider', 'tencent-tms',
+        'rule_version', '2026-07-31',
+        'suggestion', 'Pass',
+        'label', 'Normal',
+        'score', NULL,
+        'evidence', jsonb_build_object('path', 'manifest.json'),
+        'requested_at', v_now,
+        'completed_at', v_now,
+        'error_message', NULL
+      )),
+    '{"blocked":false,"signalCount":2,"blockedLabels":[],"severity":"low"}'::jsonb,
+    '非技术结果不得降低风险'
+  );
+  IF COALESCE((v_result ->> 'applied')::boolean, false) IS NOT TRUE
+    OR COALESCE((v_result ->> 'lateResult')::boolean, false) IS NOT TRUE
+    OR (SELECT status FROM submissions WHERE id = 'gate-late-mixed')
+      <> 'published'
+    OR (SELECT status_version FROM submissions WHERE id = 'gate-late-mixed') <> 4
+    OR (SELECT publication_basis FROM submissions WHERE id = 'gate-late-mixed')
+      <> 'admin_override'
+    OR (SELECT moderation_lease_until FROM submissions
+        WHERE id = 'gate-late-mixed') IS NOT NULL
+    OR (SELECT risk_summary FROM submissions WHERE id = 'gate-late-mixed')
+      IS DISTINCT FROM
+      '{"blocked":true,"signalCount":1,"blockedLabels":["技术检查：MALWARE_DETECTED"]}'::jsonb
+    OR (SELECT count(*) FROM moderation_results
+        WHERE submission_id = 'gate-late-mixed') <> 1
+    OR EXISTS (
+      SELECT 1 FROM moderation_results
+      WHERE submission_id = 'gate-late-mixed'
+        AND (kind <> 'package_scan' OR provider <> 'isolated-scanner')
+    ) THEN
+    RAISE EXCEPTION '行为门失败：混合后到未原子保留唯一技术事实';
+  END IF;
+
   -- 9. 已领取的审核任务先转人工，为后到结果保留真实租约事实。
   PERFORM gate_seed('gate-late');
   UPDATE submissions
@@ -1104,7 +1220,7 @@ BEGIN
       <> 'admin_override'
     OR (SELECT risk_summary FROM submissions
         WHERE id = 'gate-late') IS DISTINCT FROM
-      '{"blocked":true,"severity":"high"}'::jsonb
+      '{"blocked":true,"signalCount":1,"blockedLabels":["技术检查：MALWARE_DETECTED"]}'::jsonb
     OR NOT EXISTS (
       SELECT 1 FROM moderation_results
       WHERE submission_id = 'gate-late' AND suggestion = 'Block'
@@ -1131,7 +1247,7 @@ BEGIN
         WHERE submission_id = 'gate-late') <> 2
     OR (SELECT risk_summary FROM submissions
         WHERE id = 'gate-late') IS DISTINCT FROM
-      '{"blocked":true,"severity":"high"}'::jsonb
+      '{"blocked":true,"signalCount":1,"blockedLabels":["技术检查：MALWARE_DETECTED"]}'::jsonb
     OR (SELECT status FROM submissions WHERE id = 'gate-late') <> 'published'
     OR (SELECT status_version FROM submissions WHERE id = 'gate-late') <> 4
     OR (SELECT publication_basis FROM submissions WHERE id = 'gate-late')

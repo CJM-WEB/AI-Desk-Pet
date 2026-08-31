@@ -26,6 +26,7 @@ import { AdminService } from '../services/admin-service.js';
 import {
   PublicContentService,
   type PublicCommunityItem,
+  type PublicDownload,
   type PublicFeedbackItem
 } from '../services/public-content-service.js';
 import {
@@ -77,7 +78,7 @@ interface PublicContentApi {
   ): Promise<{ items: PublicFeedbackItem[]; nextCursor: number | null }>;
   toggleFeedbackLike(id: string, fingerprint: string): Promise<unknown>;
   toggleCommunityLike(id: string, fingerprint: string): Promise<unknown>;
-  getDownload(id: string): Promise<unknown>;
+  getDownload(id: string): Promise<PublicDownload>;
 }
 
 interface AbuseControlApi {
@@ -305,7 +306,9 @@ async function dispatch(
       `download:${downloadId}`,
       deviceHash
     );
-    return dependencies.publicContent.getDownload(downloadId);
+    return publicDownload(
+      await dependencies.publicContent.getDownload(downloadId)
+    );
   }
 
   const communityId = dynamicId(
@@ -492,7 +495,16 @@ function publicCommunity(item: PublicCommunityItem): PublicCommunityItem {
     packageSizeBytes: item.packageSizeBytes,
     likeCount: item.likeCount,
     downloadCount: item.downloadCount,
-    publishedAt: item.publishedAt
+    publishedAt: item.publishedAt,
+    publicationBasis: item.publicationBasis
+  };
+}
+
+function publicDownload(item: PublicDownload): PublicDownload {
+  return {
+    url: item.url,
+    expiresAt: item.expiresAt,
+    publicationBasis: item.publicationBasis
   };
 }
 

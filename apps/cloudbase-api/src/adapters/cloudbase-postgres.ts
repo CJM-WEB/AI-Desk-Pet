@@ -363,6 +363,19 @@ export class CloudBasePostgresStore implements
   async applyModerationDecision(
     input: ApplyModerationDecisionInput
   ): Promise<boolean> {
+    return this.writeModerationDecision(input, '应用系统审核决策失败');
+  }
+
+  async recordLateModerationResult(
+    input: ApplyModerationDecisionInput
+  ): Promise<boolean> {
+    return this.writeModerationDecision(input, '记录后到扫描结果失败');
+  }
+
+  private async writeModerationDecision(
+    input: ApplyModerationDecisionInput,
+    context: string
+  ): Promise<boolean> {
     const row = requireRecord(
       requireData(await this.rpcClient.rpc('apply_moderation_decision', {
         p_submission_id: input.submissionId,
@@ -371,7 +384,7 @@ export class CloudBasePostgresStore implements
         p_results: input.results.map(toModerationRpcRecord),
         p_risk_summary: input.riskSummary,
         p_auto_rejection_reason: input.autoRejectionReason
-      }), '应用系统审核决策失败'),
+      }), context),
       '系统审核决策结果'
     );
     return requireBoolean(row.applied, 'applied');
@@ -396,7 +409,8 @@ export class CloudBasePostgresStore implements
       p_next_status: input.nextStatus,
       p_expected_version: input.expectedVersion,
       p_idempotency_key: input.idempotencyKey,
-      p_reason: input.reason
+      p_reason: input.reason,
+      p_risk_acknowledgement: input.riskAcknowledgement ?? null
     });
     if (result.error?.code === '40001') {
       throw new ApiError('VERSION_CONFLICT', 409, result.error.message);
@@ -636,6 +650,9 @@ function mapSubmission(value: unknown): SubmissionRow {
       )
     } : {}),
     publishedAt: optionalString(row.published_at, 'published_at'),
+    publicationBasis: publicationBasisSchema.nullable().parse(
+      row.publication_basis
+    ),
     createdAt: requireString(row.created_at, 'created_at'),
     updatedAt: requireString(row.updated_at, 'updated_at')
   };
@@ -773,6 +790,7 @@ const publicCommunityColumns = [
   'title',
   'body',
   'published_at',
+  'publication_basis',
   'assets(object_key,original_name,actual_size,mime_type,role)',
   'public_engagement(like_count,download_count)'
 ].join(',');
@@ -817,7 +835,8 @@ function mapPublishedCommunity(value: unknown): PublishedCommunityRecord {
       engagement.download_count,
       'download_count'
     ),
-    publishedAt: requireString(row.published_at, 'published_at')
+    publishedAt: requireString(row.published_at, 'published_at'),
+    publicationBasis: publicationBasisSchema.parse(row.publication_basis)
   };
 }
 

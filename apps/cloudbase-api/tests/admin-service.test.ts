@@ -366,26 +366,12 @@ describe('管理员审核服务', () => {
     expect(store.applyAdminAction).not.toHaveBeenCalled();
   });
 
-  it('自动驳回转人工和隔离共享包恢复都回到系统审核重扫', async () => {
-    const autoRejected = submission('auto_rejected');
-    const first = createService(autoRejected);
-    await first.service.applyAction(
-      { uid: 'uid-admin', email: 'admin@example.com' },
-      autoRejected.id,
-      {
-        action: 'move_to_manual', version: 3,
-        idempotencyKey: 'rescan-auto-rejected', reason: '请求复核'
-      }
-    );
-    expect(first.store.applyAdminAction).toHaveBeenCalledWith(
-      expect.objectContaining({ nextStatus: 'system_reviewing' })
-    );
-
+  it('隔离共享包恢复仍回到系统审核重扫', async () => {
     const quarantined = submission('deleted_quarantined', {
       preQuarantineStatus: 'published'
     });
-    const second = createService(quarantined);
-    await second.service.applyAction(
+    const { service, store } = createService(quarantined);
+    await service.applyAction(
       { uid: 'uid-admin', email: 'admin@example.com' },
       quarantined.id,
       {
@@ -393,9 +379,220 @@ describe('管理员审核服务', () => {
         idempotencyKey: 'rescan-restored-package', reason: '恢复并重扫'
       }
     );
-    expect(second.store.applyAdminAction).toHaveBeenCalledWith(
+    expect(store.applyAdminAction).toHaveBeenCalledWith(
       expect.objectContaining({ nextStatus: 'system_reviewing' })
     );
+  });
+
+  it.each(['feedback', 'suggestion', 'shared_package'] as const)(
+    'system_reviewing 的 %s 转人工统一进入 manual_review_pending',
+    async kind => {
+      const row = submission('system_reviewing', {
+        kind,
+        assets: kind === 'shared_package' ? submission('system_reviewing').assets : []
+      });
+      const { service, store } = createService(row);
+
+      await service.applyAction(
+        { uid: 'uid-admin', email: 'admin@example.com' },
+        row.id,
+        {
+          action: 'move_to_manual',
+          version: 3,
+          idempotencyKey: `move-system-${kind}`,
+          reason: '管理员要求人工复核'
+        }
+      );
+
+      expect(store.applyAdminAction).toHaveBeenCalledWith(expect.objectContaining({
+        action: 'move_to_manual',
+        nextStatus: 'manual_review_pending'
+      }));
+    }
+  );
+
+  it('自动驳回的共享包转人工时不重写扫描事实', async () => {
+    const row = submission('auto_rejected', {
+      moderationResults: [moderationResult('Block', { scanCode: 'MALWARE_DETECTED' })]
+    });
+    const { service, store } = createService(row);
+
+    await service.applyAction(
+      { uid: 'uid-admin', email: 'admin@example.com' },
+      row.id,
+      {
+        action: 'move_to_manual',
+        version: 3,
+        idempotencyKey: 'move-rejected-package',
+        reason: '保留危险结论并人工复核'
+      }
+    );
+
+    expect(store.applyAdminAction).toHaveBeenCalledWith(expect.objectContaining({
+      nextStatus: 'manual_review_pending'
+    }));
+  });
+
+  it('缺少当前通过证据的待审共享包可携带精确确认值强制发布', async () => {
+    const row = submission('manual_review_pending', { moderationResults: [] });
+    const { service, store } = createService(row);
+
+    await expect(service.applyAction(
+      { uid: 'uid-admin', email: 'admin@example.com' },
+      row.id,
+      {
+        action: 'force_publish',
+        version: 3,
+        idempotencyKey: 'force-publish-package',
+        reason: '管理员接受未通过扫描的风险',
+        riskAcknowledgement: 'ADMIN_OVERRIDE_ACCEPTED'
+      }
+    )).resolves.toMatchObject({
+      submission: {
+        status: 'published',
+        publicationBasis: 'admin_override'
+      }
+    });
+    expect(store.applyAdminAction).toHaveBeenCalledWith({
+      submissionId: row.id,
+      adminId: 'uid-admin',
+      action: 'force_publish',
+      nextStatus: 'published',
+      expectedVersion: 3,
+      idempotencyKey: 'force-publish-package',
+      reason: '管理员接受未通过扫描的风险',
+      riskAcknowledgement: 'ADMIN_OVERRIDE_ACCEPTED'
+    });
+  });
+
+  it('存在当前有效通过证据时拒绝强制发布并要求走普通批准', async () => {
+    const row = submission('manual_review_pending', {
+      moderationResults: [moderationResult('Pass', currentEvidence())]
+    });
+    const { service, store } = createService(row);
+
+    await expect(service.applyAction(
+      { uid: 'uid-admin', email: 'admin@example.com' },
+      row.id,
+      {
+        action: 'force_publish',
+        version: 3,
+        idempotencyKey: 'force-publish-scanned-package',
+        reason: '不应覆盖标准发布依据',
+        riskAcknowledgement: 'ADMIN_OVERRIDE_ACCEPTED'
+      }
+    )).rejects.toMatchObject({ code: 'INVALID_ADMIN_ACTION', statusCode: 409 });
+    expect(store.applyAdminAction).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['反馈投稿', submission('manual_review_pending', { kind: 'feedback', assets: [] })],
+    ['系统审核中的共享包', submission('system_reviewing')],
+    ['自动驳回的共享包', submission('auto_rejected')]
+  ])('%s不能一步强制发布', async (_name, row) => {
+    const { service, store } = createService(row);
+
+    await expect(service.applyAction(
+      { uid: 'uid-admin', email: 'admin@example.com' },
+      row.id,
+      {
+        action: 'force_publish',
+        version: 3,
+        idempotencyKey: `invalid-force-${row.kind}-${row.status}`,
+        reason: '不满足强制发布前置状态',
+        riskAcknowledgement: 'ADMIN_OVERRIDE_ACCEPTED'
+      }
+    )).rejects.toMatchObject({ code: 'INVALID_ADMIN_ACTION', statusCode: 409 });
+    expect(store.applyAdminAction).not.toHaveBeenCalled();
+  });
+
+  it('服务边界对绕过 Schema 的错误风险确认继续失败关闭', async () => {
+    const row = submission('manual_review_pending');
+    const { service, store } = createService(row);
+
+    await expect(service.applyAction(
+      { uid: 'uid-admin', email: 'admin@example.com' },
+      row.id,
+      {
+        action: 'force_publish',
+        version: 3,
+        idempotencyKey: 'invalid-force-acknowledgement',
+        reason: '确认值错误',
+        riskAcknowledgement: 'WRONG_VALUE'
+      } as never
+    )).rejects.toMatchObject({ code: 'INVALID_ADMIN_ACTION', statusCode: 409 });
+    expect(store.applyAdminAction).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['后到危险扫描', submission('published', {
+      statusVersion: 4,
+      publicationBasis: 'admin_override',
+      moderationResults: [moderationResult('Block', {
+        scanCode: 'CHARACTER_PACKAGE_MALWARE_DETECTED'
+      })]
+    })],
+    ['删除隔离', submission('deleted_quarantined', {
+      statusVersion: 5,
+      publicationBasis: null,
+      preQuarantineStatus: 'published'
+    })],
+    ['永久清理', submission('purged', {
+      statusVersion: 6,
+      publicationBasis: null,
+      assets: []
+    })]
+  ])('强制发布后发生%s仍把同键请求交给数据库回放', async (name, changed) => {
+    const initial = submission('manual_review_pending');
+    const idempotencyKey = `force-replay-${name}`;
+    const { service, store } = createService(initial);
+    store.findAdminSubmission
+      .mockResolvedValueOnce(initial)
+      .mockResolvedValue(changed);
+    store.applyAdminAction.mockImplementation(async input => {
+      if (input.idempotencyKey !== idempotencyKey) {
+        throw new ApiError('INVALID_ADMIN_ACTION', 409);
+      }
+      return {
+        submission: {
+          id: initial.id,
+          kind: 'shared_package',
+          status: 'published',
+          statusVersion: 4,
+          publicationBasis: 'admin_override',
+          publicReason: null,
+          publishedAt: '2026-07-31T12:00:00.000Z',
+          rejectedAt: null,
+          quarantinedAt: null,
+          createdAt: '2026-07-30T12:00:00.000Z',
+          updatedAt: '2026-07-31T12:00:00.000Z'
+        },
+        replayed: store.applyAdminAction.mock.calls.length > 1
+      };
+    });
+    const request = {
+      action: 'force_publish' as const,
+      version: 3,
+      idempotencyKey,
+      reason: '保持首次强制发布请求',
+      riskAcknowledgement: 'ADMIN_OVERRIDE_ACCEPTED' as const
+    };
+
+    await expect(service.applyAction(
+      { uid: 'uid-admin', email: 'admin@example.com' },
+      initial.id,
+      request
+    )).resolves.toMatchObject({ replayed: false });
+    await expect(service.applyAction(
+      { uid: 'uid-admin', email: 'admin@example.com' },
+      initial.id,
+      request
+    )).resolves.toMatchObject({ replayed: true });
+    await expect(service.applyAction(
+      { uid: 'uid-admin', email: 'admin@example.com' },
+      initial.id,
+      { ...request, idempotencyKey: `${idempotencyKey}-new` }
+    )).rejects.toMatchObject({ code: 'INVALID_ADMIN_ACTION' });
   });
 
   it.each([
@@ -403,7 +600,7 @@ describe('管理员审核服务', () => {
       name: '共享包转人工',
       action: 'move_to_manual' as const,
       initial: submission('auto_rejected'),
-      changed: submission('system_reviewing', { statusVersion: 4 })
+      changed: submission('manual_review_pending', { statusVersion: 4 })
     },
     {
       name: '共享包恢复',

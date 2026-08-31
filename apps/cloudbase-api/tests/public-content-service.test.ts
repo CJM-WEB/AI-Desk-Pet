@@ -16,6 +16,7 @@ function createFixture(status: string | null): {
       id,
       status,
       kind: 'shared_package',
+      publicationBasis: status === 'published' ? 'admin_override' : null,
       assets: [{
         role: 'package',
         storageKey: `submissions/${id}/package.zip`,
@@ -60,7 +61,8 @@ describe('公开内容服务', () => {
     await expect(service.getDownload('published-id', 'device-hash'))
       .resolves.toEqual({
         url: 'https://storage.example/download',
-        expiresAt: '2026-07-31T00:05:00.000Z'
+        expiresAt: '2026-07-31T00:05:00.000Z',
+        publicationBasis: 'admin_override'
       });
     expect(storage.createSignedUrl).toHaveBeenCalledWith(
       'submissions/published-id/package.zip',
@@ -166,7 +168,8 @@ describe('公开列表与互动服务', () => {
           ],
           likeCount: 2,
           downloadCount: 3,
-          publishedAt: '2026-07-31T00:00:00.000Z'
+          publishedAt: '2026-07-31T00:00:00.000Z',
+          publicationBasis: 'admin_override'
         }],
         nextCursor: null
       }))
@@ -195,7 +198,8 @@ describe('公开列表与互动服务', () => {
         packageSizeBytes: 1024,
         likeCount: 2,
         downloadCount: 3,
-        publishedAt: '2026-07-31T00:00:00.000Z'
+        publishedAt: '2026-07-31T00:00:00.000Z',
+        publicationBasis: 'admin_override'
       }],
       nextCursor: null
     });

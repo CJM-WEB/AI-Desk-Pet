@@ -1,3 +1,5 @@
+import type { PublicationBasis } from '@myself/shared-types';
+
 import { ApiError } from '../errors.js';
 import type {
   ObjectStorage,
@@ -26,6 +28,11 @@ export interface PublicCommunityItem {
   likeCount: number;
   downloadCount: number;
   publishedAt: string;
+  publicationBasis: PublicationBasis;
+}
+
+export interface PublicDownload extends SignedDownload {
+  publicationBasis: PublicationBasis;
 }
 
 export interface PublicFeedbackItem {
@@ -95,12 +102,16 @@ export class PublicContentService {
   async getDownload(
     id: string,
     _fingerprint?: string
-  ): Promise<SignedDownload> {
+  ): Promise<PublicDownload> {
     const submission = await this.store.findById(id);
     if (
       !submission
       || submission.status !== 'published'
       || submission.kind !== 'shared_package'
+      || (
+        submission.publicationBasis !== 'standard'
+        && submission.publicationBasis !== 'admin_override'
+      )
     ) {
       throw notFound();
     }
@@ -114,10 +125,14 @@ export class PublicContentService {
       throw notFound();
     }
     await this.store.recordPublicDownload(id);
-    return this.storage.createSignedUrl(
+    const signed = await this.storage.createSignedUrl(
       packages[0]!.storageKey,
       signedDownloadLifetimeSeconds
     );
+    return {
+      ...signed,
+      publicationBasis: submission.publicationBasis
+    };
   }
 
   private async toCommunity(
@@ -149,7 +164,8 @@ export class PublicContentService {
       packageSizeBytes: packageAsset.sizeBytes,
       likeCount: item.likeCount,
       downloadCount: item.downloadCount,
-      publishedAt: item.publishedAt
+      publishedAt: item.publishedAt,
+      publicationBasis: item.publicationBasis
     };
   }
 
