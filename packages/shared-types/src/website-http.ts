@@ -24,7 +24,10 @@ export const websiteHttpErrorSchema = z.object({
 export function successEnvelopeSchema<T extends z.ZodTypeAny>(dataSchema: T) {
   return z.object({ requestId: requestIdSchema, data: dataSchema }).strict()
     .superRefine((value, context) => {
-      if (!Object.prototype.hasOwnProperty.call(value, 'data')) {
+      if (
+        !Object.prototype.hasOwnProperty.call(value, 'data')
+        || value.data === undefined
+      ) {
         context.addIssue({
           code: z.ZodIssueCode.custom,
           path: ['data'],
@@ -102,8 +105,11 @@ export const publicListRequestSchema = z.object({
 export const publicFeedbackListRequestSchema = publicListRequestSchema.extend({
   kind: z.enum(['feedback', 'suggestion'])
 }).strict();
+/** 详情 GET 显式建模三段 wire 事实，确保未声明的 query/body 不能被投影丢弃。 */
 export const publicDetailRequestSchema = z.object({
-  id: z.string().min(1).max(128)
+  path: z.object({ id: z.string().min(1).max(128) }).strict(),
+  query: z.object({}).strict(),
+  body: z.object({}).strict()
 }).strict();
 export const publicLikeRequestSchema = emptyRequestSchema;
 export const publicDownloadRequestSchema = emptyRequestSchema;

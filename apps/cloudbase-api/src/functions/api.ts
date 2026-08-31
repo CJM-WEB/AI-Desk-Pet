@@ -208,7 +208,9 @@ async function dispatch(
     ''
   );
   if (adminDetailId !== null) {
-    const request = adminDetailRequestSchema.safeParse({ id: adminDetailId });
+    const request = adminDetailRequestSchema.safeParse(
+      detailRequest(event, adminDetailId)
+    );
     if (!request.success) throw invalidRequest();
     await dependencies.adminIdentity.requireAdmin(requireAdminToken(event));
     return adminDetailResponseSchema.parse(
@@ -357,7 +359,9 @@ async function dispatch(
     ''
   );
   if (communityId !== null) {
-    const request = publicDetailRequestSchema.safeParse({ id: communityId });
+    const request = publicDetailRequestSchema.safeParse(
+      detailRequest(event, communityId)
+    );
     if (!request.success) throw invalidRequest();
     return publicCommunityItemSchema.parse(
       await dependencies.publicContent.getCommunity(communityId)
@@ -392,6 +396,17 @@ function publicListQuery(event: ApiHttpEvent): {
   return query.data.cursor === undefined
     ? { limit: query.data.limit }
     : { limit: query.data.limit, cursor: query.data.cursor };
+}
+
+function detailRequest(
+  event: ApiHttpEvent,
+  id: string
+): { path: { id: string }; query: Record<string, unknown>; body: Record<string, unknown> } {
+  return {
+    path: { id },
+    query: { ...(event.queryStringParameters ?? {}) },
+    body: event.body === undefined ? {} : requestRecord(event)
+  };
 }
 
 function publicFeedbackListQuery(event: ApiHttpEvent): {

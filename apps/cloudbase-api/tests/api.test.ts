@@ -490,6 +490,28 @@ describe('公开 HTTP API', () => {
     expect(dependencies.admin.listQueue).not.toHaveBeenCalled();
   });
 
+  it('公开与管理员详情拒绝额外 query 和 body 且不调用服务', async () => {
+    const dependencies = createDependencies();
+    const main = createApi(dependencies);
+
+    const responses = await Promise.all([
+      main({
+        ...event('GET', '/api/v1/community/community-1'),
+        queryStringParameters: { private: 'secret' }
+      }, context),
+      main(event('GET', '/api/v1/community/community-1', { private: 'secret' }), context),
+      main({
+        ...event('GET', '/api/v1/admin/submissions/submission-1'),
+        queryStringParameters: { private: 'secret' }
+      }, context),
+      main(event('GET', '/api/v1/admin/submissions/submission-1', { private: 'secret' }), context)
+    ]);
+
+    expect(responses.map(response => response.statusCode)).toEqual([400, 400, 400, 400]);
+    expect(dependencies.publicContent.getCommunity).not.toHaveBeenCalled();
+    expect(dependencies.admin.getDetail).not.toHaveBeenCalled();
+  });
+
   it('点赞和下载分别按设备哈希与资源 ID 限流', async () => {
     const dependencies = createDependencies();
     const main = createApi(dependencies);
