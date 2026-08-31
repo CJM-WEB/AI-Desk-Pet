@@ -1,5 +1,3 @@
-import type { MessageKey } from './i18n-types';
-
 export const zhCN = {
   'language.button': 'language',
   'language.chinese': '简体中文',
@@ -381,7 +379,7 @@ export const zhCN = {
   'admin.notice.conflict': '状态已变化，已刷新最新内容。'
 } as const;
 
-export const en: Record<MessageKey, string> = {
+export const en: { [K in keyof typeof zhCN]: string } = {
   'language.button': 'language',
   'language.chinese': '简体中文',
   'language.english': 'English',

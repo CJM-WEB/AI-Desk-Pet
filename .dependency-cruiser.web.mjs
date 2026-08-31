@@ -39,7 +39,13 @@ const WEB_RULE_NAMES = new Set([
 
 export default {
   ...baseConfiguration,
-  forbidden: baseConfiguration.forbidden.filter(rule => WEB_RULE_NAMES.has(rule.name)),
+  forbidden: baseConfiguration.forbidden
+    .filter(rule => WEB_RULE_NAMES.has(rule.name))
+    .map(rule => (
+      rule.name === 'no-circular' || rule.name === 'website-features-do-not-import-liquid-glass'
+        ? { ...rule, severity: 'error' }
+        : rule
+    )),
   options: {
     ...baseConfiguration.options,
     doNotFollow: {

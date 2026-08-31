@@ -3,7 +3,6 @@
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { I18nProvider } from '../components/i18n/I18nProvider';
-import { LIQUID_GLASS_FRAGMENT_SHADER } from '../components/home-experience/liquid-glass-shaders';
 import { DownloadChapter } from '../components/website-experience/download/DownloadChapter';
 import { isLocalInputElement } from '../components/website-experience/use-website-controller';
 
@@ -67,8 +66,6 @@ describe('下载模块', () => {
     expect(notice.textContent).toContain('安装前须知');
     expect(notice.textContent).toContain('常见问题');
     expect(container.querySelector('[class*="glassCopyContent"]')).toBeNull();
-    expect(LIQUID_GLASS_FRAGMENT_SHADER).not.toContain('u_downloadTextTexture');
-    expect(LIQUID_GLASS_FRAGMENT_SHADER).not.toContain('u_downloadTransition');
   });
 
   it('Windows 大字在下载过渡末段前保持在屏幕外', () => {

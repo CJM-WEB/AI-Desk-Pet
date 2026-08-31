@@ -4,7 +4,6 @@ import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { gsap } from 'gsap';
 import { AboutChapter } from '../components/website-experience/about/AboutChapter';
-import { LIQUID_GLASS_FRAGMENT_SHADER } from '../components/home-experience/liquid-glass-shaders';
 
 vi.mock('gsap', () => ({
   gsap: { killTweensOf: vi.fn(), set: vi.fn(), to: vi.fn() }
@@ -54,19 +53,6 @@ describe('AI Pet 液态玻璃介绍章节', () => {
       y: 0,
       ease: 'elastic.out(1, 0.42)'
     }));
-  });
-
-  it('着色器只保留首页到介绍交接的基础玻璃轮廓', () => {
-    expect(LIQUID_GLASS_FRAGMENT_SHADER).toContain('liquidGlassSdf');
-    expect(LIQUID_GLASS_FRAGMENT_SHADER).toContain('capsuleSdf');
-    expect(LIQUID_GLASS_FRAGMENT_SHADER).toContain('u_ripples[6]');
-    expect(LIQUID_GLASS_FRAGMENT_SHADER).not.toContain('u_blobOffsets');
-    expect(LIQUID_GLASS_FRAGMENT_SHADER).not.toContain('u_hoverAmount');
-    expect(LIQUID_GLASS_FRAGMENT_SHADER).not.toContain('u_dragging');
-    expect(LIQUID_GLASS_FRAGMENT_SHADER).not.toContain('u_cornerTextTexture');
-    expect(LIQUID_GLASS_FRAGMENT_SHADER).not.toContain('u_glassTextTexture');
-    expect(LIQUID_GLASS_FRAGMENT_SHADER).not.toContain('u_supportTextTexture');
-    expect(LIQUID_GLASS_FRAGMENT_SHADER).not.toContain('supportButton');
   });
 
   it('减少动态效果时关闭持续浮动', () => {

@@ -49,6 +49,10 @@ async function createRuleFixture() {
       "import { internal } from '../../cloudbase-api/src/internal.ts';\nexport { internal };\n",
     'apps/website/lib/scanner-protocol-offender.ts':
       "import { protocol } from '../../../packages/shared-types/src/scanner-protocol.ts';\nexport { protocol };\n",
+    'apps/website/components/website-experience/shader-offender.ts':
+      "import { LIQUID_GLASS_FRAGMENT_SHADER } from '../home-experience/liquid-glass-shaders.ts';\nexport { LIQUID_GLASS_FRAGMENT_SHADER };\n",
+    'apps/website/components/home-experience/liquid-glass-shaders.ts':
+      "export const LIQUID_GLASS_FRAGMENT_SHADER = '';\n",
     'apps/desktop/src/renderer/scanner-protocol-offender.ts':
       "import { protocol } from '../../../../packages/shared-types/src/scanner-protocol.ts';\nexport { protocol };\n",
     'apps/desktop/src/renderer/website-http-offender.ts':
@@ -103,11 +107,7 @@ test('网站链审查仅报告已批准的历史 warning，且不载入桌面模
     false,
   );
 
-  const allowedDebt = new Set([
-    'no-circular',
-    'no-orphan-production-module',
-    'website-features-do-not-import-liquid-glass',
-  ]);
+  const allowedDebt = new Set(['no-orphan-production-module']);
   assert.ok(report.summary.violations.every(item => allowedDebt.has(item.rule.name)));
   assert.ok(report.summary.violations.length <= 14);
 });
@@ -181,7 +181,7 @@ test('网站专属规则阻止跨应用、服务反向依赖与越界 SDK 调用
   );
   assert.equal(result.status, 0, result.stderr);
   const report = JSON.parse(result.stdout);
-  assert.equal(report.summary.error, 3);
+  assert.equal(report.summary.error, 4);
   const hasViolation = (ruleName, from) =>
     report.summary.violations.some(
       violation => violation.rule.name === ruleName && violation.from === from,
@@ -198,6 +198,12 @@ test('网站专属规则阻止跨应用、服务反向依赖与越界 SDK 调用
   );
   assert.ok(
     hasViolation('website-cloudbase-sdk-only-in-client-adapter', 'apps/website/lib/sdk-offender.ts'),
+  );
+  assert.ok(
+    hasViolation(
+      'website-features-do-not-import-liquid-glass',
+      'apps/website/components/website-experience/shader-offender.ts',
+    ),
   );
   assert.equal(
     hasViolation(
@@ -232,4 +238,14 @@ test('网站专属规则阻止跨应用、服务反向依赖与越界 SDK 调用
       entryPoint,
     );
   }
+});
+
+test('网站循环与 Liquid 越界规则均为阻断级别', async () => {
+  const configuration = (await import(`${new URL('../../.dependency-cruiser.web.mjs', import.meta.url)}?test=${Date.now()}`)).default;
+  const severityByRule = new Map(
+    configuration.forbidden.map(rule => [rule.name, rule.severity]),
+  );
+
+  assert.equal(severityByRule.get('no-circular'), 'error');
+  assert.equal(severityByRule.get('website-features-do-not-import-liquid-glass'), 'error');
 });

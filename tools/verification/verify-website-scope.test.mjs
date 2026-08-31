@@ -81,6 +81,27 @@ test('当前网站优化阶段只放行官网业务与精确获批文档', () =>
   });
 });
 
+test('阶段四只放行精确的 S2 治理规格与计划', () => {
+  const approvedStagePaths = [
+    'docs/superpowers/specs/2026-08-15-website-s2-governance-design.md',
+    'docs/superpowers/plans/2026-08-31-website-stage-4-s2-governance.md',
+  ];
+
+  assert.deepEqual(classifyChangedPaths([
+    ...approvedStagePaths,
+    'docs/superpowers/specs/2026-08-15-website-s2-governance-design.txt',
+    'docs/superpowers/plans/2026-08-31-website-stage-4-s2-governance.txt',
+    'apps/desktop/src/main/index.ts',
+  ]), {
+    allowed: approvedStagePaths,
+    forbidden: ['apps/desktop/src/main/index.ts'],
+    outside: [
+      'docs/superpowers/specs/2026-08-15-website-s2-governance-design.txt',
+      'docs/superpowers/plans/2026-08-31-website-stage-4-s2-governance.txt',
+    ],
+  });
+});
+
 test('Task 8 只放行精确的网站优化验收记录', () => {
   const acceptance = 'docs/operations/website-optimization-acceptance.md';
   const similarlyNamedPath = 'docs/operations/website-optimization-acceptance.txt';

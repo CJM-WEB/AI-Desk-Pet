@@ -518,10 +518,12 @@ export default {
     },
     {
       name: 'website-features-do-not-import-liquid-glass',
-      comment: '网站功能层不得直接依赖首页液态玻璃组件。',
+      comment: '网站功能层不得直接依赖首页液态玻璃组件或着色器。',
       severity: 'warn',
       from: { path: '^apps/website/(app|components/website-experience|components/i18n)/' },
-      to: { path: '^apps/website/components/home-experience/LiquidGlassHome\\.tsx$' },
+      to: {
+        path: '^apps/website/components/home-experience/(LiquidGlassHome\\.tsx|liquid-glass-shaders\\.ts)$',
+      },
     },
   ],
   options: {

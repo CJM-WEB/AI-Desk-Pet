@@ -61,6 +61,8 @@ export const ALLOWED_WEBSITE_SCOPE_PATHS = Object.freeze([
   'docs/superpowers/specs/2026-08-20-website-liquid-glass-deep-module-reduction-design.md',
   'docs/superpowers/plans/2026-08-21-website-gpu-e2e-responsibility-subtraction.md',
   'docs/superpowers/specs/2026-08-21-website-gpu-e2e-responsibility-subtraction-design.md',
+  'docs/superpowers/specs/2026-08-15-website-s2-governance-design.md',
+  'docs/superpowers/plans/2026-08-31-website-stage-4-s2-governance.md',
   'docs/superpowers/plans/2026-08-31-website-stage-2-3-local-closure.md',
   'docs/superpowers/plans/2026-08-31-admin-override-publication.md',
   'docs/superpowers/specs/2026-08-31-website-stage-2-3-local-closure-design.md',

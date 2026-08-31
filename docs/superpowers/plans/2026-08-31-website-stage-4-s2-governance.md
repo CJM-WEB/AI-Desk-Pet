@@ -45,7 +45,7 @@
 
 ```js
 'apps/website/components/website-experience/shader-offender.ts':
-  "import { LIQUID_GLASS_FRAGMENT_SHADER } from '../../home-experience/liquid-glass-shaders.ts';\nexport { LIQUID_GLASS_FRAGMENT_SHADER };\n",
+  "import { LIQUID_GLASS_FRAGMENT_SHADER } from '../home-experience/liquid-glass-shaders.ts';\nexport { LIQUID_GLASS_FRAGMENT_SHADER };\n",
 'apps/website/components/home-experience/liquid-glass-shaders.ts':
   "export const LIQUID_GLASS_FRAGMENT_SHADER = '';\n",
 ```
