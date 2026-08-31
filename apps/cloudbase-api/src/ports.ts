@@ -1,5 +1,6 @@
 import type {
   AdminAction,
+  PublicationBasis,
   SubmissionStatus,
   SubmissionStatusView
 } from '@myself/shared-types';
@@ -116,9 +117,17 @@ export interface AdminActionInput {
   reason: string;
 }
 
+/** 管理员动作只返回稳定裁决事实，不复用包含私密字段的完整投稿行。 */
+export interface AdminActionSubmission {
+  id: string;
+  status: SubmissionStatus;
+  statusVersion: number;
+  publicationBasis: PublicationBasis | null;
+}
+
 /** 管理员动作结果会标识是否为幂等重放。 */
 export interface AdminActionResult {
-  submission: SubmissionRow;
+  submission: AdminActionSubmission;
   replayed: boolean;
 }
 

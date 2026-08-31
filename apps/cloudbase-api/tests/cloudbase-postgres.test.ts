@@ -447,7 +447,21 @@ class MemoryRdb {
       row.status = params.p_next_status as string;
       row.status_version += 1;
       const result = {
-        submission: structuredClone(row),
+        submission: {
+          id: row.id,
+          kind: row.kind,
+          status: row.status,
+          status_version: row.status_version,
+          publication_basis: row.status === 'published'
+            ? (params.p_action === 'force_publish' ? 'admin_override' : 'standard')
+            : null,
+          public_reason: row.public_reason,
+          published_at: row.published_at,
+          rejected_at: null,
+          quarantined_at: null,
+          created_at: row.created_at,
+          updated_at: row.updated_at
+        },
         replayed: false
       };
       this.audits.set(idempotencyKey, { request, result });
@@ -1315,6 +1329,147 @@ describe('CloudBase PostgreSQL 仓储', () => {
       replayed: true
     });
     expect(database.audits).toHaveLength(1);
+  });
+
+  it.each([false, true])(
+    '管理员动作安全 RPC 快照可映射首次与重放结果（replayed=%s）',
+    async (replayed) => {
+      const rpcClient = {
+        rpc: vi.fn(async () => ({
+          data: {
+            submission: {
+              id: 'safe-admin-result',
+              kind: 'shared_package',
+              status: 'published',
+              status_version: 4,
+              publication_basis: 'admin_override',
+              public_reason: null,
+              published_at: '2026-08-31T00:00:00.000Z',
+              rejected_at: null,
+              quarantined_at: null,
+              created_at: '2026-08-30T00:00:00.000Z',
+              updated_at: '2026-08-31T00:00:00.000Z'
+            },
+            replayed
+          },
+          error: null
+        }))
+      };
+      const store = new CloudBasePostgresStore(new MemoryRdb(), rpcClient);
+
+      await expect(store.applyAdminAction({
+        submissionId: 'safe-admin-result',
+        adminId: 'admin-1',
+        action: 'approve',
+        nextStatus: 'published',
+        expectedVersion: 3,
+        idempotencyKey: 'safe-admin-result-key',
+        reason: '安全响应映射'
+      })).resolves.toEqual({
+        submission: {
+          id: 'safe-admin-result',
+          status: 'published',
+          statusVersion: 4,
+          publicationBasis: 'admin_override'
+        },
+        replayed
+      });
+    }
+  );
+
+  it('管理员动作可映射旧 purge 升级后仅含可证明字段的重放快照', async () => {
+    const rpcClient = {
+      rpc: vi.fn(async () => ({
+        data: {
+          submission: {
+            id: 'legacy-purged-result',
+            status: 'published',
+            status_version: 1,
+            publication_basis: 'standard'
+          },
+          replayed: true
+        },
+        error: null
+      }))
+    };
+    const store = new CloudBasePostgresStore(new MemoryRdb(), rpcClient);
+
+    await expect(store.applyAdminAction({
+      submissionId: 'legacy-purged-result',
+      adminId: 'admin-1',
+      action: 'approve',
+      nextStatus: 'published',
+      expectedVersion: 0,
+      idempotencyKey: 'legacy-purged-result-key',
+      reason: '回放历史批准'
+    })).resolves.toEqual({
+      submission: {
+        id: 'legacy-purged-result',
+        status: 'published',
+        statusVersion: 1,
+        publicationBasis: 'standard'
+      },
+      replayed: true
+    });
+  });
+
+  it.each([
+    {
+      label: '错误字段类型',
+      mutate: (submission: Record<string, unknown>) => ({
+        ...submission,
+        status_version: '4'
+      }),
+      topLevelExtra: false
+    },
+    {
+      label: '投稿私密额外字段',
+      mutate: (submission: Record<string, unknown>) => ({
+        ...submission,
+        body: '不得进入管理员动作响应'
+      }),
+      topLevelExtra: false
+    },
+    {
+      label: '顶层额外字段',
+      mutate: (submission: Record<string, unknown>) => submission,
+      topLevelExtra: true
+    }
+  ])('管理员动作安全 RPC 对$label失败关闭', async ({ mutate, topLevelExtra }) => {
+    const safeSubmission = {
+      id: 'unsafe-admin-result',
+      kind: 'feedback',
+      status: 'published',
+      status_version: 1,
+      publication_basis: 'standard',
+      public_reason: null,
+      published_at: '2026-08-31T00:00:00.000Z',
+      rejected_at: null,
+      quarantined_at: null,
+      created_at: '2026-08-30T00:00:00.000Z',
+      updated_at: '2026-08-31T00:00:00.000Z'
+    };
+    const rpcClient = {
+      rpc: vi.fn(async () => ({
+        data: {
+          submission: mutate(safeSubmission),
+          replayed: false,
+          ...(topLevelExtra ? { debug: '不得忽略' } : {})
+        },
+        error: null
+      }))
+    };
+    const store = new CloudBasePostgresStore(new MemoryRdb(), rpcClient);
+
+    await expect(store.applyAdminAction({
+      submissionId: 'unsafe-admin-result',
+      adminId: 'admin-1',
+      action: 'approve',
+      nextStatus: 'published',
+      expectedVersion: 0,
+      idempotencyKey: 'unsafe-admin-result-key',
+      reason: '拒绝异常响应'
+    })).rejects.toMatchObject({ code: 'DATABASE_ERROR', statusCode: 500 });
   });
 
   it('数据库 RPC 拒绝缺少当前证据的待人工共享包批准', async () => {

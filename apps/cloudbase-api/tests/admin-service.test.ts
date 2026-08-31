@@ -48,7 +48,12 @@ function createService(row = submission('manual_review_pending')) {
       submission: {
         id: 'submission-1',
         status: input.nextStatus as AdminSubmissionDetail['status'],
-        statusVersion: 4
+        statusVersion: 4,
+        publicationBasis: input.nextStatus === 'published'
+          ? (input.action === 'force_publish'
+              ? 'admin_override' as const
+              : 'standard' as const)
+          : null
       },
       replayed: false
     }))
@@ -445,7 +450,10 @@ describe('管理员审核服务', () => {
         submission: {
           id: initial.id,
           status: changed.status,
-          statusVersion: 4
+          statusVersion: 4,
+          publicationBasis: changed.status === 'published'
+            ? 'standard' as const
+            : null
         },
         replayed: store.applyAdminAction.mock.calls.length > 1
       };

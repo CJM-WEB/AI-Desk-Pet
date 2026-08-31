@@ -11,36 +11,79 @@ WHERE status = 'published'
   AND publication_basis IS NULL;
 
 -- 旧函数曾把整行投稿写入审计快照；升级时只保留稳定回放所需的公开事实。
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1
+    FROM admin_audit_logs AS audit
+    WHERE audit.result_snapshot #>> '{submission,status}' = 'purged'
+      AND audit.result_snapshot #> '{submission,status_version}' IS NULL
+      AND (
+        audit.request_payload ->> 'submissionId' = audit.submission_id
+        AND audit.request_payload ->> 'adminId' = audit.admin_id
+        AND audit.request_payload ->> 'action' = audit.action
+        AND audit.request_payload ->> 'nextStatus' = audit.after_status
+        AND audit.request_payload ->> 'reason' = audit.reason
+        AND audit.before_status <> audit.after_status
+        AND jsonb_typeof(
+          audit.request_payload -> 'expectedVersion'
+        ) = 'number'
+        AND audit.request_payload ->> 'expectedVersion' ~ '^[0-9]+$'
+      ) IS NOT TRUE
+  ) THEN
+    RAISE EXCEPTION 'invalid legacy admin audit snapshot'
+      USING ERRCODE = '22023';
+  END IF;
+END;
+$$;
+
 UPDATE admin_audit_logs AS audit
-SET result_snapshot = jsonb_build_object(
-  'submission', jsonb_build_object(
-    'id', COALESCE(
-      audit.result_snapshot #> '{submission,id}',
-      to_jsonb(audit.submission_id)
+SET result_snapshot = CASE
+  WHEN audit.result_snapshot #>> '{submission,status}' = 'purged'
+    AND audit.result_snapshot #> '{submission,status_version}' IS NULL
+  THEN jsonb_build_object(
+    'submission', jsonb_build_object(
+      'id', audit.submission_id,
+      'status', audit.after_status,
+      'status_version',
+        (audit.request_payload ->> 'expectedVersion')::bigint + 1,
+      'publication_basis', CASE
+        WHEN audit.after_status = 'published' THEN 'standard'::text
+        ELSE NULL
+      END
     ),
-    'kind', COALESCE(
-      audit.result_snapshot #> '{submission,kind}',
-      to_jsonb(submission.kind)
+    'replayed', false
+  )
+  ELSE jsonb_build_object(
+    'submission', jsonb_build_object(
+      'id', COALESCE(
+        audit.result_snapshot #> '{submission,id}',
+        to_jsonb(audit.submission_id)
+      ),
+      'kind', COALESCE(
+        audit.result_snapshot #> '{submission,kind}',
+        to_jsonb(submission.kind)
+      ),
+      'status', audit.result_snapshot #> '{submission,status}',
+      'status_version', audit.result_snapshot #> '{submission,status_version}',
+      'publication_basis', CASE
+        WHEN audit.result_snapshot #>> '{submission,status}' = 'published'
+          THEN COALESCE(
+            audit.result_snapshot #> '{submission,publication_basis}',
+            to_jsonb('standard'::text)
+          )
+        ELSE 'null'::jsonb
+      END,
+      'public_reason', audit.result_snapshot #> '{submission,public_reason}',
+      'published_at', audit.result_snapshot #> '{submission,published_at}',
+      'rejected_at', audit.result_snapshot #> '{submission,rejected_at}',
+      'quarantined_at', audit.result_snapshot #> '{submission,quarantined_at}',
+      'created_at', audit.result_snapshot #> '{submission,created_at}',
+      'updated_at', audit.result_snapshot #> '{submission,updated_at}'
     ),
-    'status', audit.result_snapshot #> '{submission,status}',
-    'status_version', audit.result_snapshot #> '{submission,status_version}',
-    'publication_basis', CASE
-      WHEN audit.result_snapshot #>> '{submission,status}' = 'published'
-        THEN COALESCE(
-          audit.result_snapshot #> '{submission,publication_basis}',
-          to_jsonb('standard'::text)
-        )
-      ELSE 'null'::jsonb
-    END,
-    'public_reason', audit.result_snapshot #> '{submission,public_reason}',
-    'published_at', audit.result_snapshot #> '{submission,published_at}',
-    'rejected_at', audit.result_snapshot #> '{submission,rejected_at}',
-    'quarantined_at', audit.result_snapshot #> '{submission,quarantined_at}',
-    'created_at', audit.result_snapshot #> '{submission,created_at}',
-    'updated_at', audit.result_snapshot #> '{submission,updated_at}'
-  ),
-  'replayed', false
-)
+    'replayed', false
+  )
+END
 FROM submissions AS submission
 WHERE submission.id = audit.submission_id;
 

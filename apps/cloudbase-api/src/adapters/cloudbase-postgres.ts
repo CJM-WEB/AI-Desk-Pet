@@ -1,7 +1,9 @@
 import {
   adminActionSchema,
+  publicationBasisSchema,
   submissionStatusSchema
 } from '@myself/shared-types';
+import { z } from 'zod';
 
 import { ApiError } from '../errors.js';
 import type {
@@ -411,14 +413,7 @@ export class CloudBasePostgresStore implements
       throw new ApiError('SUBMISSION_NOT_FOUND', 404, result.error.message);
     }
 
-    const row = requireRecord(
-      requireData(result, '执行管理员动作失败'),
-      '管理员动作结果'
-    );
-    return {
-      submission: mapSubmission(row.submission),
-      replayed: requireBoolean(row.replayed, 'replayed')
-    };
+    return mapAdminActionResult(requireData(result, '执行管理员动作失败'));
   }
 
   async listAdminSubmissions(
@@ -642,6 +637,59 @@ function mapSubmission(value: unknown): SubmissionRow {
     publishedAt: optionalString(row.published_at, 'published_at'),
     createdAt: requireString(row.created_at, 'created_at'),
     updatedAt: requireString(row.updated_at, 'updated_at')
+  };
+}
+
+const adminActionSubmissionCoreSchema = z.object({
+  id: z.string().min(1).max(128),
+  status: submissionStatusSchema,
+  status_version: z.number().int().nonnegative(),
+  publication_basis: publicationBasisSchema.nullable()
+}).strict();
+
+const adminActionSubmissionSnapshotSchema = adminActionSubmissionCoreSchema
+  .extend({
+    kind: z.string().min(1).max(64),
+    public_reason: z.string().max(500).nullable(),
+    published_at: z.string().datetime({ offset: true }).nullable(),
+    rejected_at: z.string().datetime({ offset: true }).nullable(),
+    quarantined_at: z.string().datetime({ offset: true }).nullable(),
+    created_at: z.string().datetime({ offset: true }),
+    updated_at: z.string().datetime({ offset: true })
+  })
+  .strict();
+
+const adminActionRpcResultSchema = z.object({
+  submission: z.union([
+    adminActionSubmissionSnapshotSchema,
+    adminActionSubmissionCoreSchema
+  ]),
+  replayed: z.boolean()
+}).strict().superRefine((result, context) => {
+  const published = result.submission.status === 'published';
+  if (published !== (result.submission.publication_basis !== null)) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['submission', 'publication_basis'],
+      message: '发布状态与发布依据不一致'
+    });
+  }
+});
+
+/** 管理员动作 RPC 只映射稳定裁决事实，额外字段和完整投稿私密行均失败关闭。 */
+function mapAdminActionResult(value: unknown): AdminActionResult {
+  const parsed = adminActionRpcResultSchema.safeParse(value);
+  if (!parsed.success) {
+    throw new ApiError('DATABASE_ERROR', 500, '管理员动作结果返回格式错误');
+  }
+  return {
+    submission: {
+      id: parsed.data.submission.id,
+      status: parsed.data.submission.status,
+      statusVersion: parsed.data.submission.status_version,
+      publicationBasis: parsed.data.submission.publication_basis
+    },
+    replayed: parsed.data.replayed
   };
 }
 
@@ -925,8 +973,10 @@ function requireSuggestion(
 }
 
 function requireAdminAction(value: unknown): AdminAuditLog['action'] {
-  const result = adminActionSchema.shape.action.safeParse(value);
-  if (result.success) return result.data;
+  for (const option of adminActionSchema.options) {
+    const result = option.shape.action.safeParse(value);
+    if (result.success) return result.data;
+  }
   throw new ApiError('DATABASE_ERROR', 500, 'action字段格式错误');
 }
 

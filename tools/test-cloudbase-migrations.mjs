@@ -102,7 +102,7 @@ export async function runCloudBaseMigrationBehaviorGate({
       postgresVersion: postgresVersion.version,
       postgresMajorVersion: postgresVersion.major,
       migrationsApplied: migrations.length,
-      behaviorsVerified: 35
+      behaviorsVerified: 36
     };
   } finally {
     if (started) {
@@ -213,6 +213,38 @@ SELECT
   jsonb_build_object('submission', to_jsonb(submission), 'replayed', false)
 FROM submissions AS submission
 WHERE submission.id = 'gate-legacy-audit';
+
+-- 旧 purge 会把同一投稿的全部管理员动作快照压缩成当前 purged 状态。
+INSERT INTO submissions (
+  id, kind, title, body, status, status_token_hash
+) VALUES (
+  'gate-legacy-purged-audit', 'feedback', '已清理旧标题', '已清理旧正文',
+  'manual_review_pending', repeat('c', 64)
+);
+DO $legacy_purged$
+BEGIN
+  PERFORM apply_admin_action(
+    'gate-legacy-purged-audit', 'admin-1', 'approve', 'published', 0,
+    'gate-legacy-purged-approve', '历史批准后被清理'
+  );
+  PERFORM apply_admin_action(
+    'gate-legacy-purged-audit', 'admin-1', 'delete',
+    'deleted_quarantined', 1, 'gate-legacy-purged-delete', '历史删除'
+  );
+  UPDATE submissions
+  SET purge_after = now() - interval '1 minute',
+      cleanup_started_at = now(),
+      cleanup_lease_until = now() + interval '5 minutes'
+  WHERE id = 'gate-legacy-purged-audit';
+  PERFORM mark_submission_purged('gate-legacy-purged-audit', 2);
+  IF (SELECT result_snapshot #>> '{submission,status}'
+      FROM admin_audit_logs
+      WHERE idempotency_key = 'gate-legacy-purged-approve')
+      IS DISTINCT FROM 'purged' THEN
+    RAISE EXCEPTION '行为门夹具失败：旧 purge 未压缩审计快照';
+  END IF;
+END
+$legacy_purged$;
 `;
 
 const behaviorSql = String.raw`
@@ -373,6 +405,36 @@ BEGIN
   IF COALESCE((v_result ->> 'replayed')::boolean, false) IS NOT TRUE
     OR (v_result - 'replayed') <> (v_first_snapshot - 'replayed') THEN
     RAISE EXCEPTION '行为门失败：旧版审计快照无法稳定回放';
+  END IF;
+
+  -- 被旧 purge 压缩的快照只能用审计事实重建，不得猜测已清理字段。
+  SELECT result_snapshot INTO v_first_snapshot
+  FROM admin_audit_logs
+  WHERE idempotency_key = 'gate-legacy-purged-approve';
+  IF (
+      SELECT array_agg(key ORDER BY key)
+      FROM jsonb_object_keys(
+        v_first_snapshot -> 'submission'
+      ) AS snapshot_key(key)
+    ) IS DISTINCT FROM ARRAY[
+      'id', 'publication_basis', 'status', 'status_version'
+    ]::text[]
+    OR v_first_snapshot #>> '{submission,id}'
+      IS DISTINCT FROM 'gate-legacy-purged-audit'
+    OR v_first_snapshot #>> '{submission,status}'
+      IS DISTINCT FROM 'published'
+    OR v_first_snapshot #>> '{submission,status_version}' IS DISTINCT FROM '1'
+    OR v_first_snapshot #>> '{submission,publication_basis}'
+      IS DISTINCT FROM 'standard' THEN
+    RAISE EXCEPTION '行为门失败：旧 purge 快照未按审计事实重建';
+  END IF;
+  v_result := apply_admin_action(
+    'gate-legacy-purged-audit', 'admin-1', 'approve', 'published', 0,
+    'gate-legacy-purged-approve', '历史批准后被清理'
+  );
+  IF COALESCE((v_result ->> 'replayed')::boolean, false) IS NOT TRUE
+    OR (v_result - 'replayed') <> (v_first_snapshot - 'replayed') THEN
+    RAISE EXCEPTION '行为门失败：旧 purge 快照无法回放首次动作';
   END IF;
 
   -- 1. 数据库约束直接拒绝 published + NULL，不依赖服务层。
