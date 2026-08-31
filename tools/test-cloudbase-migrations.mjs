@@ -137,7 +137,7 @@ export async function runCloudBaseMigrationBehaviorGate({
       postgresVersion: postgresVersion.version,
       postgresMajorVersion: postgresVersion.major,
       migrationsApplied: migrations.length,
-      behaviorsVerified: 39
+      behaviorsVerified: 42
     };
   } finally {
     if (started) {
@@ -513,6 +513,7 @@ DECLARE
   v_cleanup_version bigint;
   v_claimed_id text;
   v_count bigint;
+  v_evidence_case text;
   v_first_snapshot jsonb;
   v_result jsonb;
 BEGIN
@@ -780,6 +781,49 @@ BEGIN
   EXCEPTION WHEN SQLSTATE 'P1002' THEN
     NULL;
   END;
+
+  -- 服务看似完整的证据仍由数据库逐行核对；任一真实行不一致都允许走强制发布。
+  FOREACH v_evidence_case IN ARRAY ARRAY[
+    'gate-force-archive-sha',
+    'gate-force-rule-version',
+    'gate-force-completed-at'
+  ] LOOP
+    PERFORM gate_seed(v_evidence_case);
+    PERFORM apply_moderation_decision(
+      v_evidence_case, 1, 'manual_review_pending',
+      gate_pass_result(v_evidence_case, 2, v_now),
+      '{"blocked":false}'::jsonb,
+      NULL
+    );
+    IF v_evidence_case = 'gate-force-archive-sha' THEN
+      UPDATE assets
+      SET sha256 = repeat('b', 64)
+      WHERE submission_id = v_evidence_case AND role = 'package';
+    ELSIF v_evidence_case = 'gate-force-rule-version' THEN
+      UPDATE moderation_results
+      SET rule_version = 'character-package-legacy'
+      WHERE submission_id = v_evidence_case AND kind = 'package_scan';
+    ELSE
+      UPDATE moderation_results
+      SET completed_at = completed_at + interval '1 second'
+      WHERE submission_id = v_evidence_case AND kind = 'package_scan';
+    END IF;
+    IF technical_scan_evidence_valid(v_evidence_case, 2, v_now) THEN
+      RAISE EXCEPTION '行为门失败：真实行不一致仍被识别为有效证据';
+    END IF;
+    v_result := apply_admin_action(
+      v_evidence_case, 'admin-1', 'force_publish', 'published', 2,
+      v_evidence_case || '-force', '数据库确认真实证据不完整',
+      'ADMIN_OVERRIDE_ACCEPTED'
+    );
+    IF (SELECT status FROM submissions WHERE id = v_evidence_case)
+        <> 'published'
+      OR (SELECT publication_basis FROM submissions WHERE id = v_evidence_case)
+        <> 'admin_override'
+      OR v_result #>> '{submission,publication_basis}' <> 'admin_override' THEN
+      RAISE EXCEPTION '行为门失败：真实行不一致未允许强制发布';
+    END IF;
+  END LOOP;
 
   -- 7. 有效证据允许普通批准，并原子写入 standard 发布依据。
   PERFORM apply_admin_action(

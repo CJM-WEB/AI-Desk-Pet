@@ -81,7 +81,7 @@ export class ModerationService {
         signal.suggestion === 'Block'
         && signal.label.startsWith('技术检查：')
       ));
-      if (technicalBlocked) {
+      if (lateResult || technicalBlocked) {
         return this.persistDecision(
           submission,
           expectedVersion,

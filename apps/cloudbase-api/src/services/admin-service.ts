@@ -123,7 +123,6 @@ function nextStatusFor(
     if (
       submission.kind === 'shared_package'
       && status === 'manual_review_pending'
-      && !hasCurrentTechnicalPass(submission, now)
     ) {
       return 'published';
     }

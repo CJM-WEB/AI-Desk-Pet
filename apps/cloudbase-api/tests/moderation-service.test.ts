@@ -231,6 +231,51 @@ describe('自动审核编排', () => {
     expect(store.recordModerationFailure).not.toHaveBeenCalled();
   });
 
+  it('已领取任务被强制发布后完成安全扫描时跳过全部内容审核并保存唯一技术事实', async () => {
+    const claimed = sharedSubmission();
+    const published = sharedSubmission({
+      status: 'published',
+      statusVersion: 4,
+      publicationBasis: 'admin_override'
+    });
+    const store = createStore(published);
+    store.claimModerationJobs.mockResolvedValue([claimed]);
+    const { service, moderator } = createService({
+      store,
+      scan: safeScan,
+      reviewText: async () => {
+        throw new Error('后到安全扫描不得调用内容审核');
+      }
+    });
+
+    await expect(service.processNextBatch(1)).resolves.toEqual({
+      claimed: 1,
+      succeeded: 1,
+      failed: 0
+    });
+    expect(moderator.reviewText).not.toHaveBeenCalled();
+    expect(moderator.reviewImage).not.toHaveBeenCalled();
+    expect(store.recordLateModerationResult).toHaveBeenCalledWith({
+      submissionId: claimed.id,
+      expectedVersion: 2,
+      nextStatus: 'manual_review_pending',
+      results: [expect.objectContaining({
+        kind: 'package_scan',
+        provider: 'isolated-scanner',
+        suggestion: 'Pass',
+        label: '技术检查：CHARACTER_PACKAGE_SCAN_PASSED'
+      })],
+      riskSummary: {
+        blocked: false,
+        signalCount: 1,
+        blockedLabels: []
+      },
+      autoRejectionReason: null
+    });
+    expect(store.applyModerationDecision).not.toHaveBeenCalled();
+    expect(store.recordModerationFailure).not.toHaveBeenCalled();
+  });
+
   it('初读系统审核后并发强制发布仍提交完整结果交由原子 RPC 筛选', async () => {
     const store = createStore();
     let forcePublishedDuringScan = false;

@@ -465,11 +465,54 @@ describe('管理员审核服务', () => {
     });
   });
 
-  it('存在当前有效通过证据时拒绝强制发布并要求走普通批准', async () => {
+  it.each([
+    ['资产归档 SHA 与证据不一致', (row: AdminSubmissionDetail) => {
+      Object.assign(row.assets[0]!, { sha256: 'b'.repeat(64) });
+    }],
+    ['审核行规则版本与证据不一致', (row: AdminSubmissionDetail) => {
+      Object.assign(row.moderationResults[0]!, {
+        ruleVersion: 'character-package-legacy'
+      });
+    }],
+    ['审核行完成时间与证据不一致', (row: AdminSubmissionDetail) => {
+      Object.assign(row.moderationResults[0]!, {
+        completedAt: '2026-07-31T00:00:01.000Z'
+      });
+    }]
+  ] as const)('伪完整证据的%s必须交给数据库原子裁决', async (_name, mismatch) => {
+    const row = submission('manual_review_pending', {
+      moderationResults: [moderationResult('Pass', currentEvidence())]
+    });
+    mismatch(row);
+    const { service, store } = createService(row);
+
+    await expect(service.applyAction(
+      { uid: 'uid-admin', email: 'admin@example.com' },
+      row.id,
+      {
+        action: 'force_publish',
+        version: 3,
+        idempotencyKey: `force-db-evidence-${_name}`,
+        reason: '由数据库核对真实证据行',
+        riskAcknowledgement: 'ADMIN_OVERRIDE_ACCEPTED'
+      }
+    )).resolves.toMatchObject({
+      submission: { publicationBasis: 'admin_override' }
+    });
+    expect(store.applyAdminAction).toHaveBeenCalledWith(expect.objectContaining({
+      action: 'force_publish',
+      nextStatus: 'published'
+    }));
+  });
+
+  it('真正有效证据由数据库拒绝强制发布并保持既有错误契约', async () => {
     const row = submission('manual_review_pending', {
       moderationResults: [moderationResult('Pass', currentEvidence())]
     });
     const { service, store } = createService(row);
+    store.applyAdminAction.mockRejectedValueOnce(
+      new ApiError('INVALID_ADMIN_ACTION', 409)
+    );
 
     await expect(service.applyAction(
       { uid: 'uid-admin', email: 'admin@example.com' },
@@ -482,7 +525,10 @@ describe('管理员审核服务', () => {
         riskAcknowledgement: 'ADMIN_OVERRIDE_ACCEPTED'
       }
     )).rejects.toMatchObject({ code: 'INVALID_ADMIN_ACTION', statusCode: 409 });
-    expect(store.applyAdminAction).not.toHaveBeenCalled();
+    expect(store.applyAdminAction).toHaveBeenCalledWith(expect.objectContaining({
+      action: 'force_publish',
+      nextStatus: 'published'
+    }));
   });
 
   it.each([
