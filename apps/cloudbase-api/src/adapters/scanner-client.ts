@@ -13,6 +13,7 @@ import type {
   PackageScanner,
   ScanPackageInput
 } from '../ports.js';
+import { readBoundedJsonResponse } from './bounded-json-response.js';
 
 type FetchLike = (input: string, init: RequestInit) => Promise<Response>;
 type Now = () => Date;
@@ -49,6 +50,7 @@ export class ScannerClient implements PackageScanner {
       this.secret
     );
 
+    const signal = AbortSignal.timeout(SCANNER_REQUEST_TIMEOUT_MS);
     let response: Response;
     try {
       response = await this.fetcher(
@@ -61,14 +63,22 @@ export class ScannerClient implements PackageScanner {
             'x-internal-signature': signature
           },
           body,
-          signal: AbortSignal.timeout(SCANNER_REQUEST_TIMEOUT_MS)
+          signal
         }
       );
     } catch {
       throw new Error('SCANNER_UNAVAILABLE');
     }
 
-    const payload = await readJson(response);
+    let payload: unknown;
+    try {
+      payload = await readBoundedJsonResponse(response, {
+        maxBytes: SCANNER_MAX_RESPONSE_BYTES,
+        signal
+      });
+    } catch {
+      throw new Error('SCANNER_RESPONSE_INVALID');
+    }
     if (response.status === 422) {
       const rejected = scannerErrorResponseSchema.safeParse(payload);
       if (
@@ -121,37 +131,5 @@ export class ScannerClient implements PackageScanner {
         ...(signal.ocrText ? { ocrText: signal.ocrText } : {})
       }))
     };
-  }
-}
-
-async function readJson(response: Response): Promise<unknown> {
-  const reader = response.body?.getReader();
-  if (!reader) throw new Error('SCANNER_RESPONSE_INVALID');
-  const chunks: Uint8Array[] = [];
-  let totalBytes = 0;
-  try {
-    while (true) {
-      const item = await reader.read();
-      if (item.done) break;
-      totalBytes += item.value.byteLength;
-      if (totalBytes > SCANNER_MAX_RESPONSE_BYTES) {
-        await reader.cancel();
-        throw new Error('SCANNER_RESPONSE_INVALID');
-      }
-      chunks.push(item.value);
-    }
-    const text = Buffer.concat(
-      chunks.map(chunk => Buffer.from(
-        chunk.buffer,
-        chunk.byteOffset,
-        chunk.byteLength
-      )),
-      totalBytes
-    ).toString('utf8');
-    return JSON.parse(text) as unknown;
-  } catch {
-    throw new Error('SCANNER_RESPONSE_INVALID');
-  } finally {
-    reader.releaseLock();
   }
 }

@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
-import { describe, expect, expectTypeOf, it, vi } from 'vitest';
+import { afterEach, describe, expect, expectTypeOf, it, vi } from 'vitest';
 
 import {
   CloudBasePostgresRpcClient,
@@ -792,6 +792,7 @@ describe('CloudBase PostgreSQL RPC 客户端', () => {
     const client = new CloudBasePostgresRpcClient(
       'env-test',
       'service-role-key',
+      undefined,
       fetcher
     );
 
@@ -814,7 +815,8 @@ describe('CloudBase PostgreSQL RPC 客户端', () => {
         body: JSON.stringify({
           p_limit: 1,
           p_lease_until: '2026-07-31T01:00:00.000Z'
-        })
+        }),
+        signal: expect.any(AbortSignal)
       }
     );
   });
@@ -833,6 +835,7 @@ describe('CloudBase PostgreSQL RPC 客户端', () => {
     const client = new CloudBasePostgresRpcClient(
       'env-test',
       'service-role-key',
+      undefined,
       fetcher
     );
 
@@ -1044,6 +1047,82 @@ describe('CloudBase PostgreSQL 安全与公开互动存储', () => {
       downloadCount: 0,
       publishedAt: '2026-08-31T00:00:00.000Z',
       publicationBasis: 'admin_override'
+    });
+  });
+});
+
+describe('CloudBase PostgreSQL RPC 远程边界', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('等待响应头达到总 deadline 时返回稳定超时错误', async () => {
+    vi.useFakeTimers();
+    const fetcher = vi.fn((_input: string, init: RequestInit) =>
+      new Promise<Response>((_resolve, reject) => {
+        init.signal?.addEventListener('abort', () => reject(init.signal?.reason));
+      }));
+    const client = new CloudBasePostgresRpcClient(
+      'env-test',
+      'service-role-key',
+      { timeoutMs: 25, maxResponseBytes: 1024 },
+      fetcher
+    );
+
+    const pending = client.rpc('claim_moderation_jobs', {});
+    await vi.advanceTimersByTimeAsync(25);
+
+    await expect(pending).resolves.toEqual({
+      data: null,
+      error: { message: 'RPC 请求超时' }
+    });
+  });
+
+  it('响应头返回后正文挂起仍由同一个总 deadline 终止', async () => {
+    vi.useFakeTimers();
+    let cancelled = false;
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode('{'));
+      },
+      cancel() {
+        cancelled = true;
+      }
+    });
+    const client = new CloudBasePostgresRpcClient(
+      'env-test',
+      'service-role-key',
+      { timeoutMs: 25, maxResponseBytes: 1024 },
+      vi.fn(() => new Promise<Response>(resolve => {
+        setTimeout(() => resolve(new Response(body, { status: 200 })), 15);
+      }))
+    );
+
+    const pending = client.rpc('claim_moderation_jobs', {});
+    await vi.advanceTimersByTimeAsync(15);
+    await vi.advanceTimersByTimeAsync(10);
+
+    await expect(pending).resolves.toEqual({
+      data: null,
+      error: { message: 'RPC 请求超时' }
+    });
+    expect(cancelled).toBe(true);
+  });
+
+  it('默认拒绝超过 4 MiB 的 RPC 响应', async () => {
+    const client = new CloudBasePostgresRpcClient(
+      'env-test',
+      'service-role-key',
+      undefined,
+      vi.fn().mockResolvedValue(new Response('{}', {
+        status: 200,
+        headers: { 'content-length': String(4 * 1024 * 1024 + 1) }
+      }))
+    );
+
+    await expect(client.rpc('claim_moderation_jobs', {})).resolves.toEqual({
+      data: null,
+      error: { message: 'RPC 响应过大' }
     });
   });
 });

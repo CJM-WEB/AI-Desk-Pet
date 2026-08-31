@@ -32,7 +32,8 @@ import { ZodError } from 'zod';
 import { CloudBaseAdminIdentityProvider } from '../adapters/cloudbase-auth.js';
 import {
   CloudBasePostgresRpcClient,
-  CloudBasePostgresStore
+  CloudBasePostgresStore,
+  DEFAULT_RPC_CLIENT_OPTIONS
 } from '../adapters/cloudbase-postgres.js';
 import { createCloudBaseServerRuntime } from '../adapters/cloudbase-runtime.js';
 import type { CloudBaseFunctionContext } from '../adapters/cloudbase-runtime.js';
@@ -626,7 +627,10 @@ export function createProductionHandler(
   const runtime = createCloudBaseServerRuntime(config, context);
   const store = new CloudBasePostgresStore(
     runtime.rdb,
-    new CloudBasePostgresRpcClient(config.envId, config.cloudbaseApiKey)
+    new CloudBasePostgresRpcClient(config.envId, config.cloudbaseApiKey, {
+      ...DEFAULT_RPC_CLIENT_OPTIONS,
+      timeoutMs: config.cloudbaseSdkTimeoutMs
+    })
   );
   const storage = new CloudBaseStorage(runtime.bucket);
   return createApi({

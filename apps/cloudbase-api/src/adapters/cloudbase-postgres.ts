@@ -7,6 +7,10 @@ import {
 import { z } from 'zod';
 
 import { ApiError } from '../errors.js';
+import {
+  BoundedJsonResponseError,
+  readBoundedJsonResponse
+} from './bounded-json-response.js';
 import type {
   AdminActionInput,
   AdminActionResult,
@@ -57,6 +61,30 @@ export interface RdbResult {
   error: RdbError | null;
 }
 
+export type CloudBasePostgresRpcName =
+  | 'consume_abuse_limit'
+  | 'create_text_submission'
+  | 'toggle_public_like'
+  | 'record_public_download'
+  | 'create_submission'
+  | 'complete_submission_upload'
+  | 'claim_moderation_jobs'
+  | 'apply_moderation_decision'
+  | 'record_moderation_failure'
+  | 'apply_admin_action'
+  | 'claim_cleanup_jobs'
+  | 'mark_submission_purged';
+
+export interface RpcClientOptions {
+  timeoutMs: number;
+  maxResponseBytes: number;
+}
+
+export const DEFAULT_RPC_CLIENT_OPTIONS: RpcClientOptions = {
+  timeoutMs: 15_000,
+  maxResponseBytes: 4 * 1024 * 1024
+};
+
 /** CloudBase PostgreSQL 客户端在本仓储中使用的最小链式查询表面。 */
 export interface CloudBaseRdbQuery extends PromiseLike<RdbResult> {
   insert(values: unknown): CloudBaseRdbQuery;
@@ -79,7 +107,10 @@ export interface CloudBaseRdbClient {
 }
 
 export interface CloudBasePostgresRpc {
-  rpc(name: string, params: Record<string, unknown>): Promise<RdbResult>;
+  rpc(
+    name: CloudBasePostgresRpcName,
+    params: Record<string, unknown>
+  ): Promise<RdbResult>;
 }
 
 type FetchLike = (input: string, init: RequestInit) => Promise<Response>;
@@ -89,49 +120,66 @@ export class CloudBasePostgresRpcClient implements CloudBasePostgresRpc {
   constructor(
     private readonly envId: string,
     private readonly apiKey: string,
+    private readonly options: RpcClientOptions = DEFAULT_RPC_CLIENT_OPTIONS,
     private readonly fetcher: FetchLike = fetch
   ) {}
 
-  async rpc(name: string, params: Record<string, unknown>): Promise<RdbResult> {
+  async rpc(
+    name: CloudBasePostgresRpcName,
+    params: Record<string, unknown>
+  ): Promise<RdbResult> {
     const url = `https://${this.envId}.api.tcloudbasegateway.com`
       + `/v1/rdb/rest/rpc/${encodeURIComponent(name)}`;
+    const controller = new AbortController();
+    const timeout = setTimeout(
+      () => controller.abort(),
+      this.options.timeoutMs
+    );
 
-    let response: Response;
     try {
-      response = await this.fetcher(url, {
+      const response = await this.fetcher(url, {
         method: 'POST',
         headers: {
           Authorization: `Bearer ${this.apiKey}`,
           'Content-Type': 'application/json'
         },
-        body: JSON.stringify(params)
+        body: JSON.stringify(params),
+        signal: controller.signal
       });
-    } catch {
+      const payload = await readBoundedJsonResponse(response, {
+        maxBytes: this.options.maxResponseBytes,
+        signal: controller.signal
+      });
+      if (response.ok) {
+        return { data: payload, error: null };
+      }
+
+      const error = asRpcError(payload);
       return {
         data: null,
-        error: { message: 'RPC 请求失败' }
+        error: {
+          ...(error.code ? { code: error.code } : {}),
+          message: error.message ?? `RPC 请求失败（HTTP ${response.status}）`
+        }
       };
-    }
-
-    const payload = await readJsonResponse(response);
-    if (response.ok) {
-      if (payload.parseFailed) {
+    } catch (error) {
+      if (controller.signal.aborted) {
+        return { data: null, error: { message: 'RPC 请求超时' } };
+      }
+      if (error instanceof BoundedJsonResponseError) {
         return {
           data: null,
-          error: { message: 'RPC 响应格式错误' }
+          error: {
+            message: error.code === 'RESPONSE_TOO_LARGE'
+              ? 'RPC 响应过大'
+              : 'RPC 响应格式错误'
+          }
         };
       }
-      return { data: payload.value, error: null };
+      return { data: null, error: { message: 'RPC 请求失败' } };
+    } finally {
+      clearTimeout(timeout);
     }
-
-    const error = asRpcError(payload.value);
-    return {
-      data: null,
-      error: {
-        ...(error.code ? { code: error.code } : {}),
-        message: error.message ?? `RPC 请求失败（HTTP ${response.status}）`
-      }
-    };
   }
 }
 
@@ -1042,20 +1090,6 @@ function requireLimit(value: number): void {
 function throwPublicNotFound(result: RdbResult): void {
   if (result.error?.code === 'P0002') {
     throw new ApiError('NOT_FOUND', 404);
-  }
-}
-
-async function readJsonResponse(response: Response): Promise<{
-  parseFailed: boolean;
-  value: unknown;
-}> {
-  const text = await response.text();
-  if (!text) return { parseFailed: false, value: null };
-
-  try {
-    return { parseFailed: false, value: JSON.parse(text) as unknown };
-  } catch {
-    return { parseFailed: true, value: null };
   }
 }
 

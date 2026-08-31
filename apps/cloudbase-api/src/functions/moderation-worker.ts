@@ -1,4 +1,8 @@
-import { CloudBasePostgresRpcClient, CloudBasePostgresStore } from '../adapters/cloudbase-postgres.js';
+import {
+  CloudBasePostgresRpcClient,
+  CloudBasePostgresStore,
+  DEFAULT_RPC_CLIENT_OPTIONS
+} from '../adapters/cloudbase-postgres.js';
 import { createCloudBaseServerRuntime } from '../adapters/cloudbase-runtime.js';
 import type { CloudBaseFunctionContext } from '../adapters/cloudbase-runtime.js';
 import { CloudBaseStorage } from '../adapters/cloudbase-storage.js';
@@ -44,7 +48,10 @@ export function createProductionWorker(
   const runtime = createCloudBaseServerRuntime(config, context);
   const store = new CloudBasePostgresStore(
     runtime.rdb,
-    new CloudBasePostgresRpcClient(config.envId, config.cloudbaseApiKey)
+    new CloudBasePostgresRpcClient(config.envId, config.cloudbaseApiKey, {
+      ...DEFAULT_RPC_CLIENT_OPTIONS,
+      timeoutMs: config.cloudbaseSdkTimeoutMs
+    })
   );
   const service = new ModerationService(
     store,

@@ -1,6 +1,7 @@
 import { createHash, createHmac } from 'node:crypto';
 import { describe, expect, it, vi } from 'vitest';
 import {
+  SCANNER_MAX_RESPONSE_BYTES,
   SCANNER_PROTOCOL_VERSION,
   SCANNER_RULE_VERSION
 } from '@myself/shared-types/scanner-protocol';
@@ -197,5 +198,36 @@ describe('隔离扫描客户端', () => {
       expiresAt: '2026-07-31T00:05:00.000Z'
     })).rejects.toThrow('SCANNER_RESPONSE_INVALID');
     expect(cancelled).toBe(true);
+  });
+
+  it('声明响应超过 12 MiB 时不读取正文且保持 Scanner 错误分类', async () => {
+    const reader = {
+      read: vi.fn().mockResolvedValue({ done: true, value: undefined }),
+      cancel: vi.fn().mockResolvedValue(undefined),
+      releaseLock: vi.fn()
+    };
+    const response = {
+      status: 200,
+      ok: true,
+      headers: new Headers({
+        'content-length': String(SCANNER_MAX_RESPONSE_BYTES + 1)
+      }),
+      body: { getReader: () => reader }
+    } as unknown as Response;
+    const client = new ScannerClient(
+      'https://scanner.example.com',
+      'secret',
+      vi.fn().mockResolvedValue(response),
+      () => new Date('2026-07-31T00:00:00.000Z')
+    );
+
+    await expect(client.scan({
+      submissionId,
+      downloadUrl: 'https://storage.example.com/pet.zip?sig=1',
+      expiresAt: '2026-07-31T00:05:00.000Z'
+    })).rejects.toThrow('SCANNER_RESPONSE_INVALID');
+    expect(reader.read).not.toHaveBeenCalled();
+    expect(reader.cancel).toHaveBeenCalledOnce();
+    expect(reader.releaseLock).toHaveBeenCalledOnce();
   });
 });
