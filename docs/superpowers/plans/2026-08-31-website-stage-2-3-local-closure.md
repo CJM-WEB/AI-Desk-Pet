@@ -15,7 +15,7 @@
 | 阶段 2 Task 5 `apply-cloudbase-migrations*` | 整项退役；旧入口继续禁止，改用 manager SDK user migration Adapter |
 | 阶段 2 Task 7 远程部署与开关 | 移至阶段 2C，当前不执行 |
 | 阶段 3 Task 1 错误 message、可选 requestId | 退役；错误只保留 code/retry，requestId 必填 |
-| 阶段 3 Task 2 宽回执 | 替换为 prepare=uploading+targets、finalize=system_reviewing、feedback=manual_review_pending |
+| 阶段 3 Task 2 宽回执 | 替换为 prepare=uploading+targets、finalize=system_reviewing、feedback=system_reviewing |
 | 阶段 3 Task 5 修改 `tests/vitest.config.ts` | 退役；使用网站链专属配置和 catalog |
 | 阶段 3 其余 endpoint 严格 Schema、双 Adapter 与验收文件 | 继续有效，由下列精确任务实施 |
 
@@ -121,6 +121,8 @@
 
 ## Task 5：状态流、完整 ZIP 证据与临时 PostgreSQL（阶段 2B 第二门）
 
+> 状态：2026-08-31 已完成并通过独立复审。随后获批的管理员覆盖规格只替代管理动作边界：`move_to_manual` 可直接进入 `manual_review_pending`，`force_publish` 独立于技术扫描结论；普通 `approve` 的当前归档、状态版本与 24 小时证据 TTL 仍保持不变。最终数据库基线为 7 个不可变前向 migration、42 项真实行为验证。
+
 **Files:**
 - Create: `cloudbase/migrations/20260831000000_restore_scanned_submission_flow.sql`
 - Modify: `packages/shared-types/src/moderation.ts`, `packages/shared-types/tests/moderation.test.ts`
@@ -142,7 +144,7 @@
 
 ## Task 6：共享 HTTP 信封与逐 endpoint 契约
 
-> 依赖补充：先完成并验收 `2026-08-31-admin-override-publication.md`；Task 6 必须消费最终 `move_to_manual`、`force_publish`、`publicationBasis` 契约，不得建立临时重复 DTO。
+> 依赖状态：`2026-08-31-admin-override-publication.md` 已完成并通过规格/规范双审查（实现范围 `b748498..064c08d`）。Task 6 必须直接消费最终 `move_to_manual`、`force_publish`、`publicationBasis` 与 `riskAcknowledgement` 契约，不得建立临时重复 DTO；执行 brief 见 `.superpowers/sdd/2026-08-31-website-stage-2-3-local-closure/task-6-brief.md`。
 
 **Files:**
 - Create: `packages/shared-types/src/website-http.ts`, `packages/shared-types/tests/website-http.test.ts`
