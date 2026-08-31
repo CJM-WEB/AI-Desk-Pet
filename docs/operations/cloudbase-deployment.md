@@ -26,19 +26,8 @@
 ## 2. PostgreSQL 与私有存储
 
 1. 当前不得在任何 CloudBase 环境执行 migration；本地受控 migration Adapter 与临时 PostgreSQL 行为门已经通过，但真实专用会话、整轮锁、并发和续跑仍须由阶段 2C 开发环境 smoke 证明，现阶段不存在获准的远端数据库写入口。
-2. 阶段 2 的 `CloudBaseMigrationPlan` 必须直接消费当前 inventory item，不得重新引入固定 migration 路径或按环境批量执行的宽入口：
-
-   ```ts
-   type MigrationIdentity = {
-     version: string;
-     fileName: string;
-     sha256: string;
-     bytes: number;
-   };
-   ```
-
-   以下仅固定阶段 2 runner 的输入边界与安全职责，不构成实现、解冻、部署或数据库写入授权：读取数据库不可变 ledger；在专用数据库会话持有整轮 advisory lock；锁内重读 ledger 并计算 pending；每份 SQL body 与 ledger/checksum 在同一事务提交；对 checksum 漂移、重复 ledger 和未知已应用版本失败关闭；覆盖 SQL 中途、ledger 写入、commit 前后失联、双 runner 并发及续跑的故障注入。只有新的 runner、自动化与开发环境 PostgreSQL smoke 均通过后，才可恢复数据库写入口。
-3. 解冻后的 runner 必须先校验有序 migration inventory、校验和、重复版本、非法文件名和空 migration；任一异常都必须在 SQL 写入前停止，且不得通过控制台手工执行 SQL 绕过该检查。
+2. 当前唯一获批的远端迁移路径是：现有 inventory 完成文件名、顺序、校验和、重复版本和空文件检查后，直接投影为 `@cloudbase/manager-node` 的 user migration 输入；开发环境 Adapter 再执行 preview、push 和 task poll。不得重新实现第二套 migration 发现、排序或执行器，也不得通过控制台手工执行 SQL 绕过 inventory 检查。
+3. 上述 Adapter 目前只有本地编排和 SDK 边界测试，不是可直接运行的部署命令。真实 CloudBase 开发环境中的事务、锁、并发、任务失败与续跑行为必须由阶段 2C smoke 验证；验证前不得恢复远端数据库写入口。
 4. 解冻后创建仅服务端可访问的私有 Bucket，将标识配置为 `PRIVATE_BUCKET_ID`。禁止公开读写；上传与下载只使用短期签名地址。
 5. 正式安装包放在独立发布目录和 CDN 策略中，不得复用匿名投稿的隔离区。
 
@@ -66,24 +55,35 @@
 
 ## 6. 服务端环境变量清单
 
-三个云函数共用下列名称：
+三个云函数只配置各自 loader 实际读取的最小变量，不向无关函数复制 Secret。共同运行时变量为 `CLOUDBASE_ENV_ID`、`PRIVATE_BUCKET_ID`，以及可省略且只允许为 `ap-singapore` 的 `CLOUDBASE_REGION`。
+
+`ai-pet-api`：
 
 ```text
-CLOUDBASE_ENV_ID
-CLOUDBASE_REGION
 CLOUDBASE_API_KEY
-PRIVATE_BUCKET_ID
 ADMIN_EMAIL
 ABUSE_HMAC_SECRET
-TENCENTCLOUD_SECRETID
-TENCENTCLOUD_SECRETKEY
-TENCENTCLOUD_SESSIONTOKEN
+SHARED_PACKAGE_SUBMISSIONS_ENABLED=false
+```
+
+`ai-pet-moderation-worker`：
+
+```text
+CLOUDBASE_API_KEY
+MODERATION_SECRET_ID（或 TENCENTCLOUD_SECRETID）
+MODERATION_SECRET_KEY（或 TENCENTCLOUD_SECRETKEY）
+MODERATION_SESSION_TOKEN（可选；使用平台变量名时对应 TENCENTCLOUD_SESSIONTOKEN）
 MODERATION_REGION
 TMS_BIZ_TYPE
 IMS_BIZ_TYPE
 SCANNER_URL
 SCANNER_HMAC_SECRET
-SHARED_PACKAGE_SUBMISSIONS_ENABLED=false
+```
+
+`ai-pet-cleanup`：
+
+```text
+CLOUDBASE_API_KEY
 ```
 
 ## 7. 构建与部署冻结
@@ -94,7 +94,7 @@ SHARED_PACKAGE_SUBMISSIONS_ENABLED=false
 - `ai-pet-moderation-worker`：定时领取审核任务；
 - `ai-pet-cleanup`：清理到期隔离内容。
 
-阶段 2 完成 Scanner 候选、协议契约、事务型 migration runner 和开发环境完整 smoke 前，不得部署上述入口或为审核 worker、cleanup 配置定时触发器。解冻后每次只处理代码限定的小批量，失败后告警并保持内容隐藏。
+阶段 2B 完成真实 Scanner 容器候选且阶段 2C 完成开发环境 migration、函数与完整 smoke 前，不得部署上述入口或为审核 worker、cleanup 配置定时触发器。解冻后每次只处理代码限定的小批量，失败后告警并保持内容隐藏。
 
 ## 8. HTTP 网关
 
