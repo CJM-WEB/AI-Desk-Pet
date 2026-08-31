@@ -192,7 +192,8 @@ describe('自动审核编排', () => {
     const published = sharedSubmission({
       status: 'published',
       statusVersion: 4,
-      publicationBasis: 'admin_override'
+      publicationBasis: 'admin_override',
+      moderationLeaseUntil: '2026-07-31T00:10:00.000Z'
     });
     const store = createStore(published);
     store.claimModerationJobs.mockResolvedValue([claimed]);
@@ -236,7 +237,8 @@ describe('自动审核编排', () => {
     const published = sharedSubmission({
       status: 'published',
       statusVersion: 4,
-      publicationBasis: 'admin_override'
+      publicationBasis: 'admin_override',
+      moderationLeaseUntil: '2026-07-31T00:10:00.000Z'
     });
     const store = createStore(published);
     store.claimModerationJobs.mockResolvedValue([claimed]);
@@ -274,6 +276,28 @@ describe('自动审核编排', () => {
     });
     expect(store.applyModerationDecision).not.toHaveBeenCalled();
     expect(store.recordModerationFailure).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['已过期', '2026-07-31T00:00:00.000Z'],
+    ['格式无效', 'not-an-iso-date'],
+    ['缺失', null]
+  ])('后到扫描租约%s时在调用存储和扫描器前失败关闭', async (_case, leaseUntil) => {
+    const published = sharedSubmission({
+      status: 'published',
+      statusVersion: 4,
+      publicationBasis: 'admin_override',
+      moderationLeaseUntil: leaseUntil
+    });
+    const store = createStore(published);
+    const { service, storage, scanner } = createService({ store });
+
+    await expect(service.process('submission-1', 2)).rejects.toThrow(
+      'MODERATION_JOB_STALE'
+    );
+    expect(storage.createSignedUrl).not.toHaveBeenCalled();
+    expect(scanner.scan).not.toHaveBeenCalled();
+    expect(store.recordLateModerationResult).not.toHaveBeenCalled();
   });
 
   it('初读系统审核后并发强制发布仍提交完整结果交由原子 RPC 筛选', async () => {

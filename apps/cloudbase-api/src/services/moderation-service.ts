@@ -58,11 +58,14 @@ export class ModerationService {
     claimedVersion?: number
   ): Promise<ModerationProcessResult> {
     const submission = await this.store.findById(submissionId);
+    const leaseUntil = Date.parse(submission?.moderationLeaseUntil ?? '');
     const lateResult = submission !== null
       && submission.kind === 'shared_package'
       && submission.status === 'published'
       && submission.publicationBasis === 'admin_override'
       && claimedVersion !== undefined
+      && Number.isFinite(leaseUntil)
+      && leaseUntil > this.clock.now().getTime()
       && submission.statusVersion
         === claimedVersion + adminOverridePublicationVersionAdvances;
     if (!submission || (submission.status !== 'system_reviewing' && !lateResult)) {

@@ -151,6 +151,7 @@ BEGIN
     AND v_submission.status = 'published'
     AND v_submission.publication_basis = 'admin_override'
     AND v_submission.moderation_lease_until IS NOT NULL
+    AND v_submission.moderation_lease_until > now()
     AND v_submission.status_version = p_expected_version + 2;
 
   IF NOT FOUND OR (

@@ -891,6 +891,54 @@ BEGIN
     RAISE EXCEPTION '行为门失败：无租约仍接受首次后到结果';
   END IF;
 
+  -- 已过期租约与无租约同样失败关闭，不得追加结果或改写任何裁决事实。
+  PERFORM gate_seed('gate-expired-late');
+  UPDATE submissions
+  SET created_at = v_now - interval '3 days'
+  WHERE id = 'gate-expired-late';
+  SELECT claimed.status_version INTO v_claimed_version
+  FROM claim_moderation_jobs(1, v_now + interval '5 minutes') AS claimed
+  WHERE claimed.id = 'gate-expired-late';
+  IF v_claimed_version <> 2 THEN
+    RAISE EXCEPTION '行为门失败：未真实领取过期租约测试任务';
+  END IF;
+  PERFORM apply_admin_action(
+    'gate-expired-late', 'admin-1', 'move_to_manual',
+    'manual_review_pending', 2, 'gate-expired-late-manual', '人工接管扫描中任务'
+  );
+  PERFORM apply_admin_action(
+    'gate-expired-late', 'admin-1', 'force_publish', 'published', 3,
+    'gate-expired-late-force', '管理员承担扫描中发布风险',
+    'ADMIN_OVERRIDE_ACCEPTED'
+  );
+  UPDATE submissions
+  SET moderation_lease_until = v_now - interval '1 second'
+  WHERE id = 'gate-expired-late';
+  v_result := apply_moderation_decision(
+    'gate-expired-late', 2, 'auto_rejected',
+    gate_block_result('gate-expired-late', v_now),
+    '{"blocked":true,"severity":"high"}'::jsonb, '不得写入'
+  );
+  IF COALESCE((v_result ->> 'applied')::boolean, false) IS NOT FALSE
+    OR EXISTS (
+      SELECT 1 FROM moderation_results
+      WHERE submission_id = 'gate-expired-late'
+    )
+    OR (SELECT risk_summary FROM submissions
+        WHERE id = 'gate-expired-late') IS DISTINCT FROM '{}'::jsonb
+    OR (SELECT auto_rejection_reason FROM submissions
+        WHERE id = 'gate-expired-late') IS NOT NULL
+    OR (SELECT status FROM submissions
+        WHERE id = 'gate-expired-late') IS DISTINCT FROM 'published'
+    OR (SELECT status_version FROM submissions
+        WHERE id = 'gate-expired-late') IS DISTINCT FROM 4
+    OR (SELECT publication_basis FROM submissions
+        WHERE id = 'gate-expired-late') IS DISTINCT FROM 'admin_override'
+    OR (SELECT count(*) FROM admin_audit_logs
+        WHERE submission_id = 'gate-expired-late') <> 2 THEN
+    RAISE EXCEPTION '行为门失败：过期租约后到结果修改了原子事实';
+  END IF;
+
   -- 反馈、系统审核和自动驳回都不得一步强制发布。
   PERFORM apply_admin_action(
     'gate-feedback', 'admin-1', 'move_to_manual', 'manual_review_pending', 0,

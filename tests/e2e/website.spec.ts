@@ -684,7 +684,11 @@ test('无有效证据共享包经两步管理员强制发布后在卡片、详�
   expect(afterLate).toMatchObject({
     statusVersion: Number(pending.statusVersion) + 1,
     publicationBasis: 'admin_override',
-    riskSummary: { labels: ['blocked'] }
+    riskSummary: {
+      blocked: true,
+      signalCount: 1,
+      blockedLabels: ['technical_failure']
+    }
   });
   const lateDetail = await adminDetail(request, receipt.submissionId);
   const lateResultCount = (lateDetail.moderationResults as unknown[]).length;
@@ -734,6 +738,85 @@ test('无有效证据共享包经两步管理员强制发布后在卡片、详�
     .toContainText('管理员人工放行，未通过系统安全验证');
   await expect(dialog.getByRole('note', { name: '下载风险提示' }))
     .toContainText('管理员人工放行，未通过系统安全验证');
+});
+
+test('Memory 后到扫描与生产风险事实同构且保留强制发布前自动拒绝原因', async ({ request }) => {
+  for (const scanCase of [
+    {
+      title: 'E2E 后到危险事实同构',
+      fileName: 'technical-fail-late-shape.zip',
+      riskSummary: {
+        blocked: true,
+        signalCount: 1,
+        blockedLabels: ['technical_failure']
+      }
+    },
+    {
+      title: 'E2E 后到安全事实同构',
+      fileName: 'safe-late-shape.zip',
+      riskSummary: { blocked: false, signalCount: 1, blockedLabels: [] }
+    }
+  ] as const) {
+    const receipt = await submitSharedPackageViaApi(
+      request,
+      scanCase.title,
+      scanCase.fileName,
+      false
+    );
+    const reviewing = (await adminItems(request, 'system_reviewing'))
+      .find(item => item.id === receipt.submissionId)!;
+    const claimedVersion = Number(reviewing.statusVersion);
+    const claim = await request.post(
+      `/__e2e/moderation/${encodeURIComponent(receipt.submissionId)}/claim?claimedVersion=${claimedVersion}`
+    );
+    expect(claim.ok(), await claim.text()).toBe(true);
+    await applyAdminAction(request, reviewing, 'move_to_manual', '转交管理员复核');
+    const pending = (await adminItems(request, 'manual_review_pending'))
+      .find(item => item.id === receipt.submissionId)!;
+    await applyAdminAction(request, pending, 'force_publish', '管理员承担扫描风险');
+    const beforeLate = await adminDetail(request, receipt.submissionId);
+
+    const late = await request.post(
+      `/__e2e/moderation/${encodeURIComponent(receipt.submissionId)}?claimedVersion=${claimedVersion}`
+    );
+    expect(late.ok(), await late.text()).toBe(true);
+    const afterLate = await adminDetail(request, receipt.submissionId);
+    expect(afterLate.riskSummary).toEqual(scanCase.riskSummary);
+    expect(afterLate.autoRejectionReason).toBe(beforeLate.autoRejectionReason);
+    expect(Object.keys(afterLate.riskSummary as object).sort()).toEqual([
+      'blocked',
+      'blockedLabels',
+      'signalCount'
+    ]);
+  }
+});
+
+test('Memory 过期后到租约失败关闭且不修改发布与审核事实', async ({ request }) => {
+  const receipt = await submitSharedPackageViaApi(
+    request,
+    'E2E 过期后到租约',
+    'technical-fail-expired-lease.zip',
+    false
+  );
+  const reviewing = (await adminItems(request, 'system_reviewing'))
+    .find(item => item.id === receipt.submissionId)!;
+  const claimedVersion = Number(reviewing.statusVersion);
+  const claim = await request.post(
+    `/__e2e/moderation/${encodeURIComponent(receipt.submissionId)}/claim?claimedVersion=${claimedVersion}&leaseMinutes=-1`
+  );
+  expect(claim.ok(), await claim.text()).toBe(true);
+  await applyAdminAction(request, reviewing, 'move_to_manual', '转交管理员复核');
+  const pending = (await adminItems(request, 'manual_review_pending'))
+    .find(item => item.id === receipt.submissionId)!;
+  await applyAdminAction(request, pending, 'force_publish', '管理员承担扫描风险');
+  const beforeLate = await adminDetail(request, receipt.submissionId);
+
+  const late = await request.post(
+    `/__e2e/moderation/${encodeURIComponent(receipt.submissionId)}?claimedVersion=${claimedVersion}`
+  );
+  expect(late.status()).toBe(409);
+  expect((await late.json()).error.code).toBe('MODERATION_JOB_STALE');
+  expect(await adminDetail(request, receipt.submissionId)).toEqual(beforeLate);
 });
 
 test('真实管理员页面忽略长按重复 Enter，非重复二次确认与双击各只发送一次', async ({ page, request }) => {

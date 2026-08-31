@@ -47,7 +47,12 @@ export function createMemoryWebsiteApi({ runId }) {
         || !Number.isInteger(claimedVersion)
         || claimedVersion !== record.statusVersion
       ) return sendError(response, 409, 'MODERATION_JOB_STALE');
-      record.moderationLeaseUntil = plusMinutes(now(), 10);
+      const rawLeaseMinutes = searchParams.get('leaseMinutes');
+      const leaseMinutes = rawLeaseMinutes === null ? 10 : Number(rawLeaseMinutes);
+      if (!Number.isFinite(leaseMinutes)) {
+        return sendError(response, 400, 'INVALID_REQUEST');
+      }
+      record.moderationLeaseUntil = plusMinutes(now(), leaseMinutes);
       return sendData(response, 200, { claimedVersion });
     }
     const moderationId = matchId(pathname, '/__e2e/moderation/', '');
@@ -386,10 +391,12 @@ function completeModeration(record, completedAt, archive, lateResult = false) {
     );
     record.updatedAt = completedAt;
     record.riskSummary = {
-      summary: blocked ? '后到技术扫描发现风险' : '后到技术扫描完成',
-      labels: blocked ? ['blocked'] : ['reviewed']
+      blocked: technicalResult.suggestion === 'Block',
+      signalCount: 1,
+      blockedLabels: technicalResult.suggestion === 'Block'
+        ? [technicalResult.label]
+        : []
     };
-    record.autoRejectionReason = blocked ? '后到技术扫描发现风险' : null;
     record.moderationResults.push(technicalResult);
     record.moderationLeaseUntil = null;
     return;
