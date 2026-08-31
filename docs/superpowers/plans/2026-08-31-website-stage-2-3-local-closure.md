@@ -85,7 +85,7 @@
 
 ## Task 3：Node 22 容器候选（阶段 2B 第一门）
 
-> 状态：2026-08-31 本地代码门已完成；Scanner 70/70、候选验证器 7/7、typecheck、build、scope 与独立复审通过。候选器会按默认 CMD 启动不可变镜像并读取 Docker HEALTHCHECK，另以隔离探针验证 EICAR 与超时；宿主固件虚拟化不可用，真实 Docker 候选保持 `blocked/unverified`，不得记为阶段 2B 通过。
+> 状态：2026-08-31 已完成；Scanner 71/71、候选验证器 7/7、typecheck、build、scope 与独立复审通过。修复探针归档身份后，真实不可变 Node 22 镜像以 UID 999 通过 Docker HEALTHCHECK、EICAR 与 timeout 门；阶段 2B 第一门 PASS。
 
 **Files:**
 - Modify: `apps/package-scanner/vite.build.config.ts`, `apps/package-scanner/Dockerfile`
@@ -183,7 +183,7 @@
 
 ## Task 8：总验收与条件裁决
 
-> 状态：2026-08-31 已完成验收与条件裁决；验收记录提交 `cbd051c`，过时运维描述清理提交 `33dc332`，独立规格与工程标准审查均为 PASS、0 个 finding。阶段 2A 与阶段 3 PASS；阶段 2B 因本机缺少 Docker Linux runtime 保持 `blocked/unverified`；阶段 2C 未执行，生产未部署且投稿关闭。联合门未满足，普通非投稿网站新功能继续冻结。
+> 状态：2026-08-31 已完成验收与条件裁决；验收记录、运维描述清理与探针修复均经过独立复审。阶段 2A、2B 与阶段 3 PASS，联合门满足，普通非投稿网站功能开发资格恢复；阶段 2C 未执行，生产未部署且投稿关闭。
 
 **Files:**
 - Create: `docs/operations/website-optimization-acceptance.md`

@@ -8,7 +8,7 @@
 
 **Tech Stack:** pnpm workspace、TypeScript 5、Vitest 3、Playwright 1.61、Zod 3、Next.js 15、CloudBase JS SDK 3.6.8、PostgreSQL、CloudBase Run。
 
-> 2026-08-31 当前裁决：阶段 2A 与阶段 3 PASS；阶段 2B 因缺少 Docker Linux runtime 而为 `blocked/unverified`；阶段 2C 未执行，生产未部署。联合门未满足，普通非投稿网站新功能继续冻结。新鲜证据见 `docs/operations/website-optimization-acceptance.md`。
+> 2026-08-31 当前裁决：阶段 2A、2B 与阶段 3 均为 PASS，普通非投稿网站功能开发资格恢复；阶段 2C 未执行，生产未部署，投稿、远端 migration 与上线继续冻结。新鲜证据见 `docs/operations/website-optimization-acceptance.md`。
 
 ## Global Constraints
 
@@ -37,7 +37,7 @@
 
 - [x] **Step 1: 执行阶段 0 并保存证据**
 
-阶段 0 已完成，详见 `docs/operations/website-chain-verification.md` 与 `docs/operations/website-chain-verification-acceptance.md` 的最终固定顺序证据。阶段 1 已于 2026-08-21 完成，最终固定顺序 E2E 为 14/14；阶段 2A 与阶段 3 已通过，阶段 2B 仍为 `blocked/unverified`，因此普通网站功能开发资格尚未恢复，正式部署继续冻结。
+阶段 0 已完成，详见 `docs/operations/website-chain-verification.md` 与 `docs/operations/website-chain-verification-acceptance.md` 的最终固定顺序证据。阶段 1 已于 2026-08-21 完成，最终固定顺序 E2E 为 14/14；阶段 2A、2B 与阶段 3 已通过，普通网站功能开发资格恢复，正式部署继续冻结。
 
 - [x] **Step 2: 执行阶段 1 并确认止血门**
 
@@ -45,17 +45,17 @@
 
 2026-08-21 的实际完成证据见该计划 Task 11 与 `docs/operations/website-chain-verification-acceptance.md`。后续阶段不得恢复已删除的固定 SQL 写入入口。
 
-- [ ] **Step 3: 执行阶段 2A/2B 并确认本地 S1 联合门**
+- [x] **Step 3: 执行阶段 2A/2B 并确认本地 S1 联合门**
 
 阶段 2 的当前执行口径由 `2026-08-31-website-stage-2-3-local-closure.md` 修订：先完成本地结构、候选和自动化闭环；真实 Scanner 开发环境冒烟未通过时，共享包投稿开关必须保持关闭，远程部署门不阻塞阶段 3 本地契约闭环。
 
-2026-08-31 实际结果：阶段 2A PASS；阶段 2B 的 PostgreSQL 17.11 7 个 migration/42 项行为和 Scanner 本地代码门通过，但真实 Node 22 容器候选因缺少 Docker Linux runtime 未运行。本步骤保持未勾选，不得以部分证据解冻联合门。
+2026-08-31 实际结果：阶段 2A、2B PASS；PostgreSQL 17.11 的 7 个 migration/42 项行为通过，真实 Node 22 Scanner 容器以 UID 999 通过 health、EICAR 与 timeout 门，完整网站链复验通过。
 
-- [ ] **Step 4: 执行阶段 3 并恢复普通功能开发资格**
+- [x] **Step 4: 执行阶段 3 并恢复普通功能开发资格**
 
 阶段 3 的当前执行口径由 `2026-08-31-website-stage-2-3-local-closure.md` 修订；只有生产 `createApi` 与内存后端通过同一行为案例，关键响应均经 Zod 解析，且阶段 2 本地门通过后，才能恢复普通网站功能开发。恢复开发不等于开启共享包投稿或完成部署。
 
-2026-08-31 实际结果：阶段 3 PASS，双 Adapter 合同 12/12；由于阶段 2B 未通过，本步骤中的“恢复普通功能开发资格”未达成，继续保持未勾选。
+2026-08-31 实际结果：阶段 3 PASS，双 Adapter 合同 12/12；2A/2B/3 联合门满足，普通非投稿网站功能开发资格恢复。投稿开启和部署仍受阶段 2C 与独立远端授权约束。
 
 - [x] **Step 5: 在当前分支提交阶段索引状态（禁止合并与远端写入）**
 
@@ -73,11 +73,11 @@ git commit -m "docs: 记录网站阶段2至3验收裁决"
 - Consumes: 阶段 0—3 的验收记录、真实 CloudBase 网关 `/api` 前缀证据和当前生产 Adapter 行为。
 - Produces: 每项 S2 债务的独立 owner、非目标、接口、迁移/删除范围和验收门。
 
-- [ ] **Step 1: 核对进入条件**
+- [x] **Step 1: 核对进入条件**
 
 确认阶段 0—3 全部通过；缺少任一证据时停止，不创建代码任务。
 
-当前因阶段 2B 为 `blocked/unverified` 不满足进入条件；阶段 4 继续冻结。
+阶段 0—3 的本地进入条件已经满足；阶段 4 不在本轮执行，尚未创建其规格或代码任务。
 
 - [ ] **Step 2: 分别规格化八项治理工作**
 
