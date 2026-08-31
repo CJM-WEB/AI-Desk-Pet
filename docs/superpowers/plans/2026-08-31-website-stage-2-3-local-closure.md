@@ -163,6 +163,8 @@
 
 ## Task 7：生产与内存双 Adapter 行为契约
 
+> 状态：2026-08-31 已完成；实现范围 `51f6d0e..0c111de`，规格与工程标准双审查均为 PASS、0 个 finding。唯一共享套件在生产 `createApi` 与真实 localhost Memory driver 上共 12/12 通过；合同专属严格 TypeScript 门已进入 fast/full。Memory 旧 `Authorization` 与 `ADMIN_*` 兼容路径已删除，并删除一组被共享合同接管的重复 CloudBase 成功案例。最终官网 348/348、CloudBase API 268/268、Scanner 71/71、浏览器 E2E 21/21，PostgreSQL 17.11 的 7 个 migration/42 项行为验证通过。
+
 **Files:**
 - Create: `tests/website-contract/website-api-contract.ts`, `production-driver.test.ts`, `memory-driver.test.ts`
 - Create: `tests/vitest.web-chain.config.ts`
