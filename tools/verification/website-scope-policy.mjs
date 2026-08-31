@@ -10,12 +10,16 @@ export const ALLOWED_WEBSITE_SCOPE_PATHS = Object.freeze([
   'packages/shared-types/tests/scanner-protocol.test.ts',
   'apps/package-scanner/package.json',
   'apps/package-scanner/README.md',
+  'apps/package-scanner/Dockerfile',
+  'apps/package-scanner/vite.build.config.ts',
   'apps/package-scanner/src/server.ts',
   'apps/package-scanner/src/request-signature.ts',
   'apps/package-scanner/src/scan-package.ts',
   'apps/package-scanner/tests/server.test.ts',
   'apps/package-scanner/tests/request-signature.test.ts',
   'apps/package-scanner/tests/scan-package.test.ts',
+  'apps/package-scanner/tests/dockerfile.test.ts',
+  'apps/package-scanner/tests/build-output.test.ts',
   'apps/website/**',
   /** 阶段二沿用 CloudBase 范围，并只为当前任务精确放行 Scanner 与共享协议。 */
   'apps/cloudbase-api/**',
@@ -51,6 +55,10 @@ export const ALLOWED_WEBSITE_SCOPE_PATHS = Object.freeze([
   'tests/playwright.website.config.ts',
   'tools/cloudbase-migration-inventory.mjs',
   'tools/cloudbase-migration-inventory.test.mjs',
+  'tools/cloudbase-user-migrations.mjs',
+  'tools/cloudbase-user-migrations.test.mjs',
+  'tools/cloudbase-user-migration-adapter.mjs',
+  'tools/cloudbase-user-migration-adapter.test.mjs',
   'tools/build-cloudbase-functions.mjs',
   'tools/build-cloudbase-functions.test.mjs',
   'tools/plan-cloudbase-migrations.mjs',
@@ -91,10 +99,16 @@ export const ALLOWED_ROOT_SCRIPT_CHANGES = Object.freeze({
   'verify:web-chain:fast': 'node tools/verification/verify-web-chain.mjs --profile fast',
   'verify:web-chain': 'node tools/verification/verify-web-chain.mjs --profile full',
   'plan:cloudbase-migrations': 'node tools/plan-cloudbase-migrations.mjs --dry-run',
-  'test:cloudbase-tools': 'node --test tools/cloudbase-migration-inventory.test.mjs tools/plan-cloudbase-migrations.test.mjs tools/build-cloudbase-functions.test.mjs',
+  'test:cloudbase-tools': 'node --test tools/cloudbase-migration-inventory.test.mjs tools/cloudbase-user-migrations.test.mjs tools/cloudbase-user-migration-adapter.test.mjs tools/plan-cloudbase-migrations.test.mjs tools/build-cloudbase-functions.test.mjs',
+  'verify:scanner-candidate': 'node tools/verification/verify-scanner-candidate.mjs',
 });
 
 /** 依赖审查器使用固定版本，避免范围守卫本身被浮动依赖削弱。 */
 export const ALLOWED_ROOT_DEV_DEPENDENCY_CHANGES = Object.freeze({
   'dependency-cruiser': '18.2.0',
+});
+
+/** manager SDK 已成为受控迁移适配器的运行依赖，只允许保持原版本进行分类迁移。 */
+export const ALLOWED_ROOT_DEPENDENCY_RELOCATIONS = Object.freeze({
+  '@cloudbase/manager-node': '^5.6.5',
 });

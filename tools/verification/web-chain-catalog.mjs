@@ -13,6 +13,8 @@ export const WEB_AUDIT_INPUTS = Object.freeze([
   'packages/shared-types',
   'tools/release',
   'tools/plan-cloudbase-migrations.mjs',
+  'tools/cloudbase-user-migrations.mjs',
+  'tools/cloudbase-user-migration-adapter.mjs',
   'tools/build-cloudbase-functions.mjs',
   'tests/build-website-export.mjs',
   'tests/serve-website-export.mjs',
@@ -28,7 +30,7 @@ export const WEB_TEST_OWNERS = Object.freeze([
   { id: 'cloudbase-api', pattern: /^apps\/cloudbase-api\/tests\/.*\.test\.ts$/u },
   { id: 'package-scanner', pattern: /^apps\/package-scanner\/tests\/.*\.test\.ts$/u },
   { id: 'release-tools', pattern: /^tools\/release\/tests\/.*\.test\.ts$/u },
-  { id: 'root-cloudbase-tools', pattern: /^tools\/(cloudbase-migration-inventory|plan-cloudbase-migrations|build-cloudbase-functions)\.test\.mjs$/u },
+  { id: 'root-cloudbase-tools', pattern: /^tools\/(cloudbase-migration-inventory|cloudbase-user-migrations|cloudbase-user-migration-adapter|plan-cloudbase-migrations|build-cloudbase-functions)\.test\.mjs$/u },
   { id: 'website-e2e', pattern: /^tests\/e2e\/website\.spec\.ts$/u },
   { id: 'website-verification', pattern: /^tools\/verification\/.*\.test\.mjs$/u }
 ]);
@@ -61,7 +63,13 @@ const fastSteps = Object.freeze([
   defineStep('scanner-test', 'pnpm.cmd', ['--filter', '@myself/package-scanner', 'test']),
   defineStep('release-typecheck', 'pnpm.cmd', ['--filter', '@myself/release-tools', 'typecheck']),
   defineStep('release-test', 'pnpm.cmd', ['--filter', '@myself/release-tools', 'test']),
-  defineStep('migration-tool-test', process.execPath, ['--test', 'tools/plan-cloudbase-migrations.test.mjs']),
+  defineStep('migration-tool-test', process.execPath, [
+    '--test',
+    'tools/cloudbase-migration-inventory.test.mjs',
+    'tools/cloudbase-user-migrations.test.mjs',
+    'tools/cloudbase-user-migration-adapter.test.mjs',
+    'tools/plan-cloudbase-migrations.test.mjs',
+  ]),
   defineStep('dependency-audit', process.execPath, ['tools/verification/run-web-dependency-audit.mjs']),
 ]);
 
@@ -72,7 +80,7 @@ const fullOnlySteps = Object.freeze([
     '--config', 'vitest.config.ts', 'tests/build-output.test.ts',
   ]),
   defineStep('cloudbase-build-tool-test', process.execPath, ['--test', 'tools/build-cloudbase-functions.test.mjs']),
-  defineStep('scanner-build', 'pnpm.cmd', ['--filter', '@myself/package-scanner', 'build']),
+  defineStep('scanner-candidate', 'pnpm.cmd', ['verify:scanner-candidate']),
   defineStep('website-e2e', 'pnpm.cmd', ['test:e2e:website']),
 ]);
 

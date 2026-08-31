@@ -85,6 +85,8 @@
 
 ## Task 3：Node 22 容器候选（阶段 2B 第一门）
 
+> 状态：2026-08-31 本地代码与静态门已完成；Scanner 70/70、候选验证器 3/3、typecheck、build、scope 与独立复审通过。宿主固件虚拟化不可用，真实 Docker 候选保持 `blocked/unverified`，不得记为阶段 2B 通过。
+
 **Files:**
 - Modify: `apps/package-scanner/vite.build.config.ts`, `apps/package-scanner/Dockerfile`
 - Create/Modify: `apps/package-scanner/tests/build-output.test.ts`, `dockerfile.test.ts`
@@ -99,6 +101,8 @@
 4. 完成标准：两命令通过；没有容器运行时时记录 `blocked`，阶段 2B 与恢复开发门不得写成通过。
 
 ## Task 4：受控 migration Adapter
+
+> 状态：2026-08-31 已完成；CloudBase 工具 34/34、Adapter/编排器 15/15、快速网站链、scope、ownership 与独立安全复审通过。仅验证本地编排和 SDK 边界，未调用任何远端环境。
 
 **Files:**
 - Create: `tools/cloudbase-user-migrations.mjs`, `cloudbase-user-migrations.test.mjs`

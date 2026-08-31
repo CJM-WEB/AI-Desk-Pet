@@ -14,6 +14,8 @@ const currentTests = [
   'apps/package-scanner/tests/server.test.ts',
   'tools/release/tests/generate-manifest.test.ts',
   'tools/cloudbase-migration-inventory.test.mjs',
+  'tools/cloudbase-user-migrations.test.mjs',
+  'tools/cloudbase-user-migration-adapter.test.mjs',
   'tools/plan-cloudbase-migrations.test.mjs',
   'tools/build-cloudbase-functions.test.mjs',
   'tests/e2e/website.spec.ts',
@@ -40,4 +42,12 @@ test('合同测试建立前不提前登记目录、owner 或执行步骤', () =>
 
 test('当前网站链测试均恰有一个 owner', async () => {
   await verifyWebTestOwnership(process.cwd());
+});
+
+test('迁移编排模块进入依赖审计且测试进入快速门', () => {
+  assert.ok(WEB_AUDIT_INPUTS.includes('tools/cloudbase-user-migrations.mjs'));
+  assert.ok(WEB_AUDIT_INPUTS.includes('tools/cloudbase-user-migration-adapter.mjs'));
+  const migrationStep = WEB_CHAIN_PROFILES.fast.find(step => step.id === 'migration-tool-test');
+  assert.ok(migrationStep.args.includes('tools/cloudbase-user-migrations.test.mjs'));
+  assert.ok(migrationStep.args.includes('tools/cloudbase-user-migration-adapter.test.mjs'));
 });

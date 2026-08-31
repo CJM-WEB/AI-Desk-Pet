@@ -10,8 +10,9 @@
     "verify:web-chain:scope": "node tools/verification/verify-website-scope.mjs",
     "verify:web-chain:fast": "node tools/verification/verify-web-chain.mjs --profile fast",
     "verify:web-chain": "node tools/verification/verify-web-chain.mjs --profile full",
+    "verify:scanner-candidate": "node tools/verification/verify-scanner-candidate.mjs",
     "plan:cloudbase-migrations": "node tools/plan-cloudbase-migrations.mjs --dry-run",
-    "test:cloudbase-tools": "node --test tools/cloudbase-migration-inventory.test.mjs tools/plan-cloudbase-migrations.test.mjs tools/build-cloudbase-functions.test.mjs",
+    "test:cloudbase-tools": "node --test tools/cloudbase-migration-inventory.test.mjs tools/cloudbase-user-migrations.test.mjs tools/cloudbase-user-migration-adapter.test.mjs tools/plan-cloudbase-migrations.test.mjs tools/build-cloudbase-functions.test.mjs",
     "test:watch": "vitest",
     "typecheck": "pnpm -r --if-present typecheck",
     "test:unit": "vitest run --project shared-types --project file-tools --project agent-core --project character-runtime --project character-assets --project desktop",
@@ -29,11 +30,13 @@
   },
   "devDependencies": {
     "@cloudbase/cli": "^3.7.0",
-    "@cloudbase/manager-node": "^5.6.5",
     "@playwright/test": "^1.61.1",
     "@types/node": "^24.13.3",
     "dependency-cruiser": "18.2.0",
     "typescript": "^5.9.3",
     "vitest": "^3.2.7"
+  },
+  "dependencies": {
+    "@cloudbase/manager-node": "^5.6.5"
   }
 }

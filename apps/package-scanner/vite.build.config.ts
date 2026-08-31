@@ -12,7 +12,7 @@ export default defineConfig({
     ]
   },
   build: {
-    target: 'node20',
+    target: 'node22',
     outDir: 'dist',
     emptyOutDir: true,
     ssr: resolve(import.meta.dirname, 'src/server.ts'),

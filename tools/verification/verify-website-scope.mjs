@@ -6,6 +6,7 @@ import { isDeepStrictEqual } from 'node:util';
 import { fileURLToPath } from 'node:url';
 
 import {
+  ALLOWED_ROOT_DEPENDENCY_RELOCATIONS,
   ALLOWED_ROOT_DEV_DEPENDENCY_CHANGES,
   ALLOWED_ROOT_SCRIPT_CHANGES,
   ALLOWED_WEBSITE_SCOPE_PATHS,
@@ -72,15 +73,27 @@ function assertExistingEntriesUnchanged(label, baseEntries, currentEntries) {
   }
 }
 
-/** 根 manifest 只允许 scripts 和 devDependencies 按阶段 0 的精确增量发生变化。 */
+/** 根 manifest 只允许批准脚本、开发依赖及 manager SDK 精确分类迁移。 */
 export function assertRootManifestChange(baseManifest, currentManifest) {
   const baseScripts = baseManifest.scripts ?? {};
   const currentScripts = currentManifest.scripts ?? {};
   const baseDevDependencies = baseManifest.devDependencies ?? {};
   const currentDevDependencies = currentManifest.devDependencies ?? {};
+  const baseDependencies = baseManifest.dependencies ?? {};
+  const currentDependencies = currentManifest.dependencies ?? {};
+
+  const relocatedDependencies = new Set(Object.entries(ALLOWED_ROOT_DEPENDENCY_RELOCATIONS)
+    .filter(([name, version]) => baseDevDependencies[name] === version
+      && !Object.hasOwn(currentDevDependencies, name)
+      && currentDependencies[name] === version)
+    .map(([name]) => name));
+  const stableBaseDevDependencies = Object.fromEntries(
+    Object.entries(baseDevDependencies).filter(([name]) => !relocatedDependencies.has(name)),
+  );
 
   assertExistingEntriesUnchanged('根 manifest 原有脚本', baseScripts, currentScripts);
-  assertExistingEntriesUnchanged('根 manifest 原有开发依赖', baseDevDependencies, currentDevDependencies);
+  assertExistingEntriesUnchanged('根 manifest 原有开发依赖', stableBaseDevDependencies, currentDevDependencies);
+  assertExistingEntriesUnchanged('根 manifest 原有运行依赖', baseDependencies, currentDependencies);
 
   for (const [key, value] of Object.entries(currentScripts)) {
     if (!Object.hasOwn(baseScripts, key)
@@ -96,7 +109,15 @@ export function assertRootManifestChange(baseManifest, currentManifest) {
     }
   }
 
-  const ignoredKeys = new Set(['scripts', 'devDependencies']);
+  for (const [key, value] of Object.entries(currentDependencies)) {
+    if (!Object.hasOwn(baseDependencies, key)
+      && (!relocatedDependencies.has(key)
+        || ALLOWED_ROOT_DEPENDENCY_RELOCATIONS[key] !== value)) {
+      throw new Error(`根 manifest 不允许新增或改写运行依赖: ${key}`);
+    }
+  }
+
+  const ignoredKeys = new Set(['scripts', 'dependencies', 'devDependencies']);
   const rootKeys = new Set([...Object.keys(baseManifest), ...Object.keys(currentManifest)]);
   for (const key of rootKeys) {
     if (!ignoredKeys.has(key) && !isDeepStrictEqual(baseManifest[key], currentManifest[key])) {

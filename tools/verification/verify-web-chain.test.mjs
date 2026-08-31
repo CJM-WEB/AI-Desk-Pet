@@ -18,7 +18,7 @@ test('快速与完整 profile 只按批准顺序执行网站链目标', () => {
   assert.deepEqual(fullIds.slice(0, fastIds.length), fastIds);
   assert.deepEqual(fullIds.slice(fastIds.length), [
     'cloudbase-build', 'cloudbase-build-output-test',
-    'cloudbase-build-tool-test', 'scanner-build', 'website-e2e',
+    'cloudbase-build-tool-test', 'scanner-candidate', 'website-e2e',
   ]);
   assert.doesNotMatch(
     JSON.stringify(createWebChainSteps('full')),

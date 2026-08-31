@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { readFile, readdir } from 'node:fs/promises';
 
 const migrationFileNamePattern =
-  /^(?<version>\d{14})_(?<name>[a-z0-9]+(?:_[a-z0-9]+)*)\.sql$/u;
+  /^(?<version>\d{14})_(?<name>[a-z]+(?:_[a-z]+)*)\.sql$/u;
 
 const defaultFileSystem = {
   readDirectory: readdir,
@@ -83,7 +83,8 @@ export async function inventoryCloudBaseMigrations(
       name: match.groups.name,
       fileName: entry.name,
       sha256: createHash('sha256').update(content).digest('hex'),
-      bytes: content.byteLength
+      bytes: content.byteLength,
+      content
     });
   }
 

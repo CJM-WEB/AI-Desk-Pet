@@ -62,8 +62,15 @@ ClamAV/图片审核等待并释放单任务并发锁。腾讯云 IMS 官方客�
 pnpm --filter @myself/package-scanner test
 pnpm --filter @myself/package-scanner typecheck
 pnpm --filter @myself/package-scanner build
-docker build -f apps/package-scanner/Dockerfile -t ai-pet-package-scanner:local .
+pnpm verify:scanner-candidate
 ```
+
+最后一条命令要求本机 Docker runtime 可用。它构建固定标签的本地候选镜像，并在
+无网络容器内验证不可变 image ID、非 root UID、Node/ClamAV/病毒库版本、`/healthz`、
+EICAR 阻断和扫描超时 `HTTP 503`。命令只输出本地候选 JSON，不部署或修改云端环境；
+任一运行时门缺失时以非零退出码失败，不得用静态 Dockerfile 文本检查代替。
+若 Docker CLI 不在当前进程的 `PATH`，可用 `DOCKER_CLI_PATH` 指向已安装的可执行文件；
+Windows 标准 Docker Desktop 安装路径也会作为仅在 `PATH` 缺失时使用的回退。
 
 正式部署前还必须用真实 ClamAV 和腾讯云图片内容安全测试一次干净包、病毒命中、
 审核通过、审核拦截与服务超时场景。

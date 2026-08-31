@@ -54,6 +54,17 @@ test('按版本排序并对 SQL 原始字节计算 SHA-256', async (t) => {
     createHash('sha256').update('SELECT 1;\n').digest('hex')
   );
   assert.equal(items[1].bytes, Buffer.byteLength('SELECT 2;\r\n'));
+  assert.deepEqual(items[0].content, Buffer.from('SELECT 1;\n'));
+});
+
+test('拒绝 manager SDK 不接受的含数字迁移名称', async (t) => {
+  const root = await createMigrationDirectory(t);
+  await writeFile(join(root, '20260808000000_phase_2.sql'), 'SELECT 1;\n');
+
+  await assert.rejects(
+    inventoryCloudBaseMigrations(directoryUrl(root)),
+    /迁移文件名无效/u
+  );
 });
 
 test('拒绝不符合迁移文件名契约的 SQL 文件', async (t) => {
@@ -208,7 +219,8 @@ test('dry-run 不修改输入且不公开 SQL、绝对路径或凭据', () => {
       bytes: 10,
       sql: 'SELECT secret_column FROM private_table;',
       absolutePath: 'C:\\migration-path-sentinel\\migration.sql',
-      credential: 'credential-sentinel'
+      credential: 'credential-sentinel',
+      content: Buffer.from('SELECT content_sentinel;')
     })
   ]);
 
@@ -224,13 +236,14 @@ test('dry-run 不修改输入且不公开 SQL、绝对路径或凭据', () => {
       bytes: 10,
       sql: 'SELECT secret_column FROM private_table;',
       absolutePath: 'C:\\migration-path-sentinel\\migration.sql',
-      credential: 'credential-sentinel'
+      credential: 'credential-sentinel',
+      content: Buffer.from('SELECT content_sentinel;')
     }
   ]);
   assert.notEqual(plan.migrations, migrations);
   assert.notEqual(plan.migrations[0], migrations[0]);
   assert.doesNotMatch(
     serializedPlan,
-    /SELECT|credential-sentinel|migration-path-sentinel|:\\\\/u
+    /SELECT|content_sentinel|credential-sentinel|migration-path-sentinel|:\\\\/u
   );
 });

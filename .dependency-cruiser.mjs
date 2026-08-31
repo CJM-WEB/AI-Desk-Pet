@@ -443,7 +443,9 @@ export default {
       name: 'migration-planning-tools-do-not-import-web-or-cloud-source',
       comment: '迁移规划工具不得直接或间接依赖网站或 CloudBase API 实现。',
       severity: 'warn',
-      from: { path: '^tools/(plan-cloudbase-migrations|cloudbase-migration-inventory)\\.mjs$' },
+      from: {
+        path: '^tools/(plan-cloudbase-migrations|cloudbase-migration-inventory|cloudbase-user-migrations|cloudbase-user-migration-adapter)\\.mjs$',
+      },
       to: { path: '^apps/(website|cloudbase-api)/', reachable: true },
     },
     {

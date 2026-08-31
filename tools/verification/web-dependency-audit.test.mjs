@@ -61,6 +61,8 @@ async function createRuleFixture() {
     'tools/migration-bridge.mjs':
       "import { cloud } from '../apps/cloudbase-api/src/internal.ts';\nexport { cloud };\n",
     'tools/cloudbase-migration-inventory.mjs': "import './inventory-bridge.mjs';\n",
+    'tools/cloudbase-user-migrations.mjs': "import './migration-bridge.mjs';\n",
+    'tools/cloudbase-user-migration-adapter.mjs': "import './inventory-bridge.mjs';\n",
     'tools/inventory-bridge.mjs':
       "import { website } from '../apps/website/lib/migration-target.ts';\nexport { website };\n",
     'node_modules/@cloudbase/js-sdk/package.json': JSON.stringify({
@@ -118,7 +120,6 @@ test('依赖审查配置不再为已退役迁移入口或管理 SDK 保留例外
     'apply-cloudbase-migrations',
     '@cloudbase/' + 'manager-node',
     'migration-production-to-dev-dependency',
-    'migration-adapter',
   ];
 
   assert.doesNotMatch(serialized, new RegExp(retiredTerms.join('|'), 'u'));
@@ -129,7 +130,7 @@ test('依赖审查配置不再为已退役迁移入口或管理 SDK 保留例外
   );
   assert.equal(
     migrationToolRule?.from.path,
-    '^tools/(plan-cloudbase-migrations|cloudbase-migration-inventory)\\.mjs$',
+    '^tools/(plan-cloudbase-migrations|cloudbase-migration-inventory|cloudbase-user-migrations|cloudbase-user-migration-adapter)\\.mjs$',
   );
 });
 
@@ -170,6 +171,8 @@ test('网站专属规则阻止跨应用、服务反向依赖与越界 SDK 调用
       'apps/cloudbase-api',
       'tools/plan-cloudbase-migrations.mjs',
       'tools/cloudbase-migration-inventory.mjs',
+      'tools/cloudbase-user-migrations.mjs',
+      'tools/cloudbase-user-migration-adapter.mjs',
     ],
     { cwd: fixtureRoot },
   );
@@ -212,6 +215,8 @@ test('网站专属规则阻止跨应用、服务反向依赖与越界 SDK 调用
   for (const entryPoint of [
     'tools/plan-cloudbase-migrations.mjs',
     'tools/cloudbase-migration-inventory.mjs',
+    'tools/cloudbase-user-migrations.mjs',
+    'tools/cloudbase-user-migration-adapter.mjs',
   ]) {
     assert.ok(
       hasViolation('migration-planning-tools-do-not-import-web-or-cloud-source', entryPoint),

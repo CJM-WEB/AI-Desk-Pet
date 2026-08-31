@@ -112,18 +112,50 @@ test('阶段二 ScannerProtocol 只放行共享协议和扫描器路径', () => 
   });
 });
 
+test('阶段二 Scanner 候选只放行构建、测试与验证器路径', () => {
+  const approvedCandidatePaths = [
+    'apps/package-scanner/vite.build.config.ts',
+    'apps/package-scanner/Dockerfile',
+    'apps/package-scanner/tests/dockerfile.test.ts',
+    'apps/package-scanner/tests/build-output.test.ts',
+    'tools/verification/scanner-candidate-probe.mjs',
+    'tools/verification/verify-scanner-candidate.mjs',
+    'tools/verification/verify-scanner-candidate.test.mjs',
+  ];
+
+  assert.deepEqual(classifyChangedPaths(approvedCandidatePaths), {
+    allowed: approvedCandidatePaths,
+    forbidden: [],
+    outside: [],
+  });
+});
+
 test('阶段二 V3 迁移只额外放行现有 CloudBase 构建工具', () => {
   assert.deepEqual(classifyChangedPaths([
     'tools/build-cloudbase-functions.mjs',
     'tools/build-cloudbase-functions.test.mjs',
-    'tools/cloudbase-user-migrations.mjs',
   ]), {
     allowed: [
       'tools/build-cloudbase-functions.mjs',
       'tools/build-cloudbase-functions.test.mjs',
     ],
     forbidden: [],
-    outside: ['tools/cloudbase-user-migrations.mjs'],
+    outside: [],
+  });
+});
+
+test('阶段二受控迁移只放行纯编排器、适配器与测试', () => {
+  const approvedPaths = [
+    'tools/cloudbase-user-migrations.mjs',
+    'tools/cloudbase-user-migrations.test.mjs',
+    'tools/cloudbase-user-migration-adapter.mjs',
+    'tools/cloudbase-user-migration-adapter.test.mjs',
+  ];
+
+  assert.deepEqual(classifyChangedPaths(approvedPaths), {
+    allowed: approvedPaths,
+    forbidden: [],
+    outside: [],
   });
 });
 
@@ -197,6 +229,23 @@ test('根 manifest 拒绝阶段 0 依赖的非精确版本', () => {
   );
 });
 
+test('根 manifest 只允许 manager SDK 按原版本从开发依赖迁移为运行依赖', () => {
+  const withManagerDevDependency = structuredClone(baseManifest);
+  withManagerDevDependency.devDependencies['@cloudbase/manager-node'] = '^5.6.5';
+  const relocated = structuredClone(withManagerDevDependency);
+  delete relocated.devDependencies['@cloudbase/manager-node'];
+  relocated.dependencies = { '@cloudbase/manager-node': '^5.6.5' };
+
+  assert.doesNotThrow(() => assertRootManifestChange(withManagerDevDependency, relocated));
+
+  const wrongVersion = structuredClone(relocated);
+  wrongVersion.dependencies['@cloudbase/manager-node'] = '^6.0.0';
+  assert.throws(
+    () => assertRootManifestChange(withManagerDevDependency, wrongVersion),
+    /@cloudbase\/manager-node/u,
+  );
+});
+
 test('根 manifest 拒绝阶段 0 脚本的错误命令值', () => {
   const changedCommand = structuredClone(baseManifest);
   changedCommand.scripts['verify:web-chain'] = 'echo unexpected-command';
@@ -216,7 +265,8 @@ test('根 manifest 接受全部精确阶段 0 脚本和 dependency-cruiser', () 
     'verify:web-chain:fast': 'node tools/verification/verify-web-chain.mjs --profile fast',
     'verify:web-chain': 'node tools/verification/verify-web-chain.mjs --profile full',
     'plan:cloudbase-migrations': 'node tools/plan-cloudbase-migrations.mjs --dry-run',
-    'test:cloudbase-tools': 'node --test tools/cloudbase-migration-inventory.test.mjs tools/plan-cloudbase-migrations.test.mjs tools/build-cloudbase-functions.test.mjs',
+    'test:cloudbase-tools': 'node --test tools/cloudbase-migration-inventory.test.mjs tools/cloudbase-user-migrations.test.mjs tools/cloudbase-user-migration-adapter.test.mjs tools/plan-cloudbase-migrations.test.mjs tools/build-cloudbase-functions.test.mjs',
+    'verify:scanner-candidate': 'node tools/verification/verify-scanner-candidate.mjs',
   });
   allowedChange.devDependencies['dependency-cruiser'] = '18.2.0';
 
