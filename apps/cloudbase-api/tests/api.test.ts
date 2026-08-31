@@ -561,6 +561,32 @@ describe('公开 HTTP API', () => {
     expect(dependencies.admin.getDetail).not.toHaveBeenCalled();
   });
 
+  it('管理员详情在 strict 请求失败前仍先验证管理员身份', async () => {
+    const dependencies = createDependencies();
+    dependencies.adminIdentity.requireAdmin.mockRejectedValueOnce(
+      new ApiError('FORBIDDEN', 403)
+    );
+    const missingToken = {
+      ...event('GET', '/api/v1/admin/submissions/submission-1'),
+      queryStringParameters: { private: 'secret' }
+    };
+    delete missingToken.headers['x-ai-pet-admin-token'];
+    const invalidBody = event(
+      'GET',
+      '/api/v1/admin/submissions/submission-1',
+      { private: 'secret' }
+    );
+
+    const main = createApi(dependencies);
+    const withoutToken = await main(missingToken, context);
+    const forbidden = await main(invalidBody, context);
+
+    expect(withoutToken.statusCode).toBe(401);
+    expect(forbidden.statusCode).toBe(403);
+    expect(dependencies.adminIdentity.requireAdmin).toHaveBeenCalledOnce();
+    expect(dependencies.admin.getDetail).not.toHaveBeenCalled();
+  });
+
   it('点赞和下载分别按设备哈希与资源 ID 限流', async () => {
     const dependencies = createDependencies();
     const main = createApi(dependencies);

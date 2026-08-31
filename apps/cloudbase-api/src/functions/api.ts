@@ -208,11 +208,11 @@ async function dispatch(
     ''
   );
   if (adminDetailId !== null) {
+    await dependencies.adminIdentity.requireAdmin(requireAdminToken(event));
     const request = adminDetailRequestSchema.safeParse(
       detailRequest(event, adminDetailId)
     );
     if (!request.success) throw invalidRequest();
-    await dependencies.adminIdentity.requireAdmin(requireAdminToken(event));
     return adminDetailResponseSchema.parse(
       await dependencies.admin.getDetail(adminDetailId)
     );
