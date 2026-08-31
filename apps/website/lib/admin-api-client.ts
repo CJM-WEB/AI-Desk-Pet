@@ -1,7 +1,10 @@
 import {
+  adminActionNameSchema,
+  adminActionResultSchema,
   adminActionSchema,
   submissionStatusSchema,
   type AdminAction,
+  type AdminActionResult,
   type SubmissionStatus
 } from '@myself/shared-types';
 import { z } from 'zod';
@@ -57,7 +60,7 @@ const moderationResultSchema = z.object({
 }).strict();
 
 const auditLogSchema = z.object({
-  action: adminActionSchema.shape.action,
+  action: adminActionNameSchema,
   beforeStatus: submissionStatusSchema,
   afterStatus: submissionStatusSchema,
   reason: z.string(),
@@ -79,15 +82,10 @@ const adminQueuePageSchema = z.object({
   nextCursor: z.number().int().nonnegative().nullable()
 }).strict();
 
-const adminActionResultSchema = z.object({
-  submission: adminSubmissionBaseSchema,
-  replayed: z.boolean()
-}).strict();
-
 export type AdminSubmissionSummary = z.infer<typeof adminSubmissionSummarySchema>;
 export type AdminSubmissionDetail = z.infer<typeof adminSubmissionDetailSchema>;
 export type AdminQueuePage = z.infer<typeof adminQueuePageSchema>;
-export type AdminActionResult = z.infer<typeof adminActionResultSchema>;
+export type { AdminActionResult } from '@myself/shared-types';
 
 export interface AdminApi {
   listQueue(

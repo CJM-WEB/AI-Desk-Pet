@@ -47,13 +47,22 @@ function createService(row = submission('manual_review_pending')) {
     applyAdminAction: vi.fn(async (input: AdminActionInput) => ({
       submission: {
         id: 'submission-1',
+        kind: row.kind ?? 'shared_package',
         status: input.nextStatus as AdminSubmissionDetail['status'],
         statusVersion: 4,
         publicationBasis: input.nextStatus === 'published'
           ? (input.action === 'force_publish'
               ? 'admin_override' as const
               : 'standard' as const)
-          : null
+          : null,
+        publicReason: null,
+        publishedAt: input.nextStatus === 'published'
+          ? '2026-07-31T12:00:00.000Z'
+          : null,
+        rejectedAt: null,
+        quarantinedAt: null,
+        createdAt: '2026-07-30T12:00:00.000Z',
+        updatedAt: '2026-07-31T12:00:00.000Z'
       },
       replayed: false
     }))
@@ -449,11 +458,20 @@ describe('管理员审核服务', () => {
       return {
         submission: {
           id: initial.id,
+          kind: initial.kind ?? 'shared_package',
           status: changed.status,
           statusVersion: 4,
           publicationBasis: changed.status === 'published'
             ? 'standard' as const
-            : null
+            : null,
+          publicReason: null,
+          publishedAt: changed.status === 'published'
+            ? '2026-07-31T12:00:00.000Z'
+            : null,
+          rejectedAt: null,
+          quarantinedAt: null,
+          createdAt: '2026-07-30T12:00:00.000Z',
+          updatedAt: '2026-07-31T12:00:00.000Z'
         },
         replayed: store.applyAdminAction.mock.calls.length > 1
       };

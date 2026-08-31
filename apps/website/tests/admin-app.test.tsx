@@ -268,6 +268,7 @@ describe('管理员审核工作台', () => {
 
     expect((screen.getByRole('button', { name: '批准发布' }) as HTMLButtonElement).disabled)
       .toBe(true);
+    expect(screen.queryByRole('button', { name: '强制发布' })).toBeNull();
     expect(screen.getByText('技术扫描未明确通过，不能批准共享包。')).toBeTruthy();
   });
 

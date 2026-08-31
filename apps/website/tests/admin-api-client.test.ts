@@ -49,6 +49,62 @@ describe('管理员 API 客户端', () => {
     await expect(client.getDetail('access-token', 'submission-1'))
       .rejects.toEqual(new ApiClientError('INVALID_RESPONSE', 200));
   });
+
+  it('使用共享最小契约解析管理员动作首次结果与两种幂等回放', async () => {
+    const safeSubmission = adminActionSubmissionDto();
+    const fetcher = vi.fn()
+      .mockResolvedValueOnce(response({ submission: safeSubmission, replayed: false }))
+      .mockResolvedValueOnce(response({ submission: safeSubmission, replayed: true }))
+      .mockResolvedValueOnce(response({
+        submission: {
+          id: 'legacy-purged',
+          status: 'published',
+          statusVersion: 1,
+          publicationBasis: 'standard'
+        },
+        replayed: true
+      }));
+    const client = new AdminApiClient(new ApiClient('/api/v1', fetcher));
+    const action = {
+      action: 'approve' as const,
+      version: 3,
+      idempotencyKey: 'admin-action-result',
+      reason: '复核通过'
+    };
+
+    await expect(client.applyAction('access-token', 'submission-1', action))
+      .resolves.toEqual({ submission: safeSubmission, replayed: false });
+    await expect(client.applyAction('access-token', 'submission-1', action))
+      .resolves.toEqual({ submission: safeSubmission, replayed: true });
+    await expect(client.applyAction('access-token', 'legacy-purged', action))
+      .resolves.toMatchObject({
+        submission: { id: 'legacy-purged', statusVersion: 1 },
+        replayed: true
+      });
+  });
+
+  it('管理员动作响应对缺失字段和额外私密字段失败关闭', async () => {
+    const safeSubmission = adminActionSubmissionDto();
+    const { kind: _kind, ...missingKind } = safeSubmission;
+    const fetcher = vi.fn()
+      .mockResolvedValueOnce(response({ submission: missingKind, replayed: false }))
+      .mockResolvedValueOnce(response({
+        submission: { ...safeSubmission, body: '不得返回的正文' },
+        replayed: true
+      }));
+    const client = new AdminApiClient(new ApiClient('/api/v1', fetcher));
+    const action = {
+      action: 'approve' as const,
+      version: 3,
+      idempotencyKey: 'admin-action-invalid',
+      reason: '拒绝异常响应'
+    };
+
+    await expect(client.applyAction('access-token', 'submission-1', action))
+      .rejects.toEqual(new ApiClientError('INVALID_RESPONSE', 200));
+    await expect(client.applyAction('access-token', 'submission-1', action))
+      .rejects.toEqual(new ApiClientError('INVALID_RESPONSE', 200));
+  });
 });
 
 function response(data: unknown): Response {
@@ -78,5 +134,21 @@ function adminDetailDto() {
     assets: [],
     moderationResults: [],
     auditLogs: []
+  };
+}
+
+function adminActionSubmissionDto() {
+  return {
+    id: 'submission-1',
+    kind: 'shared_package',
+    status: 'published',
+    statusVersion: 4,
+    publicationBasis: 'standard',
+    publicReason: null,
+    publishedAt: '2026-08-31T00:00:00.000Z',
+    rejectedAt: null,
+    quarantinedAt: null,
+    createdAt: '2026-08-30T00:00:00.000Z',
+    updatedAt: '2026-08-31T00:00:00.000Z'
   };
 }

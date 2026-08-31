@@ -1368,9 +1368,16 @@ describe('CloudBase PostgreSQL 仓储', () => {
       })).resolves.toEqual({
         submission: {
           id: 'safe-admin-result',
+          kind: 'shared_package',
           status: 'published',
           statusVersion: 4,
-          publicationBasis: 'admin_override'
+          publicationBasis: 'admin_override',
+          publicReason: null,
+          publishedAt: '2026-08-31T00:00:00.000Z',
+          rejectedAt: null,
+          quarantinedAt: null,
+          createdAt: '2026-08-30T00:00:00.000Z',
+          updatedAt: '2026-08-31T00:00:00.000Z'
         },
         replayed
       });
@@ -1411,6 +1418,34 @@ describe('CloudBase PostgreSQL 仓储', () => {
       },
       replayed: true
     });
+  });
+
+  it('管理员动作拒绝把四键历史快照作为新首次动作返回', async () => {
+    const rpcClient = {
+      rpc: vi.fn(async () => ({
+        data: {
+          submission: {
+            id: 'legacy-shape-first-result',
+            status: 'published',
+            status_version: 1,
+            publication_basis: 'standard'
+          },
+          replayed: false
+        },
+        error: null
+      }))
+    };
+    const store = new CloudBasePostgresStore(new MemoryRdb(), rpcClient);
+
+    await expect(store.applyAdminAction({
+      submissionId: 'legacy-shape-first-result',
+      adminId: 'admin-1',
+      action: 'approve',
+      nextStatus: 'published',
+      expectedVersion: 0,
+      idempotencyKey: 'legacy-shape-first-key',
+      reason: '不得作为首次结果'
+    })).rejects.toMatchObject({ code: 'DATABASE_ERROR', statusCode: 500 });
   });
 
   it.each([

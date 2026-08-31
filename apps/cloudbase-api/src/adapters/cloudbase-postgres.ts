@@ -1,5 +1,6 @@
 import {
   adminActionSchema,
+  adminActionResultSchema,
   publicationBasisSchema,
   submissionStatusSchema
 } from '@myself/shared-types';
@@ -659,13 +660,16 @@ const adminActionSubmissionSnapshotSchema = adminActionSubmissionCoreSchema
   })
   .strict();
 
-const adminActionRpcResultSchema = z.object({
-  submission: z.union([
-    adminActionSubmissionSnapshotSchema,
-    adminActionSubmissionCoreSchema
-  ]),
-  replayed: z.boolean()
-}).strict().superRefine((result, context) => {
+const adminActionRpcResultSchema = z.union([
+  z.object({
+    submission: adminActionSubmissionSnapshotSchema,
+    replayed: z.boolean()
+  }).strict(),
+  z.object({
+    submission: adminActionSubmissionCoreSchema,
+    replayed: z.literal(true)
+  }).strict()
+]).superRefine((result, context) => {
   const published = result.submission.status === 'published';
   if (published !== (result.submission.publication_basis !== null)) {
     context.addIssue({
@@ -682,15 +686,32 @@ function mapAdminActionResult(value: unknown): AdminActionResult {
   if (!parsed.success) {
     throw new ApiError('DATABASE_ERROR', 500, '管理员动作结果返回格式错误');
   }
-  return {
+  const coreSubmission = {
+    id: parsed.data.submission.id,
+    status: parsed.data.submission.status,
+    statusVersion: parsed.data.submission.status_version,
+    publicationBasis: parsed.data.submission.publication_basis
+  };
+  const mapped = {
     submission: {
-      id: parsed.data.submission.id,
-      status: parsed.data.submission.status,
-      statusVersion: parsed.data.submission.status_version,
-      publicationBasis: parsed.data.submission.publication_basis
+      ...coreSubmission,
+      ...('kind' in parsed.data.submission ? {
+        kind: parsed.data.submission.kind,
+        publicReason: parsed.data.submission.public_reason,
+        publishedAt: parsed.data.submission.published_at,
+        rejectedAt: parsed.data.submission.rejected_at,
+        quarantinedAt: parsed.data.submission.quarantined_at,
+        createdAt: parsed.data.submission.created_at,
+        updatedAt: parsed.data.submission.updated_at
+      } : {})
     },
     replayed: parsed.data.replayed
   };
+  const result = adminActionResultSchema.safeParse(mapped);
+  if (!result.success) {
+    throw new ApiError('DATABASE_ERROR', 500, '管理员动作结果返回格式错误');
+  }
+  return result.data;
 }
 
 function mapAdminSubmission(value: unknown): AdminSubmissionSummary {

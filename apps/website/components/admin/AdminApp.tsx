@@ -235,12 +235,18 @@ function AdminWorkspace({
     setActing(true);
     setNotice(null);
     try {
-      await resolvedApi.applyAction(accessToken, detail.id, {
-        action,
+      const baseAction = {
         version: detail.statusVersion,
         idempotencyKey: crypto.randomUUID(),
         reason
-      });
+      };
+      await resolvedApi.applyAction(
+        accessToken,
+        detail.id,
+        action === 'force_publish'
+          ? { ...baseAction, action, riskAcknowledgement: 'ADMIN_OVERRIDE_ACCEPTED' }
+          : { ...baseAction, action }
+      );
       if (epoch !== sessionEpoch.current) return;
       setNotice(t('admin.notice.completed'));
       setSelectedId(null);

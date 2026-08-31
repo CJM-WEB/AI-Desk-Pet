@@ -73,3 +73,55 @@ export const adminActionSchema = z.discriminatedUnion('action', [
   })
 ]);
 export type AdminAction = z.infer<typeof adminActionSchema>;
+
+/** 审计等只读取动作名的消费者复用联合分支，不另建动作枚举。 */
+export const adminActionNameSchema = z.union([
+  adminActionSchema.options[0].shape.action,
+  adminActionSchema.options[1].shape.action
+]);
+
+const adminActionResultCoreSubmissionSchema = z.object({
+  id: z.string().min(1).max(128),
+  status: submissionStatusSchema,
+  statusVersion: z.number().int().nonnegative(),
+  publicationBasis: publicationBasisSchema.nullable()
+}).strict();
+
+const adminActionResultSafeSubmissionSchema =
+  adminActionResultCoreSubmissionSchema.extend({
+    kind: z.string().min(1).max(64),
+    publicReason: z.string().max(500).nullable(),
+    publishedAt: z.string().datetime({ offset: true }).nullable(),
+    rejectedAt: z.string().datetime({ offset: true }).nullable(),
+    quarantinedAt: z.string().datetime({ offset: true }).nullable(),
+    createdAt: z.string().datetime({ offset: true }),
+    updatedAt: z.string().datetime({ offset: true })
+  }).strict();
+
+/**
+ * 新动作及其重放返回完整安全快照；只有旧 purge 恢复的重放可返回四键事实。
+ * 两种形状都禁止重新引入投稿正文、令牌、风险或租约字段。
+ */
+export const adminActionResultSchema = z.discriminatedUnion('replayed', [
+  z.object({
+    submission: adminActionResultSafeSubmissionSchema,
+    replayed: z.literal(false)
+  }).strict(),
+  z.object({
+    submission: z.union([
+      adminActionResultSafeSubmissionSchema,
+      adminActionResultCoreSubmissionSchema
+    ]),
+    replayed: z.literal(true)
+  }).strict()
+]).superRefine((result, context) => {
+  const published = result.submission.status === 'published';
+  if (published !== (result.submission.publicationBasis !== null)) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['submission', 'publicationBasis'],
+      message: '发布状态与发布依据不一致'
+    });
+  }
+});
+export type AdminActionResult = z.infer<typeof adminActionResultSchema>;

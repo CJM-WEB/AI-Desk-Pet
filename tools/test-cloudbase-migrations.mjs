@@ -90,6 +90,41 @@ export async function runCloudBaseMigrationBehaviorGate({
           [...connection, '-f', '-'],
           legacyAdminAuditFixtureSql
         );
+        for (const damagedFixtureSql of [
+          damagedLegacyIdentityFixtureSql,
+          damagedLegacyNullExpectedVersionFixtureSql
+        ]) {
+          await run(
+            executable('psql'),
+            [...connection, '-f', '-'],
+            damagedFixtureSql
+          );
+          let damagedUpgradeRejected = false;
+          try {
+            await run(executable('psql'), [
+              ...connection,
+              '-f', join(migrationDirectory, migration.fileName)
+            ]);
+          } catch (error) {
+            if (!String(error).includes('invalid legacy admin audit snapshot')) {
+              throw error;
+            }
+            damagedUpgradeRejected = true;
+          }
+          if (!damagedUpgradeRejected) {
+            throw new Error('损坏的旧管理员审计未阻止第六迁移');
+          }
+          await run(
+            executable('psql'),
+            [...connection, '-f', '-'],
+            legacyMigrationRollbackAssertionSql
+          );
+          await run(
+            executable('psql'),
+            [...connection, '-f', '-'],
+            cleanupDamagedLegacyAdminAuditFixtureSql
+          );
+        }
       }
       await run(executable('psql'), [
         ...connection,
@@ -102,7 +137,7 @@ export async function runCloudBaseMigrationBehaviorGate({
       postgresVersion: postgresVersion.version,
       postgresMajorVersion: postgresVersion.major,
       migrationsApplied: migrations.length,
-      behaviorsVerified: 36
+      behaviorsVerified: 39
     };
   } finally {
     if (started) {
@@ -245,6 +280,109 @@ BEGIN
   END IF;
 END
 $legacy_purged$;
+`;
+
+/**
+ * 旧数据损坏夹具验证迁移预检会失败关闭，并且整个事务不会留下半迁移结构。
+ * 清理后再执行正常升级，确保失败夹具不污染后续完整行为门。
+ */
+const damagedLegacyIdentityFixtureSql = String.raw`
+INSERT INTO submissions (
+  id, kind, status, status_version, status_token_hash
+) VALUES ('gate-damaged-submission-id', 'feedback', 'purged', 1, repeat('d', 64));
+
+INSERT INTO admin_audit_logs (
+  submission_id, admin_id, action, before_status, after_status, reason,
+  idempotency_key, request_payload, result_snapshot
+) VALUES (
+    'gate-damaged-submission-id', 'admin-1', 'approve',
+    'manual_review_pending', 'published', '损坏投稿编号',
+    'gate-damaged-submission-id-key',
+    jsonb_build_object(
+      'submissionId', '另一个投稿',
+      'adminId', 'admin-1',
+      'action', 'approve',
+      'nextStatus', 'published',
+      'expectedVersion', 0,
+      'reason', '损坏投稿编号'
+    ),
+    jsonb_build_object(
+      'submission', jsonb_build_object(
+        'id', 'gate-damaged-submission-id',
+        'status', 'purged'
+      ),
+      'replayed', false
+    )
+  );
+`;
+
+const damagedLegacyNullExpectedVersionFixtureSql = String.raw`
+INSERT INTO submissions (
+  id, kind, status, status_version, status_token_hash
+) VALUES ('gate-damaged-null-version', 'feedback', 'purged', 1, repeat('e', 64));
+
+INSERT INTO admin_audit_logs (
+  submission_id, admin_id, action, before_status, after_status, reason,
+  idempotency_key, request_payload, result_snapshot
+) VALUES (
+    'gate-damaged-null-version', 'admin-1', 'delete',
+    'manual_review_pending', 'deleted_quarantined', '损坏预期版本',
+    'gate-damaged-null-version-key',
+    jsonb_build_object(
+      'submissionId', 'gate-damaged-null-version',
+      'adminId', 'admin-1',
+      'action', 'delete',
+      'nextStatus', 'deleted_quarantined',
+      'expectedVersion', NULL,
+      'reason', '损坏预期版本'
+    ),
+    jsonb_build_object(
+      'submission', jsonb_build_object(
+        'id', 'gate-damaged-null-version',
+        'status', 'purged'
+      ),
+      'replayed', false
+    )
+  );
+`;
+
+const legacyMigrationRollbackAssertionSql = String.raw`
+DO $rollback_assertion$
+BEGIN
+  IF EXISTS (
+    SELECT 1
+    FROM information_schema.columns
+    WHERE table_schema = 'public'
+      AND table_name = 'submissions'
+      AND column_name = 'publication_basis'
+  ) THEN
+    RAISE EXCEPTION '行为门失败：损坏旧审计使第六迁移部分提交';
+  END IF;
+  IF (
+    SELECT count(*)
+    FROM admin_audit_logs
+    WHERE idempotency_key IN (
+      'gate-damaged-submission-id-key',
+      'gate-damaged-null-version-key'
+    )
+  ) IS DISTINCT FROM 1::bigint THEN
+    RAISE EXCEPTION '行为门失败：迁移失败未完整回滚损坏夹具';
+  END IF;
+END
+$rollback_assertion$;
+`;
+
+const cleanupDamagedLegacyAdminAuditFixtureSql = String.raw`
+DELETE FROM admin_audit_logs
+WHERE idempotency_key IN (
+  'gate-damaged-submission-id-key',
+  'gate-damaged-null-version-key'
+);
+DELETE FROM submissions
+WHERE id IN (
+  'gate-damaged-submission-id',
+  'gate-damaged-null-version'
+);
 `;
 
 const behaviorSql = String.raw`
@@ -435,6 +573,36 @@ BEGIN
   IF COALESCE((v_result ->> 'replayed')::boolean, false) IS NOT TRUE
     OR (v_result - 'replayed') <> (v_first_snapshot - 'replayed') THEN
     RAISE EXCEPTION '行为门失败：旧 purge 快照无法回放首次动作';
+  END IF;
+
+  -- 同一旧 purge 投稿的删除动作也必须从审计事实恢复精确四键结果。
+  SELECT result_snapshot INTO v_first_snapshot
+  FROM admin_audit_logs
+  WHERE idempotency_key = 'gate-legacy-purged-delete';
+  IF (
+      SELECT array_agg(key ORDER BY key)
+      FROM jsonb_object_keys(
+        v_first_snapshot -> 'submission'
+      ) AS snapshot_key(key)
+    ) IS DISTINCT FROM ARRAY[
+      'id', 'publication_basis', 'status', 'status_version'
+    ]::text[]
+    OR v_first_snapshot #>> '{submission,id}'
+      IS DISTINCT FROM 'gate-legacy-purged-audit'
+    OR v_first_snapshot #>> '{submission,status}'
+      IS DISTINCT FROM 'deleted_quarantined'
+    OR v_first_snapshot #>> '{submission,status_version}' IS DISTINCT FROM '2'
+    OR v_first_snapshot #> '{submission,publication_basis}'
+      IS DISTINCT FROM 'null'::jsonb THEN
+    RAISE EXCEPTION '行为门失败：旧 purge 删除快照未按审计事实重建';
+  END IF;
+  v_result := apply_admin_action(
+    'gate-legacy-purged-audit', 'admin-1', 'delete',
+    'deleted_quarantined', 1, 'gate-legacy-purged-delete', '历史删除'
+  );
+  IF COALESCE((v_result ->> 'replayed')::boolean, false) IS NOT TRUE
+    OR (v_result - 'replayed') <> (v_first_snapshot - 'replayed') THEN
+    RAISE EXCEPTION '行为门失败：旧 purge 删除快照无法稳定回放';
   END IF;
 
   -- 1. 数据库约束直接拒绝 published + NULL，不依赖服务层。

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   adminActionSchema,
+  adminActionResultSchema,
   publicationBasisSchema,
   submissionReceiptSchema,
   submissionStatusSchema,
@@ -57,6 +58,78 @@ describe('投稿审核契约', () => {
     expect(publicationBasisSchema.parse('standard')).toBe('standard');
     expect(publicationBasisSchema.parse('admin_override')).toBe('admin_override');
     expect(publicationBasisSchema.safeParse('scanner_pass').success).toBe(false);
+  });
+
+  it('管理员动作结果把首次与重放绑定到精确安全响应形状', () => {
+    const safeSubmission = {
+      id: 'submission-1',
+      kind: 'shared_package',
+      status: 'published',
+      statusVersion: 4,
+      publicationBasis: 'admin_override',
+      publicReason: null,
+      publishedAt: '2026-08-31T00:00:00.000Z',
+      rejectedAt: null,
+      quarantinedAt: null,
+      createdAt: '2026-08-30T00:00:00.000Z',
+      updatedAt: '2026-08-31T00:00:00.000Z'
+    };
+
+    for (const replayed of [false, true]) {
+      expect(adminActionResultSchema.parse({
+        submission: safeSubmission,
+        replayed
+      })).toEqual({ submission: safeSubmission, replayed });
+    }
+    expect(adminActionResultSchema.parse({
+      submission: {
+        id: 'legacy-purged',
+        status: 'published',
+        statusVersion: 1,
+        publicationBasis: 'standard'
+      },
+      replayed: true
+    }).replayed).toBe(true);
+  });
+
+  it('管理员动作结果拒绝四键首次、缺失字段和任何额外字段', () => {
+    const safeSubmission = {
+      id: 'submission-1',
+      kind: 'feedback',
+      status: 'published',
+      statusVersion: 1,
+      publicationBasis: 'standard',
+      publicReason: null,
+      publishedAt: '2026-08-31T00:00:00.000Z',
+      rejectedAt: null,
+      quarantinedAt: null,
+      createdAt: '2026-08-30T00:00:00.000Z',
+      updatedAt: '2026-08-31T00:00:00.000Z'
+    };
+    expect(adminActionResultSchema.safeParse({
+      submission: {
+        id: 'submission-1',
+        status: 'published',
+        statusVersion: 1,
+        publicationBasis: 'standard'
+      },
+      replayed: false
+    }).success).toBe(false);
+    const missing = { ...safeSubmission } as Record<string, unknown>;
+    delete missing.kind;
+    expect(adminActionResultSchema.safeParse({
+      submission: missing,
+      replayed: false
+    }).success).toBe(false);
+    expect(adminActionResultSchema.safeParse({
+      submission: { ...safeSubmission, body: '私密字段' },
+      replayed: true
+    }).success).toBe(false);
+    expect(adminActionResultSchema.safeParse({
+      submission: safeSubmission,
+      replayed: true,
+      debug: true
+    }).success).toBe(false);
   });
 
   it('状态查询令牌必须恰好为 43 个 URL 安全字符', () => {

@@ -155,6 +155,7 @@ function availableActions(detail: AdminSubmissionDetail): AdminAction['action'][
 function actionLabel(action: AdminAction['action'], t: Translate): string {
   return {
     approve: t('admin.action.approve'),
+    force_publish: t('admin.action.forcePublish'),
     reject: t('admin.action.reject'),
     move_to_manual: t('admin.action.manual'),
     delete: t('admin.action.delete'),

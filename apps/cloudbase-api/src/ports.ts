@@ -1,11 +1,14 @@
 import type {
   AdminAction,
-  PublicationBasis,
+  AdminActionResult,
   SubmissionStatus,
   SubmissionStatusView
 } from '@myself/shared-types';
 
-export type { SubmissionStatusView } from '@myself/shared-types';
+export type {
+  AdminActionResult,
+  SubmissionStatusView
+} from '@myself/shared-types';
 
 /** 创建投稿记录所需的最小字段。 */
 export interface NewSubmission {
@@ -115,20 +118,6 @@ export interface AdminActionInput {
   expectedVersion: number;
   idempotencyKey: string;
   reason: string;
-}
-
-/** 管理员动作只返回稳定裁决事实，不复用包含私密字段的完整投稿行。 */
-export interface AdminActionSubmission {
-  id: string;
-  status: SubmissionStatus;
-  statusVersion: number;
-  publicationBasis: PublicationBasis | null;
-}
-
-/** 管理员动作结果会标识是否为幂等重放。 */
-export interface AdminActionResult {
-  submission: AdminActionSubmission;
-  replayed: boolean;
 }
 
 /** 公开列表允许返回的裁剪字段。 */
