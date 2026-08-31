@@ -2,7 +2,7 @@
 
 > 日期：2026-08-31
 > 分支：`WebsiteExtension`
-> 替代范围：修订主规格第 5.7、7.3、7.4 节和 2026-08-15 阶段 2、阶段 3 计划中与当前代码、阶段 1 减法及外部环境边界冲突的部分；其余条款继续有效
+> 替代范围：修订主规格第 5.7、6.3、7.3、7.4 节和 2026-08-15 阶段 2、阶段 3 计划中与当前代码、阶段 1 减法及外部环境边界冲突的部分；其余条款继续有效。管理员人工覆盖另由 `2026-08-31-admin-override-publication-design.md` 约束
 
 ## 1. 目标与非目标
 
@@ -44,11 +44,13 @@
 ### 3.4 状态流与扫描证据
 
 - 共享包完成上传只进入 `system_reviewing`；clean 扫描后进入 `manual_review_pending`；危险或无效包进入 `auto_rejected`；超时和依赖失败保持私有并重试。
+- 普通反馈和建议同样先进入 `system_reviewing`，系统内容审核后才进入 `manual_review_pending`；唯一管理员可按强制发布规格提前转人工。
 - 扫描下载写临时文件时累计完整 ZIP 的大小和 SHA-256，不二次下载、不把完整 ZIP 常驻内存。
 - clean 证据绑定投稿、不可覆盖对象键、实际大小、完整 ZIP SHA-256、协议版本、规则版本、完成时间和最终状态版本。ETag 只有在真实环境证明稳定后才进入必填门。
 - 历史 migration 不改写，只新增前向 migration。
 - 证据 TTL 必须由用户提供正整数与单位；在决定到达前，本节实现保持未开始，不猜默认值。
 - 新前向 migration 必须在临时 PostgreSQL 中执行并验证函数、约束和事务行为；没有本地 PostgreSQL 或等价容器门时阶段 2B 未通过。
+- 管理员可将 `system_reviewing` 或 `auto_rejected` 的任意投稿转入 `manual_review_pending`。共享包缺少有效通过证据时，普通批准仍失败；独立 `force_publish` 才能覆盖该门，并保留 `admin_override` 发布依据、公开警告和审计。
 
 ### 3.5 HTTP 运行时契约
 

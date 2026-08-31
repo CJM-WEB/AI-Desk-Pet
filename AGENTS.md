@@ -15,7 +15,7 @@
 
 1. **桌面陪伴链**：聊天输入进入 Provider；模型输出只作为建议或结构化请求；Electron Main 在可信边界内完成意图裁决、权限检查、工具执行和行为决策；Renderer 只呈现对话、确认、状态和动画反馈。
 2. **角色制作链**：角色工作室负责素材导入、编辑、实时预览、编译和本地发布；角色包保存到本机并可启用为当前桌宠。角色包不得携带任意脚本、命令或系统权限。
-3. **官网内容链**：官网展示产品、正式版本、共享资源和反馈入口；匿名投稿进入 CloudBase 私有存储与审核流程，只有通过系统检查和管理员审核的内容才可公开。
+3. **官网内容链**：官网展示产品、正式版本、共享资源和反馈入口；匿名投稿进入 CloudBase 私有存储与审核流程。标准发布要求系统检查和管理员审核；唯一管理员也可按获批强制发布规格显式覆盖系统结论，但必须保留真实扫描事实、风险确认、公开标记和审计记录。
 
 以下是当前硬边界：
 
@@ -37,7 +37,7 @@
 | 涉及当前路线、子项目顺序或进入条件 | `docs/superpowers/plans/2026-08-01-ai-pet-autonomous-companion-roadmap.md` | 确认阶段门与已退役方向 |
 | 涉及文件工具、PowerShell 或轻量 Agent | 最新适用规格、`docs/superpowers/specs/2026-08-12-ai-pet-lightweight-agent-reuse-design.md` 和 `docs/operations/lightweight-agent-acceptance.md` | 确认现行能力、安全边界与证据 |
 | 涉及角色工作室或角色运行时 | 最新角色规格、计划和 `docs/operations/character-workshop-acceptance.md` | 确认角色契约与人工验收边界 |
-| 涉及官网投稿、共享资源或审核 | 最新网站/CloudBase 规格、`docs/operations/cloudbase-deployment.md` 和 `docs/operations/content-moderation.md` | 确认匿名投稿、审核、存储与发布边界 |
+| 涉及官网投稿、共享资源、审核或强制发布 | 最新网站/CloudBase 规格、`docs/superpowers/specs/2026-08-31-admin-override-publication-design.md`、`docs/operations/cloudbase-deployment.md` 和 `docs/operations/content-moderation.md` | 确认匿名投稿、审核、人工覆盖、存储与发布边界 |
 | 执行既有计划 | 对应 `docs/superpowers/plans/` 文件及其引用的规格 | 按任务、测试和验收条件实施 |
 
 同一主题存在多份文档时：
@@ -119,7 +119,7 @@
 - `packages/character-runtime` 与 `packages/character-assets` 保存角色契约、状态仲裁和素材规则；角色表现不能扩大 Agent 权限。
 - `apps/desktop` 的 Main、Preload、Renderer 保持可信边界分层；任何新增 IPC 都要有严格输入校验、最小返回值和边界测试。
 - `apps/website` 通过仓库或 API 抽象访问数据，不在组件中直连数据库；网站改动不得隐式改变桌面 Agent 协议。
-- `apps/cloudbase-api` 与 `apps/package-scanner` 负责投稿、审核和隔离扫描；系统审核通过不等于公开发布，管理员权限必须同时经过网关与应用层校验。
+- `apps/cloudbase-api` 与 `apps/package-scanner` 负责投稿、审核和隔离扫描；系统审核通过不等于公开发布。管理员权限必须同时经过网关与应用层校验；强制发布是独立管理员动作，保留扫描原结论并公开标记为人工覆盖。
 - 正式发布清单、安装包和 CDN 链路独立于匿名投稿存储；不得复用用户投稿隔离区。
 
 ## 7. 验证门禁
