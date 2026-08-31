@@ -195,7 +195,7 @@ export function runWebsiteApiContract(
       }), publicCommunityPageSchema);
       expect(second.items).toHaveLength(1);
       expect(second.items[0]?.id).not.toBe(first.items[0]?.id);
-      expect(second.nextCursor).toBeNull();
+      expect(second.nextCursor).toMatch(/^v1\.[A-Za-z0-9_-]+$/u);
 
       const firstFeedback = success(await driver.request({
         method: 'GET',
@@ -266,6 +266,27 @@ export function runWebsiteApiContract(
         method: 'GET',
         path: `/api/v1/community?limit=1&cursor=v1.${invalidUtf8}`,
       }), 400, 'INVALID_CURSOR');
+    });
+
+    it('社区键集保留 PostgreSQL 微秒顺序并规范化等价 offset', async () => {
+      const first = success(await driver.request({
+        method: 'GET',
+        path: '/api/v1/community?limit=1',
+      }), publicCommunityPageSchema);
+      expect(first.items.map(item => item.id)).toEqual(['contract-community']);
+
+      const second = success(await driver.request({
+        method: 'GET',
+        path: `/api/v1/community?limit=1&cursor=${encodeURIComponent(first.nextCursor!)}`,
+      }), publicCommunityPageSchema);
+      expect(second.items.map(item => item.id)).toEqual(['contract-b']);
+
+      const third = success(await driver.request({
+        method: 'GET',
+        path: `/api/v1/community?limit=1&cursor=${encodeURIComponent(second.nextCursor!)}`,
+      }), publicCommunityPageSchema);
+      expect(third.items.map(item => item.id)).toEqual(['contract-z']);
+      expect(third.nextCursor).toBeNull();
     });
 
     it('管理接口只接受专用令牌并区分 401 与 403', async () => {

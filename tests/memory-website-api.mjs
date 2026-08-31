@@ -424,15 +424,26 @@ function seedContractFixtures(submissions, tokenIndex, uploads) {
     3,
     'standard'
   );
-  const offsetCommunity = {
+  community.publishedAt = '2026-07-31T00:00:00.000002Z';
+  const equivalentOffsetCommunity = {
     ...sharedRecord(
-      'contract-a',
-      '等价时区合同资源',
+      'contract-b',
+      '等价 offset 合同资源',
       'published',
       1,
       'standard'
     ),
-    publishedAt: '2026-07-31T08:00:00.000+08:00'
+    publishedAt: '2026-07-31T08:00:00.000002+08:00'
+  };
+  const microsecondOlderCommunity = {
+    ...sharedRecord(
+      'contract-z',
+      '亚毫秒较早合同资源',
+      'published',
+      1,
+      'standard'
+    ),
+    publishedAt: '2026-07-31T00:00:00.000001Z'
   };
   const override = sharedRecord(
     CONTRACT_REFS.overrideSubmissionId,
@@ -458,7 +469,8 @@ function seedContractFixtures(submissions, tokenIndex, uploads) {
   for (const record of [
     uploaded,
     community,
-    offsetCommunity,
+    equivalentOffsetCommunity,
+    microsecondOlderCommunity,
     override,
     feedback,
     sameTimeFeedback
@@ -658,29 +670,48 @@ function pageOf(records, searchParams, project, scope, sortField) {
 }
 
 function compareMemoryPosition(left, right) {
-  const instantDifference = parseMemoryInstant(left.sortTime) - parseMemoryInstant(right.sortTime);
-  if (instantDifference !== 0) return instantDifference;
+  const leftInstant = parseMemoryInstant(left.sortTime);
+  const rightInstant = parseMemoryInstant(right.sortTime);
+  if (leftInstant < rightInstant) return -1;
+  if (leftInstant > rightInstant) return 1;
   return left.id < right.id ? -1 : left.id > right.id ? 1 : 0;
 }
 
+/** Memory 独立解析为 epoch 微秒，避免 JS 毫秒精度截断数据库键集。 */
 function parseMemoryInstant(value) {
-  const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(Z|([+-])(\d{2}):(\d{2}))$/u.exec(value);
+  const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d+))?(Z|([+-])(\d{2}):(\d{2}))$/u.exec(value);
   if (!match) throw new Error('INVALID_DATETIME');
   const year = Number(match[1]);
   const month = Number(match[2]);
   const day = Number(match[3]);
+  const hour = Number(match[4]);
+  const minute = Number(match[5]);
+  const second = Number(match[6]);
   const leapYear = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
   const monthDays = [31, leapYear ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
-  const offsetHour = match[7] === 'Z' ? 0 : Number(match[9]);
-  const offsetMinute = match[7] === 'Z' ? 0 : Number(match[10]);
-  const instant = Date.parse(value);
+  const offsetHour = match[8] === 'Z' ? 0 : Number(match[10]);
+  const offsetMinute = match[8] === 'Z' ? 0 : Number(match[11]);
   if (
     year < 1 || month < 1 || month > 12 || day < 1 || day > monthDays[month - 1]
-    || Number(match[4]) > 23 || Number(match[5]) > 59 || Number(match[6]) > 59
+    || hour > 23 || minute > 59 || second > 59
     || offsetHour > 14 || offsetMinute > 59 || (offsetHour === 14 && offsetMinute !== 0)
-    || !Number.isFinite(instant)
   ) throw new Error('INVALID_DATETIME');
-  return instant;
+  const adjustedYear = year - (month <= 2 ? 1 : 0);
+  const era = Math.floor(adjustedYear / 400);
+  const yearOfEra = adjustedYear - era * 400;
+  const shiftedMonth = month + (month > 2 ? -3 : 9);
+  const dayOfYear = Math.floor((153 * shiftedMonth + 2) / 5) + day - 1;
+  const dayOfEra = yearOfEra * 365 + Math.floor(yearOfEra / 4)
+    - Math.floor(yearOfEra / 100) + dayOfYear;
+  const epochDays = BigInt(era * 146097 + dayOfEra - 719468);
+  const offsetSign = match[8] === 'Z' || match[9] === '+' ? 1n : -1n;
+  const offsetSeconds = offsetSign * BigInt(offsetHour * 60 + offsetMinute) * 60n;
+  const localSeconds = ((epochDays * 24n + BigInt(hour)) * 60n + BigInt(minute)) * 60n
+    + BigInt(second);
+  const fraction = match[7] ?? '';
+  let microseconds = BigInt((fraction + '000000').slice(0, 6));
+  if (fraction.length > 6 && fraction.charCodeAt(6) >= 53) microseconds += 1n;
+  return (localSeconds - offsetSeconds) * 1_000_000n + microseconds;
 }
 
 /** Memory 合同独立实现同一 opaque wire，不导入生产数据库或适配器代码。 */
@@ -703,11 +734,11 @@ function decodeMemoryCursor(cursor, expectedScope) {
       Object.keys(payload).sort().join(',') !== 'id,scope,sortTime'
       || payload.scope !== expectedScope
       || typeof payload.sortTime !== 'string'
-      || !Number.isFinite(parseMemoryInstant(payload.sortTime))
       || typeof payload.id !== 'string'
       || payload.id.length < 1
       || payload.id.length > 128
     ) throw new Error();
+    parseMemoryInstant(payload.sortTime);
     return { sortTime: payload.sortTime, id: payload.id };
   } catch {
     throw new MemoryApiError('INVALID_CURSOR', 400);

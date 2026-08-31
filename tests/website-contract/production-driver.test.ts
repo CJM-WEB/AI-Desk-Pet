@@ -70,15 +70,23 @@ function createState(): ProductionFixtureState {
         statusVersion: 3,
         title: '公开合同资源',
         publicationBasis: 'standard',
-        publishedAt: CREATED_AT,
+        publishedAt: '2026-07-31T00:00:00.000002Z',
       }],
-      ['contract-a', {
-        id: 'contract-a',
+      ['contract-b', {
+        id: 'contract-b',
         status: 'published',
         statusVersion: 1,
-        title: '等价时区合同资源',
+        title: '等价 offset 合同资源',
         publicationBasis: 'standard',
-        publishedAt: '2026-07-31T08:00:00.000+08:00',
+        publishedAt: '2026-07-31T08:00:00.000002+08:00',
+      }],
+      ['contract-z', {
+        id: 'contract-z',
+        status: 'published',
+        statusVersion: 1,
+        title: '亚毫秒较早合同资源',
+        publicationBasis: 'standard',
+        publishedAt: '2026-07-31T00:00:00.000001Z',
       }],
     ]),
     idempotency: new Map(),
@@ -351,29 +359,48 @@ function compareContractPosition(
   left: { sortTime: string; id: string },
   right: { sortTime: string; id: string },
 ): number {
-  const instantDifference = parseContractInstant(left.sortTime) - parseContractInstant(right.sortTime);
-  if (instantDifference !== 0) return instantDifference;
+  const leftInstant = parseContractInstant(left.sortTime);
+  const rightInstant = parseContractInstant(right.sortTime);
+  if (leftInstant < rightInstant) return -1;
+  if (leftInstant > rightInstant) return 1;
   return left.id < right.id ? -1 : left.id > right.id ? 1 : 0;
 }
 
-function parseContractInstant(value: string): number {
-  const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(Z|([+-])(\d{2}):(\d{2}))$/u.exec(value);
+/** 合同替身独立解析为 epoch 微秒，不借用生产数据库实现或浮点时间戳。 */
+function parseContractInstant(value: string): bigint {
+  const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d+))?(Z|([+-])(\d{2}):(\d{2}))$/u.exec(value);
   if (!match) throw new Error('INVALID_DATETIME');
   const year = Number(match[1]);
   const month = Number(match[2]);
   const day = Number(match[3]);
+  const hour = Number(match[4]);
+  const minute = Number(match[5]);
+  const second = Number(match[6]);
   const leapYear = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
   const monthDays = [31, leapYear ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
-  const offsetHour = match[7] === 'Z' ? 0 : Number(match[9]);
-  const offsetMinute = match[7] === 'Z' ? 0 : Number(match[10]);
-  const instant = Date.parse(value);
+  const offsetHour = match[8] === 'Z' ? 0 : Number(match[10]);
+  const offsetMinute = match[8] === 'Z' ? 0 : Number(match[11]);
   if (
     year < 1 || month < 1 || month > 12 || day < 1 || day > monthDays[month - 1]!
-    || Number(match[4]) > 23 || Number(match[5]) > 59 || Number(match[6]) > 59
+    || hour > 23 || minute > 59 || second > 59
     || offsetHour > 14 || offsetMinute > 59 || (offsetHour === 14 && offsetMinute !== 0)
-    || !Number.isFinite(instant)
   ) throw new Error('INVALID_DATETIME');
-  return instant;
+  const adjustedYear = year - (month <= 2 ? 1 : 0);
+  const era = Math.floor(adjustedYear / 400);
+  const yearOfEra = adjustedYear - era * 400;
+  const shiftedMonth = month + (month > 2 ? -3 : 9);
+  const dayOfYear = Math.floor((153 * shiftedMonth + 2) / 5) + day - 1;
+  const dayOfEra = yearOfEra * 365 + Math.floor(yearOfEra / 4)
+    - Math.floor(yearOfEra / 100) + dayOfYear;
+  const epochDays = BigInt(era * 146097 + dayOfEra - 719468);
+  const offsetSign = match[8] === 'Z' || match[9] === '+' ? 1n : -1n;
+  const offsetSeconds = offsetSign * BigInt(offsetHour * 60 + offsetMinute) * 60n;
+  const localSeconds = ((epochDays * 24n + BigInt(hour)) * 60n + BigInt(minute)) * 60n
+    + BigInt(second);
+  const fraction = match[7] ?? '';
+  let microseconds = BigInt((fraction + '000000').slice(0, 6));
+  if (fraction.length > 6 && fraction.charCodeAt(6) >= 53) microseconds += 1n;
+  return (localSeconds - offsetSeconds) * 1_000_000n + microseconds;
 }
 
 function encodeContractCursor(scope: string, sortTime: string, id: string): string {
@@ -395,11 +422,11 @@ function decodeContractCursor(cursor: string, expectedScope: string): {
     if (
       payload.scope !== expectedScope
       || typeof payload.sortTime !== 'string'
-      || !Number.isFinite(parseContractInstant(payload.sortTime))
       || typeof payload.id !== 'string'
       || payload.id.length < 1
       || payload.id.length > 128
     ) throw new Error();
+    parseContractInstant(payload.sortTime);
     return { sortTime: payload.sortTime, id: payload.id };
   } catch {
     throw new ApiError('INVALID_CURSOR', 400);
