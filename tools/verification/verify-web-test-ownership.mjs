@@ -18,6 +18,7 @@ const EXACT_TEST_FILES = Object.freeze([
   'tools/cloudbase-user-migration-adapter.test.mjs',
   'tools/plan-cloudbase-migrations.test.mjs',
   'tools/build-cloudbase-functions.test.mjs',
+  'tools/test-cloudbase-migrations.test.mjs',
   'tests/e2e/website.spec.ts'
 ]);
 

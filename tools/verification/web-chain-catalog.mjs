@@ -16,6 +16,7 @@ export const WEB_AUDIT_INPUTS = Object.freeze([
   'tools/cloudbase-user-migrations.mjs',
   'tools/cloudbase-user-migration-adapter.mjs',
   'tools/build-cloudbase-functions.mjs',
+  'tools/test-cloudbase-migrations.mjs',
   'tests/build-website-export.mjs',
   'tests/serve-website-export.mjs',
   'tests/memory-website-api.mjs',
@@ -30,7 +31,7 @@ export const WEB_TEST_OWNERS = Object.freeze([
   { id: 'cloudbase-api', pattern: /^apps\/cloudbase-api\/tests\/.*\.test\.ts$/u },
   { id: 'package-scanner', pattern: /^apps\/package-scanner\/tests\/.*\.test\.ts$/u },
   { id: 'release-tools', pattern: /^tools\/release\/tests\/.*\.test\.ts$/u },
-  { id: 'root-cloudbase-tools', pattern: /^tools\/(cloudbase-migration-inventory|cloudbase-user-migrations|cloudbase-user-migration-adapter|plan-cloudbase-migrations|build-cloudbase-functions)\.test\.mjs$/u },
+  { id: 'root-cloudbase-tools', pattern: /^tools\/(cloudbase-migration-inventory|cloudbase-user-migrations|cloudbase-user-migration-adapter|plan-cloudbase-migrations|build-cloudbase-functions|test-cloudbase-migrations)\.test\.mjs$/u },
   { id: 'website-e2e', pattern: /^tests\/e2e\/website\.spec\.ts$/u },
   { id: 'website-verification', pattern: /^tools\/verification\/.*\.test\.mjs$/u }
 ]);
@@ -69,6 +70,7 @@ const fastSteps = Object.freeze([
     'tools/cloudbase-user-migrations.test.mjs',
     'tools/cloudbase-user-migration-adapter.test.mjs',
     'tools/plan-cloudbase-migrations.test.mjs',
+    'tools/test-cloudbase-migrations.test.mjs',
   ]),
   defineStep('dependency-audit', process.execPath, ['tools/verification/run-web-dependency-audit.mjs']),
 ]);

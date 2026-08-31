@@ -586,7 +586,7 @@ export function createProductionHandler(
       config.adminEmail,
       config.cloudbaseSdkTimeoutMs
     ),
-    admin: new AdminService(store, storage),
+    admin: new AdminService(store, storage, { now: () => new Date() }),
     fingerprintSecret: config.abuseHmacSecret
   });
 }

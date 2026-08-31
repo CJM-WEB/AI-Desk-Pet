@@ -284,19 +284,8 @@ export interface PackageImageSignal {
   ocrText?: string;
 }
 
-/** 隔离扫描服务经过共享协议校验后的有限结构化结论。 */
-export interface PackageScanResult {
-  complete: boolean;
-  safe: boolean;
+interface PackageScanResultBase {
   code: string;
-  protocolVersion?: string;
-  ruleVersion?: string;
-  submissionId?: string;
-  completedAt?: string;
-  archive?: {
-    sizeBytes: number;
-    sha256: string;
-  };
   summary: {
     fileCount: number;
     totalUncompressedBytes: number;
@@ -307,6 +296,24 @@ export interface PackageScanResult {
   }[];
   imageSignals: readonly PackageImageSignal[];
 }
+
+/** 隔离扫描服务经过共享协议校验后的有限结构化结论。 */
+export type PackageScanResult = PackageScanResultBase & (
+  | { complete: false; safe: false }
+  | { complete: true; safe: false }
+  | {
+      complete: true;
+      safe: true;
+      protocolVersion: string;
+      ruleVersion: string;
+      submissionId: string;
+      completedAt: string;
+      archive: {
+        sizeBytes: number;
+        sha256: string;
+      };
+    }
+);
 
 /** 管理员身份的最小声明。 */
 export interface AdminIdentity {

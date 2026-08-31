@@ -95,6 +95,15 @@ describe('云端共享仓库', () => {
     expect(receipt.status).toBe('system_reviewing');
   });
 
+  it('完成确认若伪造为直接人工审核则失败关闭', async () => {
+    const api = createApi(prepared, { status: 'manual_review_pending' });
+    const upload = vi.fn(async () => undefined) as SignedUpload;
+
+    await expect(
+      new CloudSharedPetRepository(api, upload).submit(createInput())
+    ).rejects.toThrow('SUBMISSION_STATUS_INVALID');
+  });
+
   it.each(['', 'application/x-zip-compressed'])('空或别名 ZIP MIME 仍以 application/zip 上传：%s', async zipType => {
     const api = createApi(prepared, { status: 'system_reviewing' });
     const upload = vi.fn(async () => undefined) as SignedUpload;

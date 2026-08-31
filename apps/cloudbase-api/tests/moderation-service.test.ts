@@ -45,6 +45,14 @@ const safeScan: PackageScanResult = {
   complete: true,
   safe: true,
   code: 'CHARACTER_PACKAGE_SCAN_PASSED',
+  protocolVersion: '2026-08-15',
+  ruleVersion: 'character-package-2026-08-15',
+  submissionId: 'submission-1',
+  completedAt: '2026-07-31T00:00:00.000Z',
+  archive: {
+    sizeBytes: 20,
+    sha256: 'a'.repeat(64)
+  },
   summary: { fileCount: 2, totalUncompressedBytes: 30 },
   jsonTexts: [{ path: 'manifest.json', text: '桌宠名称' }],
   imageSignals: [{
@@ -89,7 +97,9 @@ function createService(overrides: {
     )
   };
   const scanner = {
-    scan: vi.fn().mockResolvedValue(overrides.scan ?? safeScan)
+    scan: vi.fn(async (input: { submissionId: string }) => (
+      overrides.scan ?? { ...safeScan, submissionId: input.submissionId }
+    ))
   };
   const storage = createStorage();
   return {
@@ -109,7 +119,7 @@ function createService(overrides: {
 
 describe('自动审核编排', () => {
   it.each([
-    [{ suggestion: 'Block', label: 'Abuse' } as ModerationSignal, 'manual_review_pending'],
+    [{ suggestion: 'Block', label: 'Abuse' } as ModerationSignal, 'auto_rejected'],
     [{ suggestion: 'Review', label: 'Politics' } as ModerationSignal, 'manual_review_pending'],
     [{ suggestion: 'Pass', label: 'Normal' } as ModerationSignal, 'manual_review_pending']
   ])('把审核建议映射为固定状态', async (signal, expected) => {
@@ -132,16 +142,16 @@ describe('自动审核编排', () => {
     )).toBe(true);
   });
 
-  it('关闭关键词层后所有内容统一进入管理员审核', async () => {
+  it('内容审核明确阻断时自动驳回且不伪装成人工待审', async () => {
     const { service, store } = createService({
       signal: { suggestion: 'Block', label: 'Abuse' }
     });
 
     await expect(service.process('submission-1')).resolves.toEqual(
-      expect.objectContaining({ status: 'manual_review_pending' })
+      expect.objectContaining({ status: 'auto_rejected' })
     );
     expect(store.applyModerationDecision).toHaveBeenCalledWith(
-      expect.objectContaining({ nextStatus: 'manual_review_pending' })
+      expect.objectContaining({ nextStatus: 'auto_rejected' })
     );
     const records = store.applyModerationDecision.mock.calls[0]![0].results;
     expect(records.some(
@@ -149,7 +159,7 @@ describe('自动审核编排', () => {
     )).toBe(false);
   });
 
-  it('技术扫描不安全时保留风险证据并交由管理员处理', async () => {
+  it('技术扫描不安全时保留风险证据并自动驳回', async () => {
     const { service, store, moderator } = createService({
       scan: {
         ...safeScan,
@@ -159,20 +169,20 @@ describe('自动审核编排', () => {
     });
 
     await expect(service.process('submission-1')).resolves.toEqual({
-      status: 'manual_review_pending',
+      status: 'auto_rejected',
       applied: true
     });
     expect(moderator.reviewText).not.toHaveBeenCalled();
     expect(store.applyModerationDecision).toHaveBeenCalledWith(
       expect.objectContaining({
-        nextStatus: 'manual_review_pending'
+        nextStatus: 'auto_rejected'
       })
     );
   });
 
   it('技术扫描未完成时保持系统审核并进入持久化重试', async () => {
     const { service, store } = createService({
-      scan: { ...safeScan, complete: false }
+      scan: { ...safeScan, complete: false, safe: false }
     });
 
     await expect(service.process('submission-1')).rejects.toThrow(
@@ -203,10 +213,34 @@ describe('自动审核编排', () => {
     const technical = store.applyModerationDecision.mock.calls[0]![0].results
       .find((result: ModerationRecord) => result.kind === 'package_scan');
     expect(technical?.evidence).toMatchObject({
+      submissionId: 'submission-1',
       packageStorageKey: 'private/pet.zip',
       packageSizeBytes: 20,
+      archiveSizeBytes: 20,
+      archiveSha256: 'a'.repeat(64),
+      protocolVersion: '2026-08-15',
+      ruleVersion: 'character-package-2026-08-15',
+      completedAt: '2026-07-31T00:00:00.000Z',
+      expiresAt: '2026-08-01T00:00:00.000Z',
+      submissionStatusVersion: 3,
       scanCode: 'CHARACTER_PACKAGE_SCAN_PASSED'
     });
+  });
+
+  it.each([
+    ['归档大小', { archive: { sizeBytes: 19, sha256: 'a'.repeat(64) } }],
+    ['投稿身份', { submissionId: 'submission-2' }],
+    ['完成时间', { completedAt: 'invalid' }],
+    ['TTL 等号边界', { completedAt: '2026-07-30T00:00:00.000Z' }]
+  ])('扫描结果的%s不匹配时保持系统审核并重试', async (_name, change) => {
+    const { service, store } = createService({
+      scan: { ...safeScan, ...change }
+    });
+
+    await expect(service.process('submission-1')).rejects.toThrow(
+      'PACKAGE_SCAN_EVIDENCE_INVALID'
+    );
+    expect(store.applyModerationDecision).not.toHaveBeenCalled();
   });
 
   it('大量 JSON 与 OCR 文本最多并发 32 项并保持证据顺序', async () => {

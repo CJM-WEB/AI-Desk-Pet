@@ -1,8 +1,12 @@
 import { createHash, createHmac } from 'node:crypto';
 import { z } from 'zod';
+import {
+  TECHNICAL_SCAN_PROTOCOL_VERSION,
+  TECHNICAL_SCAN_RULE_VERSION
+} from './moderation';
 
-export const SCANNER_PROTOCOL_VERSION = '2026-08-15' as const;
-export const SCANNER_RULE_VERSION = 'character-package-2026-08-15' as const;
+export const SCANNER_PROTOCOL_VERSION = TECHNICAL_SCAN_PROTOCOL_VERSION;
+export const SCANNER_RULE_VERSION = TECHNICAL_SCAN_RULE_VERSION;
 export const SCANNER_MAX_RESPONSE_BYTES = 12 * 1024 * 1024;
 export const SCANNER_REQUEST_TIMEOUT_MS = 130_000;
 

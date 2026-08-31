@@ -13,7 +13,10 @@ import type {
 } from '../lib/admin-api-client';
 import { ApiClientError } from '../lib/api-client';
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  vi.restoreAllMocks();
+});
 
 function detail(overrides: Partial<AdminSubmissionDetail> = {}): AdminSubmissionDetail {
   return {
@@ -307,6 +310,9 @@ describe('管理员审核工作台', () => {
   });
 
   it('人工审核共享包具有完整当前技术证据时恢复批准按钮', async () => {
+    vi.spyOn(Date, 'now').mockReturnValue(
+      Date.parse('2026-07-30T12:30:00.000Z')
+    );
     const pending = detail({
       id: 'scanned-package',
       kind: 'shared_package',
@@ -323,6 +329,12 @@ describe('管理员审核工作台', () => {
           submissionId: 'scanned-package',
           packageStorageKey: 'private/scanned-package.zip',
           packageSizeBytes: 20,
+          archiveSizeBytes: 20,
+          archiveSha256: 'a'.repeat(64),
+          protocolVersion: '2026-08-15',
+          ruleVersion: 'character-package-2026-08-15',
+          completedAt: '2026-07-30T12:00:00.000Z',
+          expiresAt: '2026-07-31T12:00:00.000Z',
           submissionStatusVersion: 3,
           scanCode: 'CHARACTER_PACKAGE_SCAN_PASSED'
         },
@@ -376,7 +388,7 @@ describe('管理员审核工作台', () => {
     fireEvent.click(await screen.findByText('待复核共享包'));
     await screen.findByLabelText('审核理由');
     fireEvent.change(screen.getByLabelText('审核理由'), { target: { value: '人工复核' } });
-    expect((screen.getByRole('button', { name: '批准发布' }) as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.queryByRole('button', { name: '批准发布' })).toBeNull();
     expect((screen.getByRole('button', { name: '转人工审核' }) as HTMLButtonElement).disabled).toBe(false);
 
     cleanup();

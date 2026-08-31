@@ -1,4 +1,9 @@
 import { useState } from 'react';
+import {
+  TECHNICAL_SCAN_PROTOCOL_VERSION,
+  TECHNICAL_SCAN_RULE_VERSION,
+  technicalScanEvidenceSchema
+} from '@myself/shared-types';
 import type { AdminAction } from '@myself/shared-types';
 
 import type { AdminSubmissionDetail } from '../../lib/admin-api-client';
@@ -141,7 +146,7 @@ export function AdminDetail({ detail, loading, acting, onAction }: AdminDetailPr
 function availableActions(detail: AdminSubmissionDetail): AdminAction['action'][] {
   if (detail.status === 'system_reviewing') return ['delete'];
   if (detail.status === 'manual_review_pending') return ['approve', 'reject', 'delete'];
-  if (detail.status === 'auto_rejected') return ['move_to_manual', 'approve', 'delete'];
+  if (detail.status === 'auto_rejected') return ['move_to_manual', 'delete'];
   if (detail.status === 'published') return ['delete'];
   if (detail.status === 'deleted_quarantined') return ['restore'];
   return [];
@@ -161,16 +166,26 @@ function hasCurrentTechnicalPass(detail: AdminSubmissionDetail): boolean {
   if (detail.kind !== 'shared_package') return true;
   const packageAsset = detail.assets.find(asset => asset.role === 'package');
   if (!packageAsset || packageAsset.actualBytes === null) return false;
-  return detail.moderationResults.some(result => (
-    result.kind === 'package_scan'
-    && result.provider === 'isolated-scanner'
-    && result.suggestion === 'Pass'
-    && result.evidence.submissionId === detail.id
-    && result.evidence.packageStorageKey === packageAsset.storageKey
-    && result.evidence.packageSizeBytes === packageAsset.actualBytes
-    && result.evidence.submissionStatusVersion === detail.statusVersion
-    && result.evidence.scanCode === 'CHARACTER_PACKAGE_SCAN_PASSED'
-  ));
+  return detail.moderationResults.some(result => {
+    if (
+      result.kind !== 'package_scan'
+      || result.provider !== 'isolated-scanner'
+      || result.suggestion !== 'Pass'
+    ) return false;
+    const parsed = technicalScanEvidenceSchema.safeParse(result.evidence);
+    if (!parsed.success) return false;
+    const evidence = parsed.data;
+    return evidence.submissionId === detail.id
+      && evidence.packageStorageKey === packageAsset.storageKey
+      && evidence.packageSizeBytes === packageAsset.actualBytes
+      && evidence.archiveSizeBytes === packageAsset.actualBytes
+      && evidence.protocolVersion === TECHNICAL_SCAN_PROTOCOL_VERSION
+      && evidence.ruleVersion === TECHNICAL_SCAN_RULE_VERSION
+      && evidence.submissionStatusVersion === detail.statusVersion
+      && Date.parse(evidence.expiresAt) - Date.parse(evidence.completedAt)
+        === 24 * 60 * 60 * 1000
+      && Date.parse(evidence.expiresAt) > Date.now();
+  });
 }
 
 /** 删除存储路径、令牌、签名等前端不需要的键，并限制证据体积。 */

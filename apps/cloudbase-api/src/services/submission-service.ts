@@ -131,11 +131,11 @@ export class SubmissionService {
 
   async finalize(
     input: FinalizeSubmissionInput
-  ): Promise<{ status: 'manual_review_pending' }> {
+  ): Promise<{ status: 'system_reviewing' }> {
     const submission = await this.store.findById(input.submissionId);
     if (!submission) throw notFound();
-    if (submission.status === 'manual_review_pending') {
-      return { status: 'manual_review_pending' };
+    if (submission.status === 'system_reviewing') {
+      return { status: 'system_reviewing' };
     }
     if (submission.status !== 'uploading') throw notFound();
 
@@ -164,10 +164,10 @@ export class SubmissionService {
         }
       ]
     });
-    if (completed.status !== 'manual_review_pending') {
+    if (completed.status !== 'system_reviewing') {
       throw new ApiError('UPLOAD_STATE_CONFLICT', 409);
     }
-    return { status: 'manual_review_pending' };
+    return { status: 'system_reviewing' };
   }
 
   async getStatus(token: string): Promise<SubmissionStatusView> {

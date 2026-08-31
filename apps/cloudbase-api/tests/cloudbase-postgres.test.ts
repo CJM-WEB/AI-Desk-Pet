@@ -15,69 +15,7 @@ import type {
 const migrationPath = fileURLToPath(
   new URL('../../../cloudbase/migrations/20260730000000_moderation.sql', import.meta.url)
 );
-const directManualReviewMigrationPath = fileURLToPath(
-  new URL(
-    '../../../cloudbase/migrations/20260808000000_direct_manual_review.sql',
-    import.meta.url
-  )
-);
-const sharedPackagePublicationGuardMigrationPath = fileURLToPath(
-  new URL(
-    '../../../cloudbase/migrations/20260815000000_shared_package_publication_guard.sql',
-    import.meta.url
-  )
-);
-
 describe('CloudBase PostgreSQL 迁移', () => {
-  it('直接人工审核迁移同步修改两类投稿入口、历史数据和共享包门禁', () => {
-    const sql = readFileSync(directManualReviewMigrationPath, 'utf8');
-
-    expect(sql).toContain('CREATE OR REPLACE FUNCTION create_text_submission');
-    expect(sql).toContain('CREATE OR REPLACE FUNCTION complete_submission_upload');
-    expect(sql).toContain('CREATE OR REPLACE FUNCTION apply_admin_action');
-    expect(sql).toMatch(/SET status = 'manual_review_pending'[\s\S]+status = 'uploading'/u);
-    expect(sql).toMatch(/VALUES \([\s\S]+?'manual_review_pending'[\s\S]+?status_token_hash/u);
-    expect(sql).toContain("v_previous_status = 'auto_rejected'");
-    expect(sql).toContain("WHERE status = 'system_reviewing'");
-    expect(sql).toContain('moderation_lease_until = NULL');
-    expect(sql).toContain('moderation_next_retry_at = NULL');
-    expect(sql.trim().startsWith('BEGIN;')).toBe(true);
-    expect(sql.trim().endsWith('COMMIT;')).toBe(true);
-  });
-
-  it('前向迁移为共享包发布保留原子管理员动作防线并收紧扫描证据', () => {
-    const sql = readFileSync(sharedPackagePublicationGuardMigrationPath, 'utf8');
-
-    expect(sql).toContain('CREATE OR REPLACE FUNCTION apply_admin_action(');
-    expect(sql).toContain("current_setting('request.jwt.claims', true)::jsonb ->> 'role'");
-    expect(sql).toContain("<> 'service_role'");
-    expect(sql).toContain('pg_advisory_xact_lock(hashtextextended(p_idempotency_key, 0))');
-    expect(sql).toContain('RETURN v_existing.result_snapshot || jsonb_build_object(\'replayed\', true)');
-    expect(sql).toContain('AND status_version = p_expected_version');
-    expect(sql).toContain('INSERT INTO admin_audit_logs');
-    expect(sql).toContain(
-      "REVOKE ALL ON FUNCTION apply_admin_action(text, text, text, text, bigint, text, text) FROM PUBLIC, anon, authenticated"
-    );
-    expect(sql).toContain(
-      'GRANT EXECUTE ON FUNCTION apply_admin_action(text, text, text, text, bigint, text, text) TO service_role'
-    );
-    const scanGuard = sql.match(/IF p_action = 'approve'[\s\S]+?END IF;/u)?.[0];
-    expect(scanGuard).toContain("v_previous_status <> 'published'");
-    expect(scanGuard).not.toContain("v_previous_status = 'auto_rejected'");
-    expect(scanGuard).toContain("result.evidence ->> 'submissionId' = p_submission_id");
-    expect(scanGuard).toContain("result.evidence ->> 'packageStorageKey' = asset.object_key");
-    expect(scanGuard).toContain("result.evidence ->> 'packageSizeBytes' = asset.actual_size::text");
-    expect(scanGuard).toMatch(
-      /result\.evidence ->> 'submissionStatusVersion'\s*= p_expected_version::text/u
-    );
-    expect(scanGuard).toMatch(
-      /result\.evidence ->> 'scanCode'\s*= 'CHARACTER_PACKAGE_SCAN_PASSED'/u
-    );
-    expect(sql).toContain("USING ERRCODE = 'P1003'");
-    expect(sql.trim().startsWith('BEGIN;')).toBe(true);
-    expect(sql.trim().endsWith('COMMIT;')).toBe(true);
-  });
-
   it('迁移包含必要表、状态约束和版本条件更新', () => {
     const sql = readFileSync(migrationPath, 'utf8');
 
@@ -472,6 +410,8 @@ class MemoryRdb {
           return false;
         }
         const evidenceRecord = evidence as Record<string, unknown>;
+        const completedAt = new Date(String(evidenceRecord.completedAt)).getTime();
+        const expiresAt = new Date(String(evidenceRecord.expiresAt)).getTime();
         return this.assets.some((asset) =>
           asset.submission_id === row.id
           && asset.role === 'package'
@@ -479,9 +419,17 @@ class MemoryRdb {
           && evidenceRecord.submissionId === row.id
           && evidenceRecord.packageStorageKey === asset.object_key
           && jsonScalarText(evidenceRecord.packageSizeBytes) === String(asset.actual_size)
+          && jsonScalarText(evidenceRecord.archiveSizeBytes) === String(asset.actual_size)
+          && typeof evidenceRecord.archiveSha256 === 'string'
+          && /^[a-f0-9]{64}$/u.test(evidenceRecord.archiveSha256)
+          && evidenceRecord.protocolVersion === '2026-08-15'
+          && evidenceRecord.ruleVersion === 'character-package-2026-08-15'
           && jsonScalarText(evidenceRecord.submissionStatusVersion)
             === String(params.p_expected_version)
           && evidenceRecord.scanCode === 'CHARACTER_PACKAGE_SCAN_PASSED'
+          && Number.isFinite(completedAt)
+          && expiresAt - completedAt === 24 * 60 * 60 * 1_000
+          && expiresAt > new Date('2026-07-31T00:00:00.000Z').getTime()
         );
       });
       if (
@@ -1448,7 +1396,7 @@ describe('CloudBase PostgreSQL 仓储', () => {
     });
   });
 
-  it('数据库 RPC 接受数值形式的当前共享包扫描证据', async () => {
+  it('数据库 RPC 只接受绑定当前共享包归档身份与版本的完整扫描证据', async () => {
     const database = new MemoryRdb();
     database.submissions.push(makeSubmission({
       id: 'scanned-package',
@@ -1474,8 +1422,14 @@ describe('CloudBase PostgreSQL 仓储', () => {
         submissionId: 'scanned-package',
         packageStorageKey: 'submissions/scanned-package/package.zip',
         packageSizeBytes: 1024,
+        archiveSizeBytes: 1024,
+        archiveSha256: 'a'.repeat(64),
+        protocolVersion: '2026-08-15',
+        ruleVersion: 'character-package-2026-08-15',
         submissionStatusVersion: 3,
-        scanCode: 'CHARACTER_PACKAGE_SCAN_PASSED'
+        scanCode: 'CHARACTER_PACKAGE_SCAN_PASSED',
+        completedAt: '2026-07-31T00:00:00.000Z',
+        expiresAt: '2026-08-01T00:00:00.000Z'
       }
     });
     const { store } = createStore(database);

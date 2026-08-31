@@ -63,7 +63,17 @@ async function submitFeedbackViaApi(
     }
   });
   expect(response.ok()).toBe(true);
-  return (await response.json()).data as E2eReceipt;
+  const receipt = (await response.json()).data as E2eReceipt;
+  expect(receipt.status).toBe('system_reviewing');
+  const hiddenStatus = await request.post('/api/v1/submission-status', {
+    data: { statusToken: receipt.statusToken }
+  });
+  expect((await hiddenStatus.json()).data.status).toBe('system_reviewing');
+  const moderated = await request.post(
+    `/__e2e/moderation/${encodeURIComponent(receipt.submissionId)}`
+  );
+  expect(moderated.ok()).toBe(true);
+  return receipt;
 }
 
 async function submitSharedPackageViaApi(
@@ -97,6 +107,15 @@ async function submitSharedPackageViaApi(
     { data: {} }
   );
   expect(finalized.ok()).toBe(true);
+  expect((await finalized.json()).data).toEqual({ status: 'system_reviewing' });
+  const hiddenStatus = await request.post('/api/v1/submission-status', {
+    data: { statusToken: prepared.statusToken }
+  });
+  expect((await hiddenStatus.json()).data.status).toBe('system_reviewing');
+  const moderated = await request.post(
+    `/__e2e/moderation/${encodeURIComponent(prepared.submissionId)}`
+  );
+  expect(moderated.ok()).toBe(true);
   return prepared as E2eReceipt;
 }
 

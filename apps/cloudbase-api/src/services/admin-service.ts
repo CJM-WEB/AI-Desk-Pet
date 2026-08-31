@@ -1,3 +1,8 @@
+import {
+  TECHNICAL_SCAN_PROTOCOL_VERSION,
+  TECHNICAL_SCAN_RULE_VERSION,
+  technicalScanEvidenceSchema
+} from '@myself/shared-types';
 import type { AdminAction, SubmissionStatus } from '@myself/shared-types';
 
 import { ApiError } from '../errors.js';
@@ -9,14 +14,18 @@ import type {
   AdminStore,
   AdminSubmissionDetail,
   AdminSubmissionDetailView,
+  Clock,
   ObjectStorage
 } from '../ports.js';
+
+const technicalEvidenceTtlMilliseconds = 24 * 60 * 60 * 1000;
 
 /** 管理员审核服务统一执行状态转换和技术扫描门禁。 */
 export class AdminService {
   constructor(
     private readonly store: AdminStore,
-    private readonly storage: ObjectStorage
+    private readonly storage: ObjectStorage,
+    private readonly clock: Clock
   ) {}
 
   listQueue(query: AdminQueueQuery): Promise<AdminQueuePage> {
@@ -45,7 +54,11 @@ export class AdminService {
   ): Promise<AdminActionResult> {
     const submission = await this.store.findAdminSubmission(id);
     if (!submission) throw new ApiError('SUBMISSION_NOT_FOUND', 404);
-    const nextStatus = nextStatusFor(submission, action.action);
+    const nextStatus = nextStatusFor(
+      submission,
+      action.action,
+      this.clock.now()
+    );
     return this.store.applyAdminAction({
       submissionId: id,
       adminId: identity.uid,
@@ -73,21 +86,19 @@ async function safeCoverPreview(
 
 function nextStatusFor(
   submission: AdminSubmissionDetail,
-  action: AdminAction['action']
+  action: AdminAction['action'],
+  now: Date
 ): SubmissionStatus {
   const status = submission.status;
   if (action === 'approve') {
     if (
       submission.kind === 'shared_package'
       && status !== 'published'
-      && !hasCurrentTechnicalPass(submission)
+      && !hasCurrentTechnicalPass(submission, now)
     ) {
       throw new ApiError('TECHNICAL_SCAN_REQUIRED', 409);
     }
     if (status === 'manual_review_pending') return 'published';
-    if (status === 'auto_rejected') {
-      return 'published';
-    }
     if (status === 'published') return 'published';
   }
   if (
@@ -100,31 +111,51 @@ function nextStatusFor(
     action === 'move_to_manual'
     && (status === 'auto_rejected' || status === 'manual_review_pending')
   ) {
-    return 'manual_review_pending';
+    return submission.kind === 'shared_package'
+      ? 'system_reviewing'
+      : 'manual_review_pending';
   }
   if (action === 'delete' && status !== 'purged') {
     return 'deleted_quarantined';
   }
   if (action === 'restore') {
-    if (submission.preQuarantineStatus) return submission.preQuarantineStatus;
+    if (submission.preQuarantineStatus) {
+      return submission.kind === 'shared_package'
+        ? 'system_reviewing'
+        : submission.preQuarantineStatus;
+    }
     throw new ApiError('INVALID_ADMIN_ACTION', 409);
   }
   throw new ApiError('INVALID_ADMIN_ACTION', 409);
 }
 
 function hasCurrentTechnicalPass(
-  submission: AdminSubmissionDetail
+  submission: AdminSubmissionDetail,
+  now: Date
 ): boolean {
   const packageAsset = submission.assets.find(asset => asset.role === 'package');
   if (!packageAsset || packageAsset.actualBytes === null) return false;
-  return submission.moderationResults.some(result => (
-    result.kind === 'package_scan'
-    && result.provider === 'isolated-scanner'
-    && result.suggestion === 'Pass'
-    && result.evidence.submissionId === submission.id
-    && result.evidence.packageStorageKey === packageAsset.storageKey
-    && result.evidence.packageSizeBytes === packageAsset.actualBytes
-    && result.evidence.submissionStatusVersion === submission.statusVersion
-    && result.evidence.scanCode === 'CHARACTER_PACKAGE_SCAN_PASSED'
-  ));
+  return submission.moderationResults.some(result => {
+    if (
+      result.kind !== 'package_scan'
+      || result.provider !== 'isolated-scanner'
+      || result.suggestion !== 'Pass'
+    ) {
+      return false;
+    }
+    const parsed = technicalScanEvidenceSchema.safeParse(result.evidence);
+    if (!parsed.success) return false;
+    const evidence = parsed.data;
+    const completedAt = new Date(evidence.completedAt).getTime();
+    const expiresAt = new Date(evidence.expiresAt).getTime();
+    return evidence.submissionId === submission.id
+      && evidence.packageStorageKey === packageAsset.storageKey
+      && evidence.packageSizeBytes === packageAsset.actualBytes
+      && evidence.archiveSizeBytes === packageAsset.actualBytes
+      && evidence.protocolVersion === TECHNICAL_SCAN_PROTOCOL_VERSION
+      && evidence.ruleVersion === TECHNICAL_SCAN_RULE_VERSION
+      && evidence.submissionStatusVersion === submission.statusVersion
+      && expiresAt - completedAt === technicalEvidenceTtlMilliseconds
+      && expiresAt > now.getTime();
+  });
 }

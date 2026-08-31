@@ -5,9 +5,10 @@ import { dirname } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import type {
   ClamAvScanner,
-  ImageContentModerator
+  ImageContentModerator,
+  ScanPackageInput
 } from '../src/scan-package';
-import { scanPackage } from '../src/scan-package';
+import { scanPackage as scanPackageImplementation } from '../src/scan-package';
 import {
   ONE_PIXEL_PNG,
   ONE_PIXEL_WEBP,
@@ -38,6 +39,19 @@ async function createArchive(
   const path = await zipFixture(entries);
   archives.push(path);
   return path;
+}
+
+async function scanPackage(
+  input: Omit<ScanPackageInput, 'archive'>
+): ReturnType<typeof scanPackageImplementation> {
+  const bytes = await readFile(input.archivePath);
+  return scanPackageImplementation({
+    ...input,
+    archive: {
+      sizeBytes: bytes.byteLength,
+      sha256: createHash('sha256').update(bytes).digest('hex')
+    }
+  });
 }
 
 afterEach(async () => {

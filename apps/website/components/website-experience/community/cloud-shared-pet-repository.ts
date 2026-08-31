@@ -127,6 +127,9 @@ export class CloudSharedPetRepository implements SharedPetRepository {
       `/submissions/${encodeURIComponent(prepared.submissionId)}/finalize`,
       { method: 'POST', body: '{}' }
     );
+    if (finalized.status !== 'system_reviewing') {
+      throw new Error('SUBMISSION_STATUS_INVALID');
+    }
     return {
       submissionId: prepared.submissionId,
       statusToken: prepared.statusToken,

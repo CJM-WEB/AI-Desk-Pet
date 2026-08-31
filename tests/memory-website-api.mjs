@@ -28,6 +28,15 @@ export function createMemoryWebsiteApi({ runId }) {
       reset();
       return sendData(response, 200, { reset: true });
     }
+    const moderationId = matchId(pathname, '/__e2e/moderation/', '');
+    if (request.method === 'POST' && moderationId) {
+      const record = requireSubmission(moderationId);
+      if (record.status !== 'system_reviewing') {
+        return sendError(response, 409, 'MODERATION_JOB_STALE');
+      }
+      completeModeration(record, now(), uploads.get(`${record.id}:package`));
+      return sendData(response, 200, { status: record.status });
+    }
     if (pathname.startsWith('/__e2e/upload/')) {
       return handleUpload(request, response, pathname);
     }
@@ -61,7 +70,6 @@ export function createMemoryWebsiteApi({ runId }) {
           statusToken,
           publicReason: null,
           autoRejectionReason: null,
-          technicalPass: false,
           riskSummary: { summary: '等待系统审核', labels: [] },
           assets: [
             assetFrom(body.coverFile, 'cover', `${id}/cover`),
@@ -100,22 +108,15 @@ export function createMemoryWebsiteApi({ runId }) {
         if (!uploads.has(`${record.id}:cover`) || !uploads.has(`${record.id}:package`)) {
           return sendError(response, 409, 'UPLOAD_INCOMPLETE');
         }
-        const packageAsset = record.assets.find(asset => asset.role === 'package');
-        const marker = `${record.title} ${record.body} ${packageAsset?.fileName ?? ''}`.toLowerCase();
-        record.technicalPass = !marker.includes('technical-fail') && !marker.includes('扫描失败');
-        record.status = marker.includes('auto-reject') || marker.includes('自动驳回')
-          ? 'auto_rejected'
-          : 'manual_review_pending';
+        record.status = 'system_reviewing';
         record.statusVersion += 1;
         record.updatedAt = now();
         record.riskSummary = {
-          summary: record.status === 'auto_rejected' ? '系统规则自动驳回' : '系统审核完成',
-          labels: record.status === 'auto_rejected' ? ['blocked'] : ['reviewed']
+          summary: '等待系统审核',
+          labels: []
         };
-        record.autoRejectionReason = record.status === 'auto_rejected'
-          ? '测试夹具命中自动驳回规则'
-          : null;
-        record.moderationResults = [packageScan(record, packageAsset)];
+        record.autoRejectionReason = null;
+        record.moderationResults = [];
         return sendData(response, 200, { status: 'system_reviewing' });
       }
 
@@ -127,29 +128,23 @@ export function createMemoryWebsiteApi({ runId }) {
         const id = nextId();
         const statusToken = tokenFor(id);
         const createdAt = now();
-        const autoRejected = body.content.includes('自动驳回');
         const record = {
           id,
           kind: body.kind,
           title: String(body.authorName ?? '').trim() || '匿名用户',
           body: body.content.trim(),
-          status: autoRejected ? 'auto_rejected' : 'manual_review_pending',
-          statusVersion: 1,
+          status: 'system_reviewing',
+          statusVersion: 0,
           statusToken,
           publicReason: null,
-          autoRejectionReason: autoRejected ? '测试夹具命中自动驳回规则' : null,
-          technicalPass: true,
-          riskSummary: { summary: autoRejected ? '系统规则自动驳回' : '系统审核完成', labels: [] },
+          autoRejectionReason: null,
+          riskSummary: { summary: '等待系统审核', labels: [] },
           assets: [],
-          moderationResults: [{
-            kind: 'text_moderation', provider: 'e2e-fixture', suggestion: autoRejected ? 'Block' : 'Pass',
-            label: autoRejected ? 'blocked' : 'safe', score: autoRejected ? 1 : 0,
-            evidence: { fixture: autoRejected ? 'auto_reject' : 'safe' }, createdAt
-          }],
+          moderationResults: [],
           auditLogs: [],
           idempotency: new Map(),
           moderationLeaseUntil: null,
-          purgeAfter: autoRejected ? plusDays(createdAt, 3) : null,
+          purgeAfter: null,
           preQuarantineStatus: null,
           publishedAt: null,
           createdAt,
@@ -260,9 +255,16 @@ export function createMemoryWebsiteApi({ runId }) {
     const match = /^\/__e2e\/upload\/([^/]+)\/(cover|package)$/u.exec(pathname);
     if (!match || !submissions.has(match[1])) return sendError(response, 404, 'NOT_FOUND');
     let bytes = 0;
-    request.on('data', chunk => { bytes += chunk.length; });
+    const digest = createHash('sha256');
+    request.on('data', chunk => {
+      bytes += chunk.length;
+      digest.update(chunk);
+    });
     request.on('end', () => {
-      uploads.set(`${match[1]}:${match[2]}`, bytes);
+      uploads.set(`${match[1]}:${match[2]}`, {
+        sizeBytes: bytes,
+        sha256: digest.digest('hex')
+      });
       const record = submissions.get(match[1]);
       const asset = record.assets.find(item => item.role === match[2]);
       if (asset) asset.actualBytes = bytes;
@@ -286,6 +288,53 @@ export function createMemoryWebsiteApi({ runId }) {
   }
 
   return { handle };
+}
+
+function completeModeration(record, completedAt, archive) {
+  if (record.kind !== 'shared_package') {
+    const blocked = record.body.includes('自动驳回');
+    record.status = blocked ? 'auto_rejected' : 'manual_review_pending';
+    record.statusVersion += 1;
+    record.updatedAt = completedAt;
+    record.riskSummary = {
+      summary: blocked ? '系统规则自动驳回' : '系统审核完成',
+      labels: blocked ? ['blocked'] : []
+    };
+    record.autoRejectionReason = blocked ? '测试夹具命中自动驳回规则' : null;
+    record.purgeAfter = blocked ? plusDays(completedAt, 3) : null;
+    record.moderationResults = [{
+      kind: 'text_moderation',
+      provider: 'e2e-fixture',
+      suggestion: blocked ? 'Block' : 'Pass',
+      label: blocked ? 'blocked' : 'safe',
+      score: blocked ? 1 : 0,
+      evidence: { fixture: blocked ? 'auto_reject' : 'safe' },
+      createdAt: completedAt
+    }];
+    return;
+  }
+  const packageAsset = record.assets.find(asset => asset.role === 'package');
+  const marker = `${record.title} ${record.body} ${packageAsset?.fileName ?? ''}`.toLowerCase();
+  const technicalPass = !marker.includes('technical-fail')
+    && !marker.includes('扫描失败');
+  const blocked = marker.includes('auto-reject')
+    || marker.includes('自动驳回')
+    || !technicalPass;
+  record.status = blocked ? 'auto_rejected' : 'manual_review_pending';
+  record.statusVersion += 1;
+  record.updatedAt = completedAt;
+  record.riskSummary = {
+    summary: blocked ? '系统规则自动驳回' : '系统审核完成',
+    labels: blocked ? ['blocked'] : ['reviewed']
+  };
+  record.autoRejectionReason = blocked ? '测试夹具命中自动驳回规则' : null;
+  record.moderationResults = [packageScan(
+    record,
+    packageAsset,
+    archive,
+    technicalPass,
+    completedAt
+  )];
 }
 
 class MemoryApiError extends Error {
@@ -343,19 +392,27 @@ function uploadTarget(origin, id, role) {
   };
 }
 
-function packageScan(record, packageAsset) {
+function packageScan(record, packageAsset, archive, technicalPass, completedAt) {
   return {
     kind: 'package_scan',
     provider: 'isolated-scanner',
-    suggestion: record.technicalPass ? 'Pass' : 'Block',
-    label: record.technicalPass ? 'safe' : 'technical_failure',
-    score: record.technicalPass ? 0 : 1,
-    evidence: {
+    suggestion: technicalPass ? 'Pass' : 'Block',
+    label: technicalPass ? 'safe' : 'technical_failure',
+    score: technicalPass ? 0 : 1,
+    evidence: technicalPass ? {
+      submissionId: record.id,
       packageStorageKey: packageAsset.storageKey,
       packageSizeBytes: packageAsset.actualBytes,
-      scanCode: record.technicalPass ? 'CHARACTER_PACKAGE_SCAN_PASSED' : 'CHARACTER_PACKAGE_SCAN_FAILED'
-    },
-    createdAt: record.updatedAt
+      archiveSizeBytes: archive.sizeBytes,
+      archiveSha256: archive.sha256,
+      protocolVersion: '2026-08-15',
+      ruleVersion: 'character-package-2026-08-15',
+      scanCode: 'CHARACTER_PACKAGE_SCAN_PASSED',
+      completedAt,
+      expiresAt: plusDays(completedAt, 1),
+      submissionStatusVersion: record.statusVersion
+    } : { scanCode: 'CHARACTER_PACKAGE_SCAN_FAILED' },
+    createdAt: completedAt
   };
 }
 
@@ -462,11 +519,12 @@ function applyAdminAction(response, record, body, now) {
   if (body.version !== record.statusVersion) return sendError(response, 409, 'VERSION_CONFLICT');
   const beforeStatus = record.status;
   const action = body.action;
-  if (action === 'approve' && record.kind === 'shared_package' && !record.technicalPass) {
+  if (action === 'approve' && record.kind === 'shared_package'
+    && !hasCurrentTechnicalEvidence(record, now())) {
     return sendError(response, 409, 'TECHNICAL_SCAN_REQUIRED');
   }
 
-  if (action === 'approve' && ['manual_review_pending', 'auto_rejected'].includes(record.status)) {
+  if (action === 'approve' && record.status === 'manual_review_pending') {
     record.status = 'published';
     record.publishedAt = now();
     record.purgeAfter = null;
@@ -474,14 +532,18 @@ function applyAdminAction(response, record, body, now) {
     record.status = 'admin_rejected';
     record.purgeAfter = plusDays(now(), 3);
   } else if (action === 'move_to_manual' && record.status === 'auto_rejected') {
-    record.status = 'manual_review_pending';
+    record.status = record.kind === 'shared_package'
+      ? 'system_reviewing'
+      : 'manual_review_pending';
     record.purgeAfter = null;
   } else if (action === 'delete' && record.status !== 'purged') {
     record.preQuarantineStatus = record.status;
     record.status = 'deleted_quarantined';
     record.purgeAfter = plusDays(now(), 3);
   } else if (action === 'restore' && record.status === 'deleted_quarantined' && record.preQuarantineStatus) {
-    record.status = record.preQuarantineStatus;
+    record.status = record.kind === 'shared_package'
+      ? 'system_reviewing'
+      : record.preQuarantineStatus;
     record.preQuarantineStatus = null;
     record.purgeAfter = null;
   } else {
@@ -500,6 +562,26 @@ function applyAdminAction(response, record, body, now) {
   });
   record.idempotency.set(body.idempotencyKey, true);
   return sendData(response, 200, { submission: adminBase(record), replayed: false });
+}
+
+function hasCurrentTechnicalEvidence(record, currentTime) {
+  const packageAsset = record.assets.find(asset => asset.role === 'package');
+  return record.moderationResults.some(result => {
+    const evidence = result.evidence ?? {};
+    return result.kind === 'package_scan'
+      && result.provider === 'isolated-scanner'
+      && result.suggestion === 'Pass'
+      && evidence.submissionId === record.id
+      && evidence.packageStorageKey === packageAsset?.storageKey
+      && evidence.packageSizeBytes === packageAsset?.actualBytes
+      && evidence.archiveSizeBytes === packageAsset?.actualBytes
+      && /^[a-f0-9]{64}$/u.test(evidence.archiveSha256 ?? '')
+      && evidence.protocolVersion === '2026-08-15'
+      && evidence.ruleVersion === 'character-package-2026-08-15'
+      && evidence.submissionStatusVersion === record.statusVersion
+      && Date.parse(evidence.expiresAt) - Date.parse(evidence.completedAt) === 86_400_000
+      && Date.parse(evidence.expiresAt) > Date.parse(currentTime);
+  });
 }
 
 function plusMinutes(value, minutes) {

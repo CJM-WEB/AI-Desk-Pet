@@ -30,6 +30,7 @@ import {
 } from './request-signature.js';
 import {
   scanPackage,
+  type ArchiveIdentity,
   type ClamAvScanner,
   type ImageContentModerator,
   type PackageScanResult,
@@ -47,9 +48,9 @@ type Download = (
   url: URL,
   destination: string,
   signal?: AbortSignal
-) => Promise<void>;
+) => Promise<ArchiveIdentity>;
 type Scan = (
-  input: Pick<ScanPackageInput, 'archivePath' | 'signal'>
+  input: Pick<ScanPackageInput, 'archivePath' | 'archive' | 'signal'>
 ) => Promise<PackageScanResult>;
 type SpawnCommand = typeof spawn;
 
@@ -119,7 +120,7 @@ export async function downloadPrivateObject(
   url: URL,
   destination: string,
   signal?: AbortSignal
-): Promise<void> {
+): Promise<ArchiveIdentity> {
   const downloadTimeout = AbortSignal.timeout(30_000);
   const response = await fetch(url, {
     redirect: 'error',
@@ -140,6 +141,7 @@ export async function downloadPrivateObject(
 
   const output = await open(destination, 'wx', 0o600);
   let totalBytes = 0;
+  const archiveHash = createHash('sha256');
   try {
     for await (const chunk of response.body) {
       const bytes = Buffer.from(chunk);
@@ -147,6 +149,7 @@ export async function downloadPrivateObject(
       if (totalBytes > MAX_ARCHIVE_BYTES) {
         throw scannerError('CHARACTER_PACKAGE_ARCHIVE_SIZE_REJECTED');
       }
+      archiveHash.update(bytes);
       await output.write(bytes);
     }
     if (totalBytes === 0) {
@@ -155,6 +158,10 @@ export async function downloadPrivateObject(
   } finally {
     await output.close();
   }
+  return {
+    sizeBytes: totalBytes,
+    sha256: archiveHash.digest('hex')
+  };
 }
 
 export async function scanRemotePackage(
@@ -171,9 +178,10 @@ export async function scanRemotePackage(
   const requestDirectory = await mkdtemp(join(input.workRoot, 'request-'));
   const archivePath = join(requestDirectory, 'package.zip');
   try {
-    await input.download(url, archivePath, input.signal);
+    const archive = await input.download(url, archivePath, input.signal);
     return await input.scan({
       archivePath,
+      archive,
       ...(input.signal ? { signal: input.signal } : {})
     });
   } finally {
@@ -295,8 +303,9 @@ export function createScannerServer(
               dependencies.requiredDownloadQueryParameters,
             download,
             signal: scanController.signal,
-            scan: ({ archivePath, signal }) => scanPackage({
+            scan: ({ archivePath, archive, signal }) => scanPackage({
               archivePath,
+              archive,
               clamav: dependencies.clamav,
               imageModerator: dependencies.imageModerator,
               ...(signal ? { signal } : {})

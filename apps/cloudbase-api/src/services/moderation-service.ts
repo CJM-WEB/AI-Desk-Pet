@@ -1,3 +1,9 @@
+import {
+  TECHNICAL_SCAN_PROTOCOL_VERSION,
+  TECHNICAL_SCAN_RULE_VERSION,
+  technicalScanEvidenceSchema
+} from '@myself/shared-types';
+
 import type {
   Clock,
   ContentModerator,
@@ -6,6 +12,7 @@ import type {
   ModerationSignal,
   ObjectStorage,
   PackageScanner,
+  PackageScanResult,
   SubmissionWithAssets
 } from '../ports.js';
 
@@ -23,6 +30,7 @@ export interface BatchResult {
 const leaseMilliseconds = 10 * 60 * 1000;
 // 为跨地域请求预留一分钟时钟偏差，避免扫描器把临界的五分钟链接误判为超时。
 const signedUrlSeconds = 4 * 60;
+const technicalEvidenceTtlMilliseconds = 24 * 60 * 60 * 1000;
 
 class ModerationDependencyError extends Error {
   constructor(
@@ -168,13 +176,21 @@ export class ModerationService {
     const technicalSignal: ModerationSignal = scan.safe
       ? { suggestion: 'Pass', label: `技术检查：${scan.code}` }
       : { suggestion: 'Block', label: `技术检查：${scan.code}` };
-    results.push(this.record(submission.id, 'package_scan', 'isolated-scanner', technicalSignal, {
-      fileCount: scan.summary.fileCount,
-      totalUncompressedBytes: scan.summary.totalUncompressedBytes,
-      packageStorageKey: packageAsset.storageKey,
-      packageSizeBytes: packageAsset.actualBytes,
-      scanCode: scan.code
-    }));
+    const technicalEvidence = scan.safe
+      ? this.createTechnicalPassEvidence(submission, packageAsset, scan)
+      : {
+          fileCount: scan.summary.fileCount,
+          totalUncompressedBytes: scan.summary.totalUncompressedBytes,
+          scanCode: scan.code
+        };
+    results.push(this.record(
+      submission.id,
+      'package_scan',
+      'isolated-scanner',
+      technicalSignal,
+      technicalEvidence,
+      scan.safe ? scan.ruleVersion : '2026-07-31'
+    ));
     signals.push(technicalSignal);
     if (!scan.safe) return signals;
 
@@ -259,6 +275,54 @@ export class ModerationService {
     return signals;
   }
 
+  private createTechnicalPassEvidence(
+    submission: SubmissionWithAssets,
+    packageAsset: SubmissionWithAssets['assets'][number],
+    scan: Extract<PackageScanResult, { complete: true; safe: true }>
+  ): Record<string, unknown> {
+    const completedAt = new Date(scan.completedAt ?? '');
+    const expiresAt = new Date(
+      completedAt.getTime() + technicalEvidenceTtlMilliseconds
+    );
+    const evidence = {
+      submissionId: scan.submissionId,
+      packageStorageKey: packageAsset.storageKey,
+      packageSizeBytes: packageAsset.actualBytes,
+      archiveSizeBytes: scan.archive?.sizeBytes,
+      archiveSha256: scan.archive?.sha256,
+      protocolVersion: scan.protocolVersion,
+      ruleVersion: scan.ruleVersion,
+      scanCode: scan.code,
+      completedAt: scan.completedAt,
+      expiresAt: Number.isFinite(expiresAt.getTime())
+        ? expiresAt.toISOString()
+        : undefined,
+      // 决策事务成功后状态版本加一，证据直接绑定该最终版本。
+      submissionStatusVersion: (submission.statusVersion ?? 0) + 1
+    };
+    const parsed = technicalScanEvidenceSchema.safeParse(evidence);
+    if (
+      !parsed.success
+      || parsed.data.submissionId !== submission.id
+      || parsed.data.packageSizeBytes !== parsed.data.archiveSizeBytes
+      || parsed.data.packageSizeBytes !== packageAsset.actualBytes
+      || parsed.data.protocolVersion !== TECHNICAL_SCAN_PROTOCOL_VERSION
+      || parsed.data.ruleVersion !== TECHNICAL_SCAN_RULE_VERSION
+      || completedAt.getTime() > this.clock.now().getTime()
+      || expiresAt.getTime() <= this.clock.now().getTime()
+    ) {
+      throw new ModerationDependencyError(
+        'PACKAGE_SCAN_EVIDENCE_INVALID',
+        []
+      );
+    }
+    return {
+      fileCount: scan.summary.fileCount,
+      totalUncompressedBytes: scan.summary.totalUncompressedBytes,
+      ...parsed.data
+    };
+  }
+
   private async runSignal(
     operation: () => Promise<ModerationSignal>,
     results: ModerationRecord[],
@@ -288,14 +352,15 @@ export class ModerationService {
     kind: string,
     provider: string,
     signal: ModerationSignal,
-    evidence: Record<string, unknown> = {}
+    evidence: Record<string, unknown> = {},
+    ruleVersion = '2026-07-31'
   ): ModerationRecord {
     const timestamp = this.clock.now().toISOString();
     return {
       submissionId,
       kind: kind.slice(0, 100),
       provider: provider.slice(0, 100),
-      ruleVersion: '2026-07-31',
+      ruleVersion,
       suggestion: signal.suggestion,
       label: signal.label.slice(0, 100),
       score: null,
@@ -312,9 +377,8 @@ export class ModerationService {
     results: readonly ModerationRecord[],
     signals: readonly ModerationSignal[]
   ): Promise<ModerationProcessResult> {
-    // 自动检查只保留风险证据，发布与驳回统一由管理员决定。
     const blocked = signals.some(signal => signal.suggestion === 'Block');
-    const status = 'manual_review_pending' as const;
+    const status = blocked ? 'auto_rejected' as const : 'manual_review_pending' as const;
     const blockedLabels = signals
       .filter(signal => signal.suggestion === 'Block')
       .map(signal => signal.label)
@@ -329,7 +393,7 @@ export class ModerationService {
         signalCount: results.length,
         blockedLabels
       },
-      autoRejectionReason: null
+      autoRejectionReason: blockedLabels[0] ?? null
     });
     return { status, applied };
   }

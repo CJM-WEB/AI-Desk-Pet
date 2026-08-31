@@ -20,7 +20,7 @@ function createFixture() {
 }
 
 describe('文本投稿服务', () => {
-  it('创建待人工审核的反馈并只保存令牌哈希', async () => {
+  it('创建系统审核中的反馈并只保存令牌哈希', async () => {
     const { service, store } = createFixture();
 
     const receipt = await service.submit({
@@ -31,7 +31,7 @@ describe('文本投稿服务', () => {
     expect(receipt).toMatchObject({
       submissionId: 'feedback-1',
       statusPath: '/submission-status/',
-      status: 'manual_review_pending'
+      status: 'system_reviewing'
     });
     expect(receipt.statusToken).toMatch(/^[A-Za-z0-9_-]{43}$/u);
     expect(store.createTextSubmission).toHaveBeenCalledWith({

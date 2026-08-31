@@ -63,7 +63,9 @@ function createService(row = submission('manual_review_pending')) {
     delete: vi.fn()
   } satisfies ObjectStorage;
   return {
-    service: new AdminService(store, storage),
+    service: new AdminService(store, storage, {
+      now: () => new Date('2026-07-31T12:00:00.000Z')
+    }),
     store,
     storage
   };
@@ -218,6 +220,12 @@ describe('管理员审核服务', () => {
       submissionId: 'submission-1',
       packageStorageKey: 'private/old-pet.zip',
       packageSizeBytes: 20,
+      archiveSizeBytes: 20,
+      archiveSha256: 'a'.repeat(64),
+      protocolVersion: '2026-08-15',
+      ruleVersion: 'character-package-2026-08-15',
+      completedAt: '2026-07-31T00:00:00.000Z',
+      expiresAt: '2026-08-01T00:00:00.000Z',
       submissionStatusVersion: 3,
       scanCode: 'CHARACTER_PACKAGE_SCAN_PASSED'
     }],
@@ -225,6 +233,12 @@ describe('管理员审核服务', () => {
       submissionId: 'submission-1',
       packageStorageKey: 'private/current-pet.zip',
       packageSizeBytes: 19,
+      archiveSizeBytes: 19,
+      archiveSha256: 'a'.repeat(64),
+      protocolVersion: '2026-08-15',
+      ruleVersion: 'character-package-2026-08-15',
+      completedAt: '2026-07-31T00:00:00.000Z',
+      expiresAt: '2026-08-01T00:00:00.000Z',
       submissionStatusVersion: 3,
       scanCode: 'CHARACTER_PACKAGE_SCAN_PASSED'
     }],
@@ -232,6 +246,12 @@ describe('管理员审核服务', () => {
       submissionId: 'other-submission',
       packageStorageKey: 'private/current-pet.zip',
       packageSizeBytes: 20,
+      archiveSizeBytes: 20,
+      archiveSha256: 'a'.repeat(64),
+      protocolVersion: '2026-08-15',
+      ruleVersion: 'character-package-2026-08-15',
+      completedAt: '2026-07-31T00:00:00.000Z',
+      expiresAt: '2026-08-01T00:00:00.000Z',
       submissionStatusVersion: 3,
       scanCode: 'CHARACTER_PACKAGE_SCAN_PASSED'
     }],
@@ -239,6 +259,12 @@ describe('管理员审核服务', () => {
       submissionId: 'submission-1',
       packageStorageKey: 'private/current-pet.zip',
       packageSizeBytes: 20,
+      archiveSizeBytes: 20,
+      archiveSha256: 'a'.repeat(64),
+      protocolVersion: '2026-08-15',
+      ruleVersion: 'character-package-2026-08-15',
+      completedAt: '2026-07-31T00:00:00.000Z',
+      expiresAt: '2026-08-01T00:00:00.000Z',
       submissionStatusVersion: 2,
       scanCode: 'CHARACTER_PACKAGE_SCAN_PASSED'
     }]
@@ -268,15 +294,21 @@ describe('管理员审核服务', () => {
     }
   );
 
-  it('技术扫描通过时允许纠正自动驳回并发布', async () => {
+  it('技术扫描通过时只允许待人工状态发布', async () => {
     const currentEvidence = {
       submissionId: 'submission-1',
       packageStorageKey: 'private/current-pet.zip',
       packageSizeBytes: 20,
+      archiveSizeBytes: 20,
+      archiveSha256: 'a'.repeat(64),
+      protocolVersion: '2026-08-15',
+      ruleVersion: 'character-package-2026-08-15',
+      completedAt: '2026-07-31T00:00:00.000Z',
+      expiresAt: '2026-08-01T00:00:00.000Z',
       submissionStatusVersion: 3,
       scanCode: 'CHARACTER_PACKAGE_SCAN_PASSED'
     };
-    const { service, store } = createService(submission('auto_rejected', {
+    const { service, store } = createService(submission('manual_review_pending', {
       moderationResults: [moderationResult('Pass', currentEvidence)]
     }));
 
@@ -296,6 +328,60 @@ describe('管理员审核服务', () => {
       nextStatus: 'published',
       expectedVersion: 3
     }));
+  });
+
+  it.each([
+    ['恰好到期', '2026-07-31T12:00:00.000Z'],
+    ['已经过期', '2026-07-31T11:59:59.999Z']
+  ])('%s的扫描证据不能批准', async (_name, expiresAt) => {
+    const evidence = currentEvidence({ expiresAt });
+    const { service, store } = createService(submission('manual_review_pending', {
+      moderationResults: [moderationResult('Pass', evidence)]
+    }));
+
+    await expect(service.applyAction(
+      { uid: 'uid-admin', email: 'admin@example.com' },
+      'submission-1',
+      {
+        action: 'approve',
+        version: 3,
+        idempotencyKey: `expired-${expiresAt}`,
+        reason: '尝试批准'
+      }
+    )).rejects.toMatchObject({ code: 'TECHNICAL_SCAN_REQUIRED' });
+    expect(store.applyAdminAction).not.toHaveBeenCalled();
+  });
+
+  it('自动驳回转人工和隔离共享包恢复都回到系统审核重扫', async () => {
+    const autoRejected = submission('auto_rejected');
+    const first = createService(autoRejected);
+    await first.service.applyAction(
+      { uid: 'uid-admin', email: 'admin@example.com' },
+      autoRejected.id,
+      {
+        action: 'move_to_manual', version: 3,
+        idempotencyKey: 'rescan-auto-rejected', reason: '请求复核'
+      }
+    );
+    expect(first.store.applyAdminAction).toHaveBeenCalledWith(
+      expect.objectContaining({ nextStatus: 'system_reviewing' })
+    );
+
+    const quarantined = submission('deleted_quarantined', {
+      preQuarantineStatus: 'published'
+    });
+    const second = createService(quarantined);
+    await second.service.applyAction(
+      { uid: 'uid-admin', email: 'admin@example.com' },
+      quarantined.id,
+      {
+        action: 'restore', version: 3,
+        idempotencyKey: 'rescan-restored-package', reason: '恢复并重扫'
+      }
+    );
+    expect(second.store.applyAdminAction).toHaveBeenCalledWith(
+      expect.objectContaining({ nextStatus: 'system_reviewing' })
+    );
   });
 
   it.each(['feedback', 'suggestion'] as const)(
@@ -418,5 +504,24 @@ function moderationResult(
     score: null,
     evidence,
     createdAt: '2026-07-31T00:00:00.000Z'
+  };
+}
+
+function currentEvidence(
+  overrides: Record<string, unknown> = {}
+): Record<string, unknown> {
+  return {
+    submissionId: 'submission-1',
+    packageStorageKey: 'private/current-pet.zip',
+    packageSizeBytes: 20,
+    archiveSizeBytes: 20,
+    archiveSha256: 'a'.repeat(64),
+    protocolVersion: '2026-08-15',
+    ruleVersion: 'character-package-2026-08-15',
+    scanCode: 'CHARACTER_PACKAGE_SCAN_PASSED',
+    completedAt: '2026-07-31T00:00:00.000Z',
+    expiresAt: '2026-08-01T00:00:00.000Z',
+    submissionStatusVersion: 3,
+    ...overrides
   };
 }

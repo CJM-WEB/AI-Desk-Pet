@@ -1,4 +1,5 @@
-import { copyFile, mkdtemp, readdir, rm } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
+import { copyFile, mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -18,6 +19,10 @@ const TEST_NOW = new Date('2026-07-31T00:00:00.000Z');
 const TEST_EXPIRES_AT = TEST_NOW.getTime() + 300_000;
 const TEST_SECRET = 'scanner-test-secret';
 const TEST_SUBMISSION_ID = '3d594650-3436-4ad0-a9a8-80ca4388824b';
+const TEST_ARCHIVE_IDENTITY = {
+  sizeBytes: 1,
+  sha256: 'a'.repeat(64)
+};
 
 async function temporaryDirectory(prefix: string): Promise<string> {
   const directory = await mkdtemp(join(tmpdir(), prefix));
@@ -36,6 +41,15 @@ function signedHeaders(body: string): Record<string, string> {
       Buffer.from(body),
       TEST_SECRET
     )
+  };
+}
+
+async function copyArchive(source: string, destination: string) {
+  await copyFile(source, destination);
+  const bytes = await readFile(source);
+  return {
+    sizeBytes: bytes.byteLength,
+    sha256: createHash('sha256').update(bytes).digest('hex')
   };
 }
 
@@ -105,7 +119,7 @@ describe('扫描服务隔离边界', () => {
       workRoot,
       allowedDownloadHosts: new Set(['storage.example.test']),
       requiredDownloadQueryParameters: new Set(['signature']),
-      download: async (_url, destination) => copyFile(sourceArchive, destination),
+      download: async (_url, destination) => copyArchive(sourceArchive, destination),
       scan: async ({ archivePath }) => {
         expect(archivePath.startsWith(`${workRoot}\\`)).toBe(true);
         if (shouldFail) throw new Error('SCANNER_TEST_FAILURE');
@@ -133,6 +147,38 @@ describe('扫描服务隔离边界', () => {
     expect(await readdir(workRoot)).toEqual([]);
   });
 
+  it('下载阶段生成的完整 ZIP 身份原样交给扫描器且不二次读取归档', async () => {
+    const workRoot = await temporaryDirectory('scanner-work-');
+    const archive = {
+      sizeBytes: 321,
+      sha256: 'b'.repeat(64)
+    };
+
+    await scanRemotePackage({
+      downloadUrl: 'https://storage.example.test/private.zip?signature=short-lived',
+      expiresAtMs: TEST_EXPIRES_AT,
+      now: TEST_NOW,
+      workRoot,
+      allowedDownloadHosts: new Set(['storage.example.test']),
+      requiredDownloadQueryParameters: new Set(['signature']),
+      download: (async () => archive) as never,
+      scan: async input => {
+        expect(input).toMatchObject({ archive });
+        return {
+          code: 'CHARACTER_PACKAGE_SCAN_PASSED',
+          archive,
+          summary: {
+            fileCount: 0,
+            totalUncompressedBytes: 0,
+            files: []
+          },
+          jsonTexts: [],
+          imageSignals: []
+        };
+      }
+    });
+  });
+
   it('拒绝非 HTTPS、非允许主机和没有短期签名参数的下载地址', async () => {
     const workRoot = await temporaryDirectory('scanner-work-');
     const base = {
@@ -141,7 +187,7 @@ describe('扫描服务隔离边界', () => {
       now: TEST_NOW,
       allowedDownloadHosts: new Set(['storage.example.test']),
       requiredDownloadQueryParameters: new Set(['signature']),
-      download: async () => undefined,
+      download: async () => TEST_ARCHIVE_IDENTITY,
       scan: async () => {
         throw new Error('不应进入扫描');
       }
@@ -252,7 +298,10 @@ describe('扫描服务隔离边界', () => {
     });
     const server = createScannerServer({
       ...dependencies,
-      download: async () => downloadStarted
+      download: async () => {
+        await downloadStarted;
+        return TEST_ARCHIVE_IDENTITY;
+      }
     });
     const port = await listen(server);
     const firstBody = scanRequest(
@@ -297,9 +346,7 @@ describe('扫描服务隔离边界', () => {
       ...dependencies,
       // 留出正常扫描窗口，首个挂起扫描仍由整包超时中止。
       scanTimeoutMs: 250,
-      download: async (_url, destination) => {
-        await copyFile(sourceArchive, destination);
-      },
+      download: async (_url, destination) => copyArchive(sourceArchive, destination),
       clamav: {
         scan: async ({ signal }: { signal?: AbortSignal }) => {
           if (!shouldHang) return { infected: false };
@@ -424,9 +471,7 @@ describe('扫描服务隔离边界', () => {
     const dependencies = await serverDependencies();
     const server = createScannerServer({
       ...dependencies,
-      download: async (_url, destination) => {
-        await copyFile(sourceArchive, destination);
-      },
+      download: async (_url, destination) => copyArchive(sourceArchive, destination),
       clamav: {
         scan: async () => ({ infected: testCase.infected })
       }

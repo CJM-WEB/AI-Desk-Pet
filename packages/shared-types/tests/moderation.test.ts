@@ -3,7 +3,8 @@ import {
   adminActionSchema,
   submissionReceiptSchema,
   submissionStatusSchema,
-  submissionStatusViewSchema
+  submissionStatusViewSchema,
+  technicalScanEvidenceSchema
 } from '../src/moderation';
 
 describe('投稿审核契约', () => {
@@ -53,13 +54,40 @@ describe('投稿审核契约', () => {
       ...receipt,
       status: 'system_reviewing'
     }).status).toBe('system_reviewing');
-    expect(submissionReceiptSchema.parse({
+    expect(() => submissionReceiptSchema.parse({
       ...receipt,
       status: 'manual_review_pending'
-    }).status).toBe('manual_review_pending');
+    })).toThrow();
     expect(() => submissionReceiptSchema.parse({
       ...receipt,
       status: 'published'
+    })).toThrow();
+  });
+
+  it('完整技术扫描证据逐字段约束归档身份、版本和时效', () => {
+    const evidence = {
+      submissionId: 'submission-1',
+      packageStorageKey: 'submissions/submission-1/package.zip',
+      packageSizeBytes: 1024,
+      archiveSizeBytes: 1024,
+      archiveSha256: 'a'.repeat(64),
+      protocolVersion: '2026-08-15',
+      ruleVersion: 'character-package-2026-08-15',
+      scanCode: 'CHARACTER_PACKAGE_SCAN_PASSED',
+      completedAt: '2026-08-31T00:00:00.000Z',
+      expiresAt: '2026-09-01T00:00:00.000Z',
+      submissionStatusVersion: 3
+    };
+
+    expect(technicalScanEvidenceSchema.parse(evidence)).toEqual(evidence);
+    for (const field of Object.keys(evidence)) {
+      const invalid = { ...evidence } as Record<string, unknown>;
+      delete invalid[field];
+      expect(() => technicalScanEvidenceSchema.parse(invalid)).toThrow();
+    }
+    expect(() => technicalScanEvidenceSchema.parse({
+      ...evidence,
+      archiveSha256: 'A'.repeat(64)
     })).toThrow();
   });
 

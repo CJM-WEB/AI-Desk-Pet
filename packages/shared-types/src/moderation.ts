@@ -19,9 +19,28 @@ export const submissionReceiptSchema = z.object({
   submissionId: z.string().min(1).max(128),
   statusToken: z.string().regex(/^[A-Za-z0-9_-]{43}$/),
   statusPath: z.literal('/submission-status/'),
-  status: z.enum(['uploading', 'system_reviewing', 'manual_review_pending'])
+  status: z.enum(['uploading', 'system_reviewing'])
 }).strict();
 export type SubmissionReceipt = z.infer<typeof submissionReceiptSchema>;
+
+export const TECHNICAL_SCAN_PROTOCOL_VERSION = '2026-08-15' as const;
+export const TECHNICAL_SCAN_RULE_VERSION = 'character-package-2026-08-15' as const;
+
+/** 共享包发布门只信任逐字段绑定当前归档和状态版本的短期扫描证据。 */
+export const technicalScanEvidenceSchema = z.object({
+  submissionId: z.string().min(1).max(128),
+  packageStorageKey: z.string().min(1).max(1024),
+  packageSizeBytes: z.number().int().positive().max(100 * 1024 * 1024),
+  archiveSizeBytes: z.number().int().positive().max(100 * 1024 * 1024),
+  archiveSha256: z.string().regex(/^[a-f0-9]{64}$/u),
+  protocolVersion: z.literal(TECHNICAL_SCAN_PROTOCOL_VERSION),
+  ruleVersion: z.literal(TECHNICAL_SCAN_RULE_VERSION),
+  scanCode: z.literal('CHARACTER_PACKAGE_SCAN_PASSED'),
+  completedAt: z.string().datetime({ offset: true }),
+  expiresAt: z.string().datetime({ offset: true }),
+  submissionStatusVersion: z.number().int().nonnegative()
+}).strict();
+export type TechnicalScanEvidence = z.infer<typeof technicalScanEvidenceSchema>;
 
 export const submissionStatusViewSchema = z.object({
   submissionId: z.string().min(1).max(128),
