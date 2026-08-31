@@ -144,7 +144,7 @@
 
 ## Task 6：共享 HTTP 信封与逐 endpoint 契约
 
-> 依赖状态：`2026-08-31-admin-override-publication.md` 已完成并通过规格/规范双审查（实现范围 `b748498..064c08d`）。Task 6 必须直接消费最终 `move_to_manual`、`force_publish`、`publicationBasis` 与 `riskAcknowledgement` 契约，不得建立临时重复 DTO；执行 brief 见 `.superpowers/sdd/2026-08-31-website-stage-2-3-local-closure/task-6-brief.md`。
+> 状态：2026-08-31 已完成；实现范围 `334f7dc..9d35815`，规格与工程标准双审查均为 PASS、0 个 finding。最终门禁为 shared-types 50/50、website 348/348、CloudBase API 269/269、Scanner 71/71、浏览器 E2E 21/21；PostgreSQL 17.11 顺序执行 7 个 migration 并通过 42 项行为验证。旧本地 Envelope、`request<unknown>` 与重复 endpoint DTO/Schema 已删除；未执行 Docker full、远端 migration 或部署。
 
 **Files:**
 - Create: `packages/shared-types/src/website-http.ts`, `packages/shared-types/tests/website-http.test.ts`
