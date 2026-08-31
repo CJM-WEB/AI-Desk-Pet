@@ -8,7 +8,7 @@
     "generate:manifest": "tsx src/generate-manifest.ts"
   },
   "dependencies": {
-    "zod": "^3.25.76"
+    "@myself/shared-types": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "^24.13.3",

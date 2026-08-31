@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
+import { releaseManifestSchema } from '@myself/shared-types/release-manifest';
 import rawManifest from '../content/release-manifest.json';
 import { zhCN } from '../components/i18n/messages';
 import { createDownloadContent } from '../components/website-experience/download/download-content';
-import { releaseManifestSchema } from '../lib/release-manifest';
 
 const platforms = createDownloadContent((key) => zhCN[key]).platforms;
 
@@ -28,6 +28,7 @@ describe('下载模块数据接口', () => {
       fileName: release.fileName,
       status: 'unpublished'
     });
+    expect('plannedReleaseTag' in platforms[0]!).toBe(false);
   });
 
 });

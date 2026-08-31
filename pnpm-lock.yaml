@@ -295,9 +295,9 @@ importers:
 
   tools/release:
     dependencies:
-      zod:
-        specifier: ^3.25.76
-        version: 3.25.76
+      '@myself/shared-types':
+        specifier: workspace:*
+        version: link:../../packages/shared-types
     devDependencies:
       '@types/node':
         specifier: ^24.13.3

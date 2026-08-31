@@ -3,6 +3,7 @@ import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, test } from 'vitest';
+import { releaseManifestSchema } from '@myself/shared-types/release-manifest';
 import {
   generateReleaseManifest,
   parseManifestCommandArgs,
@@ -35,7 +36,7 @@ describe('generateReleaseManifest', () => {
       publishedAt: '2026-07-25T00:00:00.000Z'
     });
 
-    expect(manifest).toEqual({
+    expect(releaseManifestSchema.parse(manifest)).toEqual({
       version: '0.1.0-alpha.1',
       platform: 'windows-x64',
       status: 'published',

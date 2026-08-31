@@ -57,10 +57,13 @@ async function createRuleFixture() {
       "import { protocol } from '../../../../packages/shared-types/src/scanner-protocol.ts';\nexport { protocol };\n",
     'apps/desktop/src/renderer/website-http-offender.ts':
       "import { contract } from '../../../../packages/shared-types/src/website-http.ts';\nexport { contract };\n",
+    'apps/desktop/src/renderer/release-manifest-offender.ts':
+      "import { releaseManifestSchema } from '../../../../packages/shared-types/src/release-manifest.ts';\nexport { releaseManifestSchema };\n",
     'apps/website/lib/migration-target.ts': 'export const website = true;\n',
     'apps/cloudbase-api/src/internal.ts': 'export const internal = true;\nexport const cloud = true;\n',
     'packages/shared-types/src/scanner-protocol.ts': 'export const protocol = true;\n',
     'packages/shared-types/src/website-http.ts': 'export const contract = true;\n',
+    'packages/shared-types/src/release-manifest.ts': 'export const releaseManifestSchema = true;\n',
     'apps/cloudbase-api/src/services/offender.ts':
       "import { runtime } from '../adapters/cloudbase-runtime.ts';\nexport { runtime };\n",
     'apps/cloudbase-api/src/adapters/cloudbase-runtime.ts': 'export const runtime = true;\n',
@@ -181,7 +184,7 @@ test('网站专属规则阻止跨应用、服务反向依赖与越界 SDK 调用
   );
   assert.equal(result.status, 0, result.stderr);
   const report = JSON.parse(result.stdout);
-  assert.equal(report.summary.error, 4);
+  assert.equal(report.summary.error, 5);
   const hasViolation = (ruleName, from) =>
     report.summary.violations.some(
       violation => violation.rule.name === ruleName && violation.from === from,
@@ -191,6 +194,12 @@ test('网站专属规则阻止跨应用、服务反向依赖与越界 SDK 调用
     hasViolation(
       'no-website-to-cloud-source',
       'apps/website/lib/cloud-offender.ts',
+    ),
+  );
+  assert.ok(
+    hasViolation(
+      'release-manifest-only-in-release-chain',
+      'apps/desktop/src/renderer/release-manifest-offender.ts',
     ),
   );
   assert.ok(

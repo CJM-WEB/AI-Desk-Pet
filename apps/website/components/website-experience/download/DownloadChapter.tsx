@@ -196,7 +196,7 @@ export function DownloadChapter({
     if (activePlatform.status === 'unpublished') {
       return [
         [t('download.package'), activePlatform.fileName],
-        ['Release', activePlatform.plannedReleaseTag]
+        ['Release', `v${activePlatform.versionLabel}`]
       ];
     }
     return [

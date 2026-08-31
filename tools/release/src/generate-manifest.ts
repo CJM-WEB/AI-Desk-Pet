@@ -2,23 +2,12 @@ import { createHash } from 'node:crypto';
 import { readFile, stat, writeFile } from 'node:fs/promises';
 import { basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { z } from 'zod';
+import {
+  releaseManifestSchema,
+  type ReleaseManifest
+} from '@myself/shared-types/release-manifest';
 
-const releaseManifestSchema = z
-  .object({
-    version: z.string().regex(/^\d+\.\d+\.\d+-alpha\.\d+$/),
-    platform: z.literal('windows-x64'),
-    status: z.literal('published'),
-    fileName: z.string().regex(/^AI-Pet-\d+\.\d+\.\d+-alpha\.\d+-windows-x64\.exe$/),
-    downloadUrl: z.string().url().regex(/\.exe$/),
-    sizeBytes: z.number().int().positive(),
-    sha256: z.string().regex(/^[a-f0-9]{64}$/),
-    publishedAt: z.string().datetime(),
-    signed: z.literal(false)
-  })
-  .strict();
-
-export type ReleaseManifest = z.infer<typeof releaseManifestSchema>;
+export type { ReleaseManifest } from '@myself/shared-types/release-manifest';
 
 export interface GenerateReleaseManifestInput {
   installerPath: string;

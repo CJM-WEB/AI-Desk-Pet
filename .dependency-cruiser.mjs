@@ -36,7 +36,7 @@ export default {
         dependencyTypes: ['unknown', 'undetermined', 'npm-no-pkg', 'npm-unknown'],
         // 工作区公开入口由下方五条目标专属规则校验声明关系，避免合法别名产生重复告警。
         pathNot:
-          '^packages/(agent-core|character-assets|character-runtime|file-tools|shared-types)/src/index\\.[cm]?[jt]s$|^packages/shared-types/src/(scanner-protocol|website-http)\\.[cm]?[jt]s$',
+          '^packages/(agent-core|character-assets|character-runtime|file-tools|shared-types)/src/index\\.[cm]?[jt]s$|^packages/shared-types/src/(release-manifest|scanner-protocol|website-http)\\.[cm]?[jt]s$',
       },
     },
     {
@@ -83,16 +83,25 @@ export default {
     },
     {
       name: 'no-undeclared-workspace-alias-shared-types',
-      comment: 'shared-types 公开入口只允许由已声明该依赖的应用与共享包调用。',
+      comment: 'shared-types 公开入口只允许由已声明该依赖的应用、共享包与发布工具调用。',
       severity: 'warn',
       from: {
         pathNot:
-          '^(apps/(cloudbase-api|desktop|package-scanner|website)|packages/(agent-core|character-runtime|file-tools))/',
+          '^(apps/(cloudbase-api|desktop|package-scanner|website)|packages/(agent-core|character-runtime|file-tools)|tools/release)/',
       },
       to: {
-        path: '^packages/shared-types/src/(index|scanner-protocol|website-http)\\.[cm]?[jt]s$',
+        path: '^packages/shared-types/src/(index|release-manifest|scanner-protocol|website-http)\\.[cm]?[jt]s$',
         dependencyTypes: ['undetermined'],
       },
+    },
+    {
+      name: 'release-manifest-only-in-release-chain',
+      comment: '发行清单契约只允许网站、发布工具和 shared-types 自测消费。',
+      severity: 'error',
+      from: {
+        pathNot: '^(apps/website/|tools/release/|packages/shared-types/tests/release-manifest\\.test\\.ts$)',
+      },
+      to: { path: '^packages/shared-types/src/release-manifest\\.[cm]?[jt]s$' },
     },
     {
       name: 'no-production-to-dev-dependency',
@@ -437,7 +446,7 @@ export default {
       comment: '跨工作区依赖 shared-types 必须经过包入口，不得绕入内部源码。',
       severity: 'warn',
       from: { pathNot: '^packages/shared-types/' },
-      to: { path: '^packages/shared-types/src/(?!(index|scanner-protocol|website-http)\\.[cm]?[jt]s$)' },
+      to: { path: '^packages/shared-types/src/(?!(index|release-manifest|scanner-protocol|website-http)\\.[cm]?[jt]s$)' },
     },
     {
       name: 'no-website-to-cloud-source',
@@ -544,10 +553,7 @@ export default {
       ],
     },
     tsPreCompilationDeps: true,
-    cache: {
-      folder: 'node_modules/.cache/dependency-cruiser',
-      strategy: 'content',
-      compress: true,
-    },
+    // 工作区 package exports 变化不会使依赖巡检的内容缓存失效，禁用缓存保证公开边界实时生效。
+    cache: false,
   },
 };

@@ -5,6 +5,7 @@
   "exports": {
     ".": "./src/index.ts",
     "./moderation": "./src/moderation.ts",
+    "./release-manifest": "./src/release-manifest.ts",
     "./scanner-protocol": "./src/scanner-protocol.ts",
     "./website-http": "./src/website-http.ts"
   },

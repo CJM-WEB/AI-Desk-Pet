@@ -1,5 +1,5 @@
 import rawManifest from '../../../content/release-manifest.json';
-import { releaseManifestSchema } from '../../../lib/release-manifest';
+import { releaseManifestSchema } from '@myself/shared-types/release-manifest';
 import { zhCN } from '../../i18n/messages';
 import type { Translate } from '../../i18n/i18n-types';
 
@@ -32,7 +32,6 @@ export type DownloadPlatform =
       versionLabel: string;
       systemRequirements: string;
       fileName: string;
-      plannedReleaseTag: string;
     };
 
 export type FaqItem = {
@@ -70,8 +69,7 @@ function createWindowsPlatform(t: Translate): DownloadPlatform {
       summary: t('download.windows.unpublishedSummary'),
       versionLabel: windowsRelease.version,
       systemRequirements: 'Windows 10/11 x64',
-      fileName: windowsRelease.fileName,
-      plannedReleaseTag: windowsRelease.plannedReleaseTag
+      fileName: windowsRelease.fileName
     };
 }
 export interface DownloadContent {

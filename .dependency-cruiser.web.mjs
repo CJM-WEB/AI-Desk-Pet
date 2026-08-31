@@ -21,6 +21,7 @@ const WEB_RULE_NAMES = new Set([
   'no-relative-cross-workspace-import-packages-shared-types',
   'no-relative-cross-workspace-import-tools-release',
   'shared-types-is-foundational',
+  'release-manifest-only-in-release-chain',
   'scanner-protocol-only-in-server-chain',
   'website-http-only-in-web-chain',
   'no-internal-source-import-shared-types',

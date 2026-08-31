@@ -1,5 +1,6 @@
 import rawManifest from '../content/release-manifest.json';
-import { formatReleaseSize, releaseManifestSchema } from '../lib/release-manifest';
+import { releaseManifestSchema } from '@myself/shared-types/release-manifest';
+import { formatReleaseSize } from '../lib/release-manifest';
 
 export function DownloadCard() {
   const release = releaseManifestSchema.parse(rawManifest);
