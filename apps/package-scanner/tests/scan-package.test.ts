@@ -325,6 +325,10 @@ describe('ZIP 隔离扫描', () => {
     const archivePath = await createArchive(validPackageEntries());
     const controller = new AbortController();
     let scanCalls = 0;
+    let notifySecondScan: (() => void) | undefined;
+    const secondScanStarted = new Promise<void>(resolve => {
+      notifySecondScan = resolve;
+    });
     const operation = scanPackage({
       archivePath,
       signal: controller.signal,
@@ -332,6 +336,7 @@ describe('ZIP 隔离扫描', () => {
         scan: async ({ signal }) => {
           scanCalls += 1;
           if (scanCalls === 1) return { infected: false };
+          notifySecondScan?.();
           return new Promise((_resolve, reject) => {
             signal?.addEventListener(
               'abort',
@@ -343,10 +348,10 @@ describe('ZIP 隔离扫描', () => {
       },
       imageModerator: cleanImageModerator
     });
-    setTimeout(() => controller.abort(), 10);
+    await secondScanStarted;
+    controller.abort();
 
     await expect(operation).rejects.toThrow('SCANNER_SCAN_TIMEOUT');
-    await new Promise(resolve => setTimeout(resolve, 10));
     expect(scanCalls).toBe(2);
   });
 

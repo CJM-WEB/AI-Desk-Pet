@@ -91,11 +91,6 @@ async function verifyHttpGates() {
   ));
   const eicarPort = await listen(eicarServer);
   try {
-    const health = await fetch(`http://127.0.0.1:${eicarPort}/healthz`);
-    const healthBody = await health.json();
-    if (health.status !== 200 || healthBody?.status !== 'ok') {
-      throw new Error(`healthz 返回无效：${health.status} ${JSON.stringify(healthBody)}`);
-    }
     const result = await requestScan(eicarPort);
     if (result.status !== 422 || result.body?.code !== 'dangerous') {
       throw new Error(`EICAR 未被扫描接口阻断：${JSON.stringify(result)}`);
@@ -135,7 +130,6 @@ try {
     clamavVersion: `ClamAV ${version[1]}`,
     clamavDatabaseVersion: version[2],
     uid: process.getuid?.(),
-    health: 'pass',
     eicar: 'blocked',
     timeout: 'http-503',
   })}\n`);

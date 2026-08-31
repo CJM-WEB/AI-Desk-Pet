@@ -9,6 +9,8 @@ const probePath = fileURLToPath(
   new URL('./scanner-candidate-probe.mjs', import.meta.url),
 );
 const windowsDockerCli = 'C:\\Program Files\\Docker\\Docker\\resources\\bin\\docker.exe';
+const healthPollAttempts = 60;
+const healthPollIntervalMs = 2_000;
 
 function fail(field) {
   throw new Error(`Scanner 候选报告字段无效：${field}`);
@@ -71,8 +73,41 @@ function docker(args, purpose, timeout = 15 * 60 * 1_000) {
   return result.stdout.trim();
 }
 
+function wait(milliseconds) {
+  Atomics.wait(
+    new Int32Array(new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT)),
+    0,
+    0,
+    milliseconds,
+  );
+}
+
+/** Docker HEALTHCHECK 是默认服务器能否启动的事实来源，探针不得替代此门。 */
+function waitForCandidateHealth(runDocker, containerId, waitForNextPoll) {
+  for (let attempt = 0; attempt < healthPollAttempts; attempt += 1) {
+    const state = runDocker([
+      'container', 'inspect', '--format',
+      '{{.State.Status}} {{if .State.Health}}{{.State.Health.Status}}{{else}}missing{{end}}',
+      containerId,
+    ], '读取 Scanner 候选容器健康状态', 30_000);
+    const [runtimeStatus, healthStatus] = state.trim().split(/\s+/u);
+    if (runtimeStatus !== 'running') {
+      throw new Error(`Scanner 候选容器已停止：${runtimeStatus || 'unknown'}`);
+    }
+    if (healthStatus === 'healthy') return;
+    if (healthStatus === 'unhealthy') {
+      throw new Error('Scanner 候选容器 health=unhealthy');
+    }
+    if (healthStatus !== 'starting') {
+      throw new Error(`Scanner 候选容器健康状态无效：${healthStatus || 'missing'}`);
+    }
+    if (attempt + 1 < healthPollAttempts) waitForNextPoll(healthPollIntervalMs);
+  }
+  throw new Error('Scanner 候选容器健康检查超时');
+}
+
 /** 构建并运行本地不可变 Scanner 候选；不连接或修改任何云端环境。 */
-export function verifyScannerCandidate(runDocker = docker) {
+export function verifyScannerCandidate(runDocker = docker, waitForNextPoll = wait) {
   runDocker(
     ['version', '--format', '{{.Server.Version}}'],
     '检查 Docker runtime',
@@ -86,6 +121,29 @@ export function verifyScannerCandidate(runDocker = docker) {
     ['image', 'inspect', '--format', '{{.Id}}', imageTag],
     '读取 Scanner 候选镜像身份',
   );
+  let containerId;
+  try {
+    containerId = runDocker([
+      'run', '--detach', '--network', 'none',
+      '--env', 'SCANNER_INTERNAL_SECRET=scanner-candidate-local-secret',
+      '--env', 'SCANNER_DOWNLOAD_HOSTS=candidate.invalid',
+      '--env', 'SCANNER_DOWNLOAD_SIGNATURE_PARAMETERS=signature',
+      '--env', 'TENCENTCLOUD_SECRETID=candidate-local-secret-id',
+      '--env', 'TENCENTCLOUD_SECRETKEY=candidate-local-secret-key',
+      '--env', 'TENCENT_CLOUD_REGION=ap-singapore',
+      imageId,
+    ], '按默认命令启动 Scanner 候选容器').trim();
+    if (!containerId) throw new Error('Scanner 候选容器 ID 为空');
+    waitForCandidateHealth(runDocker, containerId, waitForNextPoll);
+  } finally {
+    if (containerId) {
+      runDocker(
+        ['rm', '--force', containerId],
+        '清理 Scanner 候选容器',
+        30_000,
+      );
+    }
+  }
   const mount = `${resolve(probePath)}:/candidate/probe.mjs:ro`;
   const probeOutput = runDocker([
     'run', '--rm', '--network', 'none',
@@ -99,7 +157,12 @@ export function verifyScannerCandidate(runDocker = docker) {
   } catch (error) {
     throw new Error('Scanner 候选探针未返回单一 JSON 报告', { cause: error });
   }
-  return parseScannerCandidateReport({ imageTag, imageId, ...probe });
+  return parseScannerCandidateReport({
+    imageTag,
+    imageId,
+    ...probe,
+    health: 'pass',
+  });
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

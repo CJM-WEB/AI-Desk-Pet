@@ -85,7 +85,7 @@
 
 ## Task 3：Node 22 容器候选（阶段 2B 第一门）
 
-> 状态：2026-08-31 本地代码与静态门已完成；Scanner 70/70、候选验证器 3/3、typecheck、build、scope 与独立复审通过。宿主固件虚拟化不可用，真实 Docker 候选保持 `blocked/unverified`，不得记为阶段 2B 通过。
+> 状态：2026-08-31 本地代码门已完成；Scanner 70/70、候选验证器 7/7、typecheck、build、scope 与独立复审通过。候选器会按默认 CMD 启动不可变镜像并读取 Docker HEALTHCHECK，另以隔离探针验证 EICAR 与超时；宿主固件虚拟化不可用，真实 Docker 候选保持 `blocked/unverified`，不得记为阶段 2B 通过。
 
 **Files:**
 - Modify: `apps/package-scanner/vite.build.config.ts`, `apps/package-scanner/Dockerfile`
