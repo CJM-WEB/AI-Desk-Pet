@@ -30,7 +30,8 @@ export default {
       name: 'no-undeclared-package-dependencies',
       comment: '运行所需依赖必须由所属 package.json 显式声明。',
       severity: 'warn',
-      from: { pathNot: '(^|/)node_modules/' },
+      // 根合同测试由专属 Vitest 配置解析网站共享契约，不属于可发布 package。
+      from: { pathNot: '(^|/)node_modules/|^tests/website-contract/' },
       to: {
         dependencyTypes: ['unknown', 'undetermined', 'npm-no-pkg', 'npm-unknown'],
         // 工作区公开入口由下方五条目标专属规则校验声明关系，避免合法别名产生重复告警。
@@ -283,7 +284,8 @@ export default {
       comment: '网站 HTTP 契约只允许官网、CloudBase API 与共享契约测试消费。',
       severity: 'error',
       from: {
-        pathNot: '^(apps/(website|cloudbase-api)/|packages/shared-types/tests/)',
+        pathNot:
+          '^(apps/(website|cloudbase-api)/|packages/shared-types/tests/|tests/website-contract/)',
       },
       to: {
         path: '^packages/shared-types/src/website-http\\.[cm]?[jt]s$',
