@@ -1,4 +1,14 @@
-import { publicationBasisSchema, type SubmissionReceipt } from '@myself/shared-types';
+import type { SubmissionReceipt } from '@myself/shared-types';
+import {
+  finalizeSubmissionResponseSchema,
+  prepareSubmissionRequestSchema,
+  prepareSubmissionResponseSchema,
+  publicCommunityItemSchema,
+  publicCommunityPageSchema,
+  publicDownloadResponseSchema,
+  publicLikeResponseSchema,
+  type PublicCommunityItem
+} from '@myself/shared-types/website-http';
 import { ApiClient } from '../../../lib/api-client';
 import {
   SHARED_PET_PAGE_SIZE,
@@ -8,29 +18,6 @@ import {
   type SharedPetPage,
   type SharedPetRepository
 } from './shared-pet-types';
-
-interface PublicCommunityItem {
-  id: string;
-  name: string;
-  description: string;
-  cover: { url: string; expiresAt: string };
-  packageFileName: string;
-  packageSizeBytes: number;
-  likeCount: number;
-  downloadCount: number;
-  publishedAt: string;
-  publicationBasis: unknown;
-}
-
-interface PublicCommunityPage {
-  items: PublicCommunityItem[];
-  nextCursor: number | null;
-}
-
-interface PreparedSubmission extends SubmissionReceipt {
-  coverUpload: { url: string; expiresAt: string };
-  packageUpload: { url: string; expiresAt: string };
-}
 
 export type SignedUpload = (
   url: string,
@@ -55,8 +42,9 @@ export class CloudSharedPetRepository implements SharedPetRepository {
   ): Promise<SharedPetPage> {
     const selectedPage = Number.isFinite(page) ? Math.max(1, Math.floor(page)) : 1;
     const cursor = (selectedPage - 1) * pageSize;
-    const result = await this.api.request<PublicCommunityPage>(
-      `/community?limit=${pageSize}&cursor=${cursor}`
+    const result = await this.api.request(
+      `/community?limit=${pageSize}&cursor=${cursor}`,
+      publicCommunityPageSchema
     );
     const items = result.items.map(item => this.remember(item));
     const hasNext = result.nextCursor !== null;
@@ -78,15 +66,16 @@ export class CloudSharedPetRepository implements SharedPetRepository {
     input: CreateSharedPetInput,
     onProgress?: (percent: number) => void
   ): Promise<SubmissionReceipt> {
-    const prepared = await this.api.request<PreparedSubmission>('/submissions/prepare', {
+    const body = prepareSubmissionRequestSchema.parse({
+      kind: 'shared_package',
+      title: input.name,
+      body: input.description,
+      coverFile: fileDescriptor(input.coverFile, input.coverFile.type),
+      packageFile: fileDescriptor(input.packageFile, 'application/zip')
+    });
+    const prepared = await this.api.request('/submissions/prepare', prepareSubmissionResponseSchema, {
       method: 'POST',
-      body: JSON.stringify({
-        kind: 'shared_package',
-        title: input.name,
-        body: input.description,
-        coverFile: fileDescriptor(input.coverFile, input.coverFile.type),
-        packageFile: fileDescriptor(input.packageFile, 'application/zip')
-      })
+      body: JSON.stringify(body)
     });
     const totalBytes = input.coverFile.size + input.packageFile.size;
     let coverLoaded = 0;
@@ -124,13 +113,11 @@ export class CloudSharedPetRepository implements SharedPetRepository {
     );
     packageLoaded = input.packageFile.size;
     reportProgress();
-    const finalized = await this.api.request<{ status: 'system_reviewing' }>(
+    const finalized = await this.api.request(
       `/submissions/${encodeURIComponent(prepared.submissionId)}/finalize`,
+      finalizeSubmissionResponseSchema,
       { method: 'POST', body: '{}' }
     );
-    if (finalized.status !== 'system_reviewing') {
-      throw new Error('SUBMISSION_STATUS_INVALID');
-    }
     return {
       submissionId: prepared.submissionId,
       statusToken: prepared.statusToken,
@@ -141,8 +128,9 @@ export class CloudSharedPetRepository implements SharedPetRepository {
 
   async getById(id: string): Promise<SharedPetPackageSummary | null> {
     try {
-      return this.remember(await this.api.request<PublicCommunityItem>(
-        `/community/${encodeURIComponent(id)}`
+      return this.remember(await this.api.request(
+        `/community/${encodeURIComponent(id)}`,
+        publicCommunityItemSchema
       ));
     } catch (error) {
       if (isNotFound(error)) return null;
@@ -151,8 +139,9 @@ export class CloudSharedPetRepository implements SharedPetRepository {
   }
 
   async toggleLike(id: string): Promise<SharedPetPackageSummary> {
-    const liked = await this.api.request<{ liked: boolean; likeCount: number }>(
+    const liked = await this.api.request(
       `/community/${encodeURIComponent(id)}/like`,
+      publicLikeResponseSchema,
       { method: 'POST', body: '{}' }
     );
     const current = this.records.get(id) ?? await this.getById(id);
@@ -166,19 +155,16 @@ export class CloudSharedPetRepository implements SharedPetRepository {
   async getDownload(id: string): Promise<SharedPetDownload> {
     const current = this.records.get(id) ?? await this.getById(id);
     if (!current) throw new Error('PACKAGE_NOT_FOUND');
-    const result = await this.api.request<{
-      url: string;
-      expiresAt: string;
-      publicationBasis: unknown;
-    }>(
+    const result = await this.api.request(
       `/community/${encodeURIComponent(id)}/download`,
+      publicDownloadResponseSchema,
       { method: 'POST', body: '{}' }
     );
     return {
       url: result.url,
       expiresAt: result.expiresAt,
       fileName: current.packageFileName,
-      publicationBasis: publicationBasisSchema.parse(result.publicationBasis)
+      publicationBasis: result.publicationBasis
     };
   }
 
@@ -200,7 +186,7 @@ export class CloudSharedPetRepository implements SharedPetRepository {
       createdAt: item.publishedAt,
       updatedAt: item.publishedAt,
       likedByCurrentUser: this.records.get(item.id)?.likedByCurrentUser ?? false,
-      publicationBasis: publicationBasisSchema.parse(item.publicationBasis)
+      publicationBasis: item.publicationBasis
     };
     this.records.set(summary.id, summary);
     return summary;

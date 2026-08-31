@@ -7,7 +7,7 @@ describe('管理员 API 客户端', () => {
   it('管理员令牌使用专用请求头，避免被 CloudBase 网关抢先认证', async () => {
     const fetcher = vi.fn().mockResolvedValue(new Response(JSON.stringify({
       data: { items: [], nextCursor: null },
-      error: null
+      requestId: 'request-1'
     }), { status: 200 }));
     const client = new AdminApiClient(new ApiClient('/api/v1', fetcher));
 
@@ -25,7 +25,7 @@ describe('管理员 API 客户端', () => {
   it('严格拒绝包含未知字段的管理员响应', async () => {
     const fetcher = vi.fn().mockResolvedValue(new Response(JSON.stringify({
       data: { items: [], nextCursor: null, internalSecret: 'hidden' },
-      error: null
+      requestId: 'request-1'
     }), { status: 200 }));
     const client = new AdminApiClient(new ApiClient('/api/v1', fetcher));
 
@@ -108,7 +108,7 @@ describe('管理员 API 客户端', () => {
 });
 
 function response(data: unknown): Response {
-  return new Response(JSON.stringify({ data, error: null }), { status: 200 });
+  return new Response(JSON.stringify({ requestId: 'request-1', data }), { status: 200 });
 }
 
 function adminDetailDto() {

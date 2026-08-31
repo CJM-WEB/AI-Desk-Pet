@@ -51,9 +51,12 @@ async function createRuleFixture() {
       "import { protocol } from '../../../packages/shared-types/src/scanner-protocol.ts';\nexport { protocol };\n",
     'apps/desktop/src/renderer/scanner-protocol-offender.ts':
       "import { protocol } from '../../../../packages/shared-types/src/scanner-protocol.ts';\nexport { protocol };\n",
+    'apps/desktop/src/renderer/website-http-offender.ts':
+      "import { contract } from '../../../../packages/shared-types/src/website-http.ts';\nexport { contract };\n",
     'apps/website/lib/migration-target.ts': 'export const website = true;\n',
     'apps/cloudbase-api/src/internal.ts': 'export const internal = true;\nexport const cloud = true;\n',
     'packages/shared-types/src/scanner-protocol.ts': 'export const protocol = true;\n',
+    'packages/shared-types/src/website-http.ts': 'export const contract = true;\n',
     'apps/cloudbase-api/src/services/offender.ts':
       "import { runtime } from '../adapters/cloudbase-runtime.ts';\nexport { runtime };\n",
     'apps/cloudbase-api/src/adapters/cloudbase-runtime.ts': 'export const runtime = true;\n',
@@ -178,7 +181,7 @@ test('网站专属规则阻止跨应用、服务反向依赖与越界 SDK 调用
   );
   assert.equal(result.status, 0, result.stderr);
   const report = JSON.parse(result.stdout);
-  assert.equal(report.summary.error, 2);
+  assert.equal(report.summary.error, 3);
   const hasViolation = (ruleName, from) =>
     report.summary.violations.some(
       violation => violation.rule.name === ruleName && violation.from === from,
@@ -212,6 +215,12 @@ test('网站专属规则阻止跨应用、服务反向依赖与越界 SDK 调用
       offender,
     );
   }
+  assert.ok(
+    hasViolation(
+      'website-http-only-in-web-chain',
+      'apps/desktop/src/renderer/website-http-offender.ts',
+    ),
+  );
   for (const entryPoint of [
     'tools/plan-cloudbase-migrations.mjs',
     'tools/cloudbase-migration-inventory.mjs',

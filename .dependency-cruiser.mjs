@@ -35,7 +35,7 @@ export default {
         dependencyTypes: ['unknown', 'undetermined', 'npm-no-pkg', 'npm-unknown'],
         // 工作区公开入口由下方五条目标专属规则校验声明关系，避免合法别名产生重复告警。
         pathNot:
-          '^packages/(agent-core|character-assets|character-runtime|file-tools|shared-types)/src/index\\.[cm]?[jt]s$|^packages/shared-types/src/scanner-protocol\\.[cm]?[jt]s$',
+          '^packages/(agent-core|character-assets|character-runtime|file-tools|shared-types)/src/index\\.[cm]?[jt]s$|^packages/shared-types/src/(scanner-protocol|website-http)\\.[cm]?[jt]s$',
       },
     },
     {
@@ -89,7 +89,7 @@ export default {
           '^(apps/(cloudbase-api|desktop|package-scanner|website)|packages/(agent-core|character-runtime|file-tools))/',
       },
       to: {
-        path: '^packages/shared-types/src/(index|scanner-protocol)\\.[cm]?[jt]s$',
+        path: '^packages/shared-types/src/(index|scanner-protocol|website-http)\\.[cm]?[jt]s$',
         dependencyTypes: ['undetermined'],
       },
     },
@@ -279,6 +279,18 @@ export default {
       },
     },
     {
+      name: 'website-http-only-in-web-chain',
+      comment: '网站 HTTP 契约只允许官网、CloudBase API 与共享契约测试消费。',
+      severity: 'error',
+      from: {
+        pathNot: '^(apps/(website|cloudbase-api)/|packages/shared-types/tests/)',
+      },
+      to: {
+        path: '^packages/shared-types/src/website-http\\.[cm]?[jt]s$',
+        reachable: true,
+      },
+    },
+    {
       name: 'file-tools-dependency-direction',
       comment: '文件工具只能依赖自身和共享类型。',
       severity: 'warn',
@@ -423,7 +435,7 @@ export default {
       comment: '跨工作区依赖 shared-types 必须经过包入口，不得绕入内部源码。',
       severity: 'warn',
       from: { pathNot: '^packages/shared-types/' },
-      to: { path: '^packages/shared-types/src/(?!(index|scanner-protocol)\\.[cm]?[jt]s$)' },
+      to: { path: '^packages/shared-types/src/(?!(index|scanner-protocol|website-http)\\.[cm]?[jt]s$)' },
     },
     {
       name: 'no-website-to-cloud-source',

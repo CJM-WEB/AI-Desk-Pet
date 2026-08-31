@@ -1,7 +1,8 @@
+import type { SubmissionStatusView } from '@myself/shared-types';
 import {
-  submissionStatusViewSchema,
-  type SubmissionStatusView
-} from '@myself/shared-types';
+  submissionStatusRequestSchema,
+  submissionStatusResponseSchema
+} from '@myself/shared-types/website-http';
 import type { ApiClient } from './api-client';
 
 const STATUS_TOKEN_PATTERN = /^[A-Za-z0-9_-]{43}$/u;
@@ -17,9 +18,9 @@ export async function querySubmissionStatus(
   api: ApiClient,
   statusToken: string
 ): Promise<SubmissionStatusView> {
-  const result = await api.request<unknown>('/submission-status', {
+  const body = submissionStatusRequestSchema.parse({ statusToken });
+  return api.request('/submission-status', submissionStatusResponseSchema, {
     method: 'POST',
-    body: JSON.stringify({ statusToken })
+    body: JSON.stringify(body)
   });
-  return submissionStatusViewSchema.parse(result);
 }

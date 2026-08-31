@@ -11,8 +11,8 @@ const prepared = {
   statusToken: 'a'.repeat(43),
   statusPath: '/submission-status/' as const,
   status: 'uploading' as const,
-  coverUpload: { url: 'https://storage.example/cover', expiresAt: '2026-08-01T00:00:00.000Z' },
-  packageUpload: { url: 'https://storage.example/package', expiresAt: '2026-08-01T00:00:00.000Z' }
+  coverUpload: { path: 'submissions/submission-1/cover.png', url: 'https://storage.example/cover', expiresAt: '2026-08-01T00:00:00.000Z' },
+  packageUpload: { path: 'submissions/submission-1/package.zip', url: 'https://storage.example/package', expiresAt: '2026-08-01T00:00:00.000Z' }
 };
 
 function createInput(zipType = 'application/zip') {
@@ -25,7 +25,9 @@ function createInput(zipType = 'application/zip') {
 }
 
 function createApi(...values: unknown[]) {
-  return { request: vi.fn().mockResolvedValueOnce(values[0]).mockResolvedValueOnce(values[1]) } as unknown as ApiClient;
+  return {
+    request: vi.fn((_path, schema) => Promise.resolve(schema.parse(values.shift())))
+  } as unknown as ApiClient;
 }
 
 describe('云端共享仓库', () => {
@@ -82,14 +84,14 @@ describe('云端共享仓库', () => {
 
     const receipt = await repository.submit(createInput('application/x-zip-compressed'));
 
-    expect(api.request).toHaveBeenNthCalledWith(1, '/submissions/prepare', expect.objectContaining({
+    expect(api.request).toHaveBeenNthCalledWith(1, '/submissions/prepare', expect.anything(), expect.objectContaining({
       method: 'POST',
       body: expect.stringContaining('"contentType":"application/zip"')
     }));
-    expect(JSON.parse(vi.mocked(api.request).mock.calls[0]![1]!.body as string)).not.toHaveProperty('captcha');
+    expect(JSON.parse(vi.mocked(api.request).mock.calls[0]![2]!.body as string)).not.toHaveProperty('captcha');
     expect(upload).toHaveBeenNthCalledWith(1, 'https://storage.example/cover', expect.any(File), 'image/png', expect.any(Function));
     expect(upload).toHaveBeenNthCalledWith(2, 'https://storage.example/package', expect.any(File), 'application/zip', expect.any(Function));
-    expect(api.request).toHaveBeenNthCalledWith(2, '/submissions/submission-1/finalize', {
+    expect(api.request).toHaveBeenNthCalledWith(2, '/submissions/submission-1/finalize', expect.anything(), {
       method: 'POST', body: '{}'
     });
     expect(receipt.status).toBe('system_reviewing');
@@ -101,14 +103,14 @@ describe('云端共享仓库', () => {
 
     await expect(
       new CloudSharedPetRepository(api, upload).submit(createInput())
-    ).rejects.toThrow('SUBMISSION_STATUS_INVALID');
+    ).rejects.toThrow();
   });
 
   it.each(['', 'application/x-zip-compressed'])('空或别名 ZIP MIME 仍以 application/zip 上传：%s', async zipType => {
     const api = createApi(prepared, { status: 'system_reviewing' });
     const upload = vi.fn(async () => undefined) as SignedUpload;
     await new CloudSharedPetRepository(api, upload).submit(createInput(zipType));
-    expect(JSON.parse(vi.mocked(api.request).mock.calls[0]![1]!.body as string).packageFile.contentType)
+    expect(JSON.parse(vi.mocked(api.request).mock.calls[0]![2]!.body as string).packageFile.contentType)
       .toBe('application/zip');
     expect(vi.mocked(upload).mock.calls[1]![2]).toBe('application/zip');
   });
@@ -141,7 +143,7 @@ describe('云端共享仓库', () => {
       publicationBasis: 'admin_override'
     });
     expect(page.items[0]?.coverFileName).toBeUndefined();
-    expect(request).toHaveBeenCalledWith('/community?limit=8&cursor=0');
+    expect(request).toHaveBeenCalledWith('/community?limit=8&cursor=0', expect.anything());
   });
 
   it('游标到达含条目的终页时公开精确总页数', async () => {
@@ -157,7 +159,7 @@ describe('云端共享仓库', () => {
     await expect(new CloudSharedPetRepository(api).listPage(2)).resolves.toMatchObject({
       total: 9, totalPages: 2, totalKnown: true, hasNext: false
     });
-    expect(request).toHaveBeenCalledWith('/community?limit=8&cursor=8');
+    expect(request).toHaveBeenCalledWith('/community?limit=8&cursor=8', expect.anything());
   });
 
   it('详情 404 返回 null，点赞和下载仅使用公开 API', async () => {
@@ -187,7 +189,7 @@ describe('云端共享仓库', () => {
   });
 
   it.each([undefined, 'unsafe'])('公开列表对非法发布依据失败关闭：%s', async publicationBasis => {
-    const request = vi.fn().mockResolvedValue({
+    const request = vi.fn((_path, schema) => Promise.resolve(schema.parse({
       items: [{
         id: 'pet-invalid', name: '宠物', description: '描述',
         cover: { url: 'https://storage.example/cover', expiresAt: '2026-08-01T00:00:00.000Z' },
@@ -195,7 +197,7 @@ describe('云端共享仓库', () => {
         publishedAt: '2026-08-01T00:00:00.000Z', publicationBasis
       }],
       nextCursor: null
-    });
+    })));
 
     await expect(
       new CloudSharedPetRepository({ request } as unknown as ApiClient).listPage(1)

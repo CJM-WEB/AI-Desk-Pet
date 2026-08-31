@@ -1,21 +1,17 @@
+import { errorEnvelopeSchema, successEnvelopeSchema } from '@myself/shared-types/website-http';
+import { z } from 'zod';
+
 /** REST 请求失败使用稳定错误码，界面不暴露服务端内部信息。 */
 export class ApiClientError extends Error {
   constructor(
     public readonly code: string,
     public readonly statusCode: number,
-    public readonly retryAfterSeconds?: number
+    public readonly retryAfterSeconds?: number,
+    public readonly requestId?: string
   ) {
     super(code);
     this.name = 'ApiClientError';
   }
-}
-
-interface ApiEnvelope<T> {
-  data: T | null;
-  error: {
-    code: string;
-    retryAfterSeconds?: number;
-  } | null;
 }
 
 type Fetcher = typeof fetch;
@@ -27,7 +23,11 @@ export class ApiClient {
     private readonly fetcher: Fetcher = (input, init) => fetch(input, init)
   ) {}
 
-  async request<T>(path: string, init: RequestInit = {}): Promise<T> {
+  async request<T>(
+    path: string,
+    schema: z.ZodType<T>,
+    init: RequestInit = {}
+  ): Promise<T> {
     const response = await this.fetcher(`${this.baseUrl}${path}`, {
       ...init,
       headers: {
@@ -35,27 +35,33 @@ export class ApiClient {
         ...init.headers
       }
     });
-    const envelope = await readEnvelope<T>(response);
-    if (!response.ok || envelope.error) {
-      throw new ApiClientError(
-        envelope.error?.code ?? 'REQUEST_FAILED',
-        response.status,
-        envelope.error?.retryAfterSeconds
-      );
+    const value = await readJson(response);
+    if (response.ok) {
+      const envelope = successEnvelopeSchema(z.unknown()).safeParse(value);
+      if (!envelope.success) throw invalidResponse(response.status);
+      const data = schema.safeParse(envelope.data.data);
+      if (!data.success) throw invalidResponse(response.status);
+      return data.data;
     }
-    if (envelope.data === null) throw new ApiClientError('INVALID_RESPONSE', response.status);
-    return envelope.data;
+    const envelope = errorEnvelopeSchema.safeParse(value);
+    if (!envelope.success) throw invalidResponse(response.status);
+    throw new ApiClientError(
+      envelope.data.error.code,
+      response.status,
+      envelope.data.error.retryAfterSeconds,
+      envelope.data.requestId
+    );
   }
 }
 
-async function readEnvelope<T>(response: Response): Promise<ApiEnvelope<T>> {
+async function readJson(response: Response): Promise<unknown> {
   try {
-    const value: unknown = await response.json();
-    if (typeof value !== 'object' || value === null) throw new Error();
-    const envelope = value as Partial<ApiEnvelope<T>>;
-    if (!('data' in envelope) || !('error' in envelope)) throw new Error();
-    return envelope as ApiEnvelope<T>;
+    return await response.json() as unknown;
   } catch {
-    throw new ApiClientError('INVALID_RESPONSE', response.status);
+    throw invalidResponse(response.status);
   }
+}
+
+function invalidResponse(statusCode: number): ApiClientError {
+  return new ApiClientError('INVALID_RESPONSE', statusCode);
 }

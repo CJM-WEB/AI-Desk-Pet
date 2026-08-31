@@ -229,14 +229,14 @@ export function createMemoryWebsiteApi({ runId }) {
         return sendData(response, 200, pageOf(
           [...submissions.values()].filter(row => row.kind === 'shared_package' && row.status === 'published'),
           searchParams,
-          publicCommunity
+          record => publicCommunity(record, request.headers.host)
         ));
       }
 
       const communityId = matchId(pathname, '/api/v1/community/', '');
       if (request.method === 'GET' && communityId) {
         const record = requirePublished(communityId, 'shared_package');
-        return sendData(response, 200, publicCommunity(record));
+        return sendData(response, 200, publicCommunity(record, request.headers.host));
       }
 
       const communityLikeId = matchId(pathname, '/api/v1/community/', '/like');
@@ -515,14 +515,17 @@ function pageOf(records, searchParams, project) {
   return { items, nextCursor: cursor + items.length < records.length ? cursor + items.length : null };
 }
 
-function publicCommunity(record) {
+function publicCommunity(record, host) {
   const cover = record.assets.find(asset => asset.role === 'cover');
   const packageAsset = record.assets.find(asset => asset.role === 'package');
   return {
     id: record.id,
     name: record.title,
     description: record.body,
-    cover: { url: `/__e2e/cover/${record.id}`, expiresAt: plusMinutes(record.updatedAt, 5) },
+    cover: {
+      url: `http://${host}/__e2e/cover/${record.id}`,
+      expiresAt: plusMinutes(record.updatedAt, 5)
+    },
     packageFileName: packageAsset.fileName,
     packageSizeBytes: packageAsset.actualBytes ?? packageAsset.declaredBytes,
     likeCount: record.likeCount,
@@ -738,11 +741,11 @@ function plusDays(value, days) {
 }
 
 function sendData(response, status, data) {
-  return sendJson(response, status, { data, error: null });
+  return sendJson(response, status, { requestId: 'e2e-request', data });
 }
 
 function sendError(response, status, code) {
-  return sendJson(response, status, { data: null, error: { code } });
+  return sendJson(response, status, { requestId: 'e2e-request', error: { code } });
 }
 
 function sendJson(response, status, value) {

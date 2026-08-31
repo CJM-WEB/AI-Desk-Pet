@@ -60,7 +60,7 @@ describe('匿名投稿状态令牌', () => {
 
     await screen.findByText('系统审核中');
     expect(window.location.search).toBe('?keep=visible');
-    expect(request).toHaveBeenCalledWith('/submission-status', {
+    expect(request).toHaveBeenCalledWith('/submission-status', expect.anything(), {
       method: 'POST',
       body: JSON.stringify({ statusToken: token })
     });
@@ -82,7 +82,7 @@ describe('匿名投稿状态令牌', () => {
 
     expect(await screen.findByText('已发布')).toBeTruthy();
     expect(window.location.hash).toBe('');
-    expect(request).toHaveBeenCalledWith('/submission-status', {
+    expect(request).toHaveBeenCalledWith('/submission-status', expect.anything(), {
       method: 'POST',
       body: JSON.stringify({ statusToken: token })
     });

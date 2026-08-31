@@ -2,9 +2,27 @@ import { createHmac, randomUUID } from 'node:crypto';
 
 import {
   adminActionSchema,
-  submissionStatusSchema,
-  submissionStatusViewSchema
+  submissionStatusSchema
 } from '@myself/shared-types';
+import {
+  adminActionResponseSchema,
+  adminDetailResponseSchema,
+  adminQueueResponseSchema,
+  feedbackSubmissionRequestSchema,
+  feedbackSubmissionResponseSchema,
+  finalizeSubmissionRequestSchema,
+  finalizeSubmissionResponseSchema,
+  prepareSubmissionRequestSchema,
+  prepareSubmissionResponseSchema,
+  publicCommunityItemSchema,
+  publicCommunityPageSchema,
+  publicDownloadResponseSchema,
+  publicFeedbackPageSchema,
+  publicLikeResponseSchema,
+  submissionStatusRequestSchema,
+  submissionStatusResponseSchema
+} from '@myself/shared-types/website-http';
+import { ZodError } from 'zod';
 
 import { CloudBaseAdminIdentityProvider } from '../adapters/cloudbase-auth.js';
 import {
@@ -131,7 +149,12 @@ export function createApi(dependencies: ApiDependencies): ApiHandler {
       return jsonResponse(200, data, null, requestId);
     } catch (error) {
       const apiError = normalizeError(error);
-      return jsonResponse(apiError.statusCode, null, apiError, requestId);
+      return jsonResponse(
+        apiError.statusCode,
+        null,
+        apiError,
+        error instanceof ZodError ? randomUUID() : requestId
+      );
     }
   };
 }
@@ -149,7 +172,9 @@ async function dispatch(
 
   if (method === 'GET' && path === '/api/v1/admin/submissions') {
     await dependencies.adminIdentity.requireAdmin(requireAdminToken(event));
-    return dependencies.admin.listQueue(adminListQuery(event));
+    return adminQueueResponseSchema.parse(
+      await dependencies.admin.listQueue(adminListQuery(event))
+    );
   }
 
   const adminActionId = dynamicId(
@@ -165,7 +190,9 @@ async function dispatch(
     );
     const action = adminActionSchema.safeParse(requestRecord(event));
     if (!action.success) throw invalidRequest();
-    return dependencies.admin.applyAction(identity, adminActionId, action.data);
+    return adminActionResponseSchema.parse(
+      await dependencies.admin.applyAction(identity, adminActionId, action.data)
+    );
   }
 
   const adminDetailId = dynamicId(
@@ -177,19 +204,21 @@ async function dispatch(
   );
   if (adminDetailId !== null) {
     await dependencies.adminIdentity.requireAdmin(requireAdminToken(event));
-    return dependencies.admin.getDetail(adminDetailId);
+    return adminDetailResponseSchema.parse(
+      await dependencies.admin.getDetail(adminDetailId)
+    );
   }
 
   if (method === 'POST' && path === '/api/v1/submissions/prepare') {
-    const body = requestRecord(event);
+    const body = prepareSubmissionRequestSchema.safeParse(requestRecord(event));
+    if (!body.success) throw invalidRequest();
     const ip = requireSourceIp(event, context);
     await dependencies.abuseControl.consume(
       'submission_prepare',
       ipFingerprint(ip, dependencies.fingerprintSecret)
     );
-    return dependencies.submissions.prepare(
-      body as unknown as PrepareSubmissionInput,
-      { ip }
+    return prepareSubmissionResponseSchema.parse(
+      await dependencies.submissions.prepare(body.data, { ip })
     );
   }
 
@@ -201,55 +230,51 @@ async function dispatch(
     '/finalize'
   );
   if (finalizeId !== null) {
-    requestRecord(event);
-    return dependencies.submissions.finalize({ submissionId: finalizeId });
+    const body = finalizeSubmissionRequestSchema.safeParse(requestRecord(event));
+    if (!body.success) throw invalidRequest();
+    return finalizeSubmissionResponseSchema.parse(
+      await dependencies.submissions.finalize({ submissionId: finalizeId })
+    );
   }
 
   if (method === 'POST' && path === '/api/v1/feedback') {
-    const body = requestRecord(event);
+    const body = feedbackSubmissionRequestSchema.safeParse(requestRecord(event));
+    if (!body.success) throw invalidRequest();
     const ip = requireSourceIp(event, context);
     await dependencies.abuseControl.consume(
       'submission_prepare',
       ipFingerprint(ip, dependencies.fingerprintSecret)
     );
-    return dependencies.textSubmissions.submit(
-      body as unknown as TextSubmissionInput,
-      { ip }
+    return feedbackSubmissionResponseSchema.parse(
+      await dependencies.textSubmissions.submit(body.data, { ip })
     );
   }
 
   if (method === 'POST' && path === '/api/v1/submission-status') {
-    const body = requestRecord(event);
-    if (typeof body.statusToken !== 'string') throw invalidRequest();
+    const body = submissionStatusRequestSchema.safeParse(requestRecord(event));
+    if (!body.success) throw invalidRequest();
     const ip = requireSourceIp(event, context);
     await dependencies.abuseControl.consume(
       'status_query',
       ipFingerprint(ip, dependencies.fingerprintSecret)
     );
-    return publicStatus(await dependencies.submissions.getStatus(body.statusToken));
+    return submissionStatusResponseSchema.parse(
+      await dependencies.submissions.getStatus(body.data.statusToken)
+    );
   }
 
   if (method === 'GET' && path === '/api/v1/community') {
-    const page = await dependencies.publicContent.listCommunity(
-      publicListQuery(event)
+    return publicCommunityPageSchema.parse(
+      await dependencies.publicContent.listCommunity(publicListQuery(event))
     );
-    return {
-      items: page.items.map(publicCommunity),
-      nextCursor: page.nextCursor
-    };
   }
 
   if (method === 'GET' && path === '/api/v1/feedback') {
     const kind = event.queryStringParameters?.kind;
     if (kind !== 'feedback' && kind !== 'suggestion') throw invalidRequest();
-    const page = await dependencies.publicContent.listFeedback(
-      kind,
-      publicListQuery(event)
+    return publicFeedbackPageSchema.parse(
+      await dependencies.publicContent.listFeedback(kind, publicListQuery(event))
     );
-    return {
-      items: page.items.map(publicFeedback),
-      nextCursor: page.nextCursor
-    };
   }
 
   const feedbackLikeId = dynamicId(
@@ -260,14 +285,17 @@ async function dispatch(
     '/like'
   );
   if (feedbackLikeId !== null) {
-    requestRecord(event);
+    const body = finalizeSubmissionRequestSchema.safeParse(requestRecord(event));
+    if (!body.success) throw invalidRequest();
     const deviceHash = deviceFingerprint(
       requireSourceIp(event, context),
       header(event.headers, 'user-agent'),
       dependencies.fingerprintSecret
     );
     await dependencies.abuseControl.consume(`like:${feedbackLikeId}`, deviceHash);
-    return dependencies.publicContent.toggleFeedbackLike(feedbackLikeId, deviceHash);
+    return publicLikeResponseSchema.parse(
+      await dependencies.publicContent.toggleFeedbackLike(feedbackLikeId, deviceHash)
+    );
   }
 
   const likeId = dynamicId(
@@ -278,14 +306,17 @@ async function dispatch(
     '/like'
   );
   if (likeId !== null) {
-    requestRecord(event);
+    const body = finalizeSubmissionRequestSchema.safeParse(requestRecord(event));
+    if (!body.success) throw invalidRequest();
     const deviceHash = deviceFingerprint(
       requireSourceIp(event, context),
       header(event.headers, 'user-agent'),
       dependencies.fingerprintSecret
     );
     await dependencies.abuseControl.consume(`like:${likeId}`, deviceHash);
-    return dependencies.publicContent.toggleCommunityLike(likeId, deviceHash);
+    return publicLikeResponseSchema.parse(
+      await dependencies.publicContent.toggleCommunityLike(likeId, deviceHash)
+    );
   }
 
   const downloadId = dynamicId(
@@ -296,7 +327,8 @@ async function dispatch(
     '/download'
   );
   if (downloadId !== null) {
-    requestRecord(event);
+    const body = finalizeSubmissionRequestSchema.safeParse(requestRecord(event));
+    if (!body.success) throw invalidRequest();
     const deviceHash = deviceFingerprint(
       requireSourceIp(event, context),
       header(event.headers, 'user-agent'),
@@ -306,7 +338,7 @@ async function dispatch(
       `download:${downloadId}`,
       deviceHash
     );
-    return publicDownload(
+    return publicDownloadResponseSchema.parse(
       await dependencies.publicContent.getDownload(downloadId)
     );
   }
@@ -319,7 +351,7 @@ async function dispatch(
     ''
   );
   if (communityId !== null) {
-    return publicCommunity(
+    return publicCommunityItemSchema.parse(
       await dependencies.publicContent.getCommunity(communityId)
     );
   }
@@ -471,54 +503,6 @@ function requireAdminToken(event: ApiHttpEvent): string {
   return token;
 }
 
-function publicStatus(value: unknown): Record<string, unknown> {
-  const row = submissionStatusViewSchema.strip().parse(value);
-  return {
-    submissionId: row.submissionId,
-    status: row.status,
-    publicReason: row.publicReason,
-    createdAt: row.createdAt,
-    updatedAt: row.updatedAt
-  };
-}
-
-function publicCommunity(item: PublicCommunityItem): PublicCommunityItem {
-  return {
-    id: item.id,
-    name: item.name,
-    description: item.description,
-    cover: {
-      url: item.cover.url,
-      expiresAt: item.cover.expiresAt
-    },
-    packageFileName: item.packageFileName,
-    packageSizeBytes: item.packageSizeBytes,
-    likeCount: item.likeCount,
-    downloadCount: item.downloadCount,
-    publishedAt: item.publishedAt,
-    publicationBasis: item.publicationBasis
-  };
-}
-
-function publicDownload(item: PublicDownload): PublicDownload {
-  return {
-    url: item.url,
-    expiresAt: item.expiresAt,
-    publicationBasis: item.publicationBasis
-  };
-}
-
-function publicFeedback(item: PublicFeedbackItem): PublicFeedbackItem {
-  return {
-    id: item.id,
-    kind: item.kind,
-    authorName: item.authorName,
-    content: item.content,
-    likeCount: item.likeCount,
-    createdAt: item.createdAt
-  };
-}
-
 function safeRequestId(value: string | undefined): string {
   return typeof value === 'string'
     && /^[A-Za-z0-9._:-]{1,128}$/u.test(value)
@@ -532,21 +516,16 @@ function normalizeError(error: unknown): ApiError {
     const value = error as Record<string, unknown>;
     if (
       typeof value.code === 'string'
-      && typeof value.statusCode === 'number'
+      && /^[A-Z][A-Z0-9_]{0,127}$/u.test(value.code)
       && Number.isSafeInteger(value.statusCode)
-      && value.statusCode >= 400
-      && value.statusCode <= 599
+      && (value.statusCode as number) >= 400
+      && (value.statusCode as number) <= 599
     ) {
-      return new ApiError(
-        value.code,
-        value.statusCode,
-        '受控错误',
-        typeof value.retryAfterSeconds === 'number'
-          && Number.isSafeInteger(value.retryAfterSeconds)
-          && value.retryAfterSeconds > 0
-          ? value.retryAfterSeconds
-          : undefined
-      );
+      const retryAfterSeconds = Number.isSafeInteger(value.retryAfterSeconds)
+        && (value.retryAfterSeconds as number) > 0
+        ? value.retryAfterSeconds as number
+        : undefined;
+      return new ApiError(value.code, value.statusCode as number, '受控错误', retryAfterSeconds);
     }
   }
   return new ApiError('INTERNAL_ERROR', 500);

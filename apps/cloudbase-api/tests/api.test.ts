@@ -25,6 +25,13 @@ vi.mock('../src/adapters/cloudbase-runtime.js', () => ({
 
 const sourceIp = '203.0.113.8';
 const fingerprintSecret = '仅用于测试的指纹配置值';
+const validPrepareRequest = {
+  kind: 'shared_package' as const,
+  title: '名称',
+  body: '说明',
+  packageFile: { fileName: 'pet.zip', sizeBytes: 1024, contentType: 'application/zip' as const },
+  coverFile: { fileName: 'cover.webp', sizeBytes: 512, contentType: 'image/webp' as const }
+};
 
 function createDependencies() {
   return {
@@ -51,8 +58,7 @@ function createDependencies() {
         status: 'system_reviewing',
         publicReason: null,
         createdAt: '2026-07-31T00:00:00.000Z',
-        updatedAt: '2026-07-31T00:01:00.000Z',
-        moderationEvidence: null as string | null
+        updatedAt: '2026-07-31T00:01:00.000Z'
       }))
     },
     textSubmissions: {
@@ -78,8 +84,7 @@ function createDependencies() {
           likeCount: 2,
           downloadCount: 3,
           publishedAt: '2026-07-31T00:00:00.000Z',
-          publicationBasis: 'admin_override' as const,
-          storageKey: '不得公开'
+          publicationBasis: 'admin_override' as const
         }],
         nextCursor: null
       })),
@@ -96,8 +101,7 @@ function createDependencies() {
         likeCount: 2,
         downloadCount: 3,
         publishedAt: '2026-07-31T00:00:00.000Z',
-        publicationBasis: 'admin_override' as const,
-        internalEvidence: '不得公开'
+        publicationBasis: 'admin_override' as const
       })),
       listFeedback: vi.fn(async () => ({
         items: [{
@@ -106,8 +110,7 @@ function createDependencies() {
           authorName: '匿名用户',
           content: '公开反馈',
           likeCount: 1,
-          createdAt: '2026-07-31T00:00:00.000Z',
-          statusTokenHash: '不得公开'
+          createdAt: '2026-07-31T00:00:00.000Z'
         }],
         nextCursor: null
       })),
@@ -116,8 +119,7 @@ function createDependencies() {
       getDownload: vi.fn(async () => ({
         url: 'https://storage.example/download',
         expiresAt: '2026-07-31T00:05:00.000Z',
-        publicationBasis: 'admin_override' as const,
-        internalEvidence: '不得公开'
+        publicationBasis: 'admin_override' as const
       }))
     },
     abuseControl: {
@@ -134,18 +136,35 @@ function createDependencies() {
       getDetail: vi.fn(async () => ({
         id: 'submission-1',
         status: 'manual_review_pending',
+        statusVersion: 3,
+        kind: 'shared_package',
+        title: '桌宠资源',
+        body: '资源说明',
+        moderationLeaseUntil: null,
+        purgeAfter: null,
+        preQuarantineStatus: null,
+        publishedAt: null,
+        publicationBasis: null,
+        createdAt: '2026-07-31T00:00:00.000Z',
+        updatedAt: '2026-07-31T00:01:00.000Z',
+        riskSummary: {},
+        autoRejectionReason: null,
         coverPreview: {
           url: 'https://preview.example/cover.webp',
           expiresAt: '2026-07-31T00:05:00.000Z'
-        }
+        },
+        assets: [],
+        moderationResults: [],
+        auditLogs: []
       })),
       applyAction: vi.fn(async () => ({
         submission: {
           id: 'submission-1',
           status: 'published',
-          statusVersion: 4
+          statusVersion: 4,
+          publicationBasis: 'standard' as const
         },
-        replayed: false
+        replayed: true as const
       }))
     },
     fingerprintSecret
@@ -223,6 +242,32 @@ describe('API 生产组合', () => {
 });
 
 describe('公开 HTTP API', () => {
+  it('发送前响应校验失败时使用新 requestId 且不泄漏原对象', async () => {
+    const dependencies = createDependencies();
+    dependencies.publicContent.toggleCommunityLike.mockResolvedValueOnce({
+      liked: true,
+      likeCount: 3,
+      adminEmail: 'admin@example.com',
+      storageKey: 'private/package.zip'
+    } as unknown as { liked: boolean; likeCount: number });
+    const main = createApi(dependencies);
+
+    const response = await main(
+      event('POST', '/api/v1/community/community-1/like', {}),
+      context
+    );
+    const body = JSON.parse(response.body);
+
+    expect(response.statusCode).toBe(500);
+    expect(body).toEqual({
+      requestId: expect.any(String),
+      error: { code: 'INTERNAL_ERROR' }
+    });
+    expect(body.requestId).not.toBe(context.requestId);
+    expect(response.body).not.toContain('admin@example.com');
+    expect(response.body).not.toContain('private/package.zip');
+  });
+
   it('兼容 CloudBase HTTP 服务剥离 api 前缀后的路径', async () => {
     const dependencies = createDependencies();
     const main = createApi(dependencies);
@@ -230,7 +275,7 @@ describe('公开 HTTP API', () => {
     const response = await main(event('GET', '/v1/community'), context);
 
     expect(response.statusCode).toBe(200);
-    expect(JSON.parse(response.body).error).toBeNull();
+    expect(JSON.parse(response.body).error).toBeUndefined();
   });
 
   it('匿名 prepare 无需 CAPTCHA 即可进入投稿服务', async () => {
@@ -238,7 +283,7 @@ describe('公开 HTTP API', () => {
     const main = createApi(dependencies);
 
     const response = await main(
-      event('POST', '/api/v1/submissions/prepare', {}),
+      event('POST', '/api/v1/submissions/prepare', validPrepareRequest),
       context
     );
 
@@ -254,13 +299,12 @@ describe('公开 HTTP API', () => {
     const main = createApi(dependencies);
 
     const response = await main(
-      event('POST', '/api/v1/submissions/prepare', {}),
+      event('POST', '/api/v1/submissions/prepare', validPrepareRequest),
       context
     );
 
     expect(response.statusCode).toBe(503);
     expect(JSON.parse(response.body)).toMatchObject({
-      data: null,
       error: { code: 'SHARED_PACKAGE_SUBMISSIONS_PAUSED' }
     });
   });
@@ -317,8 +361,8 @@ describe('公开 HTTP API', () => {
     const main = createApi(dependencies);
     const request = event('POST', '/api/v1/feedback', {
       kind: 'feedback',
-      title: '反馈标题',
-      body: '反馈内容'
+      authorName: '反馈用户',
+      content: '反馈内容'
     });
     request.requestContext = { sourceIp: '198.51.100.23' };
 
@@ -372,7 +416,7 @@ describe('公开 HTTP API', () => {
     expect(dependencies.submissions.finalize).toHaveBeenCalledOnce();
   });
 
-  it('状态查询限流并只返回公开状态 DTO', async () => {
+  it('状态查询响应含私有字段时严格失败关闭', async () => {
     const dependencies = createDependencies();
     dependencies.submissions.getStatus.mockResolvedValueOnce({
       submissionId: 'submission-1',
@@ -381,7 +425,7 @@ describe('公开 HTTP API', () => {
       createdAt: '2026-07-31T00:00:00.000Z',
       updatedAt: '2026-07-31T00:01:00.000Z',
       moderationEvidence: '不得公开'
-    });
+    } as unknown as Awaited<ReturnType<typeof dependencies.submissions.getStatus>>);
     const main = createApi(dependencies);
 
     const response = await main(
@@ -392,22 +436,17 @@ describe('公开 HTTP API', () => {
     );
     const payload = JSON.parse(response.body);
 
-    expect(response.statusCode).toBe(200);
+    expect(response.statusCode).toBe(500);
     expect(dependencies.abuseControl.consume).toHaveBeenCalledWith(
       'status_query',
       expect.stringMatching(/^[a-f0-9]{64}$/u)
     );
-    expect(payload.data).toEqual({
-      submissionId: 'submission-1',
-      status: 'system_reviewing',
-      publicReason: null,
-      createdAt: '2026-07-31T00:00:00.000Z',
-      updatedAt: '2026-07-31T00:01:00.000Z'
-    });
+    expect(payload.error).toEqual({ code: 'INTERNAL_ERROR' });
+    expect(payload.data).toBeUndefined();
     expect(response.body).not.toContain('moderationEvidence');
   });
 
-  it('公开列表、详情和反馈裁剪内部字段', async () => {
+  it('公开列表、详情和反馈只发送共享严格 DTO', async () => {
     const dependencies = createDependencies();
     const main = createApi(dependencies);
 
@@ -496,8 +535,7 @@ describe('公开 HTTP API', () => {
       Object.assign(new Error('内部计数信息'), {
         code: 'RATE_LIMITED',
         statusCode: 429,
-        retryAfterSeconds: 18,
-        publicMessage: '请求失败'
+        retryAfterSeconds: 18
       })
     );
     const main = createApi(dependencies);
@@ -511,7 +549,6 @@ describe('公开 HTTP API', () => {
 
     expect(response.statusCode).toBe(429);
     expect(JSON.parse(response.body)).toMatchObject({
-      data: null,
       error: {
         code: 'RATE_LIMITED',
         retryAfterSeconds: 18
@@ -530,7 +567,6 @@ describe('公开 HTTP API', () => {
 
     expect(response.statusCode).toBe(404);
     expect(JSON.parse(response.body)).toMatchObject({
-      data: null,
       error: { code: 'NOT_FOUND' },
       requestId: 'request-1'
     });

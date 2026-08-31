@@ -5,7 +5,10 @@ import { feedbackRepository } from '../components/website-experience/chapter-reg
 
 function createApi(...responses: unknown[]) {
   return {
-    request: vi.fn().mockImplementation(() => Promise.resolve(responses.shift()))
+    request: vi.fn().mockImplementation((_path, schema) => {
+      const response = responses.shift();
+      return response instanceof Promise ? response : Promise.resolve(schema.parse(response));
+    })
   } as unknown as ApiClient;
 }
 
@@ -35,7 +38,7 @@ describe('云端反馈仓库', () => {
     expect(repository.list('feedback')).toEqual(expect.arrayContaining([
       expect.objectContaining({ id: 'published-1', source: 'local-user', likeCount: 3 })
     ]));
-    expect(vi.mocked(api.request)).toHaveBeenCalledWith('/feedback?kind=feedback&limit=100');
+    expect(vi.mocked(api.request)).toHaveBeenCalledWith('/feedback?kind=feedback&limit=100', expect.anything());
   });
 
   it('读取所有公开分页，并在游标循环时失败关闭', async () => {
@@ -61,7 +64,7 @@ describe('云端反馈仓库', () => {
       expect.objectContaining({ id: 'published-1' }),
       expect.objectContaining({ id: 'published-2' })
     ]));
-    expect(vi.mocked(api.request)).toHaveBeenNthCalledWith(2, '/feedback?kind=feedback&limit=100&cursor=100');
+    expect(vi.mocked(api.request)).toHaveBeenNthCalledWith(2, '/feedback?kind=feedback&limit=100&cursor=100', expect.anything());
   });
 
   it('反馈和建议并发刷新时保留各自的失败状态', async () => {
@@ -155,7 +158,7 @@ describe('云端反馈仓库', () => {
 
     expect(receipt.status).toBe('system_reviewing');
     expect(repository.list('feedback')).toEqual(before);
-    expect(vi.mocked(api.request)).toHaveBeenCalledWith('/feedback', expect.objectContaining({
+    expect(vi.mocked(api.request)).toHaveBeenCalledWith('/feedback', expect.anything(), expect.objectContaining({
       method: 'POST',
       body: JSON.stringify({
         kind: 'feedback', authorName: '匿名用户', content: '等待系统审核的反馈内容。'
@@ -181,7 +184,7 @@ describe('云端反馈仓库', () => {
       likedByCurrentBrowser: true, likeCount: 4
     });
 
-    expect(vi.mocked(api.request)).toHaveBeenLastCalledWith('/feedback/published-1/like', {
+    expect(vi.mocked(api.request)).toHaveBeenLastCalledWith('/feedback/published-1/like', expect.anything(), {
       method: 'POST', body: '{}'
     });
     expect(listener).toHaveBeenCalledOnce();

@@ -3,13 +3,12 @@ import { describe, expect, it } from 'vitest';
 import { ApiError, jsonResponse } from '../src/errors.js';
 
 describe('jsonResponse', () => {
-  it('未定义数据仍保留固定 data 信封字段', () => {
-    const response = jsonResponse(200, undefined, null, 'request-1');
+  it('成功信封只包含必填 requestId 与 data', () => {
+    const response = jsonResponse(200, { ok: true }, null, 'request-1');
 
     expect(JSON.parse(response.body)).toEqual({
-      data: null,
-      error: null,
-      requestId: 'request-1'
+      requestId: 'request-1',
+      data: { ok: true }
     });
   });
 
@@ -22,13 +21,10 @@ describe('jsonResponse', () => {
     );
 
     expect(JSON.parse(response.body)).toEqual({
-      data: null,
-      error: {
-        code: 'INTERNAL_ERROR',
-        message: '服务暂时不可用'
-      },
+      error: { code: 'INTERNAL_ERROR' },
       requestId: 'request-2'
     });
+    expect(JSON.parse(response.body).data).toBeUndefined();
     expect(response.body).not.toContain('secret-for-test');
   });
 
@@ -41,11 +37,7 @@ describe('jsonResponse', () => {
     );
 
     expect(JSON.parse(response.body)).toEqual({
-      data: null,
-      error: {
-        code: 'NOT_FOUND',
-        message: '接口不存在'
-      },
+      error: { code: 'NOT_FOUND' },
       requestId: 'request-3'
     });
     expect(response.body).not.toContain('/admin/private');

@@ -20,7 +20,6 @@ describe('createRouter', () => {
       }
     });
     expect(JSON.parse(response.body)).toMatchObject({
-      data: null,
       error: { code: 'NOT_FOUND' },
       requestId: expect.any(String)
     });
@@ -43,7 +42,6 @@ describe('createRouter', () => {
     expect(response.statusCode).toBe(200);
     expect(JSON.parse(response.body)).toEqual({
       data: { path: '/api/v1/health' },
-      error: null,
       requestId: 'request-health'
     });
   });

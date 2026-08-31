@@ -1,5 +1,11 @@
-import { z } from 'zod';
-import { submissionReceiptSchema, type SubmissionReceipt } from '@myself/shared-types';
+import type { SubmissionReceipt } from '@myself/shared-types';
+import {
+  feedbackSubmissionRequestSchema,
+  feedbackSubmissionResponseSchema,
+  publicFeedbackPageSchema,
+  publicLikeResponseSchema,
+  type PublicFeedbackPage
+} from '@myself/shared-types/website-http';
 import { ApiClient } from '../../../lib/api-client';
 import { OFFICIAL_EXAMPLE_ENTRIES } from './feedback-content';
 import { sortFeedbackEntries } from './feedback-model';
@@ -10,23 +16,6 @@ import type {
   FeedbackRepository,
   FeedbackStatusNotice
 } from './feedback-types';
-
-const publicFeedbackPageSchema = z.object({
-  items: z.array(z.object({
-    id: z.string().min(1),
-    kind: z.enum(['feedback', 'suggestion']),
-    authorName: z.string(),
-    content: z.string(),
-    likeCount: z.number().int().nonnegative(),
-    createdAt: z.string()
-  }).strict()),
-  nextCursor: z.number().int().nonnegative().nullable()
-}).strict();
-
-const publicLikeSchema = z.object({
-  liked: z.boolean(),
-  likeCount: z.number().int().nonnegative()
-}).strict();
 
 const MAX_PUBLIC_FEEDBACK_PAGES = 100;
 
@@ -57,10 +46,10 @@ export class CloudFeedbackRepository implements FeedbackRepository {
       const seenCursors = new Set<number>();
       let cursor: number | undefined;
       for (let pageIndex = 0; pageIndex < MAX_PUBLIC_FEEDBACK_PAGES; pageIndex += 1) {
-        const response = await this.api.request<unknown>(
-          `/feedback?kind=${kind}&limit=100${cursor === undefined ? '' : `&cursor=${cursor}`}`
+        const page = await this.api.request(
+          `/feedback?kind=${kind}&limit=100${cursor === undefined ? '' : `&cursor=${cursor}`}`,
+          publicFeedbackPageSchema
         );
-        const page = publicFeedbackPageSchema.parse(response);
         records.push(...page.items
           .filter(item => item.kind === kind)
           .map(item => this.toEntry(item)));
@@ -92,11 +81,11 @@ export class CloudFeedbackRepository implements FeedbackRepository {
   }
 
   async create(input: CreateFeedbackInput): Promise<SubmissionReceipt> {
-    const response = await this.api.request<unknown>('/feedback', {
+    const body = feedbackSubmissionRequestSchema.parse(input);
+    return this.api.request('/feedback', feedbackSubmissionResponseSchema, {
       method: 'POST',
-      body: JSON.stringify(input)
+      body: JSON.stringify(body)
     });
-    return submissionReceiptSchema.parse(response);
   }
 
   async toggleLike(id: string): Promise<FeedbackEntry> {
@@ -115,11 +104,11 @@ export class CloudFeedbackRepository implements FeedbackRepository {
 
   private async toggleLikeNow(id: string): Promise<FeedbackEntry> {
     const current = this.findPublishedEntry(id);
-    const response = await this.api.request<unknown>(
+    const result = await this.api.request(
       `/feedback/${encodeURIComponent(id)}/like`,
+      publicLikeResponseSchema,
       { method: 'POST', body: '{}' }
     );
-    const result = publicLikeSchema.parse(response);
     const updated = {
       ...current,
       likedByCurrentBrowser: result.liked,
@@ -153,7 +142,7 @@ export class CloudFeedbackRepository implements FeedbackRepository {
     return this.refreshGenerations.get(kind) === generation;
   }
 
-  private toEntry(item: z.infer<typeof publicFeedbackPageSchema>['items'][number]): FeedbackEntry {
+  private toEntry(item: PublicFeedbackPage['items'][number]): FeedbackEntry {
     return {
       id: item.id,
       kind: item.kind,
