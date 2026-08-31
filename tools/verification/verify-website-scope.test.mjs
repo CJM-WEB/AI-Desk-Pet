@@ -159,6 +159,16 @@ test('阶段二受控迁移只放行纯编排器、适配器与测试', () => {
   });
 });
 
+test('管理员强制发布修复只放行新的前向租约迁移', () => {
+  const migration = 'cloudbase/migrations/20260831020000_late_moderation_lease_guard.sql';
+
+  assert.deepEqual(classifyChangedPaths([migration]), {
+    allowed: [migration],
+    forbidden: [],
+    outside: [],
+  });
+});
+
 test('阶段一只放行获批的 CloudBase 发布止血路径', () => {
   const phaseOnePaths = [
     'apps/cloudbase-api/src/services/submission-service.ts',

@@ -57,7 +57,7 @@ test('按版本排序并对 SQL 原始字节计算 SHA-256', async (t) => {
   assert.deepEqual(items[0].content, Buffer.from('SELECT 1;\n'));
 });
 
-test('真实仓库迁移清单保持六个不可变前向版本', async () => {
+test('真实仓库迁移清单保持七个不可变前向版本', async () => {
   const items = await inventoryCloudBaseMigrations(
     new URL('../cloudbase/migrations/', import.meta.url)
   );
@@ -68,8 +68,23 @@ test('真实仓库迁移清单保持六个不可变前向版本', async () => {
     '20260808000000_direct_manual_review.sql',
     '20260815000000_shared_package_publication_guard.sql',
     '20260831000000_restore_scanned_submission_flow.sql',
-    '20260831010000_admin_override_publication.sql'
+    '20260831010000_admin_override_publication.sql',
+    '20260831020000_late_moderation_lease_guard.sql'
   ]);
+});
+
+test('已提交管理员强制发布迁移保持既有原始字节', async () => {
+  const items = await inventoryCloudBaseMigrations(
+    new URL('../cloudbase/migrations/', import.meta.url)
+  );
+  const migration = items.find(
+    item => item.fileName === '20260831010000_admin_override_publication.sql'
+  );
+
+  assert.deepEqual({ sha256: migration?.sha256, bytes: migration?.bytes }, {
+    sha256: 'a3257e9567126c28fc0dc1761d39f243c400396d1eb23bba77f46db81778eee8',
+    bytes: 23718
+  });
 });
 
 test('拒绝 manager SDK 不接受的含数字迁移名称', async (t) => {

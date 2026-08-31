@@ -31,6 +31,7 @@ export const ALLOWED_WEBSITE_SCOPE_PATHS = Object.freeze([
   'cloudbase/migrations/20260815000000_shared_package_publication_guard.sql',
   'cloudbase/migrations/20260831000000_restore_scanned_submission_flow.sql',
   'cloudbase/migrations/20260831010000_admin_override_publication.sql',
+  'cloudbase/migrations/20260831020000_late_moderation_lease_guard.sql',
   'package.json',
   'pnpm-lock.yaml',
   'tools/verification/**',
