@@ -15,7 +15,7 @@
 - 严禁修改：`apps/desktop/**`、`packages/agent-core/**`、`packages/file-tools/**`、`packages/character-runtime/**`、`packages/character-assets/**` 及桌面测试和发布配置。
 - Scanner 只能复用角色包公开契约，不得改变角色包业务语义。
 - 正式生产平台固定为独立 CloudBase 生产环境；Vercel、Cloudflare、Supabase 不进入本轮生产链路。
-- 未经用户单独授权，不执行真实数据库迁移、CloudBase 资源变更、部署、发布、远端数据修改或 Git 写操作。
+- 本轮已授权在 `WebsiteExtension` 分支执行必要的本地 Git add/commit；禁止 merge/rebase、push、PR 和跨分支写入。真实数据库迁移、CloudBase 资源变更、部署、发布和远端数据修改仍不在授权范围。
 - 大量删除必须先列出精确目标、引用、恢复方式和验证结果，并取得用户二次批准。
 - 每个功能任务执行 RED → GREEN → REFACTOR；先运行定向测试，再运行所属阶段门禁。
 
@@ -35,24 +35,26 @@
 
 - [x] **Step 1: 执行阶段 0 并保存证据**
 
-阶段 0 已完成，详见 `docs/operations/website-chain-verification.md` 与 `docs/operations/website-chain-verification-acceptance.md` 的最终固定顺序证据。阶段 1—3 仍未完成，普通网站功能开发资格尚未恢复，正式部署继续冻结。
+阶段 0 已完成，详见 `docs/operations/website-chain-verification.md` 与 `docs/operations/website-chain-verification-acceptance.md` 的最终固定顺序证据。阶段 1 已于 2026-08-21 完成，最终固定顺序 E2E 为 14/14；阶段 2—3 尚未完成，普通网站功能开发资格尚未恢复，正式部署继续冻结。
 
-- [ ] **Step 2: 执行阶段 1 并确认止血门**
+- [x] **Step 2: 执行阶段 1 并确认止血门**
 
 严格执行 `2026-08-15-website-publication-stopgap-and-migration-freeze.md`；确认无扫描证据不能批准/发布，旧迁移入口不能误执行。
 
-- [ ] **Step 3: 执行阶段 2 并确认所有 S1 退出条件**
+2026-08-21 的实际完成证据见该计划 Task 11 与 `docs/operations/website-chain-verification-acceptance.md`。后续阶段不得恢复已删除的固定 SQL 写入入口。
 
-严格执行 `2026-08-15-website-cloudbase-scanner-reliability.md`；真实 Scanner 开发环境冒烟未通过时，共享包投稿开关必须保持关闭。
+- [ ] **Step 3: 执行阶段 2A/2B 并确认本地 S1 联合门**
+
+阶段 2 的当前执行口径由 `2026-08-31-website-stage-2-3-local-closure.md` 修订：先完成本地结构、候选和自动化闭环；真实 Scanner 开发环境冒烟未通过时，共享包投稿开关必须保持关闭，远程部署门不阻塞阶段 3 本地契约闭环。
 
 - [ ] **Step 4: 执行阶段 3 并恢复普通功能开发资格**
 
-严格执行 `2026-08-15-website-http-contract-closure.md`；只有生产 `createApi` 与内存后端通过同一行为案例，且关键响应均经 Zod 解析后，才能恢复普通网站功能开发。
+阶段 3 的当前执行口径由 `2026-08-31-website-stage-2-3-local-closure.md` 修订；只有生产 `createApi` 与内存后端通过同一行为案例，关键响应均经 Zod 解析，且阶段 2 本地门通过后，才能恢复普通网站功能开发。恢复开发不等于开启共享包投稿或完成部署。
 
-- [ ] **Step 5: 在获得用户明确 Git 写入授权后提交阶段索引状态**
+- [ ] **Step 5: 在当前分支提交阶段索引状态（禁止合并与远端写入）**
 
 ```powershell
-git add docs/superpowers/plans docs/operations/website-optimization-acceptance.md
+git add docs/superpowers/specs/2026-08-31-website-stage-2-3-local-closure-design.md docs/superpowers/plans/2026-08-31-website-stage-2-3-local-closure.md docs/superpowers/plans/2026-08-15-website-optimization-index.md docs/operations/website-optimization-acceptance.md
 git commit -m "docs: 记录网站架构优化阶段门"
 ```
 
