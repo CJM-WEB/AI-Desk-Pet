@@ -5,7 +5,8 @@
   "exports": {
     ".": "./src/index.ts",
     "./moderation": "./src/moderation.ts",
-    "./scanner-protocol": "./src/scanner-protocol.ts"
+    "./scanner-protocol": "./src/scanner-protocol.ts",
+    "./website-http": "./src/website-http.ts"
   },
   "scripts": {
     "test": "vitest run",
