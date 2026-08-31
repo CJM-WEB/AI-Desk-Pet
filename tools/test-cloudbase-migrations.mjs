@@ -83,6 +83,14 @@ export async function runCloudBaseMigrationBehaviorGate({
       pathToFileURL(`${migrationDirectory}\\`)
     );
     for (const migration of migrations) {
+      if (migration.fileName
+        === '20260831010000_admin_override_publication.sql') {
+        await run(
+          executable('psql'),
+          [...connection, '-f', '-'],
+          legacyAdminAuditFixtureSql
+        );
+      }
       await run(executable('psql'), [
         ...connection,
         '-f', join(migrationDirectory, migration.fileName)
@@ -94,7 +102,7 @@ export async function runCloudBaseMigrationBehaviorGate({
       postgresVersion: postgresVersion.version,
       postgresMajorVersion: postgresVersion.major,
       migrationsApplied: migrations.length,
-      behaviorsVerified: 19
+      behaviorsVerified: 35
     };
   } finally {
     if (started) {
@@ -171,6 +179,40 @@ CREATE TABLE storage.buckets (
   name text NOT NULL,
   public boolean NOT NULL DEFAULT false
 );
+`;
+
+/**
+ * 在第六个前向迁移之前固定旧版全行审计快照，验证升级会收敛私密字段，
+ * 同时仍保留原动作的稳定幂等结果。
+ */
+const legacyAdminAuditFixtureSql = String.raw`
+SELECT set_config('request.jwt.claims', '{"role":"service_role"}', false);
+INSERT INTO submissions (
+  id, kind, title, body, status, status_version, status_token_hash,
+  captcha_summary, risk_summary, published_at
+) VALUES (
+  'gate-legacy-audit', 'feedback', '旧版标题', '旧版私密正文',
+  'published', 1, repeat('9', 64), '{"ticket":"private"}'::jsonb,
+  '{"fingerprint":"private"}'::jsonb, now()
+);
+INSERT INTO admin_audit_logs (
+  submission_id, admin_id, action, before_status, after_status, reason,
+  idempotency_key, request_payload, result_snapshot
+)
+SELECT
+  submission.id, 'admin-1', 'approve', 'manual_review_pending', 'published',
+  '历史普通批准', 'gate-legacy-replay',
+  jsonb_build_object(
+    'submissionId', submission.id,
+    'adminId', 'admin-1',
+    'action', 'approve',
+    'nextStatus', 'published',
+    'expectedVersion', 0,
+    'reason', '历史普通批准'
+  ),
+  jsonb_build_object('submission', to_jsonb(submission), 'replayed', false)
+FROM submissions AS submission
+WHERE submission.id = 'gate-legacy-audit';
 `;
 
 const behaviorSql = String.raw`
@@ -298,9 +340,41 @@ DECLARE
   v_status text;
   v_version bigint;
   v_claimed_version bigint;
+  v_cleanup_version bigint;
+  v_claimed_id text;
   v_count bigint;
+  v_first_snapshot jsonb;
   v_result jsonb;
 BEGIN
+  -- 旧版全行审计快照升级后必须精确收敛，并继续回放首次动作事实。
+  SELECT result_snapshot INTO v_first_snapshot
+  FROM admin_audit_logs
+  WHERE idempotency_key = 'gate-legacy-replay';
+  IF (
+      SELECT array_agg(key ORDER BY key)
+      FROM jsonb_object_keys(
+        v_first_snapshot -> 'submission'
+      ) AS snapshot_key(key)
+    ) IS DISTINCT FROM ARRAY[
+      'created_at', 'id', 'kind', 'public_reason', 'publication_basis',
+      'published_at', 'quarantined_at', 'rejected_at', 'status',
+      'status_version', 'updated_at'
+    ]::text[]
+    OR v_first_snapshot #>> '{submission,status}' IS DISTINCT FROM 'published'
+    OR v_first_snapshot #>> '{submission,status_version}' IS DISTINCT FROM '1'
+    OR v_first_snapshot #>> '{submission,publication_basis}'
+      IS DISTINCT FROM 'standard' THEN
+    RAISE EXCEPTION '行为门失败：旧版审计快照未安全收敛';
+  END IF;
+  v_result := apply_admin_action(
+    'gate-legacy-audit', 'admin-1', 'approve', 'published', 0,
+    'gate-legacy-replay', '历史普通批准'
+  );
+  IF COALESCE((v_result ->> 'replayed')::boolean, false) IS NOT TRUE
+    OR (v_result - 'replayed') <> (v_first_snapshot - 'replayed') THEN
+    RAISE EXCEPTION '行为门失败：旧版审计快照无法稳定回放';
+  END IF;
+
   -- 1. 数据库约束直接拒绝 published + NULL，不依赖服务层。
   BEGIN
     INSERT INTO submissions (
@@ -310,6 +384,55 @@ BEGIN
     );
     RAISE EXCEPTION '行为门失败：published 接受了空发布依据';
   EXCEPTION WHEN SQLSTATE '23514' THEN
+    NULL;
+  END;
+
+  -- SQL NULL 必须由稳定参数错误拒绝，不得落入三值逻辑。
+  PERFORM create_text_submission(jsonb_build_object(
+    'id', 'gate-null-next',
+    'kind', 'feedback',
+    'title', 'NULL 参数',
+    'body', '验证下一状态不得为空',
+    'status_token_hash', repeat('1', 64)
+  ));
+  BEGIN
+    PERFORM apply_moderation_decision(
+      'gate-null-next', 0, NULL, '[]'::jsonb, '{}'::jsonb, NULL
+    );
+    RAISE EXCEPTION '行为门失败：p_next_status 接受了 SQL NULL';
+  EXCEPTION WHEN SQLSTATE '22023' THEN
+    NULL;
+  END;
+
+  PERFORM create_text_submission(jsonb_build_object(
+    'id', 'gate-null-results',
+    'kind', 'feedback',
+    'title', 'NULL 参数',
+    'body', '验证审核结果不得为空',
+    'status_token_hash', repeat('2', 64)
+  ));
+  BEGIN
+    PERFORM apply_moderation_decision(
+      'gate-null-results', 0, 'manual_review_pending', NULL, '{}'::jsonb, NULL
+    );
+    RAISE EXCEPTION '行为门失败：p_results 接受了 SQL NULL';
+  EXCEPTION WHEN SQLSTATE '22023' THEN
+    NULL;
+  END;
+
+  PERFORM create_text_submission(jsonb_build_object(
+    'id', 'gate-null-risk',
+    'kind', 'feedback',
+    'title', 'NULL 参数',
+    'body', '验证风险摘要不得为空',
+    'status_token_hash', repeat('3', 64)
+  ));
+  BEGIN
+    PERFORM apply_moderation_decision(
+      'gate-null-risk', 0, 'manual_review_pending', '[]'::jsonb, NULL, NULL
+    );
+    RAISE EXCEPTION '行为门失败：p_risk_summary 接受了 SQL NULL';
+  EXCEPTION WHEN SQLSTATE '22023' THEN
     NULL;
   END;
 
@@ -443,6 +566,102 @@ BEGIN
     RAISE EXCEPTION '行为门失败：有效批准';
   END IF;
 
+  -- standard 发布依据即使伪造租约也不得进入后到分支。
+  UPDATE submissions
+  SET moderation_lease_until = v_now + interval '5 minutes'
+  WHERE id = 'gate-valid';
+  SELECT count(*) INTO v_count
+  FROM moderation_results WHERE submission_id = 'gate-valid';
+  v_result := apply_moderation_decision(
+    'gate-valid', 1, 'auto_rejected', gate_block_result('gate-valid', v_now),
+    '{"blocked":true,"severity":"high"}'::jsonb, '不应写入'
+  );
+  IF COALESCE((v_result ->> 'applied')::boolean, false) IS NOT FALSE
+    OR (SELECT count(*) FROM moderation_results
+        WHERE submission_id = 'gate-valid') <> v_count
+    OR (SELECT risk_summary FROM submissions
+        WHERE id = 'gate-valid') IS DISTINCT FROM '{"blocked":false}'::jsonb
+    OR (SELECT status_version FROM submissions WHERE id = 'gate-valid') <> 3
+    OR (SELECT publication_basis FROM submissions WHERE id = 'gate-valid')
+      <> 'standard' THEN
+    RAISE EXCEPTION '行为门失败：standard 发布接受了后到结果';
+  END IF;
+  UPDATE submissions
+  SET moderation_lease_until = NULL
+  WHERE id = 'gate-valid';
+
+  -- 独立的无租约强制发布记录不得接受第一次后到结果。
+  INSERT INTO submissions (
+    id, kind, status, status_version, status_token_hash,
+    publication_basis, risk_summary
+  ) VALUES (
+    'gate-no-lease-late', 'shared_package', 'published', 4,
+    repeat('8', 64), 'admin_override',
+    '{"blocked":false,"severity":"low"}'::jsonb
+  );
+  v_result := apply_moderation_decision(
+    'gate-no-lease-late', 2, 'auto_rejected',
+    gate_block_result('gate-no-lease-late', v_now),
+    '{"blocked":true,"severity":"high"}'::jsonb, '不应写入'
+  );
+  IF COALESCE((v_result ->> 'applied')::boolean, false) IS NOT FALSE
+    OR EXISTS (
+      SELECT 1 FROM moderation_results
+      WHERE submission_id = 'gate-no-lease-late'
+    )
+    OR (SELECT risk_summary FROM submissions
+        WHERE id = 'gate-no-lease-late') IS DISTINCT FROM
+      '{"blocked":false,"severity":"low"}'::jsonb
+    OR (SELECT status_version FROM submissions
+        WHERE id = 'gate-no-lease-late') IS DISTINCT FROM 4 THEN
+    RAISE EXCEPTION '行为门失败：无租约仍接受首次后到结果';
+  END IF;
+
+  -- 反馈、系统审核和自动驳回都不得一步强制发布。
+  PERFORM apply_admin_action(
+    'gate-feedback', 'admin-1', 'move_to_manual', 'manual_review_pending', 0,
+    'gate-feedback-manual', '文本转人工'
+  );
+  BEGIN
+    PERFORM apply_admin_action(
+      'gate-feedback', 'admin-1', 'force_publish', 'published', 1,
+      'gate-feedback-force', '反馈不得强制发布',
+      'ADMIN_OVERRIDE_ACCEPTED'
+    );
+    RAISE EXCEPTION '行为门失败：feedback 接受了强制发布';
+  EXCEPTION WHEN SQLSTATE 'P1002' THEN
+    NULL;
+  END;
+
+  PERFORM gate_seed('gate-direct-system');
+  BEGIN
+    PERFORM apply_admin_action(
+      'gate-direct-system', 'admin-1', 'force_publish', 'published', 1,
+      'gate-direct-system-force', '系统审核不得跳步',
+      'ADMIN_OVERRIDE_ACCEPTED'
+    );
+    RAISE EXCEPTION '行为门失败：system_reviewing 直接强制发布';
+  EXCEPTION WHEN SQLSTATE 'P1002' THEN
+    NULL;
+  END;
+
+  INSERT INTO submissions (
+    id, kind, status, status_token_hash, auto_rejection_reason
+  ) VALUES (
+    'gate-direct-auto', 'shared_package', 'auto_rejected', repeat('4', 64),
+    '自动驳回'
+  );
+  BEGIN
+    PERFORM apply_admin_action(
+      'gate-direct-auto', 'admin-1', 'force_publish', 'published', 0,
+      'gate-direct-auto-force', '自动驳回不得跳步',
+      'ADMIN_OVERRIDE_ACCEPTED'
+    );
+    RAISE EXCEPTION '行为门失败：auto_rejected 直接强制发布';
+  EXCEPTION WHEN SQLSTATE 'P1002' THEN
+    NULL;
+  END;
+
   -- 8. 共享包可以从系统审核直接转入人工待审。
   PERFORM gate_seed('gate-move');
   PERFORM apply_admin_action(
@@ -477,8 +696,9 @@ BEGIN
       <> 'manual_review_pending'
     OR (SELECT auto_rejection_reason FROM submissions
         WHERE id = 'gate-auto-move') <> '检测到危险文件'
-    OR (SELECT risk_summary ->> 'severity' FROM submissions
-        WHERE id = 'gate-auto-move') <> 'high'
+    OR (SELECT risk_summary FROM submissions
+        WHERE id = 'gate-auto-move') IS DISTINCT FROM
+      '{"blocked":true,"severity":"high"}'::jsonb
     OR NOT EXISTS (
       SELECT 1 FROM moderation_results
       WHERE submission_id = 'gate-auto-move' AND suggestion = 'Block'
@@ -548,6 +768,17 @@ BEGIN
     RAISE EXCEPTION '行为门失败：缺少确认的强制发布未回滚';
   END IF;
 
+  BEGIN
+    PERFORM apply_admin_action(
+      'gate-late', 'admin-1', 'force_publish', 'published', 3,
+      'gate-late-wrong-ack', '错误风险确认',
+      'ADMIN_OVERRIDE_CONFIRMED'
+    );
+    RAISE EXCEPTION '行为门失败：错误风险确认字面量被接受';
+  EXCEPTION WHEN SQLSTATE 'P1002' THEN
+    NULL;
+  END;
+
   -- 12. 审计写入失败必须回滚已更新的状态和发布依据。
   BEGIN
     PERFORM apply_admin_action(
@@ -589,8 +820,45 @@ BEGIN
     OR EXISTS (
       SELECT 1 FROM moderation_results
       WHERE submission_id = 'gate-late' AND suggestion = 'Pass'
-    ) THEN
+    )
+    OR (
+      SELECT array_agg(key ORDER BY key)
+      FROM jsonb_object_keys(v_result -> 'submission') AS snapshot_key(key)
+    ) IS DISTINCT FROM ARRAY[
+      'created_at', 'id', 'kind', 'public_reason', 'publication_basis',
+      'published_at', 'quarantined_at', 'rejected_at', 'status',
+      'status_version', 'updated_at'
+    ]::text[]
+    OR (
+      SELECT array_agg(key ORDER BY key)
+      FROM admin_audit_logs AS audit,
+        LATERAL jsonb_object_keys(
+          audit.result_snapshot -> 'submission'
+        ) AS snapshot_key(key)
+      WHERE audit.idempotency_key = 'gate-late-force'
+    ) IS DISTINCT FROM ARRAY[
+      'created_at', 'id', 'kind', 'public_reason', 'publication_basis',
+      'published_at', 'quarantined_at', 'rejected_at', 'status',
+      'status_version', 'updated_at'
+    ]::text[] THEN
     RAISE EXCEPTION '行为门失败：强制发布原子事实不完整';
+  END IF;
+
+  -- 后到分支不接受空结果数组，失败不得消费租约。
+  BEGIN
+    PERFORM apply_moderation_decision(
+      'gate-late', 2, 'auto_rejected', '[]'::jsonb,
+      '{"blocked":false,"severity":"low"}'::jsonb, '空结果'
+    );
+    RAISE EXCEPTION '行为门失败：后到分支接受空结果数组';
+  EXCEPTION WHEN SQLSTATE '22023' THEN
+    NULL;
+  END;
+  IF (SELECT moderation_lease_until FROM submissions WHERE id = 'gate-late')
+      IS NULL
+    OR (SELECT count(*) FROM moderation_results
+        WHERE submission_id = 'gate-late') <> 1 THEN
+    RAISE EXCEPTION '行为门失败：空后到结果修改了数据';
   END IF;
 
   -- 14. 后到危险结果只追加扫描事实和风险，不改发布状态、版本或依据。
@@ -604,8 +872,9 @@ BEGIN
     OR (SELECT status_version FROM submissions WHERE id = 'gate-late') <> 4
     OR (SELECT publication_basis FROM submissions WHERE id = 'gate-late')
       <> 'admin_override'
-    OR (SELECT risk_summary ->> 'severity' FROM submissions
-        WHERE id = 'gate-late') <> 'high'
+    OR (SELECT risk_summary FROM submissions
+        WHERE id = 'gate-late') IS DISTINCT FROM
+      '{"blocked":true,"severity":"high"}'::jsonb
     OR NOT EXISTS (
       SELECT 1 FROM moderation_results
       WHERE submission_id = 'gate-late' AND suggestion = 'Block'
@@ -615,6 +884,31 @@ BEGIN
     OR (SELECT count(*) FROM moderation_results
         WHERE submission_id = 'gate-late' AND suggestion = 'Review') <> 1 THEN
     RAISE EXCEPTION '行为门失败：后到危险结果破坏发布事实';
+  END IF;
+
+  -- 成功后到必须消费租约；重复调用不追加、不用低风险覆盖高风险。
+  IF (SELECT moderation_lease_until FROM submissions WHERE id = 'gate-late')
+      IS NOT NULL THEN
+    RAISE EXCEPTION '行为门失败：后到结果未消费审核租约';
+  END IF;
+  v_result := apply_moderation_decision(
+    'gate-late', 2, 'auto_rejected',
+    gate_block_result('gate-late', v_now + interval '1 minute'),
+    '{"blocked":false,"severity":"low"}'::jsonb, '重复后到结果'
+  );
+  IF COALESCE((v_result ->> 'applied')::boolean, false) IS NOT FALSE
+    OR (SELECT count(*) FROM moderation_results
+        WHERE submission_id = 'gate-late') <> 2
+    OR (SELECT risk_summary FROM submissions
+        WHERE id = 'gate-late') IS DISTINCT FROM
+      '{"blocked":true,"severity":"high"}'::jsonb
+    OR (SELECT status FROM submissions WHERE id = 'gate-late') <> 'published'
+    OR (SELECT status_version FROM submissions WHERE id = 'gate-late') <> 4
+    OR (SELECT publication_basis FROM submissions WHERE id = 'gate-late')
+      <> 'admin_override'
+    OR (SELECT count(*) FROM admin_audit_logs
+        WHERE submission_id = 'gate-late') <> 2 THEN
+    RAISE EXCEPTION '行为门失败：重复后到修改了原子事实';
   END IF;
 
   -- 15. 同键同请求在扫描摘要变化后仍回放首次快照。
@@ -650,7 +944,10 @@ BEGIN
     RAISE EXCEPTION '行为门失败：幂等冲突修改了数据';
   END IF;
 
-  -- 17. 已发布共享包删除后发布依据必须置空，恢复后仍回系统审核。
+  -- 17. cleanup 开始和 purge 都不得破坏幂等首次快照。
+  SELECT result_snapshot INTO v_first_snapshot
+  FROM admin_audit_logs
+  WHERE idempotency_key = 'gate-late-force';
   PERFORM apply_admin_action(
     'gate-late', 'admin-1', 'delete', 'deleted_quarantined', 4,
     'gate-late-delete', '主动下架高风险共享包'
@@ -659,15 +956,93 @@ BEGIN
       IS NOT NULL THEN
     RAISE EXCEPTION '行为门失败：非发布状态仍保留发布依据';
   END IF;
-  PERFORM apply_admin_action(
-    'gate-late', 'admin-1', 'restore', 'system_reviewing', 5,
-    'gate-late-restore', '恢复并重扫'
+
+  UPDATE submissions
+  SET purge_after = v_now - interval '1 minute'
+  WHERE id = 'gate-late';
+  SELECT claimed ->> 'id', (claimed ->> 'status_version')::bigint
+  INTO v_claimed_id, v_cleanup_version
+  FROM claim_cleanup_jobs(1, v_now + interval '5 minutes') AS claimed;
+  IF v_claimed_id <> 'gate-late' OR v_cleanup_version <> 6
+    OR (SELECT cleanup_started_at FROM submissions WHERE id = 'gate-late')
+      IS NULL THEN
+    RAISE EXCEPTION '行为门失败：未真实领取 cleanup 任务';
+  END IF;
+
+  v_result := apply_admin_action(
+    'gate-late', 'admin-1', 'force_publish', 'published', 3,
+    'gate-late-force', '管理员确认承担风险',
+    'ADMIN_OVERRIDE_ACCEPTED'
   );
-  IF (SELECT status FROM submissions WHERE id = 'gate-late')
+  IF COALESCE((v_result ->> 'replayed')::boolean, false) IS NOT TRUE
+    OR (v_result - 'replayed') <> (v_first_snapshot - 'replayed')
+    OR (SELECT result_snapshot FROM admin_audit_logs
+        WHERE idempotency_key = 'gate-late-force') <> v_first_snapshot THEN
+    RAISE EXCEPTION '行为门失败：cleanup 开始后未回放首次快照';
+  END IF;
+
+  PERFORM mark_submission_purged('gate-late', 6);
+  IF (SELECT status FROM submissions WHERE id = 'gate-late') <> 'purged'
+    OR (SELECT status_version FROM submissions WHERE id = 'gate-late') <> 7
+    OR (SELECT result_snapshot FROM admin_audit_logs
+        WHERE idempotency_key = 'gate-late-force') <> v_first_snapshot THEN
+    RAISE EXCEPTION '行为门失败：purge 改写了首次快照';
+  END IF;
+
+  v_result := apply_admin_action(
+    'gate-late', 'admin-1', 'force_publish', 'published', 3,
+    'gate-late-force', '管理员确认承担风险',
+    'ADMIN_OVERRIDE_ACCEPTED'
+  );
+  IF COALESCE((v_result ->> 'replayed')::boolean, false) IS NOT TRUE
+    OR (v_result - 'replayed') <> (v_first_snapshot - 'replayed') THEN
+    RAISE EXCEPTION '行为门失败：purged 后未回放首次快照';
+  END IF;
+
+  BEGIN
+    PERFORM apply_admin_action(
+      'gate-late', 'admin-1', 'force_publish', 'published', 7,
+      'gate-late-purged-new-key', 'purged 新请求必须拒绝',
+      'ADMIN_OVERRIDE_ACCEPTED'
+    );
+    RAISE EXCEPTION '行为门失败：purged 新 key 绕过状态机';
+  EXCEPTION WHEN SQLSTATE 'P1002' THEN
+    NULL;
+  END;
+
+  -- purge 资格中的 NULL 必须按不满足处理，不能穿透三值逻辑。
+  INSERT INTO submissions (
+    id, kind, status, status_token_hash, cleanup_started_at,
+    cleanup_lease_until, purge_after
+  ) VALUES (
+    'gate-purge-null', 'feedback', 'deleted_quarantined', repeat('7', 64),
+    v_now, v_now + interval '5 minutes', NULL
+  );
+  v_result := mark_submission_purged('gate-purge-null', 0);
+  IF COALESCE((v_result ->> 'applied')::boolean, false) IS NOT FALSE
+    OR (SELECT status FROM submissions WHERE id = 'gate-purge-null')
+      IS DISTINCT FROM 'deleted_quarantined'
+    OR (SELECT status_version FROM submissions WHERE id = 'gate-purge-null')
+      IS DISTINCT FROM 0 THEN
+    RAISE EXCEPTION '行为门失败：NULL purge_after 被视为满足清理资格';
+  END IF;
+
+  -- 共享包从隔离恢复仍回系统审核且保持空发布依据。
+  INSERT INTO submissions (
+    id, kind, status, status_token_hash, pre_quarantine_status, quarantined_at
+  ) VALUES (
+    'gate-restore', 'shared_package', 'deleted_quarantined', repeat('5', 64),
+    'published', now()
+  );
+  PERFORM apply_admin_action(
+    'gate-restore', 'admin-1', 'restore', 'system_reviewing', 0,
+    'gate-restore-rescan', '恢复并重扫'
+  );
+  IF (SELECT status FROM submissions WHERE id = 'gate-restore')
       <> 'system_reviewing'
-    OR (SELECT pre_quarantine_status FROM submissions WHERE id = 'gate-late')
+    OR (SELECT pre_quarantine_status FROM submissions WHERE id = 'gate-restore')
       IS NOT NULL
-    OR (SELECT publication_basis FROM submissions WHERE id = 'gate-late')
+    OR (SELECT publication_basis FROM submissions WHERE id = 'gate-restore')
       IS NOT NULL THEN
     RAISE EXCEPTION '行为门失败：恢复未重扫';
   END IF;

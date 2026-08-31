@@ -30,6 +30,13 @@ describe('投稿审核契约', () => {
       idempotencyKey: 'override-0001',
       reason: '人工确认可发布'
     }).success).toBe(false);
+    expect(adminActionSchema.safeParse({
+      action: 'force_publish',
+      version: 3,
+      idempotencyKey: 'override-0001',
+      reason: '人工确认可发布',
+      riskAcknowledgement: 'ADMIN_OVERRIDE_CONFIRMED'
+    }).success).toBe(false);
     expect(adminActionSchema.parse({
       action: 'force_publish',
       version: 3,

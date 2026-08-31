@@ -10,6 +10,40 @@ SET publication_basis = 'standard'
 WHERE status = 'published'
   AND publication_basis IS NULL;
 
+-- 旧函数曾把整行投稿写入审计快照；升级时只保留稳定回放所需的公开事实。
+UPDATE admin_audit_logs AS audit
+SET result_snapshot = jsonb_build_object(
+  'submission', jsonb_build_object(
+    'id', COALESCE(
+      audit.result_snapshot #> '{submission,id}',
+      to_jsonb(audit.submission_id)
+    ),
+    'kind', COALESCE(
+      audit.result_snapshot #> '{submission,kind}',
+      to_jsonb(submission.kind)
+    ),
+    'status', audit.result_snapshot #> '{submission,status}',
+    'status_version', audit.result_snapshot #> '{submission,status_version}',
+    'publication_basis', CASE
+      WHEN audit.result_snapshot #>> '{submission,status}' = 'published'
+        THEN COALESCE(
+          audit.result_snapshot #> '{submission,publication_basis}',
+          to_jsonb('standard'::text)
+        )
+      ELSE 'null'::jsonb
+    END,
+    'public_reason', audit.result_snapshot #> '{submission,public_reason}',
+    'published_at', audit.result_snapshot #> '{submission,published_at}',
+    'rejected_at', audit.result_snapshot #> '{submission,rejected_at}',
+    'quarantined_at', audit.result_snapshot #> '{submission,quarantined_at}',
+    'created_at', audit.result_snapshot #> '{submission,created_at}',
+    'updated_at', audit.result_snapshot #> '{submission,updated_at}'
+  ),
+  'replayed', false
+)
+FROM submissions AS submission
+WHERE submission.id = audit.submission_id;
+
 ALTER TABLE submissions
   ADD CONSTRAINT submissions_publication_basis_check
   CHECK (
@@ -47,10 +81,15 @@ BEGIN
   ) <> 'service_role' THEN
     RAISE EXCEPTION 'service_role required' USING ERRCODE = '42501';
   END IF;
-  IF p_next_status NOT IN ('manual_review_pending', 'auto_rejected')
-    OR jsonb_typeof(p_results) <> 'array'
-    OR jsonb_array_length(p_results) > 2500
-    OR jsonb_typeof(p_risk_summary) <> 'object' THEN
+  IF p_next_status IS NULL
+    OR p_results IS NULL
+    OR p_risk_summary IS NULL
+    OR p_next_status NOT IN ('manual_review_pending', 'auto_rejected')
+    OR jsonb_typeof(p_results) IS DISTINCT FROM 'array'
+    OR jsonb_typeof(p_risk_summary) IS DISTINCT FROM 'object' THEN
+    RAISE EXCEPTION 'invalid moderation decision' USING ERRCODE = '22023';
+  END IF;
+  IF jsonb_array_length(p_results) > 2500 THEN
     RAISE EXCEPTION 'invalid moderation decision' USING ERRCODE = '22023';
   END IF;
 
@@ -76,16 +115,18 @@ BEGIN
     RETURN jsonb_build_object('applied', false);
   END IF;
 
-  IF v_late_result AND EXISTS (
-    SELECT 1
-    FROM jsonb_to_recordset(p_results) AS result(
-      kind text,
-      provider text
-    )
-    WHERE result.kind <> 'package_scan'
-      OR result.provider <> 'isolated-scanner'
-  ) THEN
-    RAISE EXCEPTION 'invalid late moderation result' USING ERRCODE = '22023';
+  IF v_late_result THEN
+    IF jsonb_array_length(p_results) = 0 OR EXISTS (
+      SELECT 1
+      FROM jsonb_to_recordset(p_results) AS result(
+        kind text,
+        provider text
+      )
+      WHERE result.kind IS DISTINCT FROM 'package_scan'
+        OR result.provider IS DISTINCT FROM 'isolated-scanner'
+    ) THEN
+      RAISE EXCEPTION 'invalid late moderation result' USING ERRCODE = '22023';
+    END IF;
   END IF;
 
   INSERT INTO moderation_results (
@@ -112,6 +153,7 @@ BEGIN
   IF v_late_result THEN
     UPDATE submissions
     SET risk_summary = p_risk_summary,
+        moderation_lease_until = NULL,
         updated_at = now()
     WHERE id = p_submission_id
       AND status = 'published'
@@ -240,19 +282,7 @@ BEGIN
 
   PERFORM pg_advisory_xact_lock(hashtextextended(p_idempotency_key, 0));
 
-  SELECT status, kind, pre_quarantine_status, cleanup_started_at
-  INTO v_previous_status, v_submission_kind, v_pre_quarantine_status,
-    v_cleanup_started_at
-  FROM submissions
-  WHERE id = p_submission_id
-  FOR UPDATE;
-  IF NOT FOUND THEN
-    RAISE EXCEPTION 'submission not found' USING ERRCODE = 'P0002';
-  END IF;
-  IF v_cleanup_started_at IS NOT NULL THEN
-    RAISE EXCEPTION 'submission cleanup already started' USING ERRCODE = '40001';
-  END IF;
-
+  -- 幂等事实先于当前投稿生命周期，cleanup 与 purge 不得破坏首次回放。
   SELECT * INTO v_existing
   FROM admin_audit_logs
   WHERE idempotency_key = p_idempotency_key;
@@ -270,6 +300,19 @@ BEGIN
         USING ERRCODE = 'P1001';
     END IF;
     RETURN v_existing.result_snapshot || jsonb_build_object('replayed', true);
+  END IF;
+
+  SELECT status, kind, pre_quarantine_status, cleanup_started_at
+  INTO v_previous_status, v_submission_kind, v_pre_quarantine_status,
+    v_cleanup_started_at
+  FROM submissions
+  WHERE id = p_submission_id
+  FOR UPDATE;
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'submission not found' USING ERRCODE = 'P0002';
+  END IF;
+  IF v_cleanup_started_at IS NOT NULL AND v_previous_status <> 'purged' THEN
+    RAISE EXCEPTION 'submission cleanup already started' USING ERRCODE = '40001';
   END IF;
 
   IF NOT (
@@ -429,7 +472,19 @@ BEGIN
   END IF;
 
   v_result := jsonb_build_object(
-    'submission', to_jsonb(v_submission),
+    'submission', jsonb_build_object(
+      'id', v_submission.id,
+      'kind', v_submission.kind,
+      'status', v_submission.status,
+      'status_version', v_submission.status_version,
+      'publication_basis', v_submission.publication_basis,
+      'public_reason', v_submission.public_reason,
+      'published_at', v_submission.published_at,
+      'rejected_at', v_submission.rejected_at,
+      'quarantined_at', v_submission.quarantined_at,
+      'created_at', v_submission.created_at,
+      'updated_at', v_submission.updated_at
+    ),
     'replayed', false
   );
   INSERT INTO admin_audit_logs (
@@ -444,6 +499,74 @@ BEGIN
 END;
 $$;
 
+-- purge 只清理投稿私密载荷，不得把已承诺的幂等首次快照改写为后续状态。
+CREATE OR REPLACE FUNCTION mark_submission_purged(
+  p_submission_id text,
+  p_expected_version bigint
+)
+RETURNS jsonb
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $$
+DECLARE
+  v_submission submissions%ROWTYPE;
+BEGIN
+  IF COALESCE(
+    current_setting('request.jwt.claims', true)::jsonb ->> 'role',
+    ''
+  ) <> 'service_role' THEN
+    RAISE EXCEPTION 'service_role required' USING ERRCODE = '42501';
+  END IF;
+
+  SELECT * INTO v_submission
+  FROM submissions
+  WHERE id = p_submission_id
+  FOR UPDATE;
+  IF NOT FOUND
+    OR v_submission.status_version <> p_expected_version
+    OR v_submission.cleanup_lease_until IS NULL
+    OR v_submission.cleanup_started_at IS NULL
+    OR (
+      (
+        v_submission.status IN (
+          'auto_rejected',
+          'admin_rejected',
+          'deleted_quarantined'
+        )
+        AND v_submission.purge_after <= now()
+      )
+      OR (
+        v_submission.status = 'uploading'
+        AND v_submission.cleanup_started_at IS NOT NULL
+      )
+    ) IS NOT TRUE THEN
+    RETURN jsonb_build_object('applied', false);
+  END IF;
+
+  DELETE FROM assets WHERE submission_id = p_submission_id;
+  UPDATE moderation_results
+  SET evidence = '{}'::jsonb,
+      error_message = NULL
+  WHERE submission_id = p_submission_id;
+  UPDATE submissions
+  SET title = NULL,
+      body = NULL,
+      status = 'purged',
+      status_version = status_version + 1,
+      risk_summary = jsonb_build_object('purged', true),
+      public_reason = NULL,
+      auto_rejection_reason = NULL,
+      cleanup_lease_until = NULL,
+      purge_after = NULL,
+      pre_quarantine_status = NULL,
+      updated_at = now()
+  WHERE id = p_submission_id
+    AND status_version = p_expected_version;
+  RETURN jsonb_build_object('applied', true);
+END;
+$$;
+
 REVOKE ALL ON FUNCTION apply_moderation_decision(text, bigint, text, jsonb, jsonb, text)
   FROM PUBLIC, anon, authenticated;
 GRANT EXECUTE ON FUNCTION apply_moderation_decision(text, bigint, text, jsonb, jsonb, text)
@@ -451,6 +574,10 @@ GRANT EXECUTE ON FUNCTION apply_moderation_decision(text, bigint, text, jsonb, j
 REVOKE ALL ON FUNCTION apply_admin_action(text, text, text, text, bigint, text, text, text)
   FROM PUBLIC, anon, authenticated;
 GRANT EXECUTE ON FUNCTION apply_admin_action(text, text, text, text, bigint, text, text, text)
+  TO service_role;
+REVOKE ALL ON FUNCTION mark_submission_purged(text, bigint)
+  FROM PUBLIC, anon, authenticated;
+GRANT EXECUTE ON FUNCTION mark_submission_purged(text, bigint)
   TO service_role;
 
 COMMIT;
