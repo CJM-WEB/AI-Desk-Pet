@@ -183,6 +183,8 @@
 
 ## Task 8：总验收与条件裁决
 
+> 状态：2026-08-31 已完成验收与条件裁决；验收记录提交 `cbd051c`，过时运维描述清理提交 `33dc332`，独立规格与工程标准审查均为 PASS、0 个 finding。阶段 2A 与阶段 3 PASS；阶段 2B 因本机缺少 Docker Linux runtime 保持 `blocked/unverified`；阶段 2C 未执行，生产未部署且投稿关闭。联合门未满足，普通非投稿网站新功能继续冻结。
+
 **Files:**
 - Create: `docs/operations/website-optimization-acceptance.md`
 - Modify: 总索引、`docs/operations/cloudbase-deployment.md`, `content-moderation.md`
