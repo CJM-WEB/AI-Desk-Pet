@@ -145,13 +145,14 @@
 **Files:**
 - Create: `packages/shared-types/src/website-http.ts`, `packages/shared-types/tests/website-http.test.ts`
 - Modify: `packages/shared-types/package.json`, `.dependency-cruiser.mjs`, `.dependency-cruiser.web.mjs`
+- Modify: `tools/verification/web-dependency-audit.test.mjs`, `website-scope-policy.mjs`, `verify-website-scope.test.mjs`
 - Modify: website 的 `api-client.ts`, `submission-status.ts`, `admin-api-client.ts`、两个 cloud repository 及对应测试
 - Modify: CloudBase API 的 `functions/api.ts`, `errors.ts` 及对应测试
 
 **依赖：** Task 5 的最终状态与 admin evidence 形状。
 
 1. RED：必填 requestId；data/error 互斥；extra key、畸形 data、非 JSON、错误 HTTP+畸形信封均失败关闭。
-2. 精确响应：prepare=`uploading+cover/package targets`；finalize=`system_reviewing`；feedback=`manual_review_pending`；status=公开状态；公开 list/detail/like/download 与 admin queue/detail/action 全部 strict。
+2. 精确请求与响应：共享子路径同时提供 prepare、feedback、status 的 strict 请求 Schema，删除双重断言；prepare=`uploading+cover/package targets`；finalize=`system_reviewing`；feedback=`manual_review_pending`；status=公开状态；公开 list/detail/like/download 与 admin queue/detail/action 全部 strict。
 3. GREEN：唯一 `ApiClient.request(path, schema, init)`；服务端发送前 strict parse，失败经 `normalizeError` 返回不泄露原对象的 500 `INTERNAL_ERROR`。
 4. REFACTOR：删除本地 Envelope、`request<unknown>`、重复 DTO/Schema、无消费者 error message 和手工 wire 投影。
 5. 完成标准：shared-types、website、CloudBase API test/typecheck 通过，残余检索为零。
@@ -161,14 +162,14 @@
 **Files:**
 - Create: `tests/website-contract/website-api-contract.ts`, `production-driver.test.ts`, `memory-driver.test.ts`
 - Create: `tests/vitest.web-chain.config.ts`
-- Modify: `tests/memory-website-api.mjs`, `package.json`
+- Modify: `tests/memory-website-api.mjs`, `tests/e2e/website.spec.ts`, `package.json`
 - Modify: `tools/verification/web-chain-catalog.mjs`, `web-chain-catalog.test.mjs`
-- Modify: `tools/verification/verify-web-test-ownership.mjs`, `verify-website-scope.test.mjs`, `website-scope-policy.mjs`
+- Modify: `tools/verification/verify-web-test-ownership.mjs`, `verify-website-scope.test.mjs`, `website-scope-policy.mjs`, `verify-web-chain.test.mjs`
 
 **依赖：** Task 6。
 
 1. RED：两 driver 共用信封、回执、状态、公开内容、`x-ai-pet-admin-token`、401/403、版本和幂等案例。
-2. `reset(): ContractFixtureRefs` 建立同构种子并返回 IDs、token、version；不暴露数据库 port。
+2. `reset(): ContractFixtureRefs` 建立同构种子并返回已上传投稿 ID、公开内容 IDs、token、version；不暴露数据库 port。
 3. GREEN：memory 只增加 reset/固定种子，socket 由测试 driver 管；统一错误码和 requestId。
 4. 登记 `WEB_AUDIT_INPUTS`、`WEB_TEST_OWNERS`、scope test directories/exact files、catalog step 和三类验证测试；contract step 只加入 fast，full 继承 fast。
 5. REFACTOR：删除 memory 的 Authorization 分支、旧 ADMIN_* 错误码和重复案例。
