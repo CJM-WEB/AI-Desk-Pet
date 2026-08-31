@@ -32,6 +32,8 @@
 - Modify: `apps/website/tests/about-chapter.test.tsx`
 - Modify: `apps/website/tests/download-chapter.test.tsx`
 - Modify: `tools/verification/web-dependency-audit.test.mjs`
+- Modify: `tools/verification/website-scope-policy.mjs`
+- Modify: `tools/verification/verify-website-scope.test.mjs`
 
 **Interfaces:**
 - Consumes: `zhCN` 当前完整键集和现有 `MessageKey`/`Translate` 调用接口。
@@ -50,10 +52,13 @@
 
 断言 `shader-offender.ts` 命中 `website-features-do-not-import-liquid-glass`，且该规则与网站范围 `no-circular` 的 severity 都是 `error`。
 
+快速基线已经证明阶段四规格与计划尚未进入精确网站范围。范围测试补充这两个获批文档为 allowed，并继续证明同名伪文件与桌宠路径被拒绝。
+
 - [ ] **Step 2: 运行 RED**
 
 Run: `node --test tools/verification/web-dependency-audit.test.mjs`
-Expected: FAIL；当前 i18n 循环仍存在，Liquid 规则尚未覆盖 shader 且仍是 warning。
+Run: `node --test tools/verification/verify-website-scope.test.mjs`
+Expected: FAIL；当前 i18n 循环仍存在，Liquid 规则尚未覆盖 shader 且仍是 warning；阶段四两份精确文档尚未放行。
 
 - [ ] **Step 3: 最小删除反向依赖并收紧网站门**
 
@@ -75,6 +80,8 @@ to: {
 
 `.dependency-cruiser.web.mjs` 在筛选网站规则时只把 `no-circular` 和 `website-features-do-not-import-liquid-glass` 映射为 `severity: 'error'`，不改变桌宠审查级别。
 
+`website-scope-policy.mjs` 只新增本阶段规格与计划两个精确路径，不改 baseline、不放行通配文档目录。
+
 - [ ] **Step 4: 删除穿透 shader 实现的旧测试**
 
 删除 `about-chapter.test.tsx` 和 `download-chapter.test.tsx` 中 shader import 及仅断言旧 uniform 字符串不存在的断言；保留 DOM 内容、交互和 `magnetic-intro.test.tsx` 的 GPU 可观察行为测试。
@@ -82,6 +89,7 @@ to: {
 - [ ] **Step 5: 运行 GREEN**
 
 Run: `node --test tools/verification/web-dependency-audit.test.mjs`
+Run: `node --test tools/verification/verify-website-scope.test.mjs && pnpm.cmd verify:web-chain:scope`
 Run: `pnpm.cmd deps:audit:web`
 Run: `pnpm.cmd --filter @myself/website test -- tests/i18n.test.tsx tests/about-chapter.test.tsx tests/download-chapter.test.tsx tests/magnetic-intro.test.tsx`
 Run: `pnpm.cmd --filter @myself/website typecheck`
@@ -90,7 +98,7 @@ Expected: 全部 PASS；依赖审查只剩 8 个阶段五 orphan warning。
 - [ ] **Step 6: 提交**
 
 ```powershell
-git add .dependency-cruiser.mjs .dependency-cruiser.web.mjs apps/website tools/verification/web-dependency-audit.test.mjs
+git add .dependency-cruiser.mjs .dependency-cruiser.web.mjs apps/website tools/verification/web-dependency-audit.test.mjs tools/verification/website-scope-policy.mjs tools/verification/verify-website-scope.test.mjs
 git commit -m "refactor(web): 收口前端单向依赖"
 ```
 
