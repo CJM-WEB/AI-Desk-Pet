@@ -268,6 +268,55 @@ describe('公开 HTTP API', () => {
     expect(response.body).not.toContain('private/package.zip');
   });
 
+  it.each([
+    new ApiError('PRIVATE_DATABASE_PASSWORD', 400),
+    new ApiError('NOT_FOUND', 418),
+    new ApiError('NOT_FOUND', 404, '内部详情', 1),
+    new ApiError('RATE_LIMITED', 429, '内部计数', 0),
+    new ApiError('X'.repeat(256), 500)
+  ])('未知或非法受控错误失败关闭且不会二次抛出', async injectedError => {
+    const dependencies = createDependencies();
+    dependencies.publicContent.getCommunity.mockRejectedValueOnce(injectedError);
+    const main = createApi(dependencies);
+
+    const response = await main(
+      event('GET', '/api/v1/community/community-1'),
+      context
+    );
+
+    expect(response.statusCode).toBe(500);
+    expect(JSON.parse(response.body)).toEqual({
+      requestId: 'request-1',
+      error: { code: 'INTERNAL_ERROR' }
+    });
+  });
+
+  it.each([
+    ['INVALID_REQUEST', 400],
+    ['UNAUTHORIZED', 401],
+    ['FORBIDDEN', 403],
+    ['NOT_FOUND', 404],
+    ['VERSION_CONFLICT', 409]
+  ] as const)('受控错误 %s 保留精确 HTTP 状态', async (code, statusCode) => {
+    const dependencies = createDependencies();
+    dependencies.publicContent.getCommunity.mockRejectedValueOnce(
+      new ApiError(code, statusCode, '不得公开的内部原因')
+    );
+    const main = createApi(dependencies);
+
+    const response = await main(
+      event('GET', '/api/v1/community/community-1'),
+      context
+    );
+
+    expect(response.statusCode).toBe(statusCode);
+    expect(JSON.parse(response.body)).toEqual({
+      requestId: 'request-1',
+      error: { code }
+    });
+    expect(response.body).not.toContain('不得公开的内部原因');
+  });
+
   it('兼容 CloudBase HTTP 服务剥离 api 前缀后的路径', async () => {
     const dependencies = createDependencies();
     const main = createApi(dependencies);

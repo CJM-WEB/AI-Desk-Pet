@@ -541,22 +541,56 @@ function safeRequestId(value: string | undefined): string {
     : randomUUID();
 }
 
+/** 仅公开调用方可稳定处理的 code/status 组合，内部适配器错误统一收敛。 */
+const publicErrorStatuses: Readonly<Record<string, number>> = {
+  INVALID_REQUEST: 400,
+  INVALID_UPLOAD: 400,
+  UPLOAD_INCOMPLETE: 400,
+  INVALID_LIMIT: 400,
+  INVALID_CURSOR: 400,
+  INVALID_STATUS_TOKEN_HASH: 400,
+  UNAUTHORIZED: 401,
+  FORBIDDEN: 403,
+  NOT_FOUND: 404,
+  SUBMISSION_NOT_FOUND: 404,
+  INVALID_ADMIN_ACTION: 409,
+  TECHNICAL_SCAN_REQUIRED: 409,
+  UPLOAD_STATE_CONFLICT: 409,
+  UPLOAD_FINALIZE_CONFLICT: 409,
+  VERSION_CONFLICT: 409,
+  IDEMPOTENCY_CONFLICT: 409,
+  RATE_LIMITED: 429,
+  INTERNAL_ERROR: 500,
+  AUTH_SERVICE_UNAVAILABLE: 503,
+  SERVICE_UNAVAILABLE: 503,
+  SHARED_PACKAGE_SUBMISSIONS_PAUSED: 503
+};
+
 function normalizeError(error: unknown): ApiError {
-  if (error instanceof ApiError) return error;
   if (typeof error === 'object' && error !== null) {
     const value = error as Record<string, unknown>;
+    const expectedStatus = typeof value.code === 'string'
+      ? publicErrorStatuses[value.code]
+      : undefined;
     if (
-      typeof value.code === 'string'
-      && /^[A-Z][A-Z0-9_]{0,127}$/u.test(value.code)
-      && Number.isSafeInteger(value.statusCode)
-      && (value.statusCode as number) >= 400
-      && (value.statusCode as number) <= 599
+      expectedStatus !== undefined
+      && value.statusCode === expectedStatus
     ) {
-      const retryAfterSeconds = Number.isSafeInteger(value.retryAfterSeconds)
-        && (value.retryAfterSeconds as number) > 0
-        ? value.retryAfterSeconds as number
-        : undefined;
-      return new ApiError(value.code, value.statusCode as number, '受控错误', retryAfterSeconds);
+      if (value.code === 'RATE_LIMITED') {
+        if (
+          Number.isSafeInteger(value.retryAfterSeconds)
+          && (value.retryAfterSeconds as number) > 0
+        ) {
+          return new ApiError(
+            value.code,
+            expectedStatus,
+            '受控错误',
+            value.retryAfterSeconds as number
+          );
+        }
+      } else if (value.retryAfterSeconds === undefined) {
+        return new ApiError(value.code as string, expectedStatus, '受控错误');
+      }
     }
   }
   return new ApiError('INTERNAL_ERROR', 500);
