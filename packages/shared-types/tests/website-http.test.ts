@@ -161,7 +161,13 @@ describe('公开 endpoint 契约', () => {
   });
 
   it('公开与管理员路径、query 和空 body 请求拒绝额外字段', () => {
-    expect(publicListRequestSchema.parse({ limit: 20, cursor: 0 })).toEqual({ limit: 20, cursor: 0 });
+    expect(publicListRequestSchema.parse({ limit: 8, cursor: 'v1.abc' }).cursor)
+      .toBe('v1.abc');
+    expect(publicListRequestSchema.safeParse({ limit: 8, cursor: 8 }).success)
+      .toBe(false);
+    expect(publicListRequestSchema.parse({ limit: 8, cursor: '' }).cursor).toBe('');
+    expect(publicListRequestSchema.parse({ limit: 8, cursor: 'x'.repeat(513) }).cursor)
+      .toHaveLength(513);
     expect(publicListRequestSchema.safeParse({ limit: 20, private: true }).success).toBe(false);
     expect(publicFeedbackListRequestSchema.parse({ kind: 'feedback', limit: 20 })).toEqual({ kind: 'feedback', limit: 20 });
     expect(publicDetailRequestSchema.parse({
@@ -177,6 +183,11 @@ describe('公开 endpoint 契约', () => {
     expect(publicLikeRequestSchema.safeParse({ force: true }).success).toBe(false);
     expect(publicDownloadRequestSchema.safeParse({ token: 'private' }).success).toBe(false);
     expect(adminQueueRequestSchema.safeParse({ limit: 20, status: 'system_reviewing', extra: true }).success).toBe(false);
+    expect(adminQueueRequestSchema.parse({
+      limit: 20,
+      cursor: 'v1.admin',
+      status: 'system_reviewing'
+    }).cursor).toBe('v1.admin');
     expect(adminDetailRequestSchema.safeParse({
       path: { id: 'submission-1' },
       query: {},
@@ -201,8 +212,10 @@ describe('管理员 endpoint 契约', () => {
   });
 
   it('队列、详情与动作响应都是 strict', () => {
-    expect(adminQueueResponseSchema.parse({ items: [], nextCursor: null }))
-      .toEqual({ items: [], nextCursor: null });
+    expect(adminQueueResponseSchema.parse({ items: [], nextCursor: 'v1.next' }))
+      .toEqual({ items: [], nextCursor: 'v1.next' });
+    expect(adminQueueResponseSchema.safeParse({ items: [], nextCursor: 20 }).success)
+      .toBe(false);
     expect(adminQueueResponseSchema.safeParse({ items: [], nextCursor: null, adminEmail: 'secret' }).success)
       .toBe(false);
     expect(adminDetailResponseSchema.safeParse({ id: 'submission-1', adminEmail: 'secret' }).success)

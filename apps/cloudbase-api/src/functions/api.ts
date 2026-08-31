@@ -93,13 +93,13 @@ interface TextSubmissionApi {
 interface PublicContentApi {
   listCommunity(input: {
     limit: number;
-    cursor?: number | null;
-  }): Promise<{ items: PublicCommunityItem[]; nextCursor: number | null }>;
+    cursor?: string | null;
+  }): Promise<{ items: PublicCommunityItem[]; nextCursor: string | null }>;
   getCommunity(id: string): Promise<PublicCommunityItem>;
   listFeedback(
     kind: 'feedback' | 'suggestion',
-    input: { limit: number; cursor?: number | null }
-  ): Promise<{ items: PublicFeedbackItem[]; nextCursor: number | null }>;
+    input: { limit: number; cursor?: string | null }
+  ): Promise<{ items: PublicFeedbackItem[]; nextCursor: string | null }>;
   toggleFeedbackLike(id: string, fingerprint: string): Promise<unknown>;
   toggleCommunityLike(id: string, fingerprint: string): Promise<unknown>;
   getDownload(id: string): Promise<PublicDownload>;
@@ -116,7 +116,7 @@ interface AdminIdentityApi {
 interface AdminApi {
   listQueue(input: {
     limit: number;
-    cursor?: number | null;
+    cursor?: string | null;
     status?: SubmissionStatus;
   }): Promise<unknown>;
   getDetail(id: string): Promise<unknown>;
@@ -390,9 +390,9 @@ function requestRecord(event: ApiHttpEvent): Record<string, unknown> {
 
 function publicListQuery(event: ApiHttpEvent): {
   limit: number;
-  cursor?: number | null;
+  cursor?: string | null;
 } {
-  const query = publicListRequestSchema.safeParse(numericQuery(event));
+  const query = publicListRequestSchema.safeParse(listQuery(event));
   if (!query.success) throw invalidRequest();
   return query.data.cursor === undefined
     ? { limit: query.data.limit }
@@ -412,9 +412,9 @@ function detailRequest(
 
 function publicFeedbackListQuery(event: ApiHttpEvent): {
   kind: 'feedback' | 'suggestion';
-  page: { limit: number; cursor?: number };
+  page: { limit: number; cursor?: string };
 } {
-  const query = publicFeedbackListRequestSchema.safeParse(numericQuery(event));
+  const query = publicFeedbackListRequestSchema.safeParse(listQuery(event));
   if (!query.success) throw invalidRequest();
   const page = query.data.cursor === undefined
     ? { limit: query.data.limit }
@@ -424,10 +424,10 @@ function publicFeedbackListQuery(event: ApiHttpEvent): {
 
 function adminListQuery(event: ApiHttpEvent): {
   limit: number;
-  cursor?: number | null;
+  cursor?: string | null;
   status?: SubmissionStatus;
 } {
-  const query = adminQueueRequestSchema.safeParse(numericQuery(event));
+  const query = adminQueueRequestSchema.safeParse(listQuery(event));
   if (!query.success) throw invalidRequest();
   return {
     limit: query.data.limit,
@@ -436,12 +436,12 @@ function adminListQuery(event: ApiHttpEvent): {
   };
 }
 
-function numericQuery(event: ApiHttpEvent): Record<string, unknown> {
+/** 列表仅把 limit 转成数值；opaque cursor 必须原样进入共享 Schema。 */
+function listQuery(event: ApiHttpEvent): Record<string, unknown> {
   const query: Record<string, unknown> = {
     ...(event.queryStringParameters ?? {})
   };
   query.limit = query.limit === undefined ? 20 : Number(query.limit);
-  if (query.cursor !== undefined) query.cursor = Number(query.cursor);
   return query;
 }
 

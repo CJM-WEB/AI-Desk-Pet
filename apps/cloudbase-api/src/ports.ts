@@ -123,24 +123,10 @@ export interface AdminActionInput {
   riskAcknowledgement?: 'ADMIN_OVERRIDE_ACCEPTED';
 }
 
-/** 公开列表允许返回的裁剪字段。 */
-export interface PublicSubmission {
-  id: string;
-  title: string | null;
-  body: string | null;
-  publishedAt: string;
-}
-
-/** 公开列表使用零基偏移游标，限制由仓储统一执行。 */
+/** 公开列表使用服务端 opaque 键集游标，限制由仓储统一执行。 */
 export interface PublicListQuery {
   limit: number;
-  cursor?: number | null;
-}
-
-/** 公开投稿分页结果。 */
-export interface PublicSubmissionPage {
-  items: PublicSubmission[];
-  nextCursor: number | null;
+  cursor?: string | null;
 }
 
 export type TextSubmissionKind = 'feedback' | 'suggestion';
@@ -215,12 +201,12 @@ export interface PublishedFeedbackRecord {
 
 export interface PublishedCommunityPage {
   items: PublishedCommunityRecord[];
-  nextCursor: number | null;
+  nextCursor: string | null;
 }
 
 export interface PublishedFeedbackPage {
   items: PublishedFeedbackRecord[];
-  nextCursor: number | null;
+  nextCursor: string | null;
 }
 
 /** 私有对象上传签名的写入策略。 */
@@ -326,7 +312,7 @@ export interface AdminIdentity {
 /** 管理员队列的分页和状态筛选。 */
 export interface AdminQueueQuery {
   limit: number;
-  cursor?: number | null;
+  cursor?: string | null;
   status?: SubmissionStatus;
 }
 
@@ -338,7 +324,7 @@ export interface AdminSubmissionSummary extends SubmissionRow {
 
 export interface AdminQueuePage {
   items: AdminSubmissionSummary[];
-  nextCursor: number | null;
+  nextCursor: string | null;
 }
 
 /** 管理员详情只保留审核所需字段，不向公开接口复用。 */
@@ -402,7 +388,6 @@ export interface SubmissionStore {
   claimModerationJobs(limit: number, leaseUntil: string): Promise<SubmissionRow[]>;
   recordModerationResult(result: ModerationRecord): Promise<void>;
   applyAdminAction(input: AdminActionInput): Promise<AdminActionResult>;
-  listPublished(input: PublicListQuery): Promise<PublicSubmissionPage>;
   listPurgeCandidates(now: string, limit: number): Promise<SubmissionRow[]>;
 }
 

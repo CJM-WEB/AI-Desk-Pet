@@ -47,7 +47,7 @@ describe('云端反馈仓库', () => {
         items: [{
           id: 'published-1', kind: 'feedback', authorName: '第一页', content: '第一页公开反馈。',
           likeCount: 1, createdAt: '2026-08-01T00:00:00.000Z'
-        }], nextCursor: 100
+        }], nextCursor: 'v1.feedback-next'
       },
       {
         items: [{
@@ -64,7 +64,7 @@ describe('云端反馈仓库', () => {
       expect.objectContaining({ id: 'published-1' }),
       expect.objectContaining({ id: 'published-2' })
     ]));
-    expect(vi.mocked(api.request)).toHaveBeenNthCalledWith(2, '/feedback?kind=feedback&limit=100&cursor=100', expect.anything());
+    expect(vi.mocked(api.request)).toHaveBeenNthCalledWith(2, '/feedback?kind=feedback&limit=100&cursor=v1.feedback-next', expect.anything());
   });
 
   it('反馈和建议并发刷新时保留各自的失败状态', async () => {
@@ -136,7 +136,10 @@ describe('云端反馈仓库', () => {
   });
 
   it('重复游标时清空网络快照并拒绝继续读取', async () => {
-    const api = createApi({ items: [], nextCursor: 100 }, { items: [], nextCursor: 100 });
+    const api = createApi(
+      { items: [], nextCursor: 'v1.feedback-loop' },
+      { items: [], nextCursor: 'v1.feedback-loop' }
+    );
     const repository = new CloudFeedbackRepository(api);
 
     await expect(repository.refresh('feedback')).rejects.toThrow('FEEDBACK_CURSOR_LOOP');

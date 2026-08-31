@@ -180,6 +180,62 @@ export function runWebsiteApiContract(
       }));
     });
 
+    it('三条列表只回传 scoped opaque token 且第二页不重复第一项', async () => {
+      const first = success(await driver.request({
+        method: 'GET',
+        path: '/api/v1/community?limit=1',
+      }), publicCommunityPageSchema);
+      expect(first.items).toHaveLength(1);
+      expect(first.nextCursor).toMatch(/^v1\.[A-Za-z0-9_-]+$/u);
+
+      const second = success(await driver.request({
+        method: 'GET',
+        path: `/api/v1/community?limit=1&cursor=${encodeURIComponent(first.nextCursor!)}`,
+      }), publicCommunityPageSchema);
+      expect(second.items).toHaveLength(1);
+      expect(second.items[0]?.id).not.toBe(first.items[0]?.id);
+      expect(second.nextCursor).toBeNull();
+
+      const firstFeedback = success(await driver.request({
+        method: 'GET',
+        path: '/api/v1/feedback?kind=feedback&limit=1',
+      }), publicFeedbackPageSchema);
+      expect(firstFeedback.nextCursor).toMatch(/^v1\.[A-Za-z0-9_-]+$/u);
+      const secondFeedback = success(await driver.request({
+        method: 'GET',
+        path: `/api/v1/feedback?kind=feedback&limit=1&cursor=${encodeURIComponent(firstFeedback.nextCursor!)}`,
+      }), publicFeedbackPageSchema);
+      expect(secondFeedback.items[0]?.id).not.toBe(firstFeedback.items[0]?.id);
+
+      const adminHeaders = { 'x-ai-pet-admin-token': refs.adminToken };
+      const firstAdmin = success(await driver.request({
+        method: 'GET',
+        path: '/api/v1/admin/submissions?limit=1',
+        headers: adminHeaders,
+      }), adminQueueResponseSchema);
+      expect(firstAdmin.nextCursor).toMatch(/^v1\.[A-Za-z0-9_-]+$/u);
+      const secondAdmin = success(await driver.request({
+        method: 'GET',
+        path: `/api/v1/admin/submissions?limit=1&cursor=${encodeURIComponent(firstAdmin.nextCursor!)}`,
+        headers: adminHeaders,
+      }), adminQueueResponseSchema);
+      expect(secondAdmin.items[0]?.id).not.toBe(firstAdmin.items[0]?.id);
+
+      failure(await driver.request({
+        method: 'GET',
+        path: `/api/v1/feedback?kind=feedback&limit=1&cursor=${encodeURIComponent(first.nextCursor!)}`,
+      }), 400, 'INVALID_CURSOR');
+      failure(await driver.request({
+        method: 'GET',
+        path: `/api/v1/admin/submissions?limit=1&status=system_reviewing&cursor=${encodeURIComponent(firstAdmin.nextCursor!)}`,
+        headers: adminHeaders,
+      }), 400, 'INVALID_CURSOR');
+      failure(await driver.request({
+        method: 'GET',
+        path: `/api/v1/community?limit=1&cursor=${'x'.repeat(513)}`,
+      }), 400, 'INVALID_CURSOR');
+    });
+
     it('管理接口只接受专用令牌并区分 401 与 403', async () => {
       failure(await driver.request({
         method: 'GET',

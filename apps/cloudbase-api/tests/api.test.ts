@@ -514,6 +514,38 @@ describe('公开 HTTP API', () => {
     expect(dependencies.admin.listQueue).not.toHaveBeenCalled();
   });
 
+  it('三条列表只转换 limit 并原样传递 opaque cursor', async () => {
+    const dependencies = createDependencies();
+    const main = createApi(dependencies);
+
+    await main({
+      ...event('GET', '/api/v1/community'),
+      queryStringParameters: { limit: '8', cursor: 'v1.community' }
+    }, context);
+    await main({
+      ...event('GET', '/api/v1/feedback'),
+      queryStringParameters: { kind: 'feedback', limit: '9', cursor: 'v1.feedback' }
+    }, context);
+    await main({
+      ...event('GET', '/api/v1/admin/submissions'),
+      queryStringParameters: {
+        status: 'system_reviewing',
+        limit: '10',
+        cursor: 'v1.admin'
+      }
+    }, context);
+
+    expect(dependencies.publicContent.listCommunity)
+      .toHaveBeenCalledWith({ limit: 8, cursor: 'v1.community' });
+    expect(dependencies.publicContent.listFeedback)
+      .toHaveBeenCalledWith('feedback', { limit: 9, cursor: 'v1.feedback' });
+    expect(dependencies.admin.listQueue).toHaveBeenCalledWith({
+      status: 'system_reviewing',
+      limit: 10,
+      cursor: 'v1.admin'
+    });
+  });
+
   it('公开与管理员详情拒绝额外 query 和 body 且不调用服务', async () => {
     const dependencies = createDependencies();
     const main = createApi(dependencies);

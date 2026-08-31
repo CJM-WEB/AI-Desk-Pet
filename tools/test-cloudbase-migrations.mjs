@@ -132,12 +132,13 @@ export async function runCloudBaseMigrationBehaviorGate({
       ]);
     }
     await run(executable('psql'), [...connection, '-f', '-'], behaviorSql);
+    await run(executable('psql'), [...connection, '-f', '-'], keysetBehaviorSql);
 
     return {
       postgresVersion: postgresVersion.version,
       postgresMajorVersion: postgresVersion.major,
       migrationsApplied: migrations.length,
-      behaviorsVerified: 42
+      behaviorsVerified: 52
     };
   } finally {
     if (started) {
@@ -1524,6 +1525,152 @@ BEGIN
   END;
 END
 $gate$;
+`;
+
+/** 三条列表在真实 PostgreSQL 上验证同时间戳排序与翻页期间变更。 */
+const keysetBehaviorSql = String.raw`
+DO $keyset_security_gate$
+BEGIN
+  IF has_function_privilege(
+      'anon', 'list_public_community(integer,timestamptz,text)', 'EXECUTE')
+    OR has_function_privilege(
+      'authenticated', 'list_public_feedback(text,integer,timestamptz,text)', 'EXECUTE')
+    OR NOT has_function_privilege(
+      'service_role', 'list_admin_submissions(integer,text,timestamptz,text)', 'EXECUTE') THEN
+    RAISE EXCEPTION '行为门失败：列表 RPC 权限不符合 service_role 边界';
+  END IF;
+
+  PERFORM set_config('request.jwt.claims', '{"role":"anon"}', false);
+  BEGIN
+    PERFORM * FROM list_public_community(1, NULL, NULL);
+    RAISE EXCEPTION '行为门失败：社区列表未拒绝非 service_role claims';
+  EXCEPTION WHEN SQLSTATE '42501' THEN NULL;
+  END;
+  BEGIN
+    PERFORM * FROM list_public_feedback('feedback', 1, NULL, NULL);
+    RAISE EXCEPTION '行为门失败：反馈列表未拒绝非 service_role claims';
+  EXCEPTION WHEN SQLSTATE '42501' THEN NULL;
+  END;
+  BEGIN
+    PERFORM * FROM list_admin_submissions(1, NULL, NULL, NULL);
+    RAISE EXCEPTION '行为门失败：管理员列表未拒绝非 service_role claims';
+  EXCEPTION WHEN SQLSTATE '42501' THEN NULL;
+  END;
+END
+$keyset_security_gate$;
+
+SELECT set_config('request.jwt.claims', '{"role":"service_role"}', false);
+
+DO $keyset_gate$
+DECLARE
+  v_time timestamptz := '2099-08-31T03:00:00.000Z';
+  v_ids text[];
+BEGIN
+  -- 三个 RPC 都必须把 NULL limit 当作越界输入，而不是无上限查询。
+  BEGIN
+    PERFORM * FROM list_public_community(NULL, NULL, NULL);
+    RAISE EXCEPTION '行为门失败：社区列表接受 NULL limit';
+  EXCEPTION WHEN SQLSTATE '22023' THEN
+    NULL;
+  END;
+  BEGIN
+    PERFORM * FROM list_public_feedback('feedback', NULL, NULL, NULL);
+    RAISE EXCEPTION '行为门失败：反馈列表接受 NULL limit';
+  EXCEPTION WHEN SQLSTATE '22023' THEN
+    NULL;
+  END;
+  BEGIN
+    PERFORM * FROM list_admin_submissions(NULL, NULL, NULL, NULL);
+    RAISE EXCEPTION '行为门失败：管理员列表接受 NULL limit';
+  EXCEPTION WHEN SQLSTATE '22023' THEN
+    NULL;
+  END;
+
+  INSERT INTO submissions (
+    id, kind, title, body, status, status_token_hash, published_at,
+    publication_basis, created_at
+  ) VALUES
+    ('keyset-community-a', 'shared_package', 'A', 'A', 'published', md5('keyset-community-a') || md5('keyset-community-a'), v_time, 'standard', v_time),
+    ('keyset-community-b', 'shared_package', 'B', 'B', 'published', md5('keyset-community-b') || md5('keyset-community-b'), v_time, 'standard', v_time),
+    ('keyset-community-c', 'shared_package', 'C', 'C', 'published', md5('keyset-community-c') || md5('keyset-community-c'), v_time, 'standard', v_time),
+    ('keyset-feedback-a', 'feedback', 'A', 'A', 'published', md5('keyset-feedback-a') || md5('keyset-feedback-a'), v_time, 'standard', v_time),
+    ('keyset-feedback-b', 'feedback', 'B', 'B', 'published', md5('keyset-feedback-b') || md5('keyset-feedback-b'), v_time, 'standard', v_time),
+    ('keyset-feedback-c', 'feedback', 'C', 'C', 'published', md5('keyset-feedback-c') || md5('keyset-feedback-c'), v_time, 'standard', v_time),
+    ('keyset-admin-a', 'feedback', 'A', 'A', 'system_reviewing', md5('keyset-admin-a') || md5('keyset-admin-a'), NULL, NULL, v_time),
+    ('keyset-admin-b', 'feedback', 'B', 'B', 'system_reviewing', md5('keyset-admin-b') || md5('keyset-admin-b'), NULL, NULL, v_time),
+    ('keyset-admin-c', 'feedback', 'C', 'C', 'system_reviewing', md5('keyset-admin-c') || md5('keyset-admin-c'), NULL, NULL, v_time);
+
+  INSERT INTO public_engagement (submission_id)
+  SELECT id FROM submissions WHERE id LIKE 'keyset-community-%' OR id LIKE 'keyset-feedback-%';
+  INSERT INTO assets (
+    submission_id, object_key, original_name, declared_size, actual_size,
+    mime_type, role
+  )
+  SELECT id, 'submissions/' || id || '/package.zip', 'pet.zip', 8, 8,
+         'application/zip', 'package'
+  FROM submissions WHERE id LIKE 'keyset-community-%';
+
+  SELECT array_agg(page.id) INTO v_ids
+  FROM list_public_community(1, NULL, NULL) AS page
+  WHERE page.id LIKE 'keyset-community-%';
+  IF v_ids IS DISTINCT FROM ARRAY['keyset-community-c', 'keyset-community-b']::text[] THEN
+    RAISE EXCEPTION '行为门失败：社区第一页未按同时间戳 id 降序返回 limit+1';
+  END IF;
+
+  INSERT INTO submissions (
+    id, kind, title, body, status, status_token_hash, published_at,
+    publication_basis, created_at
+  ) VALUES (
+    'keyset-community-d', 'shared_package', 'D', 'D', 'published', md5('keyset-community-d') || md5('keyset-community-d'),
+    v_time, 'standard', v_time
+  );
+  INSERT INTO public_engagement (submission_id) VALUES ('keyset-community-d');
+  INSERT INTO assets (
+    submission_id, object_key, original_name, declared_size, actual_size,
+    mime_type, role
+  ) VALUES (
+    'keyset-community-d', 'submissions/keyset-community-d/package.zip',
+    'pet.zip', 8, 8, 'application/zip', 'package'
+  );
+  SELECT array_agg(page.id) INTO v_ids
+  FROM list_public_community(2, v_time, 'keyset-community-c') AS page
+  WHERE page.id LIKE 'keyset-community-%';
+  IF v_ids IS DISTINCT FROM ARRAY['keyset-community-b', 'keyset-community-a']::text[] THEN
+    RAISE EXCEPTION '行为门失败：社区第二页在插入后重复或漏项';
+  END IF;
+
+  SELECT array_agg(page.id) INTO v_ids
+  FROM list_public_feedback('feedback', 1, NULL, NULL) AS page
+  WHERE page.id LIKE 'keyset-feedback-%';
+  IF v_ids IS DISTINCT FROM ARRAY['keyset-feedback-c', 'keyset-feedback-b']::text[] THEN
+    RAISE EXCEPTION '行为门失败：反馈第一页未按同时间戳 id 降序返回 limit+1';
+  END IF;
+  UPDATE submissions
+  SET published_at = v_time + interval '1 minute'
+  WHERE id = 'keyset-feedback-c';
+  SELECT array_agg(page.id) INTO v_ids
+  FROM list_public_feedback('feedback', 2, v_time, 'keyset-feedback-c') AS page
+  WHERE page.id LIKE 'keyset-feedback-%';
+  IF v_ids IS DISTINCT FROM ARRAY['keyset-feedback-b', 'keyset-feedback-a']::text[] THEN
+    RAISE EXCEPTION '行为门失败：反馈第二页在更新后重复或漏项';
+  END IF;
+
+  SELECT array_agg(page.id) INTO v_ids
+  FROM list_admin_submissions(1, 'system_reviewing', NULL, NULL) AS page
+  WHERE page.id LIKE 'keyset-admin-%';
+  IF v_ids IS DISTINCT FROM ARRAY['keyset-admin-c', 'keyset-admin-b']::text[] THEN
+    RAISE EXCEPTION '行为门失败：管理员第一页未按同时间戳 id 降序返回 limit+1';
+  END IF;
+  UPDATE submissions SET status = 'manual_review_pending'
+  WHERE id = 'keyset-admin-c';
+  SELECT array_agg(page.id) INTO v_ids
+  FROM list_admin_submissions(2, 'system_reviewing', v_time, 'keyset-admin-c') AS page
+  WHERE page.id LIKE 'keyset-admin-%';
+  IF v_ids IS DISTINCT FROM ARRAY['keyset-admin-b', 'keyset-admin-a']::text[] THEN
+    RAISE EXCEPTION '行为门失败：管理员第二页在状态变化后重复或漏项';
+  END IF;
+END
+$keyset_gate$;
 `;
 
 if (process.argv[1]

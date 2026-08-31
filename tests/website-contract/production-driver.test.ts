@@ -72,6 +72,14 @@ function createState(): ProductionFixtureState {
         publicationBasis: 'standard',
         publishedAt: CREATED_AT,
       }],
+      ['contract-community-older', {
+        id: 'contract-community-older',
+        status: 'published',
+        statusVersion: 1,
+        title: '较早公开合同资源',
+        publicationBasis: 'standard',
+        publishedAt: '2026-07-30T23:59:00.000Z',
+      }],
     ]),
     idempotency: new Map(),
     communityLiked: false,
@@ -224,28 +232,34 @@ function createDependencies(state: ProductionFixtureState): ApiDependencies {
       }),
     },
     publicContent: {
-      listCommunity: async () => ({
-        items: [...state.records.values()]
-          .filter(isPublished)
-          .map(publicCommunity),
-        nextCursor: null,
-      }),
+      listCommunity: async input => contractPage(
+        [...state.records.values()].filter(isPublished),
+        input,
+        'community',
+        record => record.publishedAt,
+        publicCommunity,
+      ),
       getCommunity: async id => {
         const record = state.records.get(id);
         if (!record || !isPublished(record)) throw new ApiError('NOT_FOUND', 404);
         return publicCommunity(record);
       },
-      listFeedback: async () => ({
-        items: [{
+      listFeedback: async (kind, input) => contractPage([{
           id: FIXTURE_REFS.publicFeedbackId,
-          kind: 'feedback',
+          kind: 'feedback' as const,
           authorName: '合同用户',
           content: '公开合同反馈',
           likeCount: 0,
           createdAt: CREATED_AT,
-        }],
-        nextCursor: null,
-      }),
+        }, {
+          id: 'contract-feedback-older',
+          kind: 'feedback' as const,
+          authorName: '较早合同用户',
+          content: '较早公开合同反馈',
+          likeCount: 0,
+          createdAt: '2026-07-30T23:59:00.000Z',
+        }].filter(item => item.kind === kind), input, `feedback:${kind}`,
+        item => item.createdAt, item => item),
       toggleCommunityLike: async () => {
         state.communityLiked = !state.communityLiked;
         return { liked: state.communityLiked, likeCount: state.communityLiked ? 1 : 0 };
@@ -262,10 +276,15 @@ function createDependencies(state: ProductionFixtureState): ApiDependencies {
       },
     },
     admin: {
-      listQueue: async () => ({
-        items: [...state.records.values()].map(adminSummary),
-        nextCursor: null,
-      }),
+      listQueue: async input => contractPage(
+        [...state.records.values()].filter(record =>
+          input.status === undefined || record.status === input.status
+        ),
+        input,
+        `admin:${input.status ?? 'all'}`,
+        () => CREATED_AT,
+        adminSummary,
+      ),
       getDetail: async id => {
         const record = state.records.get(id);
         if (!record) throw new ApiError('NOT_FOUND', 404);
@@ -297,6 +316,61 @@ function createDependencies(state: ProductionFixtureState): ApiDependencies {
       },
     },
   };
+}
+
+/** 合同 driver 只模拟 HTTP 可观察键集语义，不导入数据库实现。 */
+function contractPage<T extends { id: string }, R>(
+  records: T[],
+  input: { limit: number; cursor?: string | null },
+  scope: string,
+  sortTime: (record: T) => string,
+  project: (record: T) => R,
+): { items: R[]; nextCursor: string | null } {
+  const boundary = input.cursor ? decodeContractCursor(input.cursor, scope) : null;
+  const rows = [...records]
+    .filter(record => boundary === null
+      || sortTime(record) < boundary.sortTime
+      || (sortTime(record) === boundary.sortTime && record.id < boundary.id))
+    .sort((left, right) =>
+      sortTime(right).localeCompare(sortTime(left)) || right.id.localeCompare(left.id)
+    )
+    .slice(0, input.limit + 1);
+  const last = rows[input.limit - 1];
+  return {
+    items: rows.slice(0, input.limit).map(project),
+    nextCursor: rows.length > input.limit && last
+      ? encodeContractCursor(scope, sortTime(last), last.id)
+      : null,
+  };
+}
+
+function encodeContractCursor(scope: string, sortTime: string, id: string): string {
+  return `v1.${Buffer.from(JSON.stringify({ scope, sortTime, id }), 'utf8').toString('base64url')}`;
+}
+
+function decodeContractCursor(cursor: string, expectedScope: string): {
+  sortTime: string;
+  id: string;
+} {
+  try {
+    if (cursor.length > 512 || !/^v1\.[A-Za-z0-9_-]+$/u.test(cursor)) throw new Error();
+    const encoded = cursor.slice(3);
+    const bytes = Buffer.from(encoded, 'base64url');
+    if (bytes.toString('base64url') !== encoded) throw new Error();
+    const payload = JSON.parse(bytes.toString('utf8')) as Record<string, unknown>;
+    if (
+      payload.scope !== expectedScope
+      || typeof payload.sortTime !== 'string'
+      || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/u.test(payload.sortTime)
+      || !Number.isFinite(Date.parse(payload.sortTime))
+      || typeof payload.id !== 'string'
+      || payload.id.length < 1
+      || payload.id.length > 128
+    ) throw new Error();
+    return { sortTime: payload.sortTime, id: payload.id };
+  } catch {
+    throw new ApiError('INVALID_CURSOR', 400);
+  }
 }
 
 function eventFrom(input: ContractRequest) {

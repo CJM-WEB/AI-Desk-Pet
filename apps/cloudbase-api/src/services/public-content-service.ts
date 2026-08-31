@@ -53,7 +53,7 @@ export class PublicContentService {
 
   async listCommunity(input: PublicListQuery): Promise<{
     items: PublicCommunityItem[];
-    nextCursor: number | null;
+    nextCursor: string | null;
   }> {
     const page = await this.store.listPublicCommunity(input);
     return {
@@ -73,7 +73,7 @@ export class PublicContentService {
     input: PublicListQuery
   ): Promise<{
     items: PublicFeedbackItem[];
-    nextCursor: number | null;
+    nextCursor: string | null;
   }> {
     const page = await this.store.listPublicFeedback(kind, input);
     return {

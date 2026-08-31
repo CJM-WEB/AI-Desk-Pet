@@ -57,7 +57,7 @@ test('按版本排序并对 SQL 原始字节计算 SHA-256', async (t) => {
   assert.deepEqual(items[0].content, Buffer.from('SELECT 1;\n'));
 });
 
-test('真实仓库迁移清单保持七个不可变前向版本', async () => {
+test('真实仓库迁移清单保持八个不可变前向版本', async () => {
   const items = await inventoryCloudBaseMigrations(
     new URL('../cloudbase/migrations/', import.meta.url)
   );
@@ -69,7 +69,8 @@ test('真实仓库迁移清单保持七个不可变前向版本', async () => {
     '20260815000000_shared_package_publication_guard.sql',
     '20260831000000_restore_scanned_submission_flow.sql',
     '20260831010000_admin_override_publication.sql',
-    '20260831020000_late_moderation_lease_guard.sql'
+    '20260831020000_late_moderation_lease_guard.sql',
+    '20260831030000_keyset_pagination.sql'
   ]);
 });
 

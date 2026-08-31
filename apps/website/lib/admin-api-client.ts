@@ -19,7 +19,7 @@ export interface AdminApi {
   listQueue(
     accessToken: string,
     status: SubmissionStatus,
-    cursor?: number,
+    cursor?: string,
     signal?: AbortSignal
   ): Promise<AdminQueuePage>;
   getDetail(
@@ -41,7 +41,7 @@ export class AdminApiClient implements AdminApi {
   async listQueue(
     accessToken: string,
     status: SubmissionStatus,
-    cursor?: number,
+    cursor?: string,
     signal?: AbortSignal
   ): Promise<AdminQueuePage> {
     const query = new URLSearchParams({ limit: '20', status });

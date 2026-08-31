@@ -50,6 +50,25 @@ describe('管理员 API 客户端', () => {
       .rejects.toEqual(new ApiClientError('INVALID_RESPONSE', 200));
   });
 
+  it('管理员分页原样回传并安全编码服务端 opaque token', async () => {
+    const fetcher = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      data: { items: [], nextCursor: null },
+      requestId: 'request-1'
+    }), { status: 200 }));
+    const client = new AdminApiClient(new ApiClient('/api/v1', fetcher));
+
+    await client.listQueue(
+      'access-token',
+      'system_reviewing',
+      'v1.admin/token'
+    );
+
+    expect(fetcher).toHaveBeenCalledWith(
+      '/api/v1/admin/submissions?limit=20&status=system_reviewing&cursor=v1.admin%2Ftoken',
+      expect.anything()
+    );
+  });
+
   it('使用共享最小契约解析管理员动作首次结果与两种幂等回放', async () => {
     const safeSubmission = adminActionSubmissionDto();
     const fetcher = vi.fn()

@@ -43,11 +43,11 @@ export class CloudFeedbackRepository implements FeedbackRepository {
     this.refreshGenerations.set(kind, generation);
     try {
       const records: FeedbackEntry[] = [];
-      const seenCursors = new Set<number>();
-      let cursor: number | undefined;
+      const seenCursors = new Set<string>();
+      let cursor: string | undefined;
       for (let pageIndex = 0; pageIndex < MAX_PUBLIC_FEEDBACK_PAGES; pageIndex += 1) {
         const page = await this.api.request(
-          `/feedback?kind=${kind}&limit=100${cursor === undefined ? '' : `&cursor=${cursor}`}`,
+          `/feedback?kind=${kind}&limit=100${cursor === undefined ? '' : `&cursor=${encodeURIComponent(cursor)}`}`,
           publicFeedbackPageSchema
         );
         records.push(...page.items

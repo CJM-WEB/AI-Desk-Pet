@@ -162,9 +162,9 @@ describe('管理员审核工作台', () => {
     const first = detail({ id: 'first', title: '第一页' });
     const second = detail({ id: 'second', title: '第二页' });
     const listQueue = vi.fn()
-      .mockResolvedValueOnce({ items: [queuePage(first).items[0]!], nextCursor: 20 })
+      .mockResolvedValueOnce({ items: [queuePage(first).items[0]!], nextCursor: 'v1.admin-next' })
       .mockRejectedValueOnce(new Error('temporary'))
-      .mockResolvedValueOnce({ items: [queuePage(second).items[0]!], nextCursor: 20 });
+      .mockResolvedValueOnce({ items: [queuePage(second).items[0]!], nextCursor: 'v1.admin-next' });
     setup({ listQueue });
     await screen.findByText('第一页');
 

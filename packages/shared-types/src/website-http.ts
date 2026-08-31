@@ -108,7 +108,7 @@ export const submissionStatusResponseSchema = submissionStatusViewSchema;
 
 export const publicListRequestSchema = z.object({
   limit: z.number().int().min(1).max(100),
-  cursor: z.number().int().nonnegative().optional()
+  cursor: z.string().optional()
 }).strict();
 export const publicFeedbackListRequestSchema = publicListRequestSchema.extend({
   kind: z.enum(['feedback', 'suggestion'])
@@ -142,7 +142,7 @@ export const publicCommunityItemSchema = z.object({
 
 export const publicCommunityPageSchema = z.object({
   items: z.array(publicCommunityItemSchema),
-  nextCursor: z.number().int().nonnegative().nullable()
+  nextCursor: z.string().min(1).max(512).nullable()
 }).strict();
 
 export const publicFeedbackItemSchema = z.object({
@@ -156,7 +156,7 @@ export const publicFeedbackItemSchema = z.object({
 
 export const publicFeedbackPageSchema = z.object({
   items: z.array(publicFeedbackItemSchema),
-  nextCursor: z.number().int().nonnegative().nullable()
+  nextCursor: z.string().min(1).max(512).nullable()
 }).strict();
 
 export const publicLikeResponseSchema = z.object({
@@ -170,7 +170,7 @@ export const publicDownloadResponseSchema = signedUrlSchema.extend({
 
 export const adminQueueRequestSchema = z.object({
   limit: z.number().int().min(1).max(100),
-  cursor: z.number().int().nonnegative().optional(),
+  cursor: z.string().optional(),
   status: submissionStatusSchema.optional()
 }).strict();
 export const adminDetailRequestSchema = publicDetailRequestSchema;
@@ -238,7 +238,7 @@ export const adminDetailResponseSchema = adminSubmissionSummarySchema.extend({
 
 export const adminQueueResponseSchema = z.object({
   items: z.array(adminSubmissionSummarySchema),
-  nextCursor: z.number().int().nonnegative().nullable()
+  nextCursor: z.string().min(1).max(512).nullable()
 }).strict();
 
 export const adminActionResponseSchema = adminActionResultSchema;

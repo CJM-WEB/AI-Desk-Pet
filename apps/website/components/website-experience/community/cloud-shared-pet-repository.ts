@@ -30,6 +30,7 @@ export type SignedUpload = (
 export class CloudSharedPetRepository implements SharedPetRepository {
   private readonly listeners = new Set<() => void>();
   private readonly records = new Map<string, SharedPetPackageSummary>();
+  private readonly pageCursors = new Map<number, string>();
 
   constructor(
     private readonly api: ApiClient,
@@ -41,14 +42,21 @@ export class CloudSharedPetRepository implements SharedPetRepository {
     pageSize: typeof SHARED_PET_PAGE_SIZE = SHARED_PET_PAGE_SIZE
   ): Promise<SharedPetPage> {
     const selectedPage = Number.isFinite(page) ? Math.max(1, Math.floor(page)) : 1;
-    const cursor = (selectedPage - 1) * pageSize;
+    if (selectedPage === 1) this.pageCursors.clear();
+    const cursor = selectedPage === 1 ? undefined : this.pageCursors.get(selectedPage);
+    if (selectedPage > 1 && cursor === undefined) throw new Error('PAGE_CURSOR_UNAVAILABLE');
     const result = await this.api.request(
-      `/community?limit=${pageSize}&cursor=${cursor}`,
+      `/community?limit=${pageSize}${cursor === undefined ? '' : `&cursor=${encodeURIComponent(cursor)}`}`,
       publicCommunityPageSchema
     );
     const items = result.items.map(item => this.remember(item));
     const hasNext = result.nextCursor !== null;
-    const total = cursor + items.length;
+    const total = (selectedPage - 1) * pageSize + items.length;
+    for (const cachedPage of this.pageCursors.keys()) {
+      if (cachedPage > selectedPage + 1) this.pageCursors.delete(cachedPage);
+    }
+    if (result.nextCursor === null) this.pageCursors.delete(selectedPage + 1);
+    else this.pageCursors.set(selectedPage + 1, result.nextCursor);
     return {
       items,
       page: selectedPage,

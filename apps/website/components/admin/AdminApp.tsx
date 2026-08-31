@@ -78,7 +78,7 @@ function AdminWorkspace({
   const [accessToken, setAccessToken] = useState<string | null>(null);
   const [activeView, setActiveView] = useState<AdminView>('manual_review_pending');
   const [items, setItems] = useState<AdminSubmissionSummary[]>([]);
-  const [nextCursor, setNextCursor] = useState<number | null>(null);
+  const [nextCursor, setNextCursor] = useState<string | null>(null);
   const [queueLoading, setQueueLoading] = useState(false);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [detail, setDetail] = useState<AdminSubmissionDetail | null>(null);
@@ -91,8 +91,8 @@ function AdminWorkspace({
   const detailSequence = useRef(0);
   const queueAbort = useRef<AbortController | null>(null);
   const detailAbort = useRef<AbortController | null>(null);
-  const seenCursors = useRef(new Set<number>());
-  const pendingCursors = useRef(new Set<number>());
+  const seenCursors = useRef(new Set<string>());
+  const pendingCursors = useRef(new Set<string>());
   const sessionEpoch = useRef(0);
 
   /** 清除当前页面持有的敏感状态；只有用户主动退出时才销毁 CloudBase 会话。 */
@@ -151,7 +151,7 @@ function AdminWorkspace({
 
   const loadQueue = useCallback(async (
     status: QueueStatus,
-    cursor?: number,
+    cursor?: string,
     append = false
   ): Promise<void> => {
     if (!accessToken) return;

@@ -15,7 +15,21 @@ import type {
 const migrationPath = fileURLToPath(
   new URL('../../../cloudbase/migrations/20260730000000_moderation.sql', import.meta.url)
 );
+const keysetMigrationPath = fileURLToPath(
+  new URL('../../../cloudbase/migrations/20260831030000_keyset_pagination.sql', import.meta.url)
+);
 describe('CloudBase PostgreSQL 迁移', () => {
+  it('三条列表 RPC 使用真实键集列且不构造通用排序列', () => {
+    const sql = readFileSync(keysetMigrationPath, 'utf8');
+
+    expect(sql).toContain('CREATE FUNCTION list_public_community(');
+    expect(sql).toContain('CREATE FUNCTION list_public_feedback(');
+    expect(sql).toContain('CREATE FUNCTION list_admin_submissions(');
+    expect(sql.match(/SECURITY DEFINER/g)).toHaveLength(3);
+    expect(sql).toContain('(submission.published_at, submission.id) < (p_cursor_time, p_cursor_id)');
+    expect(sql).toContain('(submission.created_at, submission.id) < (p_cursor_time, p_cursor_id)');
+    expect(sql).not.toContain('sort_time');
+  });
   it('迁移包含必要表、状态约束和版本条件更新', () => {
     const sql = readFileSync(migrationPath, 'utf8');
 
@@ -278,6 +292,45 @@ class MemoryRdb {
   }
 
   async rpc(name: string, params: Record<string, unknown>): Promise<QueryResult> {
+    if (name === 'list_admin_submissions') {
+      return {
+        data: this.keysetRows(
+          this.submissions.filter(row =>
+            params.p_status === null || row.status === params.p_status
+          ),
+          'created_at',
+          params
+        ),
+        error: null
+      };
+    }
+
+    if (name === 'list_public_community' || name === 'list_public_feedback') {
+      const kind = name === 'list_public_community'
+        ? 'shared_package'
+        : params.p_kind;
+      const rows = this.keysetRows(
+        this.submissions.filter(row =>
+          row.status === 'published' && row.kind === kind
+        ),
+        'published_at',
+        params
+      ).map(row => ({
+        ...row,
+        assets: this.assets
+          .filter(asset => asset.submission_id === row.id)
+          .map(asset => ({
+            object_key: asset.object_key,
+            original_name: asset.original_name,
+            actual_size: asset.actual_size,
+            mime_type: asset.mime_type,
+            role: asset.role
+          })),
+        public_engagement: { like_count: 0, download_count: 0 }
+      }));
+      return { data: rows, error: null };
+    }
+
     if (name === 'create_submission') {
       if (this.rejectAssetCreation) {
         return { data: null, error: { message: '资产写入失败' } };
@@ -471,6 +524,30 @@ class MemoryRdb {
 
     return { data: null, error: { message: `未知 RPC：${name}` } };
   }
+
+  /** 测试替身独立模拟 PostgreSQL tuple 比较，不调用生产游标 codec。 */
+  private keysetRows(
+    rows: MemorySubmission[],
+    sortColumn: 'published_at' | 'created_at',
+    params: Record<string, unknown>
+  ): MemorySubmission[] {
+    const cursorTime = params.p_cursor_time;
+    const cursorId = params.p_cursor_id;
+    return rows
+      .filter(row => {
+        if (cursorTime === null || cursorTime === undefined) return true;
+        const time = String(row[sortColumn] ?? '');
+        return time < cursorTime
+          || (time === cursorTime && row.id < String(cursorId));
+      })
+      .sort((left, right) => {
+        const time = String(right[sortColumn] ?? '')
+          .localeCompare(String(left[sortColumn] ?? ''));
+        return time || right.id.localeCompare(left.id);
+      })
+      .slice(0, Number(params.p_limit) + 1)
+      .map(row => structuredClone(row));
+  }
 }
 
 type Filter =
@@ -483,8 +560,6 @@ class MemoryQuery implements PromiseLike<QueryResult> {
   private selectedColumns = '*';
   private readonly filters: Filter[] = [];
   private readonly orderings: Array<{ column: string; ascending: boolean }> = [];
-  private rangeStart = 0;
-  private rangeEnd: number | null = null;
   private maximum: number | null = null;
   private singleMode: 'none' | 'single' | 'maybeSingle' = 'none';
 
@@ -539,12 +614,6 @@ class MemoryQuery implements PromiseLike<QueryResult> {
 
   limit(maximum: number): this {
     this.maximum = maximum;
-    return this;
-  }
-
-  range(from: number, to: number): this {
-    this.rangeStart = from;
-    this.rangeEnd = to;
     return this;
   }
 
@@ -642,10 +711,7 @@ class MemoryQuery implements PromiseLike<QueryResult> {
       });
     }
 
-    const end = this.rangeEnd === null
-      ? this.maximum === null ? undefined : this.rangeStart + this.maximum
-      : this.rangeEnd + 1;
-    const sliced = rows.slice(this.rangeStart, end);
+    const sliced = rows.slice(0, this.maximum ?? undefined);
     const selected = sliced.map((row) => this.pickColumns(row));
 
     if (this.singleMode === 'single') {
@@ -963,14 +1029,10 @@ describe('CloudBase PostgreSQL 安全与公开互动存储', () => {
       }],
       error: null
     };
-    const query: Record<string, ReturnType<typeof vi.fn>> = {};
-    for (const method of ['select', 'eq', 'order']) {
-      query[method] = vi.fn(() => query);
-    }
-    query.range = vi.fn(async () => result);
+    const rpc = { rpc: vi.fn().mockResolvedValue(result) };
     const store = new CloudBasePostgresStore(
-      { from: vi.fn(() => query) } as never,
-      { rpc: vi.fn() }
+      { from: vi.fn() } as never,
+      rpc
     );
 
     await expect(store.listPublicCommunity({ limit: 20 })).resolves.toEqual({
@@ -1000,6 +1062,11 @@ describe('CloudBase PostgreSQL 安全与公开互动存储', () => {
         publicationBasis: 'admin_override'
       }],
       nextCursor: null
+    });
+    expect(rpc.rpc).toHaveBeenCalledWith('list_public_community', {
+      p_limit: 20,
+      p_cursor_time: null,
+      p_cursor_id: null
     });
   });
 
@@ -1128,6 +1195,55 @@ describe('CloudBase PostgreSQL RPC 远程边界', () => {
 });
 
 describe('CloudBase PostgreSQL 仓储', () => {
+  it('管理员队列以最后一项 created_at/id 生成游标且拒绝跨 status 复用', async () => {
+    const createdAt = '2026-08-31T03:00:00.000Z';
+    const rpc = {
+      rpc: vi.fn()
+        .mockResolvedValueOnce({
+          data: ['c', 'b', 'a'].map(id => makeSubmission({
+            id: `admin-${id}`,
+            status: 'system_reviewing',
+            created_at: createdAt
+          })),
+          error: null
+        })
+        .mockResolvedValueOnce({
+          data: [makeSubmission({
+            id: 'admin-a',
+            status: 'system_reviewing',
+            created_at: createdAt
+          })],
+          error: null
+        })
+    };
+    const store = new CloudBasePostgresStore({ from: vi.fn() } as never, rpc);
+
+    const first = await store.listAdminSubmissions({
+      limit: 2,
+      status: 'system_reviewing'
+    });
+    expect(first.items.map(item => item.id)).toEqual(['admin-c', 'admin-b']);
+    expect(first.nextCursor).toMatch(/^v1\.[A-Za-z0-9_-]+$/u);
+
+    await store.listAdminSubmissions({
+      limit: 2,
+      status: 'system_reviewing',
+      cursor: first.nextCursor
+    });
+    expect(rpc.rpc).toHaveBeenNthCalledWith(2, 'list_admin_submissions', {
+      p_limit: 2,
+      p_status: 'system_reviewing',
+      p_cursor_time: createdAt,
+      p_cursor_id: 'admin-b'
+    });
+    await expect(store.listAdminSubmissions({
+      limit: 2,
+      status: 'manual_review_pending',
+      cursor: first.nextCursor
+    })).rejects.toMatchObject({ code: 'INVALID_CURSOR', statusCode: 400 });
+    expect(rpc.rpc).toHaveBeenCalledTimes(2);
+  });
+
   it('管理员队列返回现有风险摘要且不混入公开映射', async () => {
     const database = new MemoryRdb();
     database.submissions.push(makeSubmission({
@@ -2035,71 +2151,6 @@ describe('CloudBase PostgreSQL 仓储', () => {
         statusCode: 409
       });
     }
-  });
-
-  it('公开列表按发布时间稳定分页且只返回公开字段', async () => {
-    const database = new MemoryRdb();
-    database.submissions.push(
-      makeSubmission({
-        id: 'published-1',
-        title: '第一项',
-        body: '公开正文一',
-        status: 'published',
-        published_at: '2026-07-31T03:00:00.000Z'
-      }),
-      makeSubmission({
-        id: 'published-2',
-        title: '第二项',
-        body: '公开正文二',
-        status: 'published',
-        published_at: '2026-07-31T02:00:00.000Z'
-      }),
-      makeSubmission({
-        id: 'published-3',
-        title: '第三项',
-        body: '公开正文三',
-        status: 'published',
-        published_at: '2026-07-31T01:00:00.000Z'
-      }),
-      makeSubmission({
-        id: 'hidden',
-        title: '不可见',
-        status: 'manual_review_pending'
-      })
-    );
-    const { store } = createStore(database);
-
-    const firstPage = await store.listPublished({ limit: 2 });
-    expect(database.fromCalls).toEqual(['submissions']);
-    expect(firstPage).toEqual({
-      items: [
-        {
-          id: 'published-1',
-          title: '第一项',
-          body: '公开正文一',
-          publishedAt: '2026-07-31T03:00:00.000Z'
-        },
-        {
-          id: 'published-2',
-          title: '第二项',
-          body: '公开正文二',
-          publishedAt: '2026-07-31T02:00:00.000Z'
-        }
-      ],
-      nextCursor: 2
-    });
-    await expect(store.listPublished({ limit: 2, cursor: firstPage.nextCursor }))
-      .resolves.toEqual({
-        items: [
-          {
-            id: 'published-3',
-            title: '第三项',
-            body: '公开正文三',
-            publishedAt: '2026-07-31T01:00:00.000Z'
-          }
-        ],
-        nextCursor: null
-      });
   });
 
   it('清理候选只返回到期且尚未清理的投稿', async () => {

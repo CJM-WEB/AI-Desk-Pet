@@ -38,8 +38,6 @@ import type {
   PublishedFeedbackPage,
   PublishedFeedbackRecord,
   SecurityStore,
-  PublicSubmission,
-  PublicSubmissionPage,
   RecordModerationFailureInput,
   SubmissionAsset,
   SubmissionRow,
@@ -50,6 +48,11 @@ import type {
   MarkPurgedInput,
   SubmissionWithAssets
 } from '../ports.js';
+import {
+  decodeKeysetCursor,
+  encodeKeysetCursor,
+  type KeysetCursorScope
+} from './keyset-cursor.js';
 
 export interface RdbError {
   code?: string;
@@ -73,7 +76,10 @@ export type CloudBasePostgresRpcName =
   | 'record_moderation_failure'
   | 'apply_admin_action'
   | 'claim_cleanup_jobs'
-  | 'mark_submission_purged';
+  | 'mark_submission_purged'
+  | 'list_public_community'
+  | 'list_public_feedback'
+  | 'list_admin_submissions';
 
 export interface RpcClientOptions {
   timeoutMs: number;
@@ -96,7 +102,6 @@ export interface CloudBaseRdbQuery extends PromiseLike<RdbResult> {
   not(column: string, operator: string, value: unknown): CloudBaseRdbQuery;
   order(column: string, options: { ascending: boolean }): CloudBaseRdbQuery;
   limit(maximum: number): CloudBaseRdbQuery;
-  range(from: number, to: number): CloudBaseRdbQuery;
   single(): CloudBaseRdbQuery;
   maybeSingle(): CloudBaseRdbQuery;
 }
@@ -266,12 +271,21 @@ export class CloudBasePostgresStore implements
   async listPublicCommunity(
     input: PublicListQuery
   ): Promise<PublishedCommunityPage> {
-    const rows = await this.listPublicRows('shared_package', input, true);
+    requireLimit(input.limit);
+    const scope = 'community';
+    const cursor = decodeOptionalCursor(input.cursor, scope);
+    const result = await this.rpcClient.rpc('list_public_community', {
+      p_limit: input.limit,
+      p_cursor_time: cursor?.sortTime ?? null,
+      p_cursor_id: cursor?.id ?? null
+    });
+    const rows = requireRows(
+      requireData(result, '查询公开社区失败'),
+      '公开社区'
+    );
     return {
       items: rows.slice(0, input.limit).map(mapPublishedCommunity),
-      nextCursor: rows.length > input.limit
-        ? (input.cursor ?? 0) + input.limit
-        : null
+      nextCursor: nextCursor(rows, input.limit, scope, 'published_at')
     };
   }
 
@@ -293,12 +307,22 @@ export class CloudBasePostgresStore implements
     kind: 'feedback' | 'suggestion',
     input: PublicListQuery
   ): Promise<PublishedFeedbackPage> {
-    const rows = await this.listPublicRows(kind, input, false);
+    requireLimit(input.limit);
+    const scope: KeysetCursorScope = `feedback:${kind}`;
+    const cursor = decodeOptionalCursor(input.cursor, scope);
+    const result = await this.rpcClient.rpc('list_public_feedback', {
+      p_kind: kind,
+      p_limit: input.limit,
+      p_cursor_time: cursor?.sortTime ?? null,
+      p_cursor_id: cursor?.id ?? null
+    });
+    const rows = requireRows(
+      requireData(result, '查询公开反馈失败'),
+      '公开反馈'
+    );
     return {
       items: rows.slice(0, input.limit).map(mapPublishedFeedback),
-      nextCursor: rows.length > input.limit
-        ? (input.cursor ?? 0) + input.limit
-        : null
+      nextCursor: nextCursor(rows, input.limit, scope, 'published_at')
     };
   }
 
@@ -483,25 +507,21 @@ export class CloudBasePostgresStore implements
     input: AdminQueueQuery
   ): Promise<AdminQueuePage> {
     requireLimit(input.limit);
-    const offset = input.cursor ?? 0;
-    if (!Number.isSafeInteger(offset) || offset < 0) {
-      throw new ApiError('INVALID_CURSOR', 400);
-    }
-    let query = this.database
-      .from('submissions')
-      .select('*');
-    if (input.status) query = query.eq('status', input.status);
-    const result = await query
-      .order('created_at', { ascending: false })
-      .order('id', { ascending: false })
-      .range(offset, offset + input.limit);
+    const scope: KeysetCursorScope = `admin:${input.status ?? 'all'}`;
+    const cursor = decodeOptionalCursor(input.cursor, scope);
+    const result = await this.rpcClient.rpc('list_admin_submissions', {
+      p_limit: input.limit,
+      p_status: input.status ?? null,
+      p_cursor_time: cursor?.sortTime ?? null,
+      p_cursor_id: cursor?.id ?? null
+    });
     const rows = requireRows(
       requireData(result, '查询管理员队列失败'),
       '管理员队列'
     );
     return {
       items: rows.slice(0, input.limit).map(mapAdminSubmission),
-      nextCursor: rows.length > input.limit ? offset + input.limit : null
+      nextCursor: nextCursor(rows, input.limit, scope, 'created_at')
     };
   }
 
@@ -541,31 +561,6 @@ export class CloudBasePostgresStore implements
         requireData(audits, '查询管理员审计记录失败'),
         '管理员审计记录'
       ).map(mapAdminAuditLog)
-    };
-  }
-
-  async listPublished(input: PublicListQuery): Promise<PublicSubmissionPage> {
-    requireLimit(input.limit);
-    const offset = input.cursor ?? 0;
-    if (!Number.isSafeInteger(offset) || offset < 0) {
-      throw new ApiError('INVALID_CURSOR', 400);
-    }
-
-    const result = await this.database
-      .from('submissions')
-      .select('id,title,body,published_at')
-      .eq('status', 'published')
-      .order('published_at', { ascending: false })
-      .order('id', { ascending: false })
-      .range(offset, offset + input.limit);
-    const rows = requireRows(
-      requireData(result, '查询公开投稿失败'),
-      '公开投稿'
-    );
-    const hasMore = rows.length > input.limit;
-    return {
-      items: rows.slice(0, input.limit).map(mapPublicSubmission),
-      nextCursor: hasMore ? offset + input.limit : null
     };
   }
 
@@ -609,27 +604,6 @@ export class CloudBasePostgresStore implements
       '永久清理结果'
     );
     return requireBoolean(row.applied, 'applied');
-  }
-
-  private async listPublicRows(
-    kind: 'shared_package' | 'feedback' | 'suggestion',
-    input: PublicListQuery,
-    includeAssets: boolean
-  ): Promise<unknown[]> {
-    requireLimit(input.limit);
-    const offset = input.cursor ?? 0;
-    if (!Number.isSafeInteger(offset) || offset < 0) {
-      throw new ApiError('INVALID_CURSOR', 400);
-    }
-    const result = await this.database
-      .from('submissions')
-      .select(includeAssets ? publicCommunityColumns : publicFeedbackColumns)
-      .eq('status', 'published')
-      .eq('kind', kind)
-      .order('published_at', { ascending: false })
-      .order('id', { ascending: false })
-      .range(offset, offset + input.limit);
-    return requireRows(requireData(result, '查询公开内容失败'), '公开内容');
   }
 
   private async findSubmission(id: string): Promise<SubmissionRow> {
@@ -843,15 +817,6 @@ const publicCommunityColumns = [
   'public_engagement(like_count,download_count)'
 ].join(',');
 
-const publicFeedbackColumns = [
-  'id',
-  'kind',
-  'title',
-  'body',
-  'created_at',
-  'public_engagement(like_count)'
-].join(',');
-
 function mapPublishedCommunity(value: unknown): PublishedCommunityRecord {
   const row = requireRecord(value, '公开社区记录');
   const engagement = requireRelationRecord(
@@ -933,16 +898,6 @@ function toModerationRpcRecord(result: ModerationRecord): Record<string, unknown
     requested_at: result.requestedAt,
     completed_at: result.completedAt,
     error_message: result.errorMessage
-  };
-}
-
-function mapPublicSubmission(value: unknown): PublicSubmission {
-  const row = requireRecord(value, '公开投稿');
-  return {
-    id: requireString(row.id, 'id'),
-    title: optionalString(row.title, 'title'),
-    body: optionalString(row.body, 'body'),
-    publishedAt: requireString(row.published_at, 'published_at')
   };
 }
 
@@ -1066,6 +1021,30 @@ function requireAdminAction(value: unknown): AdminAuditLog['action'] {
     if (result.success) return result.data;
   }
   throw new ApiError('DATABASE_ERROR', 500, 'action字段格式错误');
+}
+
+function decodeOptionalCursor(
+  cursor: string | null | undefined,
+  scope: KeysetCursorScope
+): { sortTime: string; id: string } | null {
+  return cursor === undefined || cursor === null
+    ? null
+    : decodeKeysetCursor(cursor, scope);
+}
+
+function nextCursor(
+  rows: unknown[],
+  limit: number,
+  scope: KeysetCursorScope,
+  sortColumn: 'published_at' | 'created_at'
+): string | null {
+  if (rows.length <= limit) return null;
+  const boundary = requireRecord(rows[limit - 1], '列表游标边界');
+  return encodeKeysetCursor(
+    scope,
+    requireString(boundary[sortColumn], sortColumn),
+    requireString(boundary.id, 'id')
+  );
 }
 
 function requireBoolean(value: unknown, field: string): boolean {

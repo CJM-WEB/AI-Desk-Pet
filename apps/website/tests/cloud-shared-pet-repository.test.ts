@@ -133,7 +133,7 @@ describe('云端共享仓库', () => {
         cover: { url: 'https://storage.example/cover?signature=secret', expiresAt: '2026-08-01T00:00:00.000Z' },
         packageFileName: 'pet.zip', packageSizeBytes: 7, likeCount: 1, downloadCount: 2,
         publishedAt: '2026-08-01T00:00:00.000Z', publicationBasis: 'admin_override'
-      }], nextCursor: 8
+      }], nextCursor: 'v1.community-next'
     });
     const api = { request } as unknown as ApiClient;
     const page = await new CloudSharedPetRepository(api).listPage(1);
@@ -143,11 +143,13 @@ describe('云端共享仓库', () => {
       publicationBasis: 'admin_override'
     });
     expect(page.items[0]?.coverFileName).toBeUndefined();
-    expect(request).toHaveBeenCalledWith('/community?limit=8&cursor=0', expect.anything());
+    expect(request).toHaveBeenCalledWith('/community?limit=8', expect.anything());
   });
 
   it('游标到达含条目的终页时公开精确总页数', async () => {
-    const request = vi.fn().mockResolvedValue({
+    const request = vi.fn()
+      .mockResolvedValueOnce({ items: [], nextCursor: 'v1.community-page-2' })
+      .mockResolvedValueOnce({
       items: [{
         id: 'pet-9', name: '宠物', description: '描述',
         cover: { url: 'https://storage.example/cover', expiresAt: '2026-08-01T00:00:00.000Z' },
@@ -156,10 +158,36 @@ describe('云端共享仓库', () => {
       }], nextCursor: null
     });
     const api = { request } as unknown as ApiClient;
-    await expect(new CloudSharedPetRepository(api).listPage(2)).resolves.toMatchObject({
+    const repository = new CloudSharedPetRepository(api);
+    await repository.listPage(1);
+    await expect(repository.listPage(2)).resolves.toMatchObject({
       total: 9, totalPages: 2, totalKnown: true, hasNext: false
     });
-    expect(request).toHaveBeenCalledWith('/community?limit=8&cursor=8', expect.anything());
+    expect(request).toHaveBeenNthCalledWith(
+      2,
+      '/community?limit=8&cursor=v1.community-page-2',
+      expect.anything()
+    );
+  });
+
+  it('刷新第一页会清空后续页游标并只采用新响应的 token', async () => {
+    const request = vi.fn()
+      .mockResolvedValueOnce({ items: [], nextCursor: 'v1.old-page-2' })
+      .mockResolvedValueOnce({ items: [], nextCursor: null })
+      .mockResolvedValueOnce({ items: [], nextCursor: 'v1.new-page-2' })
+      .mockResolvedValueOnce({ items: [], nextCursor: null });
+    const repository = new CloudSharedPetRepository({ request } as unknown as ApiClient);
+
+    await repository.listPage(1);
+    await repository.listPage(2);
+    await repository.listPage(1);
+    await repository.listPage(2);
+
+    expect(request).toHaveBeenNthCalledWith(
+      4,
+      '/community?limit=8&cursor=v1.new-page-2',
+      expect.anything()
+    );
   });
 
   it('详情 404 返回 null，点赞和下载仅使用公开 API', async () => {

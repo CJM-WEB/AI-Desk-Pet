@@ -242,7 +242,9 @@ export function createMemoryWebsiteApi({ runId }) {
         return sendData(response, 200, pageOf(
           [...submissions.values()].filter(row => row.kind === 'shared_package' && row.status === 'published'),
           searchParams,
-          record => publicCommunity(record, request.headers.host)
+          record => publicCommunity(record, request.headers.host),
+          'community',
+          'publishedAt'
         ));
       }
 
@@ -276,7 +278,9 @@ export function createMemoryWebsiteApi({ runId }) {
         return sendData(response, 200, pageOf(
           [...submissions.values()].filter(row => row.kind === kind && row.status === 'published'),
           searchParams,
-          publicFeedback
+          publicFeedback,
+          `feedback:${kind}`,
+          'publishedAt'
         ));
       }
 
@@ -292,10 +296,15 @@ export function createMemoryWebsiteApi({ runId }) {
 
         if (request.method === 'GET' && pathname === '/api/v1/admin/submissions') {
           const status = searchParams.get('status');
+          if (status !== null && !SUBMISSION_STATUSES.has(status)) {
+            return sendError(response, 400, 'INVALID_REQUEST');
+          }
           return sendData(response, 200, pageOf(
             [...submissions.values()].filter(row => !status || row.status === status),
             searchParams,
-            adminSummary
+            adminSummary,
+            `admin:${status ?? 'all'}`,
+            'createdAt'
           ));
         }
 
@@ -415,6 +424,16 @@ function seedContractFixtures(submissions, tokenIndex, uploads) {
     3,
     'standard'
   );
+  const olderCommunity = {
+    ...sharedRecord(
+      'contract-community-older',
+      '较早公开合同资源',
+      'published',
+      1,
+      'standard'
+    ),
+    publishedAt: '2026-07-30T23:59:00.000Z'
+  };
   const override = sharedRecord(
     CONTRACT_REFS.overrideSubmissionId,
     '待强制发布合同投稿',
@@ -429,7 +448,21 @@ function seedContractFixtures(submissions, tokenIndex, uploads) {
     assets: [],
     publicationBasis: null
   };
-  for (const record of [uploaded, community, override, feedback]) {
+  const olderFeedback = {
+    ...feedback,
+    id: 'contract-feedback-older',
+    title: '较早合同用户',
+    body: '较早公开合同反馈',
+    publishedAt: '2026-07-30T23:59:00.000Z'
+  };
+  for (const record of [
+    uploaded,
+    community,
+    olderCommunity,
+    override,
+    feedback,
+    olderFeedback
+  ]) {
     submissions.set(record.id, record);
   }
   tokenIndex.set(CONTRACT_REFS.uploadedStatusToken, CONTRACT_REFS.uploadedSubmissionId);
@@ -596,12 +629,81 @@ function matchId(pathname, prefix, suffix) {
   try { return decodeURIComponent(encoded); } catch { return null; }
 }
 
-function pageOf(records, searchParams, project) {
-  const limit = Math.min(100, Math.max(1, Number(searchParams.get('limit') ?? 20)));
-  const cursor = Math.max(0, Number(searchParams.get('cursor') ?? 0));
-  const items = records.slice(cursor, cursor + limit).map(project);
-  return { items, nextCursor: cursor + items.length < records.length ? cursor + items.length : null };
+function pageOf(records, searchParams, project, scope, sortField) {
+  const limit = Number(searchParams.get('limit') ?? 20);
+  if (!Number.isInteger(limit) || limit < 1 || limit > 100) {
+    throw new MemoryApiError('INVALID_REQUEST', 400);
+  }
+  const cursor = searchParams.get('cursor');
+  const boundary = cursor === null ? null : decodeMemoryCursor(cursor, scope);
+  const sorted = [...records]
+    .filter(record => boundary === null
+      || record[sortField] < boundary.sortTime
+      || (record[sortField] === boundary.sortTime && record.id < boundary.id))
+    .sort((left, right) =>
+      String(right[sortField]).localeCompare(String(left[sortField]))
+      || right.id.localeCompare(left.id)
+    );
+  const rows = sorted.slice(0, limit + 1);
+  const items = rows.slice(0, limit).map(project);
+  const last = rows[limit - 1];
+  return {
+    items,
+    nextCursor: rows.length > limit
+      ? encodeMemoryCursor(scope, last[sortField], last.id)
+      : null
+  };
 }
+
+/** Memory 合同独立实现同一 opaque wire，不导入生产数据库或适配器代码。 */
+function encodeMemoryCursor(scope, sortTime, id) {
+  return `v1.${Buffer.from(JSON.stringify({ scope, sortTime, id }), 'utf8').toString('base64url')}`;
+}
+
+function decodeMemoryCursor(cursor, expectedScope) {
+  try {
+    if (
+      !CURSOR_SCOPES.has(expectedScope)
+      || cursor.length > 512
+      || !/^v1\.[A-Za-z0-9_-]+$/u.test(cursor)
+    ) throw new Error();
+    const encoded = cursor.slice(3);
+    const bytes = Buffer.from(encoded, 'base64url');
+    if (bytes.toString('base64url') !== encoded) throw new Error();
+    const payload = JSON.parse(bytes.toString('utf8'));
+    if (
+      Object.keys(payload).sort().join(',') !== 'id,scope,sortTime'
+      || payload.scope !== expectedScope
+      || typeof payload.sortTime !== 'string'
+      || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/u.test(payload.sortTime)
+      || !Number.isFinite(Date.parse(payload.sortTime))
+      || typeof payload.id !== 'string'
+      || payload.id.length < 1
+      || payload.id.length > 128
+    ) throw new Error();
+    return { sortTime: payload.sortTime, id: payload.id };
+  } catch {
+    throw new MemoryApiError('INVALID_CURSOR', 400);
+  }
+}
+
+const SUBMISSION_STATUSES = new Set([
+  'uploading',
+  'system_reviewing',
+  'manual_review_pending',
+  'published',
+  'auto_rejected',
+  'admin_rejected',
+  'deleted_quarantined',
+  'purged'
+]);
+const CURSOR_SCOPES = new Set([
+  'community',
+  'feedback:feedback',
+  'feedback:suggestion',
+  'admin:all',
+  ...[...SUBMISSION_STATUSES].map(status => `admin:${status}`)
+]);
 
 function publicCommunity(record, host) {
   const cover = record.assets.find(asset => asset.role === 'cover');
