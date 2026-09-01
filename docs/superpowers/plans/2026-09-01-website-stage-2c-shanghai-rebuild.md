@@ -685,8 +685,8 @@ if ($stage2cGatewayDomain -notmatch '^[a-z0-9.-]+$') { throw 'HTTP 网关域名�
 $stage2cRouteData = @{
   domain = $stage2cGatewayDomain
   routes = @(
-    @{ path = '/api/v1/admin'; upstreamResourceType = 'WEB_SCF'; upstreamResourceName = 'ai-pet-api'; enable = $true; enableAuth = $true; enableSafeDomain = $true; enablePathTransmission = $true },
-    @{ path = '/api/v1'; upstreamResourceType = 'WEB_SCF'; upstreamResourceName = 'ai-pet-api'; enable = $true; enableAuth = $false; enableSafeDomain = $true; enablePathTransmission = $true }
+    @{ path = '/api/v1/admin'; upstreamResourceType = 'SCF'; upstreamResourceName = 'ai-pet-api'; enable = $true; enableAuth = $true; enableSafeDomain = $true; enablePathTransmission = $true },
+    @{ path = '/api/v1'; upstreamResourceType = 'SCF'; upstreamResourceName = 'ai-pet-api'; enable = $true; enableAuth = $false; enableSafeDomain = $true; enablePathTransmission = $true }
   )
 } | ConvertTo-Json -Compress -Depth 6
 pnpm.cmd exec cloudbase -e $stage2cEnvId -r ap-shanghai routes add --data $stage2cRouteData --json

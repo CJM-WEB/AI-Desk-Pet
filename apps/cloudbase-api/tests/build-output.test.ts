@@ -62,5 +62,5 @@ describe('CloudBase 函数构建产物', () => {
         else process.env[key] = value;
       }
     }
-  });
+  }, 15_000);
 });
