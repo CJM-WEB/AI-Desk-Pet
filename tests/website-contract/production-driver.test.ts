@@ -84,6 +84,7 @@ interface ProductionFixtureState {
   }>;
   interactionVotes: Set<string>;
   downloadCounts: Map<string, number>;
+  officialWindowsDownloadClickCount: number;
   nowMs: number;
 }
 
@@ -242,6 +243,7 @@ function createState(): ProductionFixtureState {
     interactionOperations: new Map(),
     interactionVotes: new Set(),
     downloadCounts: new Map(),
+    officialWindowsDownloadClickCount: 0,
     nowMs: Date.parse(CREATED_AT),
   };
 }
@@ -369,6 +371,14 @@ function createDependencies(state: ProductionFixtureState): ApiDependencies {
   return {
     fingerprintSecret: 'contract-fingerprint-secret',
     abuseControl: { consume: async () => undefined },
+    officialDownloadMetrics: {
+      recordOfficialWindowsDownloadClick: async () => {
+        state.officialWindowsDownloadClickCount += 1;
+      },
+      getOfficialWindowsDownloadClickCount: async () => (
+        state.officialWindowsDownloadClickCount
+      ),
+    },
     adminIdentity: {
       requireAdmin: async token => {
         if (token !== ADMIN_TOKEN) throw new ApiError('FORBIDDEN', 403);

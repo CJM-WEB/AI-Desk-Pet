@@ -4,6 +4,8 @@
 
 > 当前状态（2026-09-01）：`remote: unverified`。本地实现、测试和真实 Docker 候选已完成验证；尚未创建上海 PostgreSQL 环境、执行远端 migration、部署函数、配置私有 Bucket、身份、网关或静态托管。共享包匿名投稿开关保持 `SHARED_PACKAGE_SUBMISSIONS_ENABLED=false`。现行证据见 `website-stage-2c-zero-cost-manual-review-acceptance.md`。
 
+> 官方 Windows 安装包点击计数的本地合同与浏览器验证已于 2026-09-02 追加；远端第 16 条 migration、`ai-pet-api` 函数版本、网关路由和管理员真实读取仍未验证。该本地结论不改变本节 `remote: unverified`，更不表示上海环境或正式生产已通过。
+
 ## 1. 正式运行面与禁止部署项
 
 上海开发环境只允许部署下列组件：
@@ -31,7 +33,7 @@
 
 ## 3. PostgreSQL 与私有对象存储
 
-1. 先在同一上海 PostgreSQL 环境顺序执行全部前向 migration；不得修改、重排或回滚历史 migration。失败只能用新的前向 migration 修复。
+1. 先在同一上海 PostgreSQL 环境顺序执行全部 16 条前向 migration（包含 `20260901020000_official_windows_download_click_metric.sql`）；不得修改、重排或回滚历史 migration。失败只能用新的前向 migration 修复。
 2. 创建仅服务端可访问的私有 Bucket，并配置为 `PRIVATE_BUCKET_ID`。禁止公开读写；上传和下载只使用短期签名地址。
 3. 正式安装包使用独立发布目录和 CDN 策略，不得复用匿名投稿隔离区。
 4. 真实 PostgreSQL 的锁、并发、任务失败和续跑必须以远端 smoke 证据确认；本地 PostgreSQL 结果不能替代该证据。
@@ -109,5 +111,7 @@ docker run --rm --network none --read-only --cap-drop ALL `
 ## 8. 远端开发环境 smoke 与发布边界
 
 获得远端授权后，在同一环境验证：migration、私有对象短期上传/下载、匿名与管理员授权、新投稿直入人工队列、反馈普通批准、共享包强制发布风险提示、点赞、评论、下载和 cleanup。共享包投稿开关继续关闭，直到另有裁决。
+
+官方安装包计数还必须验证：公开 `POST /api/v1/official-downloads/windows/click` 只接受空对象并只返回空数据；管理员 `GET /api/v1/admin/metrics/official-windows-download` 经现有管理员认证后才返回累计值；公开页面、公开 DTO 与静态导出均不含累计值。上述计数是被服务端接受的点击，既不代表下载、安装、独立用户，也不应把原始 IP、User-Agent、下载地址或管理员令牌写入日志。
 
 本地验证通过不等于远端部署、阶段 2C 通过或正式上线。正式生产还需要独立规格和授权，单独裁决套餐、域名、备份、监控、迁移与回滚。

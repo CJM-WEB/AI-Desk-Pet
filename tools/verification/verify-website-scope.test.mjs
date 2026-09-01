@@ -289,6 +289,35 @@ test('阶段 2C 零费用人工审核只放行规格、计划与精确实现路�
   });
 });
 
+test('官方下载计数只放行单条迁移、网站链合同与精确验收文档', () => {
+  const approvedPaths = [
+    'cloudbase/migrations/20260901020000_official_windows_download_click_metric.sql',
+    'docs/superpowers/specs/2026-09-01-website-official-download-counter-design.md',
+    'docs/superpowers/plans/2026-09-01-website-official-download-counter.md',
+    'tests/memory-website-api.mjs',
+    'tests/website-contract/website-api-contract.ts',
+    'tests/website-contract/production-driver.test.ts',
+    'tests/e2e/website.spec.ts',
+    'docs/operations/cloudbase-deployment.md',
+    'docs/operations/website-stage-2c-zero-cost-manual-review-acceptance.md',
+    '.superpowers/sdd/2026-09-01-website-official-download-counter/task-3-report.md',
+  ];
+  const unapprovedPaths = [
+    'cloudbase/migrations/20260901020001_official_windows_download_click_metric.sql',
+    'docs/superpowers/plans/2026-09-01-website-official-download-counter.txt',
+    'apps/desktop/src/main/index.ts',
+  ];
+
+  assert.deepEqual(classifyChangedPaths([
+    ...approvedPaths,
+    ...unapprovedPaths,
+  ]), {
+    allowed: approvedPaths,
+    forbidden: ['apps/desktop/src/main/index.ts'],
+    outside: unapprovedPaths.slice(0, -1),
+  });
+});
+
 test('阶段 2C 最终范围只放行部署清单、仍有效的本地文件与精确历史计划', () => {
   const approvedStagePaths = [
     'cloudbaserc.json',

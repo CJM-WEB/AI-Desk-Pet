@@ -21,13 +21,20 @@
 
 | 项目 | 实际结果 |
 | --- | --- |
-| PostgreSQL 行为门 | 本地 PostgreSQL 17.11，顺序执行 15 个 migration，76 项行为验证通过。 |
-| 自动化测试 | 共 940 项通过：门禁测试 107、共享契约 42、网站单测 364、CloudBase API 265、包扫描器 67、发行工具 4、migration 工具 36、网站合同 30、CloudBase 构建产物 2、CloudBase 构建工具 5、Playwright E2E 18。 |
-| 网站 | 364 项单测通过；生产构建通过；Playwright E2E 18/18 通过。 |
-| CloudBase API | 265 项单元测试通过；构建与 typecheck 通过；另有 2 项构建产物测试通过，产物只含 `api`、`cleanup`。 |
+| PostgreSQL 行为门 | 本地 PostgreSQL 17.11，顺序执行 16 个 migration，85 项行为验证通过。 |
+| 自动化测试 | 共 982 项通过：门禁测试 108、共享契约 43、网站单测 383、CloudBase API 275、包扫描器 67、发行工具 4、migration 工具 42、网站合同 34、CloudBase 构建产物 2、CloudBase 构建工具 5、Playwright E2E 19。 |
+| 网站 | 383 项单测通过；生产构建通过；Playwright E2E 19/19 通过。 |
+| CloudBase API | 275 项单元测试通过；构建与 typecheck 通过；另有 2 项构建产物测试通过，产物只含 `api`、`cleanup`。 |
 | 包扫描器 | 67 项测试通过；typecheck 通过。 |
 | 依赖审查 | 260 个模块、683 条依赖；0 个错误，8 个已批准历史 warning。 |
 | 真实 Docker 候选 | imageId `sha256:1e1bd204ecdeb6c640358597e04b6e1732b1a39152e0106fe8cfb6d18dd81280`；Node `v22.23.2`、ClamAV `1.4.3`、UID `999`；ClamAV DB `28110`，更新时间 `2026-09-01T11:10:23.000Z`，裁决时年龄 0 天；无网络、全部 capability 移除、只读根文件系统、只读输入与 `mode=1777` tmpfs 条件下，干净包进入人工审核、EICAR 阻断、非法包拒绝。 |
+
+## 2026-09-02 官方安装包点击计数补充
+
+- 本地范围新增第 16 条前向 migration `20260901020000_official_windows_download_click_metric.sql`；历史 migration 未修改。
+- Memory 与生产合同替身共用公开空响应和管理员累计值合同；公开社区、反馈与静态页面不返回 `officialDownloadCount` 或 `clickCount`。
+- 本地浏览器场景以 Memory API 连续登记两次点击，公开页不显示指标，认证管理员工作台才显示累计值；本次完整网站链与范围/所有权门均通过。
+- 未执行上海远端 migration、函数更新、网关配置或真实管理员 smoke；本节不将其写为通过。
 
 Task 7 最终复验实际执行：
 

@@ -421,11 +421,11 @@ Expected: 全部通过；没有桌宠路径、Secret、临时归档、CloudBase 
 
 - [ ] **Step 8.3：最小部署**
 
-顺序执行全部 migration，创建私有 Bucket，只部署 `ai-pet-api` 与 `ai-pet-cleanup`，配置身份、最小网关和静态托管。不得开通或部署 CloudBase Run、TMS、IMS、moderation worker。
+顺序执行全部 16 条 migration（包括 `20260901020000_official_windows_download_click_metric.sql`），创建私有 Bucket，只部署 `ai-pet-api` 与 `ai-pet-cleanup`，配置身份、最小网关和静态托管。不得开通或部署 CloudBase Run、TMS、IMS、moderation worker。
 
 - [ ] **Step 8.4：真实 smoke**
 
-验证投稿直入人工队列、反馈批准、共享包强制发布风险提示、点赞、评论、短期下载、非管理员拒绝、cleanup 和本地 Docker 干净包/EICAR。投稿开关保持关闭，测试数据按已批准清理边界处理。
+验证投稿直入人工队列、反馈批准、共享包强制发布风险提示、点赞、评论、短期下载、非管理员拒绝、cleanup 和本地 Docker 干净包/EICAR；另验证官方下载公开 POST 只返回空对象、管理员指标读取受现有认证保护且公开页面/DTO 不泄露累计值。投稿开关保持关闭，测试数据按已批准清理边界处理。
 
 - [ ] **Step 8.5：记录状态**
 

@@ -2,8 +2,10 @@ import {
   adminActionResponseSchema,
   adminDetailResponseSchema,
   adminQueueResponseSchema,
+  adminSiteMetricsResponseSchema,
   feedbackSubmissionResponseSchema,
   finalizeSubmissionResponseSchema,
+  officialDownloadClickResponseSchema,
   prepareSubmissionResponseSchema,
   publicCommunityItemSchema,
   publicCommunityPageSchema,
@@ -242,6 +244,46 @@ export function runWebsiteApiContract(
       }));
       expect(JSON.stringify({ list, detail, download }))
         .not.toContain('contract-private-derived');
+    });
+
+    it('官方安装包点击只公开空响应，累计值仅由管理员读取', async () => {
+      const firstClick = success(await driver.request({
+        method: 'POST',
+        path: '/api/v1/official-downloads/windows/click',
+        body: {},
+      }), officialDownloadClickResponseSchema);
+      const secondClick = success(await driver.request({
+        method: 'POST',
+        path: '/api/v1/official-downloads/windows/click',
+        body: {},
+      }), officialDownloadClickResponseSchema);
+      expect(firstClick).toEqual({});
+      expect(secondClick).toEqual({});
+      expect(JSON.stringify({ firstClick, secondClick })).not.toContain('clickCount');
+
+      failure(await driver.request({
+        method: 'GET',
+        path: '/api/v1/admin/metrics/official-windows-download',
+      }), 401, 'UNAUTHORIZED');
+      expect(success(await driver.request({
+        method: 'GET',
+        path: '/api/v1/admin/metrics/official-windows-download',
+        headers: { 'x-ai-pet-admin-token': refs.adminToken },
+      }), adminSiteMetricsResponseSchema)).toEqual({ clickCount: 2 });
+    });
+
+    it('公开合同 DTO 不包含官方下载累计值字段', async () => {
+      const community = success(await driver.request({
+        method: 'GET',
+        path: '/api/v1/community?limit=20',
+      }), publicCommunityPageSchema);
+      const feedback = success(await driver.request({
+        method: 'GET',
+        path: '/api/v1/feedback?kind=feedback&limit=20',
+      }), publicFeedbackPageSchema);
+
+      expect(JSON.stringify({ community, feedback }))
+        .not.toMatch(/officialDownloadCount|clickCount/u);
     });
 
     it('点赞 operation UUID 大小写等价且在精确 24 小时后失效', async () => {

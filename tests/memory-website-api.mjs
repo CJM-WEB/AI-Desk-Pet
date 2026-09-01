@@ -17,6 +17,7 @@ const publicLikeRequestSchema = z.object({
 const publicDownloadRequestSchema = z.object({
   operationId: z.string().uuid().transform(value => value.toLowerCase())
 }).strict();
+const officialDownloadClickRequestSchema = z.object({}).strict();
 
 const ADMIN_TOKEN = 'e2e-admin-session';
 const CONTRACT_ADMIN_TOKEN = 'contract-admin-token';
@@ -50,6 +51,8 @@ export function createMemoryWebsiteApi({ runId }) {
   const interactionVotes = new Set();
   let sequence = 0;
   let clockOffsetMs = 0;
+  // 官方下载指标是测试服务器生命周期内唯一状态，公开响应绝不携带该值。
+  let officialWindowsDownloadClickCount = 0;
 
   const reset = () => {
     submissions.clear();
@@ -60,6 +63,7 @@ export function createMemoryWebsiteApi({ runId }) {
     interactionVotes.clear();
     sequence = 0;
     clockOffsetMs = 0;
+    officialWindowsDownloadClickCount = 0;
     seedContractFixtures(submissions, tokenIndex, uploads);
     return structuredClone(CONTRACT_REFS);
   };
@@ -314,9 +318,21 @@ export function createMemoryWebsiteApi({ runId }) {
         }));
       }
 
+      if (request.method === 'POST' && pathname === '/api/v1/official-downloads/windows/click') {
+        if (!officialDownloadClickRequestSchema.safeParse(await readJson(request)).success) {
+          return sendError(response, 400, 'INVALID_REQUEST');
+        }
+        officialWindowsDownloadClickCount += 1;
+        return sendData(response, 200, {});
+      }
+
       if (pathname.startsWith('/api/v1/admin/')) {
         const authorized = requireAdmin(request, response);
         if (!authorized) return true;
+
+        if (request.method === 'GET' && pathname === '/api/v1/admin/metrics/official-windows-download') {
+          return sendData(response, 200, { clickCount: officialWindowsDownloadClickCount });
+        }
 
         if (request.method === 'GET' && pathname === '/api/v1/admin/submissions') {
           const status = searchParams.get('status');

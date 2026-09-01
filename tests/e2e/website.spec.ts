@@ -375,6 +375,23 @@ test.beforeEach(async ({ request }) => {
   expect(response.ok()).toBe(true);
 });
 
+test('官方下载点击仅由管理员工作台显示累计值', async ({ page, request }) => {
+  for (let click = 0; click < 2; click += 1) {
+    const response = await request.post('/api/v1/official-downloads/windows/click', {
+      data: {},
+    });
+    expect(response.ok()).toBe(true);
+    expect((await response.json()).data).toEqual({});
+  }
+
+  await enterInteractive(page);
+  await expect(page.getByText('官方安装包下载点击')).toHaveCount(0);
+
+  await page.goto('/admin/');
+  const metric = page.getByLabel('官方安装包下载点击');
+  await expect(metric).toContainText('2');
+});
+
 async function enterInteractive(page: Page): Promise<void> {
   await page.goto('/?seed=42');
   await expect(page.locator(HOME)).toHaveAttribute('data-phase', 'interactive');
