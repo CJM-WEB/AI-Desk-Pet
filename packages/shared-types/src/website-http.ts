@@ -231,6 +231,7 @@ const adminAuditLogSchema = z.object({
 
 export const adminDetailResponseSchema = adminSubmissionSummarySchema.extend({
   coverPreview: signedUrlSchema.nullable(),
+  packageDownload: signedUrlSchema.nullable(),
   assets: z.array(adminAssetSchema),
   moderationResults: z.array(adminModerationResultSchema),
   auditLogs: z.array(adminAuditLogSchema)

@@ -911,10 +911,20 @@ function hasValidPublicationShape(record) {
 
 function adminDetail(record, request) {
   const cover = record.assets.find(asset => asset.role === 'cover');
+  const packageAsset = record.assets.find(asset => (
+    asset.role === 'package'
+    && asset.contentType === 'application/zip'
+    && Number.isSafeInteger(asset.actualBytes)
+    && asset.actualBytes > 0
+  ));
   return {
     ...adminSummary(record),
     coverPreview: cover ? {
       url: `http://${request.headers.host}/__e2e/cover/${record.id}`,
+      expiresAt: plusMinutes(record.updatedAt, 5)
+    } : null,
+    packageDownload: packageAsset ? {
+      url: `http://${request.headers.host}/__e2e/package/${record.id}`,
       expiresAt: plusMinutes(record.updatedAt, 5)
     } : null,
     assets: record.assets,

@@ -2,11 +2,11 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** 按安全门顺序完成网站链路阶段 0—3，恢复普通网站功能开发资格，并为阶段 4 治理和阶段 5 CloudBase 正式生产重部署建立可审计入口。
+**Goal:** 按安全门顺序完成网站链路阶段 0—3，恢复普通网站功能开发资格，并为阶段 4 治理和后续独立生产计划建立可审计入口。
 
 **Architecture:** 采用“验证基线 → 安全止血 → 基础设施可靠性 → 跨端契约闭环”的纵向切片顺序；每个阶段必须满足退出条件后才能进入下一阶段。阶段 4—5 当前只记录进入条件，不提前固化尚未取得真实平台证据的代码方案。
 
-**Tech Stack:** pnpm workspace、TypeScript 5、Vitest 3、Playwright 1.61、Zod 3、Next.js 15、CloudBase JS SDK 3.6.8、PostgreSQL、CloudBase Run。
+**Tech Stack:** pnpm workspace、TypeScript 5、Vitest 3、Playwright 1.61、Zod 3、Next.js 15、CloudBase JS SDK 3.6.8、PostgreSQL、Docker、ClamAV。
 
 > 2026-09-01 当前入口：阶段 2A、2B、阶段 3 与阶段四本地治理的既有本地裁决保持通过。阶段 2C 的现行规格与计划为 `2026-09-01-website-stage-2c-zero-cost-manual-review-design.md` 和 `2026-09-01-website-stage-2c-zero-cost-manual-review.md`：云上只保留 PostgreSQL、私有存储、API、cleanup、身份、网关与静态托管；新投稿直入人工队列。已执行本地验证，`remote: unverified`；投稿开启、远端 migration、阶段 5 正式生产重部署与上线继续冻结。真实状态见 `docs/operations/website-stage-2c-shanghai-acceptance.md`。
 
@@ -100,24 +100,12 @@ git commit -m "docs: 记录网站阶段2至3验收裁决"
 - 外部状态：CloudBase 开发环境、远端 migration、cleanup 调度、真实网关、对象存储、部署、发布和正式上线均未执行。
 - 范围边界：生产 Router 的唯一正式路径裁决继续等待阶段 2C 真实网关证据，不属于阶段四完成条件。
 
-### Task 3: 阶段 5 正式生产重部署入口
+### Task 3: 已退役的旧阶段 5 生产重部署入口
+
+> **历史替代声明（禁止执行）：** 本节中 CloudBase Run、三函数、`moderation-worker` 与 Scanner 的部署顺序已被阶段 2C 零费用人工审核规格和计划替代。不得执行下列旧入口、命令或其变体；现行链路只允许 PostgreSQL、私有 Bucket、API、cleanup、身份、网关、静态托管与管理员本地 Docker CLI。正式生产仍须另立规格并获得逐项授权。
 
 **Files:**
 - Create: `docs/superpowers/plans/2026-08-15-website-production-relaunch.md`
 - Create: `docs/operations/2026-08-15-website-production-relaunch-acceptance.md`
 
-**Interfaces:**
-- Consumes: 阶段 0—4 验收、固定发布候选身份、独立生产 CloudBase 环境资料和用户对外部操作的逐项授权。
-- Produces: 可回滚的正式 CloudBase 上线记录；未实际执行时状态只能写“待正式上线”。
-
-- [ ] **Step 1: 在编写部署命令前向用户取得生产操作授权**
-
-授权范围必须逐项覆盖：生产迁移、三函数、Scanner 镜像、Hosting 静态站点、正式域名/HTTPS/CORS/CSP、监控告警和回滚。
-
-- [ ] **Step 2: 按固定候选顺序部署**
-
-顺序固定为：生产迁移 → `api`/`moderation-worker`/`cleanup` → Scanner → 内部冒烟 → Hosting → 正式域名 → 外部冒烟。任何一步失败立即停止后续写操作。
-
-- [ ] **Step 3: 记录真实证据而不是计划结论**
-
-验收记录必须写日期、环境类别、候选身份、执行命令、退出码、实际 HTTP/页面观察、回滚结果和未覆盖项；不得记录 Secret、`x-ai-pet-admin-token`、OTP、签名 URL、私有对象键或真实环境 ID。
+**现行入口：** [`2026-09-01-website-stage-2c-zero-cost-manual-review-design.md`](../specs/2026-09-01-website-stage-2c-zero-cost-manual-review-design.md) 与 [`2026-09-01-website-stage-2c-zero-cost-manual-review.md`](2026-09-01-website-stage-2c-zero-cost-manual-review.md)。真实生产操作未获授权时状态只能写“待正式上线”；不得从本历史节生成部署步骤。

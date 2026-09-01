@@ -17,7 +17,10 @@
 
 ## 2. 共享包本地 Docker 检查
 
-下载管理员授权的 ZIP 后，在本机执行。构建阶段的 `freshclam` 需要网络取得病毒库；运行阶段必须保持 `--network none`。UTC 日期构建参数使病毒库每日刷新，候选验证拒绝超过 7 天的数据库；超过时限应重新构建并验证。
+按以下顺序执行，不得跳过或增加第二个扫描/预览工具：
+
+1. 在管理员详情使用“下载待审 ZIP（5分钟）”链接下载 ZIP，保存到独立的待审目录；短期地址不进入公开 DTO、日志或下载计数。
+2. 对该同一文件记录 SHA-256，再运行下列现有 Docker CLI。构建阶段的 `freshclam` 需要网络取得病毒库；运行阶段必须保持 `--network none`。UTC 日期构建参数使病毒库每日刷新，候选验证拒绝超过 7 天的数据库；超过时限应重新构建并验证。
 
 ```powershell
 $clamavRefreshDate = (Get-Date).ToUniversalTime().ToString('yyyy-MM-dd')
@@ -26,15 +29,19 @@ docker build --file apps/package-scanner/Dockerfile `
   --tag ai-pet-package-scanner:local .
 
 $archivePath = (Resolve-Path '.\package.zip').Path
+Get-FileHash -LiteralPath $archivePath -Algorithm SHA256
 docker run --rm --network none --read-only --cap-drop ALL `
   --tmpfs /tmp/scan:rw,noexec,nosuid,nodev,mode=1777 `
   --mount "type=bind,source=$archivePath,target=/input/package.zip,readonly" `
   ai-pet-package-scanner:local /input/package.zip
 ```
 
+3. 保存该 ZIP 的 SHA-256 和 CLI JSON；同时保存当前候选镜像验证中的 `clean`、`eicar` 与 `invalid` 结果。CLI 成功后，才可用归档管理器以只读方式打开**同一 ZIP**，在一次性预览目录检查全部图片。
+4. 检查完成后删除本地 ZIP 副本与一次性预览目录；不创建预览导出器、不上传本地报告。
+
 镜像默认以非 root `scanner` 用户运行；根文件系统和输入 ZIP 均为只读。唯一可写位置是 `/tmp/scan` tmpfs，`mode=1777` 是非 root ClamAV 创建临时文件的必要条件。不得向容器传入云凭据、管理员令牌、私有对象地址或任何 Scanner Secret。
 
-报告为本地 JSON：成功表示 ZIP 预算、路径、图片解码、角色结构和 ClamAV 检查完成，并且固定包含 `manualReviewRequired: true`。管理员必须人工查看封面和所有需审核图片；干净结果不等于安全证明，更不改变 `admin_override`。EICAR、非法结构、扫描超时、病毒库缺失或其他依赖失败均应保持内容隐藏并记录稳定错误码。
+报告为本地 JSON：成功表示 ZIP 预算、路径、图片解码、角色结构和 ClamAV 检查完成，并且固定包含 `manualReviewRequired: true`。管理员必须人工查看封面和所有需审核图片；这些都是人工观察，不产生系统通过证据，发布仍只能使用 `force_publish` / `admin_override`。EICAR、非法结构、扫描超时、病毒库缺失或其他依赖失败均应保持内容隐藏并记录稳定错误码。
 
 ## 3. 每日人工队列
 

@@ -41,9 +41,18 @@ export class AdminService {
       && asset.actualBytes !== null
       && asset.actualBytes > 0
     ));
+    const packageAsset = detail.assets.find(asset => (
+      asset.role === 'package'
+      && asset.contentType === 'application/zip'
+      && asset.actualBytes !== null
+      && asset.actualBytes > 0
+    ));
     return {
       ...detail,
-      coverPreview: cover ? await safeCoverPreview(this.storage, cover.storageKey) : null
+      coverPreview: cover ? await safeSignedDownload(this.storage, cover.storageKey) : null,
+      packageDownload: packageAsset
+        ? await safeSignedDownload(this.storage, packageAsset.storageKey)
+        : null
     };
   }
 
@@ -81,8 +90,8 @@ export class AdminService {
   }
 }
 
-/** 预览属于辅助信息；签名失败不得阻断审核正文、证据和动作。 */
-async function safeCoverPreview(
+/** 短期下载只辅助管理员观察；签名失败不得暴露私有路径或阻断审核动作。 */
+async function safeSignedDownload(
   storage: Pick<ObjectStorage, 'createSignedUrl'>,
   storageKey: string
 ): Promise<Awaited<ReturnType<ObjectStorage['createSignedUrl']>> | null> {

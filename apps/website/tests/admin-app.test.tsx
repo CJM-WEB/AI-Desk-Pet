@@ -35,6 +35,7 @@ function detail(overrides: Partial<AdminSubmissionDetail> = {}): AdminSubmission
     riskSummary: { labels: ['ai-pet'], summary: '与产品相关' },
     autoRejectionReason: null,
     coverPreview: null,
+    packageDownload: null,
     assets: [],
     moderationResults: [],
     auditLogs: [],
@@ -155,6 +156,37 @@ describe('管理员审核工作台', () => {
     expect(getDetail).toHaveBeenCalledTimes(2);
     expect(api.listQueue).toHaveBeenCalledTimes(2);
     expect((screen.getByLabelText('审核理由') as HTMLTextAreaElement).value).toBe('');
+  });
+
+  it('管理员详情只在服务端提供待审 ZIP 时显示五分钟下载链接', async () => {
+    const row = detail({
+      kind: 'shared_package',
+      packageDownload: {
+        url: 'https://storage.example/review-pet.zip',
+        expiresAt: '2026-07-30T12:06:00.000Z'
+      },
+      assets: [{
+        role: 'package',
+        storageKey: 'private/review-pet.zip',
+        fileName: 'review-pet.zip',
+        declaredBytes: 12,
+        actualBytes: 12,
+        contentType: 'application/zip'
+      }]
+    });
+    setup({ getDetail: vi.fn().mockResolvedValue(row) });
+
+    fireEvent.click(await screen.findByText('改进建议'));
+    const link = await screen.findByRole('link', { name: '下载待审 ZIP（5分钟）' });
+    expect(link.getAttribute('href')).toBe('https://storage.example/review-pet.zip');
+  });
+
+  it('管理员详情未提供待审 ZIP 时不显示下载链接', async () => {
+    setup();
+
+    fireEvent.click(await screen.findByText('改进建议'));
+    await screen.findByText('希望增加桌宠快捷动作。');
+    expect(screen.queryByRole('link', { name: '下载待审 ZIP（5分钟）' })).toBeNull();
   });
 
   it('动作成功替换队列后允许复用新一代页面返回的相同游标', async () => {

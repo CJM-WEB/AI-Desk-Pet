@@ -94,6 +94,13 @@ export function AdminDetail({ detail, loading, acting, onAction }: AdminDetailPr
             ))}
           </ul>
         )}
+        {detail.packageDownload ? (
+          <p>
+            <a href={detail.packageDownload.url} referrerPolicy="no-referrer">
+              {t('admin.detail.packageDownload')}
+            </a>
+          </p>
+        ) : null}
       </section>
 
       <section className={styles.detailSection}>

@@ -33,18 +33,28 @@ describe('管理员 API 客户端', () => {
       .rejects.toEqual(new ApiClientError('INVALID_RESPONSE', 200));
   });
 
-  it('严格解析管理员私有封面短期预览且不接受额外凭据', async () => {
+  it('严格解析管理员私有短期地址且不接受额外凭据', async () => {
     const valid = adminDetailDto();
     const fetcher = vi.fn()
-      .mockResolvedValueOnce(response(valid))
       .mockResolvedValueOnce(response({
         ...valid,
-        coverPreview: { ...valid.coverPreview, storageKey: 'private/cover.webp' }
+        packageDownload: {
+          url: 'https://preview.example/pet.zip',
+          expiresAt: '2026-07-31T00:05:00.000Z'
+        }
+      }))
+      .mockResolvedValueOnce(response({
+        ...valid,
+        packageDownload: {
+          url: 'https://preview.example/pet.zip',
+          expiresAt: '2026-07-31T00:05:00.000Z',
+          storageKey: 'private/pet.zip'
+        }
       }));
     const client = new AdminApiClient(new ApiClient('/api/v1', fetcher));
 
     await expect(client.getDetail('access-token', 'submission-1')).resolves.toMatchObject({
-      coverPreview: { url: 'https://preview.example/cover.webp' }
+      packageDownload: { url: 'https://preview.example/pet.zip' }
     });
     await expect(client.getDetail('access-token', 'submission-1'))
       .rejects.toEqual(new ApiClientError('INVALID_RESPONSE', 200));
@@ -150,6 +160,7 @@ function adminDetailDto() {
       url: 'https://preview.example/cover.webp',
       expiresAt: '2026-07-31T00:05:00.000Z'
     },
+    packageDownload: null,
     assets: [],
     moderationResults: [],
     auditLogs: []

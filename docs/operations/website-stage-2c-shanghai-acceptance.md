@@ -13,7 +13,7 @@
 | --- | --- |
 | PostgreSQL 行为门 | 本地 PostgreSQL 17.11，顺序执行 15 个 migration，74 项行为验证通过。 |
 | 网站 | 362 项单测通过；生产构建通过；Playwright E2E 18/18 通过。 |
-| CloudBase API | 257 项测试通过；构建与 typecheck 通过；构建产物只含 `api`、`cleanup`。 |
+| CloudBase API | 258 项测试通过；构建与 typecheck 通过；构建产物只含 `api`、`cleanup`。 |
 | 包扫描器 | 67 项测试通过；typecheck 通过。 |
 | Scanner candidate verifier | 19/19 通过。 |
 | 真实 Docker 候选 | Node `v22.23.2`、ClamAV `1.4.3`、UID `999`；无网络、只读根文件系统、只读输入与 `mode=1777` tmpfs 条件下，干净包完成检查、EICAR 阻断、非法包拒绝。 |

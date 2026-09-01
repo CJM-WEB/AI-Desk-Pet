@@ -40,6 +40,30 @@
 
 `ai-pet-api` 负责公开投稿、状态、公开读取与管理员 API；`ai-pet-cleanup` 负责既有隔离对象和互动幂等账本的清理。仅配置各自 loader 实际读取的最小变量，密钥不得写入仓库、构建日志、前端变量或本手册。
 
+两个函数共同配置以下变量（不在此记录任何值）：
+
+```text
+CLOUDBASE_ENV_ID
+PRIVATE_BUCKET_ID
+```
+
+`ai-pet-api` 额外配置：
+
+```text
+CLOUDBASE_API_KEY
+ADMIN_EMAIL
+ABUSE_HMAC_SECRET
+SHARED_PACKAGE_SUBMISSIONS_ENABLED=false
+```
+
+`ai-pet-cleanup` 额外配置：
+
+```text
+CLOUDBASE_API_KEY
+```
+
+以上清单与当前 `config.ts` 的两个 loader 对齐。不得为 worker、Scanner 或腾讯内容安全添加变量，也不得复制旧的 HMAC、Scanner Secret 或腾讯凭据。
+
 身份认证启用邮箱 OTP，并预先创建唯一管理员账号。管理员路径同时经过网关认证与应用层身份、邮箱白名单和角色校验；网关认证不能替代应用层授权。公开投稿与状态路径允许匿名访问，仍由限流、管理员审批和私有对象边界保护。
 
 配置最小网关时，必须先捕获脱敏的真实 event/path，确认平台传递的路径形状后再选择唯一 Router。CORS 只允许实际开发或正式站点来源及所需方法/请求头，不允许带认证信息的通配来源。
@@ -65,7 +89,7 @@ pnpm.cmd --filter @myself/website build
 
 ## 7. 本地 Docker 辅助检查
 
-共享包只在管理员本机进行一次性 Docker CLI 检查，不上传报告、不调用云服务，也不生成系统通过证据。构建时 `freshclam` 需要网络下载病毒库；运行时必须断网。`CLAMAV_DB_REFRESH_DATE` 按 UTC 日期使构建阶段每日刷新，候选验证拒绝超过 7 天的病毒库，因此超过 7 天必须重新构建并复验。
+共享包只在管理员本机进行一次性 Docker CLI 检查，不上传报告、不调用云服务，也不生成系统通过证据。管理员从详情中的“下载待审 ZIP（5分钟）”取得短期地址；该地址只出现在管理员 DTO，既不进入公开 DTO，也不增加公开下载计数。构建时 `freshclam` 需要网络下载病毒库；运行时必须断网。`CLAMAV_DB_REFRESH_DATE` 按 UTC 日期使构建阶段每日刷新，候选验证拒绝超过 7 天的病毒库，因此超过 7 天必须重新构建并复验。
 
 ```powershell
 $clamavRefreshDate = (Get-Date).ToUniversalTime().ToString('yyyy-MM-dd')

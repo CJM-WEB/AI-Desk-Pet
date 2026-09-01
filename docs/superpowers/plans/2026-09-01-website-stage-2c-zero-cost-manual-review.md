@@ -30,6 +30,18 @@
 - Create: `docs/superpowers/plans/2026-09-01-website-stage-2c-zero-cost-manual-review.md`
 - Modify: `tools/verification/website-scope-policy.mjs`
 - Modify: `tools/verification/verify-website-scope.test.mjs`
+- Modify: `packages/shared-types/src/website-http.ts`
+- Modify: `packages/shared-types/tests/website-http.test.ts`
+- Modify: `apps/cloudbase-api/src/ports.ts`
+- Modify: `apps/cloudbase-api/src/services/admin-service.ts`
+- Modify: `apps/cloudbase-api/tests/admin-service.test.ts`
+- Modify: `apps/cloudbase-api/tests/api.test.ts`
+- Modify: `apps/website/components/admin/AdminDetail.tsx`
+- Modify: `apps/website/components/i18n/messages.ts`
+- Modify: `apps/website/tests/admin-api-client.test.ts`
+- Modify: `apps/website/tests/admin-app.test.tsx`
+- Modify: `tests/memory-website-api.mjs`
+- Modify: `tests/website-contract/production-driver.test.ts`
 
 - [ ] **Step 1.1：RED**
 
@@ -303,6 +315,18 @@ git commit -m "refactor(web): 退役审核队列运行结构"
 - Modify: `docs/superpowers/plans/2026-08-15-website-optimization-index.md`
 - Modify: `tools/verification/website-scope-policy.mjs`
 - Modify: `tools/verification/verify-website-scope.test.mjs`
+- Modify: `packages/shared-types/src/website-http.ts`
+- Modify: `packages/shared-types/tests/website-http.test.ts`
+- Modify: `apps/cloudbase-api/src/ports.ts`
+- Modify: `apps/cloudbase-api/src/services/admin-service.ts`
+- Modify: `apps/cloudbase-api/tests/admin-service.test.ts`
+- Modify: `apps/cloudbase-api/tests/api.test.ts`
+- Modify: `apps/website/components/admin/AdminDetail.tsx`
+- Modify: `apps/website/components/i18n/messages.ts`
+- Modify: `apps/website/tests/admin-api-client.test.ts`
+- Modify: `apps/website/tests/admin-app.test.tsx`
+- Modify: `tests/memory-website-api.mjs`
+- Modify: `tests/website-contract/production-driver.test.ts`
 
 - [ ] **Step 6.1：文档减法**
 

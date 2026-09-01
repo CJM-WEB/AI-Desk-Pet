@@ -284,6 +284,25 @@ describe('管理员 endpoint 契约', () => {
       .toBe(false);
     expect(adminDetailResponseSchema.safeParse({ id: 'submission-1', adminEmail: 'secret' }).success)
       .toBe(false);
+    const adminDetail = {
+      ...adminSummary,
+      coverPreview: null,
+      packageDownload: null,
+      assets: [],
+      moderationResults: [],
+      auditLogs: []
+    };
+    expect(adminDetailResponseSchema.parse(adminDetail).packageDownload).toBeNull();
+    const { packageDownload: _packageDownload, ...withoutPackageDownload } = adminDetail;
+    expect(adminDetailResponseSchema.safeParse(withoutPackageDownload).success).toBe(false);
+    expect(adminDetailResponseSchema.safeParse({
+      ...adminDetail,
+      packageDownload: {
+        url: 'https://storage.example/review.zip',
+        expiresAt: '2026-07-31T00:05:00.000Z',
+        storageKey: 'private/review.zip'
+      }
+    }).success).toBe(false);
     expect(adminActionResponseSchema.safeParse({
       submission: { id: 'submission-1', status: 'published', statusVersion: 2, publicationBasis: 'standard' },
       replayed: true,

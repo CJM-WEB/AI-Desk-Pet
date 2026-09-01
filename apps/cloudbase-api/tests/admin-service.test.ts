@@ -86,6 +86,51 @@ function createService(row = submission('manual_review_pending')) {
 }
 
 describe('管理员审核服务', () => {
+  it('详情只为当前有效的私有 ZIP 签发五分钟待审下载', async () => {
+    const row = submission('manual_review_pending');
+    const { service, storage } = createService(row);
+
+    await expect(service.getDetail(row.id)).resolves.toMatchObject({
+      packageDownload: {
+        url: 'https://preview.example/cover.webp',
+        expiresAt: '2026-07-31T00:05:00.000Z'
+      }
+    });
+    expect(storage.createSignedUrl).toHaveBeenCalledWith('private/current-pet.zip', 300);
+  });
+
+  it.each([
+    ['反馈投稿', submission('manual_review_pending', { kind: 'feedback', assets: [] })],
+    ['非 ZIP 包', submission('manual_review_pending', {
+      assets: [{
+        role: 'package', storageKey: 'private/current-pet.tar', fileName: 'pet.tar',
+        declaredBytes: 20, actualBytes: 20, contentType: 'application/x-tar'
+      }]
+    })],
+    ['空 ZIP', submission('manual_review_pending', {
+      assets: [{
+        role: 'package', storageKey: 'private/empty.zip', fileName: 'empty.zip',
+        declaredBytes: 0, actualBytes: 0, contentType: 'application/zip'
+      }]
+    })]
+  ])('%s 不签发待审 ZIP', async (_name, row) => {
+    const { service, storage } = createService(row);
+
+    await expect(service.getDetail(row.id)).resolves.toMatchObject({ packageDownload: null });
+    expect(storage.createSignedUrl).not.toHaveBeenCalled();
+  });
+
+  it('待审 ZIP 签名失败时降级为空且不泄露存储错误', async () => {
+    const row = submission('manual_review_pending');
+    const { service, storage } = createService(row);
+    storage.createSignedUrl.mockRejectedValueOnce(new Error('private/current-pet.zip'));
+
+    await expect(service.getDetail(row.id)).resolves.toMatchObject({
+      body: '资源说明',
+      packageDownload: null
+    });
+  });
+
   it('详情只为允许的封面图片签发五分钟私有预览', async () => {
     const row = submission('manual_review_pending', {
       assets: [{

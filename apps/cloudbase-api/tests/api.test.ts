@@ -156,6 +156,7 @@ function createDependencies() {
           url: 'https://preview.example/cover.webp',
           expiresAt: '2026-07-31T00:05:00.000Z'
         },
+        packageDownload: null,
         assets: [],
         moderationResults: [],
         auditLogs: []

@@ -311,16 +311,33 @@ function adminSummary(record: ContractRecord) {
 
 function adminDetail(record: ContractRecord) {
   const cover = record.assets.find(asset => asset.role === 'cover');
+  const packageAsset = record.assets.find(asset => (
+    isCurrentPackageAsset(asset)
+  ));
   return {
     ...adminSummary(record),
     coverPreview: cover ? {
       url: `https://storage.example/${record.id}/cover.webp`,
       expiresAt: '2026-07-31T00:05:00.000Z',
     } : null,
+    packageDownload: packageAsset ? {
+      url: `https://storage.example/${packageAsset.storageKey}`,
+      expiresAt: '2026-07-31T00:05:00.000Z',
+    } : null,
     assets: record.assets,
     moderationResults: [],
     auditLogs: record.auditLogs,
   };
+}
+
+/** 合同替身只为当前有效 ZIP 投影管理员短期下载地址。 */
+function isCurrentPackageAsset(asset: ContractAsset): boolean {
+  const actualBytes = asset.actualBytes;
+  return asset.role === 'package'
+    && asset.contentType === 'application/zip'
+    && actualBytes !== null
+    && Number.isSafeInteger(actualBytes)
+    && actualBytes > 0;
 }
 
 function actionSnapshot(record: ContractRecord) {
