@@ -1304,9 +1304,9 @@ describe('CloudBase PostgreSQL 安全与公开互动存储', () => {
       publicationBasis: 'admin_override'
     });
     expect(query.eq).toHaveBeenCalledTimes(3);
-    expect(query.eq).toHaveBeenNthCalledWith(1, 'id', 'community-detail');
-    expect(query.eq).toHaveBeenNthCalledWith(2, 'status', 'published');
-    expect(query.eq).toHaveBeenNthCalledWith(3, 'kind', 'shared_package');
+    expect(query.eq).toHaveBeenCalledWith('id', 'community-detail');
+    expect(query.eq).toHaveBeenCalledWith('status', 'published');
+    expect(query.eq).toHaveBeenCalledWith('kind', 'shared_package');
     detail.assets.push({
       object_key: 'submissions/community-detail/private.bin',
       original_name: 'private.bin',

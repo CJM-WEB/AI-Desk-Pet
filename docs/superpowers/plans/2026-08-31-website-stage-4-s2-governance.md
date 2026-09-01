@@ -607,6 +607,19 @@ git commit -m "refactor(web): 收窄云端业务能力端口"
 ### Task 9：阶段四联合门、验收记录与 Router 条件门
 
 **Files:**
+- Create: `.superpowers/sdd/2026-08-31-website-stage-4-s2-governance/task-9-preflight-report.md`
+- Create: `cloudbase/migrations/20260831070000_feedback_kind_null_guard.sql`
+- Modify: `apps/cloudbase-api/tests/cloudbase-postgres.test.ts`
+- Modify: `apps/cloudbase-api/tests/keyset-cursor.test.ts`
+- Modify: `apps/website/components/website-experience/community/cloud-shared-pet-repository.ts`
+- Modify: `apps/website/tests/cloud-shared-pet-repository.test.ts`
+- Modify: `tests/website-contract/production-driver.test.ts`
+- Modify: `tests/website-contract/website-api-contract.ts`
+- Modify: `tools/cloudbase-migration-inventory.test.mjs`
+- Modify: `tools/test-cloudbase-migrations.mjs`
+- Modify: `tools/test-cloudbase-migrations.test.mjs`
+- Modify: `tools/verification/website-scope-policy.mjs`
+- Modify: `tools/verification/verify-website-scope.test.mjs`
 - Modify: `docs/superpowers/plans/2026-08-15-website-optimization-index.md`
 - Modify: `docs/superpowers/plans/2026-08-31-website-stage-4-s2-governance.md`
 - Modify: `docs/operations/website-optimization-acceptance.md`

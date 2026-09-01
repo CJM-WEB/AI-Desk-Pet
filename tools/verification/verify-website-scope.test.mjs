@@ -102,6 +102,38 @@ test('阶段四只放行精确的 S2 治理规格与计划', () => {
   });
 });
 
+test('阶段四实现只放行精确迁移、发行契约与发行工具路径', () => {
+  const approvedStageImplementationPaths = [
+    'cloudbase/migrations/20260831030000_keyset_pagination.sql',
+    'cloudbase/migrations/20260831040000_idempotent_public_interactions.sql',
+    'cloudbase/migrations/20260831040001_public_like_endpoint_guard.sql',
+    'cloudbase/migrations/20260831050000_idempotent_download_issuance.sql',
+    'cloudbase/migrations/20260831060000_publication_shape_guard.sql',
+    'cloudbase/migrations/20260831070000_feedback_kind_null_guard.sql',
+    'packages/shared-types/src/release-manifest.ts',
+    'packages/shared-types/tests/release-manifest.test.ts',
+    'tools/release/package.json',
+    'tools/release/src/generate-manifest.ts',
+    'tools/release/tests/generate-manifest.test.ts',
+  ];
+
+  assert.deepEqual(classifyChangedPaths([
+    ...approvedStageImplementationPaths,
+    'cloudbase/migrations/20260831060001_unapproved.sql',
+    'packages/shared-types/src/unapproved-release.ts',
+    'tools/release/src/unapproved.ts',
+    'apps/desktop/src/main/index.ts',
+  ]), {
+    allowed: approvedStageImplementationPaths,
+    forbidden: ['apps/desktop/src/main/index.ts'],
+    outside: [
+      'cloudbase/migrations/20260831060001_unapproved.sql',
+      'packages/shared-types/src/unapproved-release.ts',
+      'tools/release/src/unapproved.ts',
+    ],
+  });
+});
+
 test('Task 8 只放行精确的网站优化验收记录', () => {
   const acceptance = 'docs/operations/website-optimization-acceptance.md';
   const similarlyNamedPath = 'docs/operations/website-optimization-acceptance.txt';

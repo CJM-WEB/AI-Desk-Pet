@@ -35,6 +35,7 @@ export class CloudSharedPetRepository implements SharedPetRepository {
   private readonly records = new Map<string, SharedPetPackageSummary>();
   private readonly pageCursors = new Map<number, string>();
   private readonly pendingLikes = new Map<string, PendingSharedPetLike>();
+  // 下载失败必须保留 operationId 供响应丢失重试复用，只有成功响应后才可清除。
   private readonly pendingDownloads = new Map<string, string>();
   private readonly likeQueues = new Map<string, Promise<void>>();
   private pageGeneration = 0;
@@ -59,6 +60,12 @@ export class CloudSharedPetRepository implements SharedPetRepository {
       publicCommunityPageSchema
     );
     const ownsState = generation === this.pageGeneration;
+    // 当前代际不得把已消费 token 再写成后续页入口，否则翻页会形成服务端游标环。
+    if (
+      ownsState
+      && result.nextCursor !== null
+      && [...this.pageCursors.values()].includes(result.nextCursor)
+    ) throw new Error('PAGE_CURSOR_LOOP');
     const items = result.items.map(item => this.remember(item, ownsState));
     const hasNext = result.nextCursor !== null;
     const total = (selectedPage - 1) * pageSize + items.length;

@@ -20,6 +20,22 @@ describe('键集游标 codec', () => {
     });
   });
 
+  it('最长 scope 与 id 下仍在 512 字节门内无损往返六位分数秒', () => {
+    const preciseTime = '2026-08-31T03:00:00.123456Z';
+    const maximumId = 'x'.repeat(128);
+    const cursor = encodeKeysetCursor(
+      'admin:manual_review_pending',
+      preciseTime,
+      maximumId
+    );
+
+    expect(cursor.length).toBeLessThanOrEqual(512);
+    expect(decodeKeysetCursor(cursor, 'admin:manual_review_pending')).toEqual({
+      sortTime: preciseTime,
+      id: maximumId
+    });
+  });
+
   it('拒绝跨 scope 与管理员 status 复用', () => {
     const publicCursor = encodeKeysetCursor('feedback:feedback', sortTime, 'feedback-2');
     expect(() => decodeKeysetCursor(publicCursor, 'feedback:suggestion'))

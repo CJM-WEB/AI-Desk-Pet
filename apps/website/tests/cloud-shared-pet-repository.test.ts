@@ -238,6 +238,17 @@ describe('云端共享仓库', () => {
     expect(request).toHaveBeenCalledTimes(3);
   });
 
+  it('服务端续页重复返回已消费的 nextCursor 时失败关闭', async () => {
+    const request = vi.fn()
+      .mockResolvedValueOnce({ items: [], nextCursor: 'v1.repeated-page' })
+      .mockResolvedValueOnce({ items: [], nextCursor: 'v1.repeated-page' });
+    const repository = new CloudSharedPetRepository({ request } as unknown as ApiClient);
+
+    await repository.listPage(1);
+    await expect(repository.listPage(2)).rejects.toThrow('PAGE_CURSOR_LOOP');
+    expect(request).toHaveBeenCalledTimes(2);
+  });
+
   it('详情 404 返回 null，点赞和下载仅使用公开 API', async () => {
     const api = { request: vi.fn()
       .mockRejectedValueOnce(new ApiClientError('NOT_FOUND', 404))

@@ -601,7 +601,9 @@ function contractPage<T extends { id: string }, R>(
   project: (record: T) => R,
   isolateProjection = false,
 ): { items: R[]; nextCursor: string | null } {
-  const boundary = input.cursor ? decodeContractCursor(input.cursor, scope) : null;
+  const boundary = input.cursor === undefined || input.cursor === null
+    ? null
+    : decodeContractCursor(input.cursor, scope);
   const rows = [...records]
     .filter(record => boundary === null
       || compareContractPosition(
@@ -695,7 +697,8 @@ function decodeContractCursor(cursor: string, expectedScope: string): {
       new TextDecoder('utf-8', { fatal: true }).decode(bytes),
     ) as Record<string, unknown>;
     if (
-      payload.scope !== expectedScope
+      Object.keys(payload).sort().join(',') !== 'id,scope,sortTime'
+      || payload.scope !== expectedScope
       || typeof payload.sortTime !== 'string'
       || typeof payload.id !== 'string'
       || payload.id.length < 1

@@ -174,7 +174,7 @@ export async function runCloudBaseMigrationBehaviorGate({
       postgresVersion: postgresVersion.version,
       postgresMajorVersion: postgresVersion.major,
       migrationsApplied: migrations.length,
-      behaviorsVerified: 100
+      behaviorsVerified: 103
     };
   } finally {
     if (started) {
@@ -231,9 +231,10 @@ async function run(executable, arguments_, input) {
   });
 }
 
-/** 双会话固定持有 operation advisory lock，证明第二次同 ID 调用会等待并只回放首次写入。 */
+/** 点赞与下载分别用双会话持有 operation lock，证明同 ID 并发只回放首次写入。 */
 async function runConcurrentInteractionGate(psql, connection) {
   const operationId = '00000000-0000-4000-8000-000000000499';
+  const downloadOperationId = '00000000-0000-4000-8000-000000000498';
   await run(psql, [...connection, '-f', '-'], String.raw`
 SELECT set_config('request.jwt.claims', '{"role":"service_role"}', false);
 INSERT INTO submissions (
@@ -244,6 +245,25 @@ INSERT INTO submissions (
   md5('gate-like-concurrent') || md5('gate-like-concurrent'), now(), 'standard'
 );
 INSERT INTO public_engagement (submission_id) VALUES ('gate-like-concurrent');
+
+INSERT INTO submissions (
+  id, kind, title, body, status, status_token_hash
+) VALUES (
+  'gate-download-concurrent', 'shared_package', '并发下载', '并发下载',
+  'manual_review_pending', md5('gate-download-concurrent') || md5('gate-download-concurrent')
+);
+INSERT INTO public_engagement (submission_id) VALUES ('gate-download-concurrent');
+INSERT INTO assets (
+  submission_id, object_key, original_name, declared_size, actual_size,
+  mime_type, role
+) VALUES
+  ('gate-download-concurrent', 'submissions/gate-download-concurrent/cover.png',
+   'cover.png', 7, 7, 'image/png', 'cover'),
+  ('gate-download-concurrent', 'submissions/gate-download-concurrent/package.zip',
+   'pet.zip', 8, 8, 'application/zip', 'package');
+UPDATE submissions
+SET status = 'published', published_at = now(), publication_basis = 'standard'
+WHERE id = 'gate-download-concurrent';
 `);
 
   const first = runUntilMarker(
@@ -292,6 +312,50 @@ BEGIN
   END IF;
 END
 $concurrent_like_gate$;
+`);
+
+  const downloadFirst = runUntilMarker(
+    psql,
+    [...connection, '-f', '-'],
+    String.raw`
+BEGIN;
+SELECT set_config('request.jwt.claims', '{"role":"service_role"}', true);
+SELECT pg_advisory_xact_lock(hashtextextended('${downloadOperationId}', 0));
+\echo download-lock-acquired
+SELECT record_public_download(
+  'gate-download-concurrent', repeat('b', 64), '${downloadOperationId}'::uuid
+);
+SELECT pg_sleep(0.35);
+COMMIT;
+`,
+    'download-lock-acquired'
+  );
+  await downloadFirst.marker;
+  const downloadSecond = run(psql, [...connection, '-f', '-'], String.raw`
+SELECT set_config('request.jwt.claims', '{"role":"service_role"}', false);
+SELECT record_public_download(
+  'gate-download-concurrent', repeat('b', 64), '${downloadOperationId}'::uuid
+);
+`);
+  const earlyDownloadResult = await Promise.race([
+    downloadSecond.then(() => 'completed'),
+    new Promise(resolvePromise => setTimeout(() => resolvePromise('blocked'), 100))
+  ]);
+  if (earlyDownloadResult !== 'blocked') {
+    throw new Error('行为门失败：并发下载同 operation 未等待首次事务');
+  }
+  await Promise.all([downloadFirst.completion, downloadSecond]);
+  await run(psql, [...connection, '-f', '-'], String.raw`
+DO $concurrent_download_gate$
+BEGIN
+  IF (SELECT count(*) FROM public_interaction_operations
+      WHERE operation_id = '${downloadOperationId}'::uuid) <> 1
+    OR (SELECT download_count FROM public_engagement
+        WHERE submission_id = 'gate-download-concurrent') <> 1 THEN
+    RAISE EXCEPTION '行为门失败：并发下载同 operation 发生重复计数';
+  END IF;
+END
+$concurrent_download_gate$;
 `);
 }
 
@@ -1795,6 +1859,12 @@ BEGIN
     NULL;
   END;
   BEGIN
+    PERFORM * FROM list_public_feedback(NULL, 1, NULL, NULL);
+    RAISE EXCEPTION '行为门失败：反馈列表接受 NULL kind';
+  EXCEPTION WHEN SQLSTATE '22023' THEN
+    NULL;
+  END;
+  BEGIN
     PERFORM * FROM list_admin_submissions(NULL, NULL, NULL, NULL);
     RAISE EXCEPTION '行为门失败：管理员列表接受 NULL limit';
   EXCEPTION WHEN SQLSTATE '22023' THEN
@@ -2280,6 +2350,29 @@ BEGIN
     OR (SELECT download_count FROM public_engagement
         WHERE submission_id = 'gate-download-one') <> 2 THEN
     RAISE EXCEPTION '行为门失败：不同下载 operation 未各增加一次';
+  END IF;
+
+  v_first := record_public_download(
+    'gate-download-one', repeat('a', 64),
+    '00000000-0000-4000-8000-000000000503'::uuid
+  );
+  UPDATE public_interaction_operations
+  SET created_at = statement_timestamp() - interval '24 hours',
+      expires_at = statement_timestamp()
+  WHERE operation_id = '00000000-0000-4000-8000-000000000503'::uuid;
+  v_replay := record_public_download(
+    'gate-download-two', repeat('b', 64),
+    '00000000-0000-4000-8000-000000000503'::uuid
+  );
+  IF v_first IS DISTINCT FROM jsonb_build_object('download_count', 3)
+    OR v_replay IS DISTINCT FROM jsonb_build_object('download_count', 1)
+    OR (SELECT submission_id FROM public_interaction_operations
+        WHERE operation_id = '00000000-0000-4000-8000-000000000503'::uuid)
+       IS DISTINCT FROM 'gate-download-two'
+    OR (SELECT expires_at - created_at FROM public_interaction_operations
+        WHERE operation_id = '00000000-0000-4000-8000-000000000503'::uuid)
+       IS DISTINCT FROM interval '24 hours' THEN
+    RAISE EXCEPTION '行为门失败：恰好 24 小时到期的下载 operation 未按新输入复用';
   END IF;
 
   FOR v_index IN 1..10 LOOP

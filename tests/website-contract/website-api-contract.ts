@@ -378,6 +378,24 @@ export function runWebsiteApiContract(
       }), 400, 'INVALID_CURSOR');
     });
 
+    it('空 cursor 与携带额外字段的 opaque token 都失败关闭', async () => {
+      failure(await driver.request({
+        method: 'GET',
+        path: '/api/v1/community?limit=1&cursor=',
+      }), 400, 'INVALID_CURSOR');
+
+      const extraFieldPayload = Buffer.from(JSON.stringify({
+        scope: 'community',
+        sortTime: '2026-07-31T00:00:00.000Z',
+        id: refs.publicCommunityId,
+        adminEmail: 'secret@example.test',
+      })).toString('base64url');
+      failure(await driver.request({
+        method: 'GET',
+        path: `/api/v1/community?limit=1&cursor=v1.${extraFieldPayload}`,
+      }), 400, 'INVALID_CURSOR');
+    });
+
     it('社区键集保留微秒顺序并以原始坏行推进游标', async () => {
       const first = success(await driver.request({
         method: 'GET',
