@@ -195,7 +195,7 @@ export async function runCloudBaseMigrationBehaviorGate({
       postgresVersion: postgresVersion.version,
       postgresMajorVersion: postgresVersion.major,
       migrationsApplied: migrations.length,
-      behaviorsVerified: 71
+      behaviorsVerified: 74
     };
   } finally {
     if (started) {
@@ -929,6 +929,27 @@ BEGIN
     <> 'manual_review_pending' THEN
     RAISE EXCEPTION '行为门失败：文本投稿未直入人工队列';
   END IF;
+  BEGIN
+    PERFORM apply_admin_action(
+      'gate-feedback', 'admin-1', 'force_publish', 'published', 0,
+      'gate-feedback-direct-force', '反馈不得强制发布',
+      'ADMIN_OVERRIDE_ACCEPTED'
+    );
+    RAISE EXCEPTION '行为门失败：反馈接受了直接强制发布';
+  EXCEPTION WHEN SQLSTATE 'P1002' THEN
+    NULL;
+  END;
+  IF (SELECT status FROM submissions WHERE id = 'gate-feedback')
+      IS DISTINCT FROM 'manual_review_pending'
+    OR (SELECT status_version FROM submissions WHERE id = 'gate-feedback')
+      IS DISTINCT FROM 0
+    OR (SELECT publication_basis FROM submissions WHERE id = 'gate-feedback')
+      IS NOT NULL
+    OR EXISTS (
+      SELECT 1 FROM admin_audit_logs WHERE submission_id = 'gate-feedback'
+    ) THEN
+    RAISE EXCEPTION '行为门失败：反馈强制发布拒绝留下了副作用';
+  END IF;
   PERFORM apply_admin_action(
     'gate-feedback', 'admin-1', 'approve', 'published', 0,
     'gate-feedback-approve', '反馈审核通过'
@@ -1147,6 +1168,28 @@ BEGIN
   UPDATE submissions
   SET status = 'system_reviewing'
   WHERE id = 'gate-historical-system';
+  BEGIN
+    PERFORM apply_admin_action(
+      'gate-historical-system', 'admin-1', 'force_publish', 'published', 1,
+      'gate-historical-system-direct-force', '历史系统状态不得跳步',
+      'ADMIN_OVERRIDE_ACCEPTED'
+    );
+    RAISE EXCEPTION '行为门失败：历史系统状态接受了直接强制发布';
+  EXCEPTION WHEN SQLSTATE 'P1002' THEN
+    NULL;
+  END;
+  IF (SELECT status FROM submissions WHERE id = 'gate-historical-system')
+      IS DISTINCT FROM 'system_reviewing'
+    OR (SELECT status_version FROM submissions
+        WHERE id = 'gate-historical-system') IS DISTINCT FROM 1
+    OR (SELECT publication_basis FROM submissions
+        WHERE id = 'gate-historical-system') IS NOT NULL
+    OR EXISTS (
+      SELECT 1 FROM admin_audit_logs
+      WHERE submission_id = 'gate-historical-system'
+    ) THEN
+    RAISE EXCEPTION '行为门失败：历史系统状态强制发布拒绝留下了副作用';
+  END IF;
   PERFORM apply_admin_action(
     'gate-historical-system', 'admin-1', 'move_to_manual',
     'manual_review_pending', 1, 'gate-historical-system-manual',
@@ -1171,6 +1214,28 @@ BEGIN
     'character-package-2026-08-15', 'Block', '技术检查：MALWARE_DETECTED',
     '{"scanCode":"MALWARE_DETECTED"}'::jsonb, v_now, v_now
   );
+  BEGIN
+    PERFORM apply_admin_action(
+      'gate-historical-auto', 'admin-1', 'force_publish', 'published', 0,
+      'gate-historical-auto-direct-force', '自动驳回不得跳步',
+      'ADMIN_OVERRIDE_ACCEPTED'
+    );
+    RAISE EXCEPTION '行为门失败：自动驳回接受了直接强制发布';
+  EXCEPTION WHEN SQLSTATE 'P1002' THEN
+    NULL;
+  END;
+  IF (SELECT status FROM submissions WHERE id = 'gate-historical-auto')
+      IS DISTINCT FROM 'auto_rejected'
+    OR (SELECT status_version FROM submissions WHERE id = 'gate-historical-auto')
+      IS DISTINCT FROM 0
+    OR (SELECT publication_basis FROM submissions
+        WHERE id = 'gate-historical-auto') IS NOT NULL
+    OR EXISTS (
+      SELECT 1 FROM admin_audit_logs
+      WHERE submission_id = 'gate-historical-auto'
+    ) THEN
+    RAISE EXCEPTION '行为门失败：自动驳回强制发布拒绝留下了副作用';
+  END IF;
   PERFORM apply_admin_action(
     'gate-historical-auto', 'admin-1', 'move_to_manual',
     'manual_review_pending', 0, 'gate-historical-auto-manual', '转人工复核'

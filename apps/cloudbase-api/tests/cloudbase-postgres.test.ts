@@ -257,7 +257,6 @@ interface MemorySubmission {
   public_reason: string | null;
   risk_summary: Record<string, unknown>;
   auto_rejection_reason: string | null;
-  moderation_lease_until: string | null;
   cleanup_lease_until: string | null;
   cleanup_started_at: string | null;
   published_at: string | null;
@@ -666,7 +665,6 @@ function makeSubmission(
     public_reason: input.public_reason ?? null,
     risk_summary: input.risk_summary ?? {},
     auto_rejection_reason: input.auto_rejection_reason ?? null,
-    moderation_lease_until: input.moderation_lease_until ?? null,
     cleanup_lease_until: input.cleanup_lease_until ?? null,
     cleanup_started_at: input.cleanup_started_at ?? null,
     published_at: input.published_at ?? null,
@@ -817,6 +815,12 @@ describe('CloudBase PostgreSQL RPC 客户端', () => {
 });
 
 describe('CloudBase PostgreSQL 安全与公开互动存储', () => {
+  it('最终 schema 测试行不声明或生成已删除的 worker 租约字段', () => {
+    expectTypeOf<MemorySubmission>().not.toHaveProperty('moderation_lease_until');
+    expect(makeSubmission({ id: 'current-schema-row' }))
+      .not.toHaveProperty('moderation_lease_until');
+  });
+
   it('通过具名 RPC 原子消费验证码和限流计数', async () => {
     const rpc = {
       rpc: vi.fn()
