@@ -3,9 +3,16 @@
 ## 范围与结论
 
 - 日期：2026-09-01。
-- 范围：阶段 2C 的零费用前置门、上海单地域本地收窄、适用本地门禁和状态文档收敛；不访问浏览器或腾讯云，不执行远端操作。
+- 范围：记录阶段 2C 的零费用前置门、上海单地域本地收窄、适用本地门禁和状态文档收敛。Task 11 本身未再次访问浏览器或腾讯云，未执行远端操作；本文引用 Task 1 已有的只读控制台与官方文档证据。
 - 最终状态：`blocked`。
 - 此结论不表示已创建上海 PostgreSQL 环境、已执行远端 migration、已部署函数、Scanner、网关或 Hosting，也不表示生产已上线。线上仍是旧测试版，`SHARED_PACKAGE_SUBMISSIONS_ENABLED=false` 继续生效。
+
+## 提交范围
+
+- 本次验收的代码基线为 `ca19fb2`。
+- 首次交付提交为 `9eaff5c`（`docs(web): 记录上海阶段2C验收结果`）。
+- 该交付仅包含以下六个文档：`docs/operations/cloudbase-deployment.md`、`docs/operations/content-moderation.md`、`docs/operations/website-stage-2c-shanghai-acceptance.md`、`docs/superpowers/plans/2026-08-15-website-optimization-index.md`、`docs/superpowers/plans/2026-08-31-website-stage-2-3-local-closure.md`、`docs/superpowers/plans/2026-09-01-website-stage-2c-shanghai-rebuild.md`。
+- 本次边界修正仅改动本验收记录与阶段 2–3 闭环计划，不改代码、配置、依赖、migration 或桌宠路径。
 
 ## 远端阻断依据
 
