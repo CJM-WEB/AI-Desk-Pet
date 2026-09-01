@@ -9,6 +9,7 @@ const apiRoot = resolve(workspaceRoot, 'apps', 'cloudbase-api');
 const distRoot = resolve(apiRoot, 'dist');
 const requireFromApi = createRequire(resolve(apiRoot, 'package.json'));
 const { build } = requireFromApi('esbuild');
+const cloudBaseNodeEntry = requireFromApi.resolve('@cloudbase/js-sdk');
 const functions = {
   api: resolve(apiRoot, 'src', 'functions', 'api.ts'),
   cleanup: resolve(apiRoot, 'src', 'functions', 'cleanup.ts')
@@ -44,6 +45,12 @@ export function rewriteCloudBaseV3NodeRuntime(source) {
 const cloudBaseNodeRuntimePlugin = {
   name: 'bundle-cloudbase-node-runtime-dependencies',
   setup(buildContext) {
+    // 构建 CommonJS 云函数时固定使用 SDK 的 Node CommonJS 入口，避免 ESM
+    // 入口中的 import.meta.url 在二次打包为 CommonJS 后失效并回退到 Web 适配器。
+    buildContext.onResolve(
+      { filter: /^@cloudbase\/js-sdk$/ },
+      () => ({ path: cloudBaseNodeEntry })
+    );
     buildContext.onLoad(
       { filter: /index\.node\.(?:cjs|esm)\.js$/ },
       async args => {

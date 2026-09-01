@@ -27,4 +27,40 @@ describe('CloudBase 函数构建产物', () => {
       expect(source).not.toContain('npm install jsonwebtoken');
     }
   });
+
+  it('两个生产构建产物均可使用 Node 适配器创建运行时', () => {
+    const testEnv = {
+      CLOUDBASE_ENV_ID: 'env-test',
+      CLOUDBASE_REGION: 'ap-shanghai',
+      PRIVATE_BUCKET_ID: 'ai-pet-private',
+      CLOUDBASE_API_KEY: 'test-key',
+      ADMIN_EMAIL: 'admin@example.com',
+      ABUSE_HMAC_SECRET: 'test-secret',
+      SHARED_PACKAGE_SUBMISSIONS_ENABLED: 'false'
+    } as const;
+    const originalEnv = Object.fromEntries(
+      Object.keys(testEnv).map(key => [key, process.env[key]])
+    );
+    Object.assign(process.env, testEnv);
+
+    try {
+      const api = require(resolve(distRoot, 'api', 'index.js')) as {
+        createProductionHandler(context: { eventID: string }): () => Promise<unknown>;
+      };
+      const cleanup = require(resolve(distRoot, 'cleanup', 'index.js')) as {
+        createProductionWorker(context: { eventID: string }): () => Promise<unknown>;
+      };
+
+      expect(() => api.createProductionHandler({ eventID: 'test-event' }))
+        .not.toThrow();
+      expect(() => cleanup.createProductionWorker({ eventID: 'test-event' }))
+        .not.toThrow();
+    } finally {
+      for (const key of Object.keys(testEnv)) {
+        const value = originalEnv[key];
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+    }
+  });
 });

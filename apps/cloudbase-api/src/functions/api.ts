@@ -568,7 +568,7 @@ function header(
   return value.slice(0, 512);
 }
 
-/** 管理接口使用专用头传递短期令牌，避免 CloudBase 网关抢先消费 Authorization。 */
+/** Authorization 供网关认证，x-ai-pet-admin-token 供应用层身份复验。 */
 function requireAdminToken(event: ApiHttpEvent): string {
   const token = Object.entries(event.headers)
     .find(([key]) => key.toLowerCase() === 'x-ai-pet-admin-token')?.[1];
