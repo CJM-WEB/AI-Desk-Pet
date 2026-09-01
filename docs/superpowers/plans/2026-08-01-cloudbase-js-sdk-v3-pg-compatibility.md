@@ -1,5 +1,7 @@
 # CloudBase JS SDK V3 PG Compatibility Implementation Plan
 
+> **历史计划提示：** 本文仅保留历史执行证据；其中 `ap-singapore` 地域条款与部署命令已被 [`2026-09-01-website-stage-2c-shanghai-rebuild-design.md`](../specs/2026-09-01-website-stage-2c-shanghai-rebuild-design.md) 替代，不得按本文执行 CloudBase 部署或远端写操作。与地域无关的历史事实不受此提示影响。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** 在不改变匿名投稿和双层审核安全边界的前提下，将后端统一迁移到 CloudBase JS SDK V3 PG，并为 Next.js 管理员邮箱 OTP 登录建立安全的客户端适配层。

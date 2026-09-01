@@ -25,7 +25,7 @@
    ```
 
    阶段 2C 完成前，任何 CloudBase 环境都不得从仓库执行 migration，也不得通过控制台复制 SQL 绕过冻结。已提交数据库变更只能通过新的前向 migration 修复，历史 migration 不得改写。
-5. 解冻后的环境仍须保留独立的开发与生产环境，分别记录 `CLOUDBASE_ENV_ID`；数据库、Bucket、函数、扫描容器、域名、告警与所有密钥不得混用。服务端 CloudBase 固定使用 `ap-shanghai`；`CLOUDBASE_REGION` 只能留空或设为 `ap-shanghai`。
+5. 解冻后的环境仍须保留独立的开发与生产环境，分别记录 `CLOUDBASE_ENV_ID`；数据库、Bucket、函数、扫描容器、域名、告警与所有密钥不得混用。阶段 2C 开发环境的服务端 CloudBase 目标地域为 `ap-shanghai`，其 `CLOUDBASE_REGION` 只能留空或设为 `ap-shanghai`。正式生产地域不由阶段 2C 裁决，必须由后续生产计划基于上海开发环境证据重新决定，不得直接把阶段 2C 开发配置作为生产配置。
 
 ## 2. PostgreSQL 与私有存储
 
@@ -61,9 +61,9 @@
 4. API 函数的 `SCANNER_URL` 指向容器 HTTPS 地址，`SCANNER_HMAC_SECRET` 必须与容器的 `SCANNER_INTERNAL_SECRET` 使用同一密钥值，但名称按各自进程保留。
 5. 用干净包、病毒命中、图片拦截、超时和并发请求验证失败关闭；Scanner 异常时必须保持共享包隐藏和批准禁用。
 
-## 6. 服务端环境变量清单
+## 6. 阶段 2C 开发环境目标变量清单
 
-三个云函数只配置各自 loader 实际读取的最小变量，不向无关函数复制 Secret。共同运行时变量为 `CLOUDBASE_ENV_ID`、`PRIVATE_BUCKET_ID`，以及可省略且只允许为 `ap-shanghai` 的 `CLOUDBASE_REGION`。
+以下清单仅描述阶段 2C 开发环境目标配置，不表示该配置已部署，也不表示正式生产地域或变量已经决定。三个云函数只配置各自 loader 实际读取的最小变量，不向无关函数复制 Secret。共同运行时变量为 `CLOUDBASE_ENV_ID`、`PRIVATE_BUCKET_ID`，以及在该开发环境中可省略且只允许为 `ap-shanghai` 的 `CLOUDBASE_REGION`。
 
 `ai-pet-api`：
 

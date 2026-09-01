@@ -239,22 +239,30 @@ test('阶段二受控迁移只放行纯编排器、适配器与测试', () => {
   });
 });
 
-test('阶段 2C 只放行上海重建的精确本地范围', () => {
+test('阶段 2C 最终范围只放行仍有效的本地文件与精确历史计划', () => {
   const approvedStagePaths = [
-    'cloudbaserc.json',
     'apps/package-scanner/tests/adapters.test.ts',
-    'tools/run-cloudbase-development-migrations.mjs',
-    'tools/run-cloudbase-development-migrations.test.mjs',
     'docs/operations/website-stage-2c-shanghai-acceptance.md',
     'docs/superpowers/specs/2026-08-01-cloudbase-js-sdk-v3-pg-compatibility-design.md',
     'docs/superpowers/specs/2026-09-01-website-stage-2c-shanghai-rebuild-design.md',
     'docs/superpowers/plans/2026-09-01-website-stage-2c-shanghai-rebuild.md',
+    'docs/superpowers/plans/2026-08-01-cloudbase-js-sdk-v3-pg-compatibility.md',
+    'docs/superpowers/plans/2026-08-08-direct-manual-review.md',
+    'docs/superpowers/plans/2026-08-08-remove-submission-captcha.md',
+  ];
+  const retiredRemotePaths = [
+    'cloudbaserc.json',
+    'tools/run-cloudbase-development-migrations.mjs',
+    'tools/run-cloudbase-development-migrations.test.mjs',
   ];
 
-  assert.deepEqual(classifyChangedPaths(approvedStagePaths), {
+  assert.deepEqual(classifyChangedPaths([
+    ...approvedStagePaths,
+    ...retiredRemotePaths,
+  ]), {
     allowed: approvedStagePaths,
     forbidden: [],
-    outside: [],
+    outside: retiredRemotePaths,
   });
 });
 
@@ -365,12 +373,15 @@ test('根 manifest 拒绝阶段 0 脚本的错误命令值', () => {
   );
 });
 
-test('根 manifest 只接受阶段 2C 开发迁移的精确命令', () => {
+test('根 manifest 拒绝已裁剪的阶段 2C 开发迁移命令', () => {
   const changedManifest = structuredClone(baseManifest);
   changedManifest.scripts['run:cloudbase-migrations:development'] =
     'node tools/run-cloudbase-development-migrations.mjs';
 
-  assert.doesNotThrow(() => assertRootManifestChange(baseManifest, changedManifest));
+  assert.throws(
+    () => assertRootManifestChange(baseManifest, changedManifest),
+    /run:cloudbase-migrations:development/u,
+  );
 });
 
 test('根 manifest 接受全部精确阶段 0 脚本和 dependency-cruiser', () => {

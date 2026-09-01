@@ -1,5 +1,7 @@
 # 投稿直接人工审核 Implementation Plan
 
+> **历史计划提示：** 本文仅保留历史执行证据；其中 `ap-singapore` 地域条款与部署命令已被 [`2026-09-01-website-stage-2c-shanghai-rebuild-design.md`](../specs/2026-09-01-website-stage-2c-shanghai-rebuild-design.md) 替代，不得按本文执行 CloudBase 部署或远端写操作。与地域无关的历史事实不受此提示影响。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** 让反馈、建议和共享资源包在完成必要校验后直接进入管理员人工审核，同时完整保留系统审核实现供后续恢复。

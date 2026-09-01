@@ -1,5 +1,7 @@
 # 移除匿名投稿 CAPTCHA 实施计划
 
+> **历史计划提示：** 本文仅保留历史执行证据；其中 `ap-singapore` 地域条款与部署命令已被 [`2026-09-01-website-stage-2c-shanghai-rebuild-design.md`](../specs/2026-09-01-website-stage-2c-shanghai-rebuild-design.md) 替代，不得按本文执行 CloudBase 部署或远端写操作。与地域无关的历史事实不受此提示影响。
+
 > **执行要求：** 实施时使用测试驱动方式逐项完成；当前未获得 Git 写操作授权，因此本计划不执行提交、推送或分支操作。
 
 **目标：** 完整移除资源包投稿与反馈／建议投稿的 CAPTCHA 依赖，同时保留 IP 限流、审核流程和管理员邮箱 OTP。

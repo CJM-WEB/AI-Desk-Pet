@@ -6,7 +6,6 @@ export const ALLOWED_WEBSITE_SCOPE_PATHS = Object.freeze([
   '.gitignore',
   'AGENTS.md',
   'CONTEXT.md',
-  'cloudbaserc.json',
   '.dependency-cruiser.mjs',
   '.dependency-cruiser.web.mjs',
   'packages/shared-types/package.json',
@@ -56,6 +55,9 @@ export const ALLOWED_WEBSITE_SCOPE_PATHS = Object.freeze([
   'docs/operations/website-stage-2c-shanghai-acceptance.md',
   'docs/superpowers/specs/2026-08-01-cloudbase-js-sdk-v3-pg-compatibility-design.md',
   'docs/superpowers/specs/2026-09-01-website-stage-2c-shanghai-rebuild-design.md',
+  'docs/superpowers/plans/2026-08-01-cloudbase-js-sdk-v3-pg-compatibility.md',
+  'docs/superpowers/plans/2026-08-08-direct-manual-review.md',
+  'docs/superpowers/plans/2026-08-08-remove-submission-captcha.md',
   'docs/superpowers/plans/2026-09-01-website-stage-2c-shanghai-rebuild.md',
   'docs/superpowers/specs/2026-08-15-website-architecture-optimization-and-production-relaunch-design.md',
   'docs/superpowers/plans/2026-08-15-website-verification-foundation.md',
@@ -104,8 +106,6 @@ export const ALLOWED_WEBSITE_SCOPE_PATHS = Object.freeze([
   'tools/plan-cloudbase-migrations.test.mjs',
   'tools/test-cloudbase-migrations.mjs',
   'tools/test-cloudbase-migrations.test.mjs',
-  'tools/run-cloudbase-development-migrations.mjs',
-  'tools/run-cloudbase-development-migrations.test.mjs',
   /** 仅允许基线中已有的两个文件作为删除差异出现；恢复由退役不变量拒绝。 */
   'tools/apply-cloudbase-migrations.mjs',
   'tools/apply-cloudbase-migrations.test.mjs',
@@ -145,7 +145,6 @@ export const ALLOWED_ROOT_SCRIPT_CHANGES = Object.freeze({
   'plan:cloudbase-migrations': 'node tools/plan-cloudbase-migrations.mjs --dry-run',
   'test:cloudbase-tools': 'node --test tools/cloudbase-migration-inventory.test.mjs tools/cloudbase-user-migrations.test.mjs tools/cloudbase-user-migration-adapter.test.mjs tools/plan-cloudbase-migrations.test.mjs tools/build-cloudbase-functions.test.mjs',
   'verify:scanner-candidate': 'node tools/verification/verify-scanner-candidate.mjs',
-  'run:cloudbase-migrations:development': 'node tools/run-cloudbase-development-migrations.mjs',
 });
 
 /** 依赖审查器使用固定版本，避免范围守卫本身被浮动依赖削弱。 */

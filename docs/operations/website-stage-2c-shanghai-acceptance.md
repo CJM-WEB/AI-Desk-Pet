@@ -24,14 +24,15 @@
 
 - Task 1 提交：`14541a8`、`3c07ab9`。精确网站范围已锁定，零费用门禁经过两次独立审查。
 - Task 2 提交：`374371b`、`ca19fb2`。现行 API、服务端 SDK、网站 SDK、Scanner IMS、migration Adapter 和候选容器统一为 `ap-shanghai`，网站 SDK 的 `intl` 启用项已删除；新加坡仅保留于失败关闭测试或已说明替代关系的历史正文。
+- 本地只读运行 `pnpm.cmd plan:cloudbase-migrations`，生成 13 个 migration 的 checksum plan，`planSha256` 为 `ae6095d471e0f7056b25cec286694a1706fe851538ec6adce4f12debf851ee09`。该本地 plan 未提交到远端，没有创建远端 migration 任务或 TaskId。
 - Task 4 已完成本地门禁：`verify:cloudbase`（CloudBase API 329 项、Scanner 71 项）、`verify:website`（网站 361 项单测、静态构建和 E2E 21/21）、`test:cloudbase-tools`（36/36）均通过。
 - 在既有 PostgreSQL 17.11 runtime 上以进程级 `AI_PET_POSTGRES_RUNTIME` 运行 `verify:web-chain:fast` 后退出 0：13 个 migration、103 项 PostgreSQL 行为、网站合同 30/30、依赖审计 274 modules/723 dependencies/0 error/8 个已批准历史 warning。第一次 fast 门因未设置该进程级变量而在行为门前失败；只读核验后按既有验收方式设置并重跑通过，未进行代码修复。
-- Task 11 的完整 `verify:web-chain` 退出 0：范围与 ownership 检查、13 个 migration、103 项 PostgreSQL 行为、网站合同 30/30、Scanner 候选与网站 E2E 21/21 均通过；依赖审计为 274 modules/723 dependencies/0 error/8 个已批准历史 warning。
-- scope、ownership、`git diff --check 880502c..HEAD` 与 `git diff --check` 已通过；独立规格复核为 PASS，代码质量为 Approved，无 Critical/Important/Minor。
+- Task 11 的完整 `verify:web-chain` 首次在 Scanner 候选拉取 Docker Hub 匿名令牌时因 TLS 握手超时退出 1；未修改代码，只重试一次后退出 0。通过结果包含范围与 ownership 检查、13 个 migration、103 项 PostgreSQL 行为、网站合同 30/30、Scanner 候选与网站 E2E 21/21；依赖审计为 274 modules/723 dependencies/0 error/8 个已批准历史 warning。该网络重试不是代码修复。
+- scope、ownership、`git diff --check 880502c..HEAD` 与 `git diff --check` 已通过；独立规格复核为 PASS，代码质量为 Approved。最终审查无阻断 finding，并接受一项 Scanner 测试名称未完整表达凭据透传行为的 Minor；该命名问题不影响行为正确性，关闭前不修改测试代码。
 
 ## 未执行项、费用与密钥风险
 
-Task 3 与 Task 5–10 按阻断裁剪：未删除旧环境，未创建上海 PG 环境，未执行远端 migration，未创建 TaskId 或 migration plan hash，未创建 Bucket、Key 或管理员，未部署函数、Scanner、网关、触发器或 Hosting，未启停服务，未开通内容安全或按量服务，也未发布或上线。
+Task 3 与 Task 5–10 按阻断裁剪：未删除旧环境，未创建上海 PG 环境，未执行远端 migration，未创建远端 migration 任务或 TaskId，未把本地 checksum plan 提交到远端，未创建 Bucket、Key 或管理员，未部署函数、Scanner、网关、触发器或 Hosting，未启停服务，未开通内容安全或按量服务，也未发布或上线。
 
 没有启动会产生远端用量的步骤，因此不进入 48 小时资源点与费用统计等待；不得伪造资源点、账单、TaskId、版本、PG 或 smoke 证据。只读核验发现旧 Scanner 配置保存长期腾讯云访问凭据，但未记录、迁移或撤销任何值。环境删除不等于账号级密钥撤销；若重启远端方案，必须先完成独立的账号级密钥轮换或删除门禁，并在实际撤销时再次确认。
 
