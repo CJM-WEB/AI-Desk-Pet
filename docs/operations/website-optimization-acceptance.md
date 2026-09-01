@@ -4,9 +4,10 @@
 > 分支：`WebsiteExtension`
 > 固定实现基线：`3ce8303773477bde9f429bef87f662ab8912e5c9`
 > Standards 最小代码修复：`3729da587120f1ffbb3a1e3904b7b508a6125096`
-> 总裁决：阶段四整体未通过；八项本地治理代码已完成，但完整 `verify:web-chain` 在 Docker `scanner-candidate` 环境门失败
-> 审查状态：最终 Spec 轴 Approved；Standards 初审发现 1 个 Important 与 1 个 Minor，修复已落地，仍待 scoped 复审
-> 适用范围：阶段四本地代码、分段门、完整门失败事实与外部未执行项；不替代 2026-08-20 的网站视觉验收记录
+> 完整联合门基线：`f6978d0cec4108a1c168eded98b1ce5b9e512a1b`
+> 总裁决：阶段四本地治理验收完成；八项治理实现、真实 Scanner 候选与完整 `verify:web-chain` 均通过
+> 审查状态：最终 Spec 与 Standards 两轴 Approved；scoped 复审为 Critical 0、Important 0、Minor 0，无范围蔓延
+> 适用范围：阶段四本地代码、分段门、完整联合门与外部未执行项；不替代 2026-08-20 的网站视觉验收记录，不证明阶段 2C 或正式生产已完成
 
 ## 1. 阶段裁决
 
@@ -16,8 +17,8 @@
 | `LiquidGlassHome` 事件项 | 已接替 | 2026-08-20 减法规格已删除相关跨章节事件且不替换；阶段四未重建事件总线。 |
 | 生产 Router | 等待阶段 2C | 本地证据不能裁决真实 CloudBase 网关是否带 `/api` 前缀；当前不记通过、失败或永久双轨。 |
 | 最终代码 Spec 轴 | Approved | 固定实现差异审查为 Critical 0、Important 0、Minor 0。 |
-| Standards 轴 | 待 scoped 复审 | 初审的计划事实不同步和 `publicAssetSize()` 浅中转已按最小范围修复；本记录不把待复审写成 Approved。 |
-| 完整 `verify:web-chain` | FAIL（环境门） | 同次运行在 `scanner-candidate` 连接 Docker Desktop Linux engine 时失败；后续 website build/E2E 未执行，不能以分段门替代。 |
+| Standards 轴 | Approved | 初审的计划事实不同步和 `publicAssetSize()` 浅中转已按最小范围修复；scoped 复审为 Critical 0、Important 0、Minor 0。 |
+| 完整 `verify:web-chain` | PASS | 在固定联合门基线上使用显式 PostgreSQL 17 runtime 运行，同次通过真实 `scanner-candidate` 与 website E2E 21/21，退出码 0。 |
 | 阶段 2C / 正式生产 | 未执行 / 未部署 | 未连接 CloudBase 开发环境；未执行远端 migration、cleanup 调度、真实网关与对象存储验证、函数/Scanner/Hosting 部署、发布或正式上线。 |
 
 ## 2. 2026-09-01 分段真实证据
@@ -37,13 +38,15 @@
 | `pnpm.cmd typecheck` | PASS；10 个适用 workspace 全部通过。 |
 | Standards 最小修复复验 | 改前与改后同一 CloudBase 定向命令均为 21 个文件、328/328；独立 CloudBase typecheck 与 `verify:cloudbase` 通过，Scanner 71/71。 |
 
-## 3. 完整门失败事实
+## 3. 完整联合门通过事实
 
-使用显式本地 PostgreSQL 17 runtime 执行的完整 `verify:web-chain` 退出 1。失败关闭前，同一次进程已通过 scope、ownership、验证工具 74/74、shared-types 56/56、Website 361/361、CloudBase 快速集 326/326、Scanner 71/71、release-tools 4/4、migration 工具 36/36、PostgreSQL 17.11 的 13 个 migration/103 项行为、网站合同 30/30、依赖审查以及 CloudBase 构建相关目标。
+在 `f6978d0cec4108a1c168eded98b1ce5b9e512a1b` 上将 `AI_PET_POSTGRES_RUNTIME` 指向本地 PostgreSQL 17 runtime 后运行 `pnpm.cmd verify:web-chain`，同一次进程退出 0，并出现 `[web-chain] PASS website-e2e`。
 
-唯一失败点是 `scanner-candidate` 无法连接 `npipe:////./pipe/dockerDesktopLinuxEngine`。诊断指向工作区外陈旧 `sailor-ingest.sock` reparse socket 导致 Docker Desktop backend 崩溃；清理该外部 socket 被执行策略阻止。仓库明确禁止以静态报告或无 Docker 模式替代真实候选镜像门，因此没有绕过或伪造通过。该次完整门在失败后没有执行后续 website build/E2E。
+同次结果为：scope PASS、ownership PASS、验证工具 74/74、shared-types 56/56、Website 单元测试 361/361、CloudBase 快速集 326/326、Scanner 单元测试 71/71、release-tools 4/4、migration 工具 36/36、PostgreSQL 17.11 顺序执行 13 个 migration 并通过 103 项行为断言、网站合同 30/30、依赖审查 274 modules/723 dependencies/0 error/8 个已知阶段五 orphan warning、CloudBase build output 2/2、build tool 3/3，以及 website E2E 21/21。
 
-后续必须先恢复 Docker Desktop Linux engine，再从头重跑完整 `verify:web-chain`。只有同一次完整门退出 0，且 Standards scoped 复审无阻塞项，才能把阶段四整体改为通过。
+真实 `scanner-candidate` 通过：镜像 `ai-pet-package-scanner:stage2-candidate`，镜像 ID `sha256:a46bce60acd5c74baad0bc01cc9682f07a65c37850b36d22cd21ddbc8311628c`，Node `v22.23.2`，ClamAV `1.4.3`/病毒库 `28109`，UID `999`；EICAR 被阻断、超时返回 HTTP 503、健康检查通过。该证据是本地候选镜像验收，不表示 CloudBase Run Scanner 已部署或完成开发环境冒烟。
+
+生产 Router 仍需阶段 2C 捕获真实 CloudBase 网关路径后裁决；该项不属于阶段四本地治理完成范围。
 
 ## 4. 外部未验证项
 

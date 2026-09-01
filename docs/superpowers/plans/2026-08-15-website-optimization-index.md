@@ -8,7 +8,7 @@
 
 **Tech Stack:** pnpm workspace、TypeScript 5、Vitest 3、Playwright 1.61、Zod 3、Next.js 15、CloudBase JS SDK 3.6.8、PostgreSQL、CloudBase Run。
 
-> 2026-09-01 当前裁决：阶段 2A、2B 与阶段 3 的既有本地裁决保持 PASS；阶段四八项本地治理实现已完成，但完整 `verify:web-chain` 在 Docker `scanner-candidate` 环境门失败，因此阶段四整体仍未达标。阶段 2C 未执行，生产未部署，投稿、远端 migration 与上线继续冻结。真实状态见 `docs/operations/website-optimization-acceptance.md`。
+> 2026-09-01 当前裁决：阶段 2A、2B 与阶段 3 的既有本地裁决保持 PASS；阶段四八项本地治理实现与完整 `verify:web-chain` 均已通过，阶段四本地治理验收完成。阶段 2C 未执行，生产未部署，投稿、远端 migration 与上线继续冻结。真实状态见 `docs/operations/website-optimization-acceptance.md`。
 
 ## Global Constraints
 
@@ -96,8 +96,9 @@ git commit -m "docs: 记录网站阶段2至3验收裁决"
 - 八项本地治理实现：complete；最终代码 Spec 轴 Approved。
 - `LiquidGlassHome` 事件项：由 2026-08-20 减法规格接替，不重新建立事件总线。
 - 生产 Router：等待阶段 2C 真实网关证据，不记通过或失败。
-- 阶段四整体：未达标。2026-09-01 完整 `verify:web-chain` 唯一失败点是 Docker `scanner-candidate` 环境门，同次后续 website build/E2E 未执行；分段通过不能替代完整门。
+- 阶段四整体：complete。2026-09-01 在 `f6978d0cec4108a1c168eded98b1ce5b9e512a1b` 上运行的同一次完整 `verify:web-chain` 通过真实 `scanner-candidate` 与 website E2E 21/21，并以退出码 0 结束。
 - 外部状态：CloudBase 开发环境、远端 migration、cleanup 调度、真实网关、对象存储、部署、发布和正式上线均未执行。
+- 范围边界：生产 Router 的唯一正式路径裁决继续等待阶段 2C 真实网关证据，不属于阶段四完成条件。
 
 ### Task 3: 阶段 5 正式生产重部署入口
 

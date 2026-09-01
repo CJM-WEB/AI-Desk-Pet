@@ -2,7 +2,7 @@
 
 本文记录 CloudBase PostgreSQL、私有对象存储、三个云函数、隔离扫描容器和 Next.js 静态导出的目标配置与当前止血状态。命令中的密钥均通过环境变量提供，不在仓库、构建日志或前端变量中填写真实值；仓库中的配置和迁移文件不证明任何环境已经部署。
 
-> 2026-09-01 状态：阶段四八项本地治理代码已完成，但完整 `verify:web-chain` 在 Docker `scanner-candidate` 环境门失败，阶段四整体未达标。CloudBase 开发环境、远端 migration、cleanup 调度、真实网关、私有对象存储、函数/Scanner/Hosting 部署、发布和正式上线均未执行；线上仍是旧测试版，本分支未上线且共享包投稿继续关闭。详见 [网站阶段四本地治理真实状态记录](website-optimization-acceptance.md)。
+> 2026-09-01 状态：阶段四八项本地治理代码与完整 `verify:web-chain` 均已通过，阶段四本地治理验收完成。CloudBase 开发环境、远端 migration、cleanup 调度、真实网关、私有对象存储、函数/Scanner/Hosting 部署、发布和正式上线均未执行；线上仍是旧测试版，本分支未上线且共享包投稿继续关闭。生产 Router 继续等待阶段 2C 真实网关证据，不属于阶段四完成范围。详见 [网站阶段四本地治理真实状态记录](website-optimization-acceptance.md)。
 
 当前仓库本地代码已包含版本化 keyset cursor、互动幂等账本、下载成功签发计数、发布结构不变量、坏公开记录隔离、有界 RPC JSON、单一 Release Manifest 契约和收窄后的 CloudBase 能力端口。临时 PostgreSQL 17.11 已顺序执行 13 个前向 migration 并通过 103 项行为验证；这些事实只证明本地实现，不证明任何远端资源已迁移、配置或运行。
 
@@ -15,7 +15,7 @@
    SHARED_PACKAGE_SUBMISSIONS_ENABLED=false
    ```
 
-3. 只有真实 Scanner 容器候选与阶段 2C 开发环境完整 smoke 均已完成并验收后，才可将该值改为 `true`；2026-09-01 最新完整门在本机 Docker 候选环境失败，既有分段或历史候选结果不能替代本次完整门。该条件不构成实际部署或上线授权。
+3. 只有真实 Scanner 容器候选与阶段 2C 开发环境完整 smoke 均已完成并验收后，才可将该值改为 `true`；2026-09-01 本地完整门已通过真实 Scanner 候选，但阶段 2C 开发环境 smoke 尚未执行，因此投稿开关继续关闭。该条件不构成实际部署或上线授权。
 4. 新增的前向 migration 目前仅在临时本地 PostgreSQL 17.11 中顺序执行 13 个 migration 并通过 103 项行为验证，尚未在任何 CloudBase PostgreSQL 环境执行。当前默认迁移入口仍是以下只读 dry-run；它只读取仓库 migration 并输出 checksum plan，不读取凭据、不加载管理 SDK，也不连接或写入数据库：
 
    ```powershell
@@ -49,7 +49,7 @@
 
 ## 5. 隔离扫描容器（仅阶段 2 获批解冻后）
 
-2026-09-01 完整网站链在 `scanner-candidate` 连接 Docker Desktop Linux engine 时失败；该环境失败不是候选通过证据，也不允许以静态报告或无 Docker 模式替代。CloudBase Run Scanner 尚未部署或冒烟。
+2026-09-01 完整网站链已通过真实 `scanner-candidate`：Node `v22.23.2`、ClamAV `1.4.3`/病毒库 `28109`、UID `999`，EICAR 被阻断、超时返回 HTTP 503、健康检查通过。该结果仅证明本地候选镜像；CloudBase Run Scanner 尚未部署或完成开发环境冒烟。
 
 1. 使用 `apps/package-scanner/Dockerfile` 部署 CloudBase Run 服务。
 2. 运行参数：Node.js 22 容器、最小实例数 0、单实例并发 1、内存至少 1 GB、健康检查 `/healthz`。

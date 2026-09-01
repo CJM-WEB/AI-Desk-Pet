@@ -607,7 +607,7 @@ git commit -m "refactor(web): 收窄云端业务能力端口"
 
 ### Task 9：阶段四联合门、验收记录与 Router 条件门
 
-> 2026-09-01 实际状态：代码与分段门已完成；完整 `verify:web-chain` 在 `scanner-candidate` 因 Docker Desktop Linux engine 环境不可用而失败关闭，同次后续 website build/E2E 未执行。最终 Spec 轴已批准；Standards 审查项已按最小范围修复，仍待 scoped 复审，因此本 Task 不得标记 complete。
+> 2026-09-01 最终状态：代码、分段门与完整 `verify:web-chain` 均已完成；同一次完整门通过真实 `scanner-candidate` 和 website E2E 并退出 0。最终 Spec 与 Standards 两轴 scoped 复审均无阻塞项，本 Task complete。远端迁移、正式部署和线上发布未执行；生产 Router 继续等待阶段 2C 真实网关证据，不属于阶段四完成范围。
 
 **Files:**
 - Create: `.superpowers/sdd/2026-08-31-website-stage-4-s2-governance/task-9-preflight-report.md`
@@ -653,7 +653,7 @@ Expected: 全部 PASS；失败、超时或取消不得登记为通过。
 
 2026-09-01 分段实际结果：CloudBase API 328/328、Scanner 71/71；Website 361/361、两次 production build、E2E 21/21。
 
-- [ ] **Step 3: 运行 PostgreSQL 17 与完整网站链**
+- [x] **Step 3: 运行 PostgreSQL 17 与完整网站链**
 
 Run:
 
@@ -664,13 +664,13 @@ pnpm.cmd verify:web-chain
 
 Expected: 从 scope 到 browser E2E 的同一次完整门退出 0；记录实际 migration 数、行为断言数、各 package 测试数、构建与 E2E 数，不复制旧数字。
 
-2026-09-01 实际结果：FAIL。PostgreSQL 17.11 已顺序执行 13 个 migration 并通过 103 项行为验证；完整门在后续 `scanner-candidate` Docker 环境门失败，同次 website build/E2E 未执行。分段通过不得替代本步骤。
+2026-09-01 最终实际结果：PASS。以 `f6978d0cec4108a1c168eded98b1ce5b9e512a1b` 为基线，同一次完整门顺序通过 scope、ownership、全部测试与构建、PostgreSQL 17.11 的 13 个 migration/103 项行为、真实 `scanner-candidate` 以及 website E2E 21/21，并以退出码 0 结束。
 
-- [ ] **Step 4: 独立最终双审**
+- [x] **Step 4: 独立最终双审**
 
 对本计划起点到 HEAD 执行规格审查与工程质量审查，重点核对：无 numeric/toggle/先计数/重复 Manifest/无界 reader/过宽死方法；`force_publish` 保持；Memory/Production 同构；Router 未被预判。Critical/Important 必须由一个修复子智能体统一修复并做一次 scoped re-review。
 
-2026-09-01 实际结果：Spec 轴 Approved；Standards 初审发现 1 个 Important 与 1 个 Minor，已在 Task 9 最终修复中处理，scoped 复审待执行。
+2026-09-01 最终实际结果：Spec 与 Standards 两轴均 Approved；scoped 复审为 Critical 0、Important 0、Minor 0，且无范围蔓延。
 
 - [x] **Step 5: 更新文档真实状态**
 
@@ -693,4 +693,4 @@ git commit -m "docs: 记录网站阶段四本地治理状态"
 - Task 6：complete（`51160d2..5c8dc40`；Standards/Spec review approved）
 - Task 7：complete（`5c8dc40..8aa122b`；Standards/Spec scoped re-review approved）
 - Task 8：complete（`8aa122b..a792c83`；Standards/Spec scoped re-review approved）
-- Task 9：未完成（代码/分段门完成，Docker `scanner-candidate` 环境门未通过；Standards 修复待 scoped 复审）
+- Task 9：complete（`f6978d0` 基线上完整 `verify:web-chain` 同次退出 0；真实 `scanner-candidate`、website E2E 21/21 与最终双审均通过；远端迁移、部署、上线及 Router 阶段 2C 证据不在本 Task 范围）

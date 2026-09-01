@@ -2,7 +2,7 @@
 
 本手册供唯一管理员处理 AI Pet 共享资源包、反馈和建议。普通投稿完全匿名；管理员邮箱、审核证据、状态令牌和存储地址不得公开。
 
-> 2026-09-01 状态：阶段四本地 Production/Memory 合同为 30/30，CloudBase API 为 328/328，临时 PostgreSQL 17.11 已顺序执行 13 个 migration 并通过 103 项行为验证。完整 `verify:web-chain` 仍在 Docker `scanner-candidate` 环境门失败；这些本地证据不证明对象存储、TMS/IMS、cleanup 调度、真实网关、部署、告警或人工处置流程已经通过。CloudBase 开发环境与远端 migration 均未执行，生产未部署，线上仍是旧测试版；共享包投稿继续关闭，本分支的管理员强制发布能力尚未上线。
+> 2026-09-01 状态：阶段四本地 Production/Memory 合同为 30/30，CloudBase API 分段门为 328/328，临时 PostgreSQL 17.11 已顺序执行 13 个 migration 并通过 103 项行为验证；同一次完整 `verify:web-chain` 已通过真实 Scanner 候选与 website E2E 21/21 并退出 0，阶段四本地治理验收完成。这些本地证据不证明对象存储、TMS/IMS、cleanup 调度、真实网关、部署、告警或人工处置流程已经通过。CloudBase 开发环境与远端 migration 均未执行，生产未部署，线上仍是旧测试版；共享包投稿继续关闭，本分支的管理员强制发布能力尚未上线。
 
 ## 1. 审核原则
 
@@ -131,4 +131,4 @@
 
 ## 14. 数据库迁移冻结
 
-`pnpm.cmd plan:cloudbase-migrations` 仍是默认只读迁移入口，只在本地输出 checksum plan，不读取凭据、不连接数据库。2026-09-01 已用 `node tools/test-cloudbase-migrations.mjs --postgres-runtime <本地 PostgreSQL 目录>` 在临时 PostgreSQL 17.11 中顺序执行 13 个 migration 并通过 103 项行为验证；该工具只用于一次性本地行为门，在随机本机端口验证函数、约束、批准/强制发布拒绝、幂等互动与事务回滚后停止并删除临时实例，不得传入远端地址，也不构成 CloudBase 部署或生产写入授权。完整 `verify:web-chain` 仍因 Docker `scanner-candidate` 环境失败而未通过。已提交数据库变更只能新增前向 migration；真实开发环境和生产 migration 均未执行，并继续受阶段 2C 独立授权门冻结。
+`pnpm.cmd plan:cloudbase-migrations` 仍是默认只读迁移入口，只在本地输出 checksum plan，不读取凭据、不连接数据库。2026-09-01 已用 `node tools/test-cloudbase-migrations.mjs --postgres-runtime <本地 PostgreSQL 目录>` 在临时 PostgreSQL 17.11 中顺序执行 13 个 migration 并通过 103 项行为验证；该工具只用于一次性本地行为门，在随机本机端口验证函数、约束、批准/强制发布拒绝、幂等互动与事务回滚后停止并删除临时实例，不得传入远端地址，也不构成 CloudBase 部署或生产写入授权。同日完整 `verify:web-chain` 已通过真实 `scanner-candidate` 与 website E2E 21/21 并退出 0；已提交数据库变更仍只能新增前向 migration，真实开发环境和生产 migration 均未执行，并继续受阶段 2C 独立授权门冻结。
