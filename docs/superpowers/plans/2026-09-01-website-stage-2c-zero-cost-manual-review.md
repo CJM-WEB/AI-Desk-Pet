@@ -188,7 +188,7 @@ git commit -m "refactor(web): 删除云端自动审核链"
 - Modify: `apps/package-scanner/src/scan-package.ts`
 - Modify: `apps/package-scanner/tests/scan-package.test.ts`
 - Modify: `apps/package-scanner/Dockerfile`
-- Modify: `apps/package-scanner/vite.config.ts`
+- Modify: `apps/package-scanner/vite.build.config.ts`
 - Modify: `apps/package-scanner/package.json`
 - Modify: `tools/verification/verify-scanner-candidate.mjs`
 - Modify: `tools/verification/verify-scanner-candidate.test.mjs`

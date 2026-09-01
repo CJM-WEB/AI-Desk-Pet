@@ -249,6 +249,7 @@ test('阶段 2C 零费用人工审核只放行规格、计划与精确实现路�
     'apps/package-scanner/src/clamav-command-scanner.ts',
     'apps/package-scanner/tests/local-scan-cli.test.ts',
     'apps/package-scanner/tests/clamav-command-scanner.test.ts',
+    'apps/package-scanner/vite.build.config.ts',
     'docs/operations/website-stage-2c-shanghai-acceptance.md',
   ];
   const unapprovedPaths = [
