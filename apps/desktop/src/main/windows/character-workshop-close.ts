@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import type { CharacterWorkshopCloseReason } from '../../shared/myself-api';
 
 interface FlushWebContents {
   isDestroyed(): boolean;
@@ -28,8 +29,14 @@ interface FlushIpcMain {
 
 interface PendingFlush {
   sender: FlushWebContents;
+  reason: CharacterWorkshopCloseReason;
   resolve(result: boolean): void;
   timer: ReturnType<typeof setTimeout>;
+}
+
+interface InFlightFlush {
+  reason: CharacterWorkshopCloseReason;
+  operation: Promise<boolean>;
 }
 
 export interface CharacterWorkshopCloseHandshake {
@@ -70,7 +77,7 @@ export function createCharacterWorkshopCloseHandshake(
   options: CharacterWorkshopCloseHandshakeOptions
 ): CharacterWorkshopCloseHandshake {
   const pendingByToken = new Map<string, PendingFlush>();
-  const inFlightBySender = new WeakMap<FlushWebContents, Promise<boolean>>();
+  const inFlightBySender = new WeakMap<FlushWebContents, InFlightFlush>();
   const timeoutMs = options.timeoutMs ?? DEFAULT_FLUSH_TIMEOUT_MS;
   const createToken = options.createToken ?? randomUUID;
 
@@ -99,13 +106,16 @@ export function createCharacterWorkshopCloseHandshake(
 
     clearTimeout(pending.timer);
     pendingByToken.delete(payload.token);
-    if (!payload.ok) {
+    if (!payload.ok && pending.reason === 'app_quit') {
       reportError(handshakeError('CHARACTER_WORKSHOP_FLUSH_FAILED'));
     }
     pending.resolve(payload.ok);
   });
 
-  const flush = (window: FlushWindow | null): Promise<boolean> => {
+  const request = (
+    window: FlushWindow | null,
+    reason: CharacterWorkshopCloseReason
+  ): Promise<boolean> => {
     if (
       !window
       || window.isDestroyed()
@@ -116,7 +126,11 @@ export function createCharacterWorkshopCloseHandshake(
 
     const sender = window.webContents;
     const existing = inFlightBySender.get(sender);
-    if (existing) return existing;
+    if (existing?.reason === reason) return existing.operation;
+    if (existing) {
+      // 应用退出必须在窗口关闭判断结束后独立执行显式保存，不能复用“暂不关闭”。
+      return existing.operation.then(() => request(window, reason));
+    }
 
     const token = createToken();
     const operation = new Promise<boolean>(resolve => {
@@ -125,10 +139,10 @@ export function createCharacterWorkshopCloseHandshake(
         reportError(handshakeError('CHARACTER_WORKSHOP_FLUSH_TIMEOUT'));
         resolve(false);
       }, timeoutMs);
-      pendingByToken.set(token, { sender, resolve, timer });
+      pendingByToken.set(token, { sender, reason, resolve, timer });
 
       try {
-        sender.send(options.requestChannel, { token });
+        sender.send(options.requestChannel, { token, reason });
       } catch {
         clearTimeout(timer);
         pendingByToken.delete(token);
@@ -136,9 +150,9 @@ export function createCharacterWorkshopCloseHandshake(
         resolve(false);
       }
     });
-    inFlightBySender.set(sender, operation);
+    inFlightBySender.set(sender, { reason, operation });
     void operation.then(() => {
-      if (inFlightBySender.get(sender) === operation) {
+      if (inFlightBySender.get(sender)?.operation === operation) {
         inFlightBySender.delete(sender);
       }
     });
@@ -146,7 +160,7 @@ export function createCharacterWorkshopCloseHandshake(
   };
 
   return {
-    flush,
+    flush: window => request(window, 'app_quit'),
     bindWindow(window, isQuitting) {
       let closePending = false;
       window.on('close', event => {
@@ -155,9 +169,9 @@ export function createCharacterWorkshopCloseHandshake(
         if (closePending) return;
         closePending = true;
         void (async () => {
-          await flush(window);
+          const allowed = await request(window, 'window_close');
           closePending = false;
-          if (!isQuitting() && !window.isDestroyed()) window.hide();
+          if (allowed && !isQuitting() && !window.isDestroyed()) window.hide();
         })().catch(error => {
           closePending = false;
           reportError(error);

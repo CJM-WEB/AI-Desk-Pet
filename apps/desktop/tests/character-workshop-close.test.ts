@@ -82,7 +82,8 @@ describe('角色工作室关闭握手', () => {
 
     expect(closeEvent.preventDefault).toHaveBeenCalledOnce();
     expect(window.webContents.send).toHaveBeenCalledWith(requestChannel, {
-      token: 'close-token'
+      token: 'close-token',
+      reason: 'window_close'
     });
     expect(window.hide).not.toHaveBeenCalled();
 
@@ -105,7 +106,7 @@ describe('角色工作室关闭握手', () => {
     expect(reportError).toHaveBeenCalledTimes(2);
   });
 
-  test('用户关闭与退出链并发刷新时复用同一个有界请求', async () => {
+  test('用户关闭与退出链并发时，退出链在关闭判断后独立请求显式保存', async () => {
     const ipc = createIpcDouble();
     const window = new FakeWindow();
     const handshake = createCharacterWorkshopCloseHandshake({
@@ -113,24 +114,37 @@ describe('角色工作室关闭握手', () => {
       requestChannel,
       acknowledgementChannel,
       timeoutMs: 100,
-      createToken: () => 'shared-token'
+      createToken: vi.fn()
+        .mockReturnValueOnce('close-token')
+        .mockReturnValueOnce('quit-token')
     });
     handshake.bindWindow(window, () => false);
 
     window.closeByUser();
     const beforeQuitFlush = handshake.flush(window);
 
-    expect(window.webContents.send).toHaveBeenCalledOnce();
+    expect(window.webContents.send).toHaveBeenCalledWith(requestChannel, {
+      token: 'close-token',
+      reason: 'window_close'
+    });
     ipc.emit(acknowledgementChannel, window.webContents, {
-      token: 'shared-token',
-      ok: true
+      token: 'close-token',
+      ok: false
     });
 
+    await vi.waitFor(() => expect(window.webContents.send).toHaveBeenCalledWith(
+      requestChannel,
+      { token: 'quit-token', reason: 'app_quit' }
+    ));
+    ipc.emit(acknowledgementChannel, window.webContents, {
+      token: 'quit-token',
+      ok: true
+    });
     await expect(beforeQuitFlush).resolves.toBe(true);
-    await vi.waitFor(() => expect(window.hide).toHaveBeenCalledOnce());
+    expect(window.hide).not.toHaveBeenCalled();
   });
 
-  test('Renderer 报告失败时记录错误并放行隐藏', async () => {
+  test('Renderer 拒绝窗口关闭时视为正常交互，不记录错误也不隐藏', async () => {
     const ipc = createIpcDouble();
     const window = new FakeWindow();
     const reportError = vi.fn();
@@ -150,13 +164,11 @@ describe('角色工作室关闭握手', () => {
       ok: false
     });
 
-    await vi.waitFor(() => expect(window.hide).toHaveBeenCalledOnce());
-    expect(reportError).toHaveBeenCalledWith(expect.objectContaining({
-      message: 'CHARACTER_WORKSHOP_FLUSH_FAILED'
-    }));
+    await vi.waitFor(() => expect(reportError).not.toHaveBeenCalled());
+    expect(window.hide).not.toHaveBeenCalled();
   });
 
-  test('Renderer 无响应时在超时后记录错误并放行隐藏', async () => {
+  test('Renderer 无响应时在超时后记录错误但保持窗口打开', async () => {
     vi.useFakeTimers();
     const ipc = createIpcDouble();
     const window = new FakeWindow();
@@ -176,9 +188,38 @@ describe('角色工作室关闭握手', () => {
     expect(window.hide).not.toHaveBeenCalled();
 
     await vi.advanceTimersByTimeAsync(1);
-    expect(window.hide).toHaveBeenCalledOnce();
+    expect(window.hide).not.toHaveBeenCalled();
     expect(reportError).toHaveBeenCalledWith(expect.objectContaining({
       message: 'CHARACTER_WORKSHOP_FLUSH_TIMEOUT'
+    }));
+  });
+
+  test('退出应用请求携带 app_quit，失败时仍保留原有错误证据', async () => {
+    const ipc = createIpcDouble();
+    const window = new FakeWindow();
+    const reportError = vi.fn();
+    const handshake = createCharacterWorkshopCloseHandshake({
+      ipcMain: ipc.ipc,
+      requestChannel,
+      acknowledgementChannel,
+      timeoutMs: 100,
+      createToken: () => 'quit-token',
+      reportError
+    });
+
+    const flushing = handshake.flush(window);
+    expect(window.webContents.send).toHaveBeenCalledWith(requestChannel, {
+      token: 'quit-token',
+      reason: 'app_quit'
+    });
+    ipc.emit(acknowledgementChannel, window.webContents, {
+      token: 'quit-token',
+      ok: false
+    });
+
+    await expect(flushing).resolves.toBe(false);
+    expect(reportError).toHaveBeenCalledWith(expect.objectContaining({
+      message: 'CHARACTER_WORKSHOP_FLUSH_FAILED'
     }));
   });
 });

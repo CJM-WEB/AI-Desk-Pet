@@ -80,7 +80,8 @@ function stateDouble(
     }],
     selectedCharacterId: 'nova', draft, selectedEntity: { kind: 'action', actionId: 'idle-main' },
     selectedSkinId: 'default', selectedStateId: 'idle', selectedActionId: 'idle-main',
-    draftStatus: 'saved', compileStatus: 'idle', loadStatus: 'ready', busyAction: null,
+    draftStatus: 'saved', closeConfirmationPending: false,
+    compileStatus: 'idle', loadStatus: 'ready', busyAction: null,
     toastQueue: [], availableSources: [], load: vi.fn(async () => undefined),
     mount: vi.fn(() => () => undefined), selectCharacter: vi.fn(async () => undefined),
     selectIdentity: vi.fn(), selectSkin: vi.fn(), selectState: vi.fn(), selectAction: vi.fn(),
@@ -99,6 +100,8 @@ function stateDouble(
     removeAction: vi.fn(), removeExtensionState: vi.fn(), addExtensionState: vi.fn(),
     applySpriteSheet: vi.fn(async () => undefined), compileAndPublish: vi.fn(async () => undefined),
     publishCharacter: vi.fn(async () => undefined), updateCurrentAction: vi.fn(),
+    prepareWindowClose: vi.fn(async () => true), resumeAfterClosePrompt: vi.fn(),
+    discardUnsavedDraft: vi.fn(async () => undefined),
     flushDraft: vi.fn(async () => undefined), dismissToast: vi.fn(), dispose: vi.fn(),
     ...overrides
   };

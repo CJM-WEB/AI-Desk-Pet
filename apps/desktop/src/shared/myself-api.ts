@@ -36,6 +36,7 @@ import type { LocalModelPublicStatus } from './local-model-ipc';
 import type { WorkshopLayoutSettings } from './workshop-layout-ipc';
 
 export type LocalDataScope = 'conversation' | 'audit' | 'secret' | 'all';
+export type CharacterWorkshopCloseReason = 'window_close' | 'app_quit';
 
 export interface SaveProviderInput {
   profileId?: string;
@@ -148,7 +149,7 @@ export interface MyselfApi extends PetWindowInteractionApi {
   openSettings(): Promise<void>;
   openCharacterWorkshop(): Promise<void>;
   onCharacterWorkshopFlushRequested(
-    listener: () => Promise<void>
+    listener: (reason: CharacterWorkshopCloseReason) => Promise<boolean>
   ): () => void;
   hideChat(): Promise<void>;
   quit(): Promise<void>;

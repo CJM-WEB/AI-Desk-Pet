@@ -2345,6 +2345,90 @@ describe('角色工作室 Zustand 状态层', () => {
     );
   });
 
+  test('未保存关闭会暂停检查点，继续编辑后从头恢复 30 秒计时', async () => {
+    vi.useFakeTimers();
+    const { api } = apiDouble();
+    const store = createCharacterWorkshopStore(api);
+    await store.getState().load();
+    store.getState().updateCurrentAction({ name: '尚未保存' });
+
+    await expect(store.getState().prepareWindowClose()).resolves.toBe(false);
+    expect(store.getState().closeConfirmationPending).toBe(true);
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(api.saveCharacterDraft).not.toHaveBeenCalled();
+
+    store.getState().resumeAfterClosePrompt();
+    expect(store.getState().closeConfirmationPending).toBe(false);
+    await vi.advanceTimersByTimeAsync(29_999);
+    expect(api.saveCharacterDraft).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(api.saveCharacterDraft).toHaveBeenCalledOnce();
+  });
+
+  test('关闭预检等待在途保存结算，再提示仍未落盘的新修订', async () => {
+    const saving = deferred<void>();
+    const { api } = apiDouble({
+      saveCharacterDraft: vi.fn(() => saving.promise)
+    });
+    const store = createCharacterWorkshopStore(api);
+    await store.getState().load();
+    store.getState().updateCurrentAction({ name: '已进入保存' });
+    const save = store.getState().flushDraft();
+    store.getState().updateCurrentAction({ name: '保存期间的新修改' });
+
+    let settled = false;
+    const closing = store.getState().prepareWindowClose().then(result => {
+      settled = true;
+      return result;
+    });
+    await settle();
+    expect(settled).toBe(false);
+
+    saving.resolve();
+    await save;
+    await expect(closing).resolves.toBe(false);
+    expect(store.getState()).toMatchObject({
+      draftStatus: 'dirty',
+      closeConfirmationPending: true
+    });
+  });
+
+  test('放弃关闭恢复最后持久化草稿，读取失败则保留内存修改并恢复检查点', async () => {
+    vi.useFakeTimers();
+    const persisted = draft('default', 'AI Pet 默认角色');
+    const getCharacterDraft = vi.fn()
+      .mockResolvedValueOnce(structuredClone(persisted))
+      .mockResolvedValueOnce(structuredClone(persisted));
+    const { api } = apiDouble({ getCharacterDraft });
+    const store = createCharacterWorkshopStore(api);
+    await store.getState().load();
+    store.getState().updateCurrentAction({ name: '准备放弃' });
+    await store.getState().prepareWindowClose();
+
+    await store.getState().discardUnsavedDraft();
+
+    expect(store.getState()).toMatchObject({
+      draftStatus: 'idle',
+      closeConfirmationPending: false
+    });
+    expect(store.getState().draft?.actions[0]?.name).toBe('待机');
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(api.saveCharacterDraft).not.toHaveBeenCalled();
+
+    getCharacterDraft.mockRejectedValueOnce(new Error('CHARACTER_DRAFT_SAVE_FAILED'));
+    store.getState().updateCurrentAction({ name: '必须保留' });
+    await store.getState().prepareWindowClose();
+    await expect(store.getState().discardUnsavedDraft()).rejects.toThrow();
+    expect(store.getState()).toMatchObject({
+      draftStatus: 'dirty',
+      closeConfirmationPending: false
+    });
+    expect(store.getState().draft?.actions[0]?.name).toBe('必须保留');
+    expect(store.getState().toastQueue.at(-1)).toMatchObject({ tone: 'error' });
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(api.saveCharacterDraft).toHaveBeenCalledOnce();
+  });
+
   test('角色切换会先提交旧草稿，新角色编辑随后串行保存', async () => {
     vi.useFakeTimers();
     const oldSave = deferred<void>();

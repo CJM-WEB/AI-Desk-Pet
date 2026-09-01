@@ -1311,6 +1311,18 @@ textarea {
   background: #fef0ed;
 }
 
+.transient-toast-content {
+  min-width: 0;
+  display: grid;
+  gap: 8px;
+}
+
+.transient-toast-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
 .transient-toast button {
   width: 30px;
   height: 30px;
@@ -1328,4 +1340,18 @@ textarea {
 .transient-toast button:hover {
   border-color: #b7c3c1;
   background: rgba(255, 255, 255, 0.72);
+}
+
+.transient-toast .transient-toast-actions button {
+  width: auto;
+  min-width: 72px;
+  height: 30px;
+  flex: 0 0 auto;
+  padding: 0 10px;
+  border-color: currentColor;
+  font: inherit;
+}
+
+.transient-toast .transient-toast-actions button.is-danger {
+  color: #9b2c20;
 }

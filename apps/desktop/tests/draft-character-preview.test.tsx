@@ -964,6 +964,7 @@ describe('真实草稿预览', () => {
         selectedStateId: 'idle',
         selectedActionId: 'idle-main',
         draftStatus: 'saved',
+        closeConfirmationPending: false,
         compileStatus: 'idle',
         loadStatus: 'ready',
         busyAction: null,
@@ -1046,6 +1047,9 @@ describe('真实草稿预览', () => {
             }))
           }));
         },
+        prepareWindowClose: vi.fn(async () => true),
+        resumeAfterClosePrompt: vi.fn(),
+        discardUnsavedDraft: vi.fn(async () => undefined),
         flushDraft: vi.fn(async () => undefined),
         dismissToast: vi.fn(),
         dispose: vi.fn()

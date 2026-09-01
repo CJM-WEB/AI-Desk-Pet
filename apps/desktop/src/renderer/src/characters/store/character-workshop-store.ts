@@ -111,6 +111,7 @@ export interface CharacterWorkshopState {
   selectedStateId: string | null;
   selectedActionId: string | null;
   draftStatus: 'idle' | 'dirty' | 'saving' | 'saved' | 'error';
+  closeConfirmationPending: boolean;
   compileStatus: 'idle' | 'compiling' | 'success' | 'error';
   loadStatus: 'idle' | 'loading' | 'ready' | 'error';
   busyAction: WorkshopBusyAction;
@@ -160,6 +161,9 @@ export interface CharacterWorkshopState {
   compileAndPublish(): Promise<void>;
   publishCharacter(input: CharacterPublishInput): Promise<void>;
   updateCurrentAction(patch: LegacyWorkshopActionPatch): void;
+  prepareWindowClose(): Promise<boolean>;
+  resumeAfterClosePrompt(): void;
+  discardUnsavedDraft(): Promise<void>;
   flushDraft(): Promise<void>;
   dismissToast(id: string): void;
   dispose(): void;
@@ -311,6 +315,7 @@ export function createCharacterWorkshopStore(
   let draftRevision = 0;
   let savedRevision = 0;
   let savedDraftRevisionToken: string | null = null;
+  let closeRequestPending = false;
   let selectionRevision = 0;
   let workspaceTargetRevision = 0;
   let listRevision = 0;
@@ -409,6 +414,7 @@ export function createCharacterWorkshopStore(
           mimeType
         })),
         draftStatus: 'idle',
+        closeConfirmationPending: false,
         compileStatus: 'idle'
       });
     }
@@ -455,6 +461,7 @@ export function createCharacterWorkshopStore(
       if (
         saveTimer !== undefined
         || saveInFlight
+        || closeRequestPending
         || draftRevision <= savedRevision
       ) return;
       saveTimer = setTimeout(() => {
@@ -708,6 +715,7 @@ export function createCharacterWorkshopStore(
       selectedStateId: null,
       selectedActionId: null,
       draftStatus: 'idle',
+      closeConfirmationPending: false,
       compileStatus: 'idle',
       loadStatus: 'idle',
       busyAction: null,
@@ -1774,6 +1782,65 @@ export function createCharacterWorkshopStore(
         return requestDraftSave('explicit');
       },
 
+      async prepareWindowClose() {
+        closeRequestPending = true;
+        if (saveTimer !== undefined) {
+          clearTimeout(saveTimer);
+          saveTimer = undefined;
+        }
+        if (saveInFlight) {
+          try {
+            await saveInFlight;
+          } catch {
+            // 保存错误已进入公开状态；关闭判断继续以最新修订事实为准。
+          }
+        }
+        const pending = hasPendingDraft() || draftRevision > savedRevision;
+        if (!pending) {
+          closeRequestPending = false;
+          set({ closeConfirmationPending: false });
+          return true;
+        }
+        set({ closeConfirmationPending: true });
+        return false;
+      },
+
+      resumeAfterClosePrompt() {
+        closeRequestPending = false;
+        set({ closeConfirmationPending: false });
+        scheduleSave();
+      },
+
+      async discardUnsavedDraft() {
+        if (saveInFlight) {
+          try {
+            await saveInFlight;
+          } catch {
+            // 失败保存没有改变磁盘事实，随后仍从最后成功草稿恢复。
+          }
+        }
+        const characterId = get().selectedCharacterId;
+        if (!characterId) {
+          closeRequestPending = false;
+          set({ closeConfirmationPending: false });
+          return;
+        }
+        try {
+          const persistedDraft = await api.getCharacterDraft(characterId);
+          if (get().selectedCharacterId !== characterId) {
+            throw new Error('CHARACTER_OPERATION_FAILED');
+          }
+          setDraft(persistedDraft, get().availableSources);
+          closeRequestPending = false;
+        } catch (error) {
+          closeRequestPending = false;
+          set({ closeConfirmationPending: false });
+          enqueueToast({ tone: 'error', text: errorText(error) });
+          scheduleSave();
+          throw error;
+        }
+      },
+
       dismissToast(id) {
         set(current => ({
           toastQueue: current.toastQueue.filter(toast => toast.id !== id)
@@ -1781,6 +1848,7 @@ export function createCharacterWorkshopStore(
       },
 
       dispose() {
+        closeRequestPending = false;
         if (saveTimer !== undefined) {
           clearTimeout(saveTimer);
           saveTimer = undefined;

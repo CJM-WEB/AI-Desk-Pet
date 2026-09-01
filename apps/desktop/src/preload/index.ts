@@ -327,13 +327,16 @@ const api: MyselfApi = {
   onCharacterWorkshopFlushRequested: listener => {
     const handler = (_event: Electron.IpcRendererEvent, payload: unknown): void => {
       if (!payload || typeof payload !== 'object') return;
-      const token = (payload as Record<string, unknown>)['token'];
+      const record = payload as Record<string, unknown>;
+      const token = record['token'];
+      const reason = record['reason'];
       if (typeof token !== 'string' || token.length === 0) return;
+      if (reason !== 'window_close' && reason !== 'app_quit') return;
 
       void (async () => {
-        let ok = true;
+        let ok = false;
         try {
-          await listener();
+          ok = await listener(reason);
         } catch {
           ok = false;
         }

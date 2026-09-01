@@ -33,6 +33,44 @@ afterEach(() => {
 });
 
 describe('通用瞬时提示层', () => {
+  test('常驻确认提示不自动消失且只通过两个操作按钮回传选择', async () => {
+    vi.useFakeTimers({ toFake: ['clearTimeout', 'performance', 'setTimeout'] });
+    const onDismiss = vi.fn();
+    const onAction = vi.fn();
+
+    render(
+      <TransientToastLayer
+        queue={[{
+          id: 'unsaved-close',
+          tone: 'warning',
+          text: '草稿尚未保存，确定要关闭工作台吗？',
+          persistent: true,
+          dismissible: false,
+          actions: [{
+            id: 'continue', label: '继续编辑'
+          }, {
+            id: 'close', label: '仍然关闭', tone: 'danger'
+          }]
+        }]}
+        onDismiss={onDismiss}
+        onAction={onAction}
+        durationMs={workshopDurationMs}
+        ariaLabel="工作台提示"
+      />
+    );
+
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(onDismiss).not.toHaveBeenCalled();
+    expect(screen.queryByRole('button', {
+      name: '关闭工作台提示：草稿尚未保存，确定要关闭工作台吗？'
+    })).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: '继续编辑' }));
+    fireEvent.click(screen.getByRole('button', { name: '仍然关闭' }));
+    expect(onAction).toHaveBeenNthCalledWith(1, 'unsaved-close', 'continue');
+    expect(onAction).toHaveBeenNthCalledWith(2, 'unsaved-close', 'close');
+  });
+
   test('仅渲染队首，并在消费者提供的三秒时长结束后关闭', async () => {
     vi.useFakeTimers({ toFake: ['clearTimeout', 'performance', 'setTimeout'] });
     const onDismiss = vi.fn();

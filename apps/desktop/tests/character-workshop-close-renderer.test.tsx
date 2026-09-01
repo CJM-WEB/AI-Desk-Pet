@@ -157,8 +157,8 @@ describe('角色工作室恢复提示', () => {
 });
 
 describe('角色工作室 Renderer 关闭刷新', () => {
-  test('Main 请求刷新时等待当前 store 的 flushDraft 完成', async () => {
-    let flushListener: (() => Promise<void>) | null = null;
+  test('应用退出请求仍等待当前 store 的显式保存完成', async () => {
+    let closeListener: ((reason: 'window_close' | 'app_quit') => Promise<boolean>) | null = null;
     let releaseSave = (): void => {};
     const savePending = new Promise<void>(resolve => {
       releaseSave = resolve;
@@ -167,8 +167,10 @@ describe('角色工作室 Renderer 关闭刷新', () => {
     const unsubscribe = vi.fn();
     const api = workshopApi({
       saveCharacterDraft,
-      onCharacterWorkshopFlushRequested: vi.fn((listener: () => Promise<void>) => {
-        flushListener = listener;
+      onCharacterWorkshopFlushRequested: vi.fn((listener: (
+        reason: 'window_close' | 'app_quit'
+      ) => Promise<boolean>) => {
+        closeListener = listener;
         return unsubscribe;
       })
     });
@@ -176,11 +178,11 @@ describe('角色工作室 Renderer 关闭刷新', () => {
     const rendered = render(<CharacterWorkshopView api={api} />);
     const nameInput = await screen.findByLabelText('动作名称');
     fireEvent.change(nameInput, { target: { value: '轻呼吸新版' } });
-    await waitFor(() => expect(flushListener).not.toBeNull());
+    await waitFor(() => expect(closeListener).not.toBeNull());
 
-    const flush = { promise: null as Promise<void> | null };
+    const flush = { promise: null as Promise<boolean> | null };
     act(() => {
-      flush.promise = flushListener?.() ?? null;
+      flush.promise = closeListener?.('app_quit') ?? null;
     });
     await waitFor(() => expect(saveCharacterDraft).toHaveBeenCalledOnce());
     if (!flush.promise) throw new Error('未注册草稿刷新监听器');
@@ -196,9 +198,71 @@ describe('角色工作室 Renderer 关闭刷新', () => {
       await flush.promise;
     });
     expect(settled).toBe(true);
+    await expect(flush.promise).resolves.toBe(true);
 
     rendered.unmount();
     expect(unsubscribe).toHaveBeenCalledOnce();
+  });
+
+  test('未保存窗口关闭显示常驻右上角提示，继续编辑不保存也不关闭', async () => {
+    let closeListener: ((reason: 'window_close' | 'app_quit') => Promise<boolean>) | null = null;
+    const api = workshopApi({
+      onCharacterWorkshopFlushRequested: vi.fn((listener: (
+        reason: 'window_close' | 'app_quit'
+      ) => Promise<boolean>) => {
+        closeListener = listener;
+        return vi.fn();
+      })
+    });
+    const closeWindow = vi.spyOn(window, 'close').mockImplementation(() => undefined);
+    render(<CharacterWorkshopView api={api} />);
+    fireEvent.change(await screen.findByLabelText('动作名称'), {
+      target: { value: '尚未保存的动作' }
+    });
+    await waitFor(() => expect(closeListener).not.toBeNull());
+
+    const requestClose = closeListener as unknown as (
+      reason: 'window_close' | 'app_quit'
+    ) => Promise<boolean>;
+    await expect(requestClose('window_close')).resolves.toBe(false);
+
+    expect(await screen.findByText('草稿尚未保存，确定要关闭工作台吗？')).toBeTruthy();
+    expect(api.saveCharacterDraft).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: '继续编辑' }));
+    await waitFor(() => {
+      expect(screen.queryByText('草稿尚未保存，确定要关闭工作台吗？')).toBeNull();
+    });
+    expect(closeWindow).not.toHaveBeenCalled();
+  });
+
+  test('仍然关闭会恢复最后持久化草稿后再次触发标准窗口关闭', async () => {
+    let closeListener: ((reason: 'window_close' | 'app_quit') => Promise<boolean>) | null = null;
+    const getCharacterDraft = vi.fn(async () => structuredClone(draft));
+    const api = workshopApi({
+      getCharacterDraft,
+      onCharacterWorkshopFlushRequested: vi.fn((listener: (
+        reason: 'window_close' | 'app_quit'
+      ) => Promise<boolean>) => {
+        closeListener = listener;
+        return vi.fn();
+      })
+    });
+    const closeWindow = vi.spyOn(window, 'close').mockImplementation(() => undefined);
+    render(<CharacterWorkshopView api={api} />);
+    fireEvent.change(await screen.findByLabelText('动作名称'), {
+      target: { value: '准备放弃的动作' }
+    });
+    await waitFor(() => expect(closeListener).not.toBeNull());
+    const requestClose = closeListener as unknown as (
+      reason: 'window_close' | 'app_quit'
+    ) => Promise<boolean>;
+    await requestClose('window_close');
+
+    fireEvent.click(await screen.findByRole('button', { name: '仍然关闭' }));
+
+    await waitFor(() => expect(getCharacterDraft).toHaveBeenCalledTimes(2));
+    expect(closeWindow).toHaveBeenCalledOnce();
+    expect(api.saveCharacterDraft).not.toHaveBeenCalled();
   });
 
   test('已发布摘要不完整时不以当前草稿完整度绕过启用确认', async () => {

@@ -89,6 +89,18 @@ function workshopToastDurationMs(toast: TransientToast): 3000 | 6000 {
   return toast.tone === 'warning' || toast.tone === 'error' ? 6000 : 3000;
 }
 
+const UNSAVED_CLOSE_TOAST: TransientToast = {
+  id: 'character-workshop-unsaved-close',
+  tone: 'warning',
+  text: '草稿尚未保存，确定要关闭工作台吗？',
+  persistent: true,
+  dismissible: false,
+  actions: [
+    { id: 'continue-editing', label: '继续编辑' },
+    { id: 'close-anyway', label: '仍然关闭', tone: 'danger' }
+  ]
+};
+
 export interface CharacterWorkshopViewProps {
   api: CharacterWorkshopApi & Pick<
     MyselfApi,
@@ -631,8 +643,19 @@ export function CharacterWorkshopWorkspace(
       </nav>
 
       <TransientToastLayer
-        queue={state.toastQueue}
+        queue={state.closeConfirmationPending ? [UNSAVED_CLOSE_TOAST] : state.toastQueue}
         onDismiss={state.dismissToast}
+        onAction={(_toastId, actionId) => {
+          if (actionId === 'continue-editing') {
+            state.resumeAfterClosePrompt();
+            return;
+          }
+          if (actionId === 'close-anyway') {
+            void state.discardUnsavedDraft()
+              .then(() => window.close())
+              .catch(() => undefined);
+          }
+        }}
         durationMs={workshopToastDurationMs}
         ariaLabel="工作台提示"
       />
@@ -1209,7 +1232,13 @@ export function CharacterWorkshopView(props: CharacterWorkshopViewProps) {
     let active = true;
     const dispose = store.getState().mount();
     const unsubscribeFlush = props.api.onCharacterWorkshopFlushRequested(
-      () => store.getState().flushDraft()
+      async reason => {
+        if (reason === 'window_close') {
+          return store.getState().prepareWindowClose();
+        }
+        await store.getState().flushDraft();
+        return true;
+      }
     );
     const recoverySnapshotPromise = recoverySnapshotPromiseRef.current
       ??= props.api.getCharacterRecoverySnapshot();
