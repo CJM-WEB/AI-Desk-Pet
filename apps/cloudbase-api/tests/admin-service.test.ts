@@ -788,6 +788,123 @@ describe('管理员审核服务', () => {
     )).rejects.toMatchObject({ code: 'INVALID_ADMIN_ACTION' });
   });
 
+  it.each([
+    {
+      name: '共享包再次强制发布',
+      initial: submission('deleted_quarantined', { preQuarantineStatus: 'published' }),
+      changed: submission('published', {
+        statusVersion: 5,
+        publicationBasis: 'admin_override',
+        preQuarantineStatus: null
+      }),
+      firstStatus: 'manual_review_pending',
+      replayNextStatus: 'manual_review_pending'
+    },
+    {
+      name: '共享包永久清理',
+      initial: submission('deleted_quarantined', { preQuarantineStatus: 'published' }),
+      changed: submission('purged', {
+        statusVersion: 8,
+        assets: [],
+        preQuarantineStatus: null
+      }),
+      firstStatus: 'manual_review_pending',
+      replayNextStatus: 'manual_review_pending'
+    },
+    {
+      name: '反馈再次驳回',
+      initial: submission('deleted_quarantined', {
+        kind: 'feedback', assets: [], preQuarantineStatus: 'manual_review_pending'
+      }),
+      changed: submission('admin_rejected', {
+        kind: 'feedback', assets: [], statusVersion: 5, preQuarantineStatus: null
+      }),
+      firstStatus: 'manual_review_pending',
+      replayNextStatus: 'admin_rejected'
+    },
+    {
+      name: '建议永久清理',
+      initial: submission('deleted_quarantined', {
+        kind: 'suggestion', assets: [], preQuarantineStatus: 'published'
+      }),
+      changed: submission('purged', {
+        kind: 'suggestion', assets: [], statusVersion: 8, preQuarantineStatus: null
+      }),
+      firstStatus: 'published',
+      replayNextStatus: 'purged'
+    }
+  ] as const)('$name 后旧 restore key 仍到达数据库并回放首次快照', async ({
+    name,
+    initial,
+    changed,
+    firstStatus,
+    replayNextStatus
+  }) => {
+    const idempotencyKey = `restore-lifecycle-${name}`;
+    const requestedVersion = 3;
+    const { service, store } = createService(initial);
+    store.findAdminSubmission
+      .mockResolvedValueOnce(initial)
+      .mockResolvedValue(changed);
+    store.applyAdminAction.mockImplementation(async input => {
+      if (input.idempotencyKey !== idempotencyKey) {
+        throw new ApiError('INVALID_ADMIN_ACTION', 409);
+      }
+      return {
+        submission: {
+          id: initial.id,
+          kind: initial.kind ?? 'shared_package',
+          status: firstStatus,
+          statusVersion: requestedVersion + 1,
+          publicationBasis: firstStatus === 'published' ? 'standard' as const : null,
+          publicReason: null,
+          publishedAt: firstStatus === 'published'
+            ? '2026-07-31T12:00:00.000Z'
+            : null,
+          rejectedAt: null,
+          quarantinedAt: null,
+          createdAt: '2026-07-30T12:00:00.000Z',
+          updatedAt: '2026-07-31T12:00:00.000Z'
+        },
+        replayed: store.applyAdminAction.mock.calls.length > 1
+      };
+    });
+    const request = {
+      action: 'restore' as const,
+      version: requestedVersion,
+      idempotencyKey,
+      reason: '保持首次恢复请求'
+    };
+
+    await expect(service.applyAction(
+      { uid: 'uid-admin', email: 'admin@example.com' },
+      initial.id,
+      request
+    )).resolves.toMatchObject({
+      submission: { status: firstStatus },
+      replayed: false
+    });
+    await expect(service.applyAction(
+      { uid: 'uid-admin', email: 'admin@example.com' },
+      initial.id,
+      request
+    )).resolves.toMatchObject({
+      submission: { status: firstStatus },
+      replayed: true
+    });
+    expect(store.applyAdminAction.mock.calls[1]?.[0]).toEqual(expect.objectContaining({
+      nextStatus: replayNextStatus,
+      expectedVersion: requestedVersion
+    }));
+
+    await expect(service.applyAction(
+      { uid: 'uid-admin', email: 'admin@example.com' },
+      initial.id,
+      { ...request, idempotencyKey: `${idempotencyKey}-new` }
+    )).rejects.toMatchObject({ code: 'INVALID_ADMIN_ACTION' });
+    expect(store.applyAdminAction).toHaveBeenCalledTimes(3);
+  });
+
   it.each(['feedback', 'suggestion'] as const)(
     '待人工审核的%s不依赖角色包扫描证据',
     async kind => {

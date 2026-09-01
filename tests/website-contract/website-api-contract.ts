@@ -496,9 +496,10 @@ export function runWebsiteApiContract(
     });
 
     it('普通批准发布合法反馈且不要求资产或 Scanner 证据', async () => {
+      const path = `/api/v1/admin/submissions/${refs.standardSubmissionId}/actions`;
       const published = success(await driver.request({
         method: 'POST',
-        path: `/api/v1/admin/submissions/${refs.standardSubmissionId}/actions`,
+        path,
         headers: { 'x-ai-pet-admin-token': refs.adminToken },
         body: {
           action: 'approve',
@@ -519,6 +520,82 @@ export function runWebsiteApiContract(
       expect(feedback.items).toContainEqual(expect.objectContaining({
         id: refs.standardSubmissionId,
       }));
+
+      const deleted = success(await driver.request({
+        method: 'POST', path,
+        headers: { 'x-ai-pet-admin-token': refs.adminToken },
+        body: {
+          action: 'delete',
+          version: published.submission.statusVersion,
+          idempotencyKey: 'contract-standard-delete-001',
+          reason: '隔离已发布反馈',
+        },
+      }), adminActionResponseSchema);
+      const restoreRequest = {
+        action: 'restore' as const,
+        version: deleted.submission.statusVersion,
+        idempotencyKey: 'contract-standard-restore-001',
+        reason: '恢复已发布反馈',
+      };
+      const restored = success(await driver.request({
+        method: 'POST', path,
+        headers: { 'x-ai-pet-admin-token': refs.adminToken },
+        body: restoreRequest,
+      }), adminActionResponseSchema);
+      expect(restored).toMatchObject({
+        replayed: false,
+        submission: { status: 'published', publicationBasis: 'standard' },
+      });
+      const deletedAgain = success(await driver.request({
+        method: 'POST', path,
+        headers: { 'x-ai-pet-admin-token': refs.adminToken },
+        body: {
+          action: 'delete',
+          version: restored.submission.statusVersion,
+          idempotencyKey: 'contract-standard-delete-002',
+          reason: '恢复后再次隔离',
+        },
+      }), adminActionResponseSchema);
+      const replay = success(await driver.request({
+        method: 'POST', path,
+        headers: { 'x-ai-pet-admin-token': refs.adminToken },
+        body: restoreRequest,
+      }), adminActionResponseSchema);
+      expect(replay).toEqual({ ...restored, replayed: true });
+      for (const body of [
+        { ...restoreRequest, reason: '同键改理由' },
+        { ...restoreRequest, version: restoreRequest.version + 1 },
+        { ...restoreRequest, action: 'delete' as const },
+      ]) {
+        failure(await driver.request({
+          method: 'POST', path,
+          headers: { 'x-ai-pet-admin-token': refs.adminToken },
+          body,
+        }), 409, 'IDEMPOTENCY_CONFLICT');
+      }
+      const beforeNewKey = success(await driver.request({
+        method: 'GET',
+        path: `/api/v1/admin/submissions/${refs.standardSubmissionId}`,
+        headers: { 'x-ai-pet-admin-token': refs.adminToken },
+      }), adminDetailResponseSchema);
+      failure(await driver.request({
+        method: 'POST', path,
+        headers: { 'x-ai-pet-admin-token': refs.adminToken },
+        body: {
+          ...restoreRequest,
+          idempotencyKey: 'contract-standard-restore-new',
+        },
+      }), 409, 'VERSION_CONFLICT');
+      const afterNewKey = success(await driver.request({
+        method: 'GET',
+        path: `/api/v1/admin/submissions/${refs.standardSubmissionId}`,
+        headers: { 'x-ai-pet-admin-token': refs.adminToken },
+      }), adminDetailResponseSchema);
+      expect(afterNewKey).toMatchObject({
+        status: 'deleted_quarantined',
+        statusVersion: deletedAgain.submission.statusVersion,
+      });
+      expect(afterNewKey.auditLogs).toEqual(beforeNewKey.auditLogs);
     });
 
     it.each([
@@ -626,15 +703,16 @@ export function runWebsiteApiContract(
         status: 'deleted_quarantined',
         publicationBasis: null,
       });
+      const restoreRequest = {
+        action: 'restore' as const,
+        version: deleted.submission.statusVersion,
+        idempotencyKey: 'contract-restore-override-001',
+        reason: '恢复后人工复核',
+      };
       const restored = success(await driver.request({
         method: 'POST', path,
         headers: { 'x-ai-pet-admin-token': refs.adminToken },
-        body: {
-          action: 'restore',
-          version: deleted.submission.statusVersion,
-          idempotencyKey: 'contract-restore-override-001',
-          reason: '恢复后人工复核',
-        },
+        body: restoreRequest,
       }), adminActionResponseSchema);
       expect(restored.submission).toMatchObject({
         status: 'manual_review_pending',
@@ -665,6 +743,59 @@ export function runWebsiteApiContract(
           reason: '恢复后人工复核',
         }),
       ]);
+
+      const republished = success(await driver.request({
+        method: 'POST', path,
+        headers: { 'x-ai-pet-admin-token': refs.adminToken },
+        body: {
+          action: 'force_publish',
+          version: restored.submission.statusVersion,
+          idempotencyKey: 'contract-force-after-restore-001',
+          reason: '恢复后再次确认风险',
+          riskAcknowledgement: 'ADMIN_OVERRIDE_ACCEPTED',
+        },
+      }), adminActionResponseSchema);
+      expect(republished.submission.status).toBe('published');
+      const replay = success(await driver.request({
+        method: 'POST', path,
+        headers: { 'x-ai-pet-admin-token': refs.adminToken },
+        body: restoreRequest,
+      }), adminActionResponseSchema);
+      expect(replay).toEqual({ ...restored, replayed: true });
+      for (const body of [
+        { ...restoreRequest, reason: '同键改理由' },
+        { ...restoreRequest, version: restoreRequest.version + 1 },
+        { ...restoreRequest, action: 'delete' as const },
+      ]) {
+        failure(await driver.request({
+          method: 'POST', path,
+          headers: { 'x-ai-pet-admin-token': refs.adminToken },
+          body,
+        }), 409, 'IDEMPOTENCY_CONFLICT');
+      }
+      const beforeNewKey = success(await driver.request({
+        method: 'GET',
+        path: `/api/v1/admin/submissions/${refs.overrideSubmissionId}`,
+        headers: { 'x-ai-pet-admin-token': refs.adminToken },
+      }), adminDetailResponseSchema);
+      failure(await driver.request({
+        method: 'POST', path,
+        headers: { 'x-ai-pet-admin-token': refs.adminToken },
+        body: {
+          ...restoreRequest,
+          idempotencyKey: 'contract-restore-override-new',
+        },
+      }), 409, 'VERSION_CONFLICT');
+      const afterNewKey = success(await driver.request({
+        method: 'GET',
+        path: `/api/v1/admin/submissions/${refs.overrideSubmissionId}`,
+        headers: { 'x-ai-pet-admin-token': refs.adminToken },
+      }), adminDetailResponseSchema);
+      expect(afterNewKey).toMatchObject({
+        status: 'published',
+        statusVersion: republished.submission.statusVersion,
+      });
+      expect(afterNewKey.auditLogs).toEqual(beforeNewKey.auditLogs);
     });
   });
 }

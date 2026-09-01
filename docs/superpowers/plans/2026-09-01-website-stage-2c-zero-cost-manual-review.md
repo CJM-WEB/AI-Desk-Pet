@@ -373,6 +373,7 @@ Expected: 搜索结果只允许出现在“已退役/禁止部署”的历史说
 - Modify: `tests/website-contract/website-api-contract.ts`
 - Modify: `tools/cloudbase-migration-inventory.test.mjs`
 - Modify: `tools/test-cloudbase-migrations.mjs`
+- Modify: `tools/test-cloudbase-migrations.test.mjs`
 - Modify: `tools/verification/verify-scanner-candidate.mjs`
 - Modify: `tools/verification/verify-scanner-candidate.test.mjs`
 - Modify: `tools/verification/web-dependency-audit.test.mjs`

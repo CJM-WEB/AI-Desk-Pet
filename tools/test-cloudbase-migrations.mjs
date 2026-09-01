@@ -195,7 +195,7 @@ export async function runCloudBaseMigrationBehaviorGate({
       postgresVersion: postgresVersion.version,
       postgresMajorVersion: postgresVersion.major,
       migrationsApplied: migrations.length,
-      behaviorsVerified: 74
+      behaviorsVerified: 76
     };
   } finally {
     if (started) {
@@ -1252,22 +1252,26 @@ BEGIN
     RAISE EXCEPTION '行为门失败：历史危险结果转人工时被改写';
   END IF;
 
-  -- 共享包恢复只回人工审核，并保留风险、版本与审计事实；文本恢复继续兼容七参数默认调用。
-  INSERT INTO submissions (
-    id, kind, status, status_token_hash, pre_quarantine_status, quarantined_at,
-    risk_summary, auto_rejection_reason
-  ) VALUES (
-    'gate-restore', 'shared_package', 'deleted_quarantined', repeat('5', 64),
-    'published', now(), '{"blocked":true,"severity":"high"}'::jsonb,
-    '历史自动拒绝事实'
-  );
+  -- 共享包恢复后再次发布，旧 key 仍只按管理员原始输入回放首次人工审核快照。
+  PERFORM gate_seed('gate-restore');
+  UPDATE submissions
+  SET risk_summary = '{"blocked":true,"severity":"high"}'::jsonb,
+      auto_rejection_reason = '历史自动拒绝事实'
+  WHERE id = 'gate-restore';
   PERFORM apply_admin_action(
-    'gate-restore', 'admin-1', 'restore', 'manual_review_pending', 0,
+    'gate-restore', 'admin-1', 'delete', 'deleted_quarantined', 1,
+    'gate-restore-delete', '隔离后复核'
+  );
+  v_result := apply_admin_action(
+    'gate-restore', 'admin-1', 'restore', 'manual_review_pending', 2,
     'gate-restore-manual', '恢复后人工复核'
   );
+  SELECT result_snapshot INTO v_first_snapshot
+  FROM admin_audit_logs
+  WHERE idempotency_key = 'gate-restore-manual';
   IF (SELECT status FROM submissions WHERE id = 'gate-restore')
       <> 'manual_review_pending'
-    OR (SELECT status_version FROM submissions WHERE id = 'gate-restore') <> 1
+    OR (SELECT status_version FROM submissions WHERE id = 'gate-restore') <> 3
     OR (SELECT publication_basis FROM submissions WHERE id = 'gate-restore')
       IS NOT NULL
     OR (SELECT risk_summary FROM submissions WHERE id = 'gate-restore')
@@ -1284,6 +1288,68 @@ BEGIN
     ) THEN
     RAISE EXCEPTION '行为门失败：共享包恢复的人工状态、风险或审计事实不完整';
   END IF;
+  PERFORM apply_admin_action(
+    'gate-restore', 'admin-1', 'force_publish', 'published', 3,
+    'gate-restore-force', '恢复后再次确认风险', 'ADMIN_OVERRIDE_ACCEPTED'
+  );
+  v_result := apply_admin_action(
+    'gate-restore', 'admin-1', 'restore', 'published', 2,
+    'gate-restore-manual', '恢复后人工复核'
+  );
+  IF COALESCE((v_result ->> 'replayed')::boolean, false) IS NOT TRUE
+    OR (v_result - 'replayed') <> (v_first_snapshot - 'replayed')
+    OR v_result #>> '{submission,status}' <> 'manual_review_pending'
+    OR (SELECT request_payload #>> '{nextStatus}' FROM admin_audit_logs
+        WHERE idempotency_key = 'gate-restore-manual')
+      <> 'manual_review_pending' THEN
+    RAISE EXCEPTION '行为门失败：共享包后续发布破坏首次恢复回放';
+  END IF;
+  BEGIN
+    PERFORM apply_admin_action(
+      'gate-restore', 'admin-2', 'restore', 'published', 2,
+      'gate-restore-manual', '恢复后人工复核'
+    );
+    RAISE EXCEPTION '行为门失败：恢复幂等键接受了不同管理员';
+  EXCEPTION WHEN SQLSTATE 'P1001' THEN NULL;
+  END;
+  BEGIN
+    PERFORM apply_admin_action(
+      'gate-restore', 'admin-1', 'restore', 'published', 3,
+      'gate-restore-manual', '恢复后人工复核'
+    );
+    RAISE EXCEPTION '行为门失败：恢复幂等键接受了不同版本';
+  EXCEPTION WHEN SQLSTATE 'P1001' THEN NULL;
+  END;
+  BEGIN
+    PERFORM apply_admin_action(
+      'gate-restore', 'admin-1', 'restore', 'published', 2,
+      'gate-restore-manual', '同键改理由'
+    );
+    RAISE EXCEPTION '行为门失败：恢复幂等键接受了不同理由';
+  EXCEPTION WHEN SQLSTATE 'P1001' THEN NULL;
+  END;
+  BEGIN
+    PERFORM apply_admin_action(
+      'gate-restore', 'admin-1', 'delete', 'deleted_quarantined', 2,
+      'gate-restore-manual', '恢复后人工复核'
+    );
+    RAISE EXCEPTION '行为门失败：恢复幂等键接受了不同动作';
+  EXCEPTION WHEN SQLSTATE 'P1001' THEN NULL;
+  END;
+  BEGIN
+    PERFORM apply_admin_action(
+      'gate-restore', 'admin-1', 'restore', 'manual_review_pending', 2,
+      'gate-restore-new-key', '恢复后人工复核'
+    );
+    RAISE EXCEPTION '行为门失败：新 key 绕过共享包当前生命周期';
+  EXCEPTION WHEN SQLSTATE 'P1002' THEN NULL;
+  END;
+  IF EXISTS (
+    SELECT 1 FROM admin_audit_logs
+    WHERE idempotency_key = 'gate-restore-new-key'
+  ) THEN
+    RAISE EXCEPTION '行为门失败：共享包无效新 key 写入审计';
+  END IF;
 
   INSERT INTO submissions (
     id, kind, title, body, status, status_token_hash,
@@ -1296,13 +1362,35 @@ BEGIN
     'gate-text-restore', 'admin-1', 'restore', 'published', 0,
     'gate-text-restore-replay', '恢复文本'
   );
+  SELECT result_snapshot INTO v_first_snapshot
+  FROM admin_audit_logs
+  WHERE idempotency_key = 'gate-text-restore-replay';
+  PERFORM apply_admin_action(
+    'gate-text-restore', 'admin-1', 'delete', 'deleted_quarantined', 1,
+    'gate-text-restore-delete', '恢复后再次隔离'
+  );
   v_result := apply_admin_action(
-    'gate-text-restore', 'admin-1', 'restore', 'published', 0,
+    'gate-text-restore', 'admin-1', 'restore', 'deleted_quarantined', 0,
     'gate-text-restore-replay', '恢复文本'
   );
   IF COALESCE((v_result ->> 'replayed')::boolean, false) IS NOT TRUE
+    OR (v_result - 'replayed') <> (v_first_snapshot - 'replayed')
     OR v_result #>> '{submission,status}' <> 'published' THEN
-    RAISE EXCEPTION '行为门失败：文本恢复未回放首次快照';
+    RAISE EXCEPTION '行为门失败：文本后续流转破坏首次恢复回放';
+  END IF;
+  BEGIN
+    PERFORM apply_admin_action(
+      'gate-text-restore', 'admin-1', 'restore', 'published', 0,
+      'gate-text-restore-new-key', '恢复文本'
+    );
+    RAISE EXCEPTION '行为门失败：新 key 绕过文本恢复旧版本';
+  EXCEPTION WHEN SQLSTATE '40001' THEN NULL;
+  END;
+  IF EXISTS (
+    SELECT 1 FROM admin_audit_logs
+    WHERE idempotency_key = 'gate-text-restore-new-key'
+  ) THEN
+    RAISE EXCEPTION '行为门失败：文本恢复无效新 key 写入审计';
   END IF;
 END
 $gate$;

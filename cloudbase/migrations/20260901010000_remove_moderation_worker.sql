@@ -125,8 +125,15 @@ BEGIN
   FROM admin_audit_logs
   WHERE idempotency_key = p_idempotency_key;
   IF FOUND THEN
-    IF (v_existing.request_payload - 'latestScanSummary' - 'riskAcknowledgement')
-        <> (v_request_identity - 'riskAcknowledgement')
+    IF (
+        v_existing.request_payload
+          - 'latestScanSummary' - 'riskAcknowledgement' - 'nextStatus'
+      ) <> (v_request_identity - 'riskAcknowledgement' - 'nextStatus')
+      OR (
+        p_action <> 'restore'
+        AND v_existing.request_payload -> 'nextStatus'
+          IS DISTINCT FROM v_request_identity -> 'nextStatus'
+      )
       OR COALESCE(
         v_existing.request_payload -> 'riskAcknowledgement',
         'null'::jsonb

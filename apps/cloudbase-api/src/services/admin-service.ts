@@ -157,24 +157,16 @@ function nextStatusFor(
     return 'deleted_quarantined';
   }
   if (action === 'restore') {
+    if (submission.statusVersion !== requestedVersion) {
+      // 版本已变化时只派生稳定合法目标，数据库用管理员原始输入裁定旧 key 或新请求。
+      return submission.kind === 'shared_package'
+        ? 'manual_review_pending'
+        : status;
+    }
     if (submission.preQuarantineStatus) {
       return submission.kind === 'shared_package'
         ? 'manual_review_pending'
         : submission.preQuarantineStatus;
-    }
-    if (
-      submission.statusVersion !== requestedVersion
-      && (
-        (submission.kind === 'shared_package' && status === 'manual_review_pending')
-        || (
-          submission.kind !== 'shared_package'
-          && status !== 'deleted_quarantined'
-          && status !== 'purged'
-        )
-      )
-    ) {
-      // 恢复成功会清空 preQuarantineStatus，目标状态仍可由当前版本安全重建。
-      return status;
     }
     throw new ApiError('INVALID_ADMIN_ACTION', 409);
   }
