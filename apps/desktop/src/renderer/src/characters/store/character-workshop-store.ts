@@ -167,6 +167,8 @@ export interface CharacterWorkshopState {
 
 type WorkshopStore = StoreApi<CharacterWorkshopState>;
 const COMPILE_CANCELLED = Symbol('CHARACTER_COMPILE_CANCELLED');
+const DRAFT_CHECKPOINT_INTERVAL_MS = 30_000;
+type DraftSaveReason = 'checkpoint' | 'explicit';
 
 function errorText(error: unknown): string {
   const code = error instanceof Error ? error.message : 'CHARACTER_OPERATION_FAILED';
@@ -305,7 +307,7 @@ export function createCharacterWorkshopStore(
     selectionRevision: number;
     draftRevision: number;
   } | null = null;
-  let saveRequested = false;
+  let explicitTargetRevision: number | null = null;
   let draftRevision = 0;
   let savedRevision = 0;
   let savedDraftRevisionToken: string | null = null;
@@ -384,10 +386,15 @@ export function createCharacterWorkshopStore(
       draft: CharacterDraftV2,
       sources: readonly CharacterWorkshopSourceDto[] = []
     ): void {
+      if (saveTimer !== undefined) {
+        clearTimeout(saveTimer);
+        saveTimer = undefined;
+      }
       const selection = initialSelection(draft);
       draftRevision += 1;
       savedRevision = draftRevision;
       savedDraftRevisionToken = null;
+      explicitTargetRevision = null;
       workspaceTargetRevision += 1;
       set({
         selectedCharacterId: draft.id,
@@ -443,13 +450,100 @@ export function createCharacterWorkshopStore(
       }
     }
 
+    /** 首次变脏后只建立一个固定检查点；保存结算前的后续编辑不重置计时。 */
     function scheduleSave(): void {
-      if (saveTimer !== undefined) clearTimeout(saveTimer);
+      if (
+        saveTimer !== undefined
+        || saveInFlight
+        || draftRevision <= savedRevision
+      ) return;
       saveTimer = setTimeout(() => {
         saveTimer = undefined;
-        // 定时保存无人等待结果；失败状态已由 flushDraft 写入 store，此处只消费 rejection。
-        void get().flushDraft().catch(() => undefined);
-      }, 500);
+        // 检查点无人等待结果；失败状态已由保存单飞写入 store，此处只消费 rejection。
+        void requestDraftSave('checkpoint').catch(() => undefined);
+      }, DRAFT_CHECKPOINT_INTERVAL_MS);
+    }
+
+    /** 检查点只写到点修订一次；显式请求会继续排空到调用时的目标修订。 */
+    function requestDraftSave(
+      reason: DraftSaveReason,
+      requestedTargetRevision = draftRevision
+    ): Promise<void> {
+      if (reason === 'explicit') {
+        if (saveTimer !== undefined) {
+          clearTimeout(saveTimer);
+          saveTimer = undefined;
+        }
+        explicitTargetRevision = Math.max(
+          explicitTargetRevision ?? 0,
+          requestedTargetRevision
+        );
+      }
+      if (saveInFlight) return saveInFlight;
+
+      const operation = async () => {
+        while (true) {
+          const current = get();
+          if (
+            !current.draft
+            || !current.selectedCharacterId
+            || (current.draftStatus !== 'dirty' && current.draftStatus !== 'error')
+          ) {
+            if (
+              explicitTargetRevision !== null
+              && savedRevision >= explicitTargetRevision
+            ) explicitTargetRevision = null;
+            return;
+          }
+          const characterId = current.selectedCharacterId;
+          const revision = draftRevision;
+          const pendingDraft = cloneDraft(current.draft);
+          const persistenceRevision = crypto.randomUUID();
+          set({ draftStatus: 'saving' });
+          try {
+            await api.saveCharacterDraft(
+              characterId,
+              pendingDraft,
+              persistenceRevision
+            );
+          } catch (error) {
+            const stillSelected = get().selectedCharacterId === characterId;
+            const newerExplicitTarget = stillSelected
+              && explicitTargetRevision !== null
+              && explicitTargetRevision > revision;
+            if (newerExplicitTarget) continue;
+            if (stillSelected) {
+              explicitTargetRevision = null;
+              set({ draftStatus: 'error' });
+              enqueueToast({ tone: 'error', text: errorText(error) });
+              throw error;
+            }
+            return;
+          }
+
+          if (get().selectedCharacterId !== characterId) return;
+          savedRevision = Math.max(savedRevision, revision);
+          savedDraftRevisionToken = persistenceRevision;
+          set({ draftStatus: draftRevision === revision ? 'saved' : 'dirty' });
+          if (
+            explicitTargetRevision !== null
+            && savedRevision >= explicitTargetRevision
+          ) explicitTargetRevision = null;
+          if (
+            explicitTargetRevision !== null
+            && savedRevision < explicitTargetRevision
+          ) continue;
+          // 自动检查点不因保存期间的新编辑立即连写；显式目标已在上方完整排空。
+          return;
+        }
+      };
+      let tracked: Promise<void>;
+      tracked = operation().finally(() => {
+        if (saveInFlight === tracked) saveInFlight = null;
+        scheduleSave();
+      });
+      saveInFlight = tracked;
+      return tracked;
     }
 
     /** 所有领域编辑统一经过深克隆，并在提交前收敛可能失效的选择。 */
@@ -1677,65 +1771,7 @@ export function createCharacterWorkshopStore(
       },
 
       flushDraft() {
-        if (saveTimer !== undefined) {
-          clearTimeout(saveTimer);
-          saveTimer = undefined;
-        }
-        saveRequested = true;
-        if (saveInFlight) return saveInFlight;
-
-        const operation = async () => {
-          while (saveRequested) {
-            saveRequested = false;
-            const current = get();
-            if (
-              !current.draft
-              || !current.selectedCharacterId
-              || (current.draftStatus !== 'dirty' && current.draftStatus !== 'error')
-            ) continue;
-            const characterId = current.selectedCharacterId;
-            const revision = draftRevision;
-            const pendingDraft = cloneDraft(current.draft);
-            const persistenceRevision = crypto.randomUUID();
-            set({ draftStatus: 'saving' });
-            try {
-              await api.saveCharacterDraft(
-                characterId,
-                pendingDraft,
-                persistenceRevision
-              );
-              savedRevision = revision;
-              if (get().selectedCharacterId === characterId) {
-                savedDraftRevisionToken = persistenceRevision;
-              }
-              if (
-                get().selectedCharacterId === characterId
-                && draftRevision === revision
-              ) {
-                set({ draftStatus: 'saved' });
-              } else if (
-                get().selectedCharacterId === characterId
-                && draftRevision !== revision
-              ) {
-                saveRequested = true;
-              }
-            } catch (error) {
-              if (
-                get().selectedCharacterId === characterId
-                && draftRevision === revision
-              ) {
-                set({ draftStatus: 'error' });
-                enqueueToast({ tone: 'error', text: errorText(error) });
-                throw error;
-              }
-              saveRequested = true;
-            }
-          }
-        };
-        saveInFlight = operation().finally(() => {
-          saveInFlight = null;
-        });
-        return saveInFlight;
+        return requestDraftSave('explicit');
       },
 
       dismissToast(id) {

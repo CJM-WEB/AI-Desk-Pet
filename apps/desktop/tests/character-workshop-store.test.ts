@@ -505,7 +505,7 @@ describe('角色工作室 Zustand 状态层', () => {
     expect(api.getCharacterDraft).toHaveBeenCalledOnce();
   });
 
-  test('身份编辑以不可变草稿替换并在 500ms 后保存 V2', async () => {
+  test('身份编辑以不可变草稿替换并在首次变脏 30 秒后保存最新 V2', async () => {
     vi.useFakeTimers();
     const loadedDraft = draft('demo', '演示角色');
     const originalIdentity = loadedDraft.identity;
@@ -522,12 +522,16 @@ describe('角色工作室 Zustand 状态层', () => {
     expect(loadedDraft.identity).toBe(originalIdentity);
     expect(loadedDraft.identity.description).toBe('一只友好的桌面伙伴');
     expect(store.getState().draft?.identity.description).toBe('一只谨慎的桌面伙伴');
-    await vi.advanceTimersByTimeAsync(499);
+    await vi.advanceTimersByTimeAsync(29_999);
     expect(api.saveCharacterDraft).not.toHaveBeenCalled();
+    store.getState().updateIdentity({ description: '一只沉稳的桌面伙伴' });
     await vi.advanceTimersByTimeAsync(1);
     expect(api.saveCharacterDraft).toHaveBeenCalledWith(
       'demo',
-      expect.objectContaining({ version: 2 }),
+      expect.objectContaining({
+        version: 2,
+        identity: expect.objectContaining({ description: '一只沉稳的桌面伙伴' })
+      }),
       expect.stringMatching(/^[0-9a-f-]{36}$/u)
     );
   });
@@ -1212,7 +1216,7 @@ describe('角色工作室 Zustand 状态层', () => {
     expect(failingStore.getState().toastQueue).toHaveLength(1);
   });
 
-  test('保存 timer 句柄为 0 时重调度、显式保存和卸载都会清理它', async () => {
+  test('保存 timer 句柄为 0 时后续编辑不重调度，显式保存和卸载都会清理它', async () => {
     const clearTimeoutSpy = vi.spyOn(globalThis, 'clearTimeout');
     vi.spyOn(globalThis, 'setTimeout').mockImplementation(() => (
       0 as unknown as ReturnType<typeof setTimeout>
@@ -1227,13 +1231,12 @@ describe('角色工作室 Zustand 状态层', () => {
     store.getState().updateCurrentAction({ name: '卸载前调度' });
     store.getState().dispose();
 
-    expect(clearTimeoutSpy).toHaveBeenCalledTimes(3);
+    expect(clearTimeoutSpy).toHaveBeenCalledTimes(2);
     expect(clearTimeoutSpy).toHaveBeenNthCalledWith(1, 0);
     expect(clearTimeoutSpy).toHaveBeenNthCalledWith(2, 0);
-    expect(clearTimeoutSpy).toHaveBeenNthCalledWith(3, 0);
   });
 
-  test('500ms 自动保存会消费失败的 Promise，但显式 flush 仍会拒绝', async () => {
+  test('30 秒自动保存会消费失败的 Promise，但显式 flush 仍会拒绝', async () => {
     vi.useFakeTimers();
     const { api } = apiDouble({
       saveCharacterDraft: vi.fn(async () => {
@@ -1243,7 +1246,7 @@ describe('角色工作室 Zustand 状态层', () => {
     const store = createCharacterWorkshopStore(api);
     await store.getState().load();
     store.getState().updateCurrentAction({ name: '定时失败' });
-    await vi.advanceTimersByTimeAsync(500);
+    await vi.advanceTimersByTimeAsync(30_000);
     await settle();
 
     expect(store.getState()).toMatchObject({
@@ -2267,7 +2270,7 @@ describe('角色工作室 Zustand 状态层', () => {
     expect(store.getState().characters).toHaveLength(2);
   });
 
-  test('编辑动作后严格等待 500ms 自动保存，flushDraft 会立即保存且并发调用单飞', async () => {
+  test('编辑动作后严格等待 30 秒自动保存，flushDraft 会立即保存且并发调用单飞', async () => {
     vi.useFakeTimers();
     const saving = deferred<void>();
     const { api } = apiDouble({
@@ -2278,7 +2281,7 @@ describe('角色工作室 Zustand 状态层', () => {
 
     store.getState().updateCurrentAction({ name: '挥手' });
     expect(store.getState().draftStatus).toBe('dirty');
-    await vi.advanceTimersByTimeAsync(499);
+    await vi.advanceTimersByTimeAsync(29_999);
     expect(api.saveCharacterDraft).not.toHaveBeenCalled();
 
     await vi.advanceTimersByTimeAsync(1);
@@ -2301,6 +2304,41 @@ describe('角色工作室 Zustand 状态层', () => {
         version: 2,
         actions: expect.arrayContaining([
           expect.objectContaining({ name: '挥手' })
+        ])
+      }),
+      expect.stringMatching(/^[0-9a-f-]{36}$/u)
+    );
+  });
+
+  test('检查点保存期间的新修改不会立即连写而是在结算后重新等待 30 秒', async () => {
+    vi.useFakeTimers();
+    const firstSave = deferred<void>();
+    const saveCharacterDraft = vi.fn()
+      .mockImplementationOnce(() => firstSave.promise)
+      .mockResolvedValueOnce(undefined);
+    const { api } = apiDouble({ saveCharacterDraft });
+    const store = createCharacterWorkshopStore(api);
+    await store.getState().load();
+
+    store.getState().updateCurrentAction({ name: '首个检查点' });
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(saveCharacterDraft).toHaveBeenCalledOnce();
+    store.getState().updateCurrentAction({ name: '检查点期间的新修改' });
+
+    firstSave.resolve();
+    await settle();
+    expect(saveCharacterDraft).toHaveBeenCalledOnce();
+    expect(store.getState().draftStatus).toBe('dirty');
+
+    await vi.advanceTimersByTimeAsync(29_999);
+    expect(saveCharacterDraft).toHaveBeenCalledOnce();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(saveCharacterDraft).toHaveBeenCalledTimes(2);
+    expect(saveCharacterDraft).toHaveBeenLastCalledWith(
+      'default',
+      expect.objectContaining({
+        actions: expect.arrayContaining([
+          expect.objectContaining({ name: '检查点期间的新修改' })
         ])
       }),
       expect.stringMatching(/^[0-9a-f-]{36}$/u)
@@ -2599,7 +2637,7 @@ describe('角色工作室 Zustand 状态层', () => {
     expect(store.getState().busyAction).toBeNull();
   });
 
-  test('导出期间触发 500ms 自动保存不会抢占或清空 exporting', async () => {
+  test('导出期间触发 30 秒自动保存不会抢占或清空 exporting', async () => {
     vi.useFakeTimers();
     const exporting = deferred<Awaited<
       ReturnType<CharacterWorkshopApi['exportCharacterPackage']>
@@ -2613,7 +2651,7 @@ describe('角色工作室 Zustand 状态层', () => {
 
     const operation = store.getState().exportCharacterPackage();
     expect(store.getState().busyAction).toBe('exporting');
-    await vi.advanceTimersByTimeAsync(500);
+    await vi.advanceTimersByTimeAsync(30_000);
 
     expect(api.saveCharacterDraft).toHaveBeenCalledOnce();
     expect(store.getState().draftStatus).toBe('saved');
@@ -2624,7 +2662,7 @@ describe('角色工作室 Zustand 状态层', () => {
     expect(store.getState().busyAction).toBeNull();
   });
 
-  test('素材导入期间触发 500ms 自动保存不会抢占或清空 importing', async () => {
+  test('素材导入期间触发 30 秒自动保存不会抢占或清空 importing', async () => {
     vi.useFakeTimers();
     const importing = deferred<Awaited<
       ReturnType<CharacterWorkshopApi['chooseCharacterSources']>
@@ -2638,7 +2676,7 @@ describe('角色工作室 Zustand 状态层', () => {
 
     const operation = store.getState().importSources();
     expect(store.getState().busyAction).toBe('importing');
-    await vi.advanceTimersByTimeAsync(500);
+    await vi.advanceTimersByTimeAsync(30_000);
 
     expect(api.saveCharacterDraft).toHaveBeenCalledOnce();
     expect(store.getState().busyAction).toBe('importing');
@@ -2648,7 +2686,7 @@ describe('角色工作室 Zustand 状态层', () => {
     expect(store.getState().busyAction).toBeNull();
   });
 
-  test('启用期间触发 500ms 自动保存不会抢占或清空 activating', async () => {
+  test('启用期间触发 30 秒自动保存不会抢占或清空 activating', async () => {
     vi.useFakeTimers();
     const activating = deferred<void>();
     const { api } = apiDouble({
@@ -2660,7 +2698,7 @@ describe('角色工作室 Zustand 状态层', () => {
 
     const operation = store.getState().activateCharacter('nova');
     expect(store.getState().busyAction).toBe('activating');
-    await vi.advanceTimersByTimeAsync(500);
+    await vi.advanceTimersByTimeAsync(30_000);
 
     expect(api.saveCharacterDraft).toHaveBeenCalledOnce();
     expect(store.getState().busyAction).toBe('activating');
@@ -2670,7 +2708,7 @@ describe('角色工作室 Zustand 状态层', () => {
     expect(store.getState().busyAction).toBeNull();
   });
 
-  test('发布期间触发 500ms 自动保存不会抢占或清空 compiling', async () => {
+  test('发布期间触发 30 秒自动保存不会抢占或清空 compiling', async () => {
     vi.useFakeTimers();
     const publishing = deferred<void>();
     const { api } = apiDouble({
@@ -2682,7 +2720,7 @@ describe('角色工作室 Zustand 状态层', () => {
 
     const operation = store.getState().publishCharacter(publishInput('default'));
     expect(store.getState().busyAction).toBe('compiling');
-    await vi.advanceTimersByTimeAsync(500);
+    await vi.advanceTimersByTimeAsync(30_000);
 
     expect(api.saveCharacterDraft).toHaveBeenCalledOnce();
     expect(store.getState().busyAction).toBe('compiling');
@@ -2714,7 +2752,7 @@ describe('角色工作室 Zustand 状态层', () => {
     store.getState().updateCurrentAction({ name: '卸载前草稿' });
     dispose();
     expect(unsubscribe).toHaveBeenCalledOnce();
-    await vi.advanceTimersByTimeAsync(500);
+    await vi.advanceTimersByTimeAsync(30_000);
     expect(api.saveCharacterDraft).not.toHaveBeenCalled();
   });
 
@@ -3057,7 +3095,7 @@ describe('角色工作室 Zustand 状态层', () => {
     store.getState().removeAction('moving', 'missing-action');
     store.getState().removeAction('idle', 'missing-action');
     store.getState().removeExtensionState('custom:missing');
-    await vi.advanceTimersByTimeAsync(500);
+    await vi.advanceTimersByTimeAsync(30_000);
 
     expect(store.getState()).toBe(before);
     expect(store.getState()).toMatchObject({
@@ -3129,7 +3167,7 @@ describe('角色工作室 Zustand 状态层', () => {
         expect.objectContaining({ displayName: 'idle.png' })
       ])
     });
-    await vi.advanceTimersByTimeAsync(500);
+    await vi.advanceTimersByTimeAsync(30_000);
     expect(api.saveCharacterDraft).toHaveBeenCalled();
   });
 
@@ -3231,7 +3269,7 @@ describe('角色工作室 Zustand 状态层', () => {
     await store.getState().load();
 
     store.getState().requestRemoveState('wave');
-    await vi.advanceTimersByTimeAsync(500);
+    await vi.advanceTimersByTimeAsync(30_000);
 
     expect(api.saveCharacterDraft).toHaveBeenCalledWith('default', expect.objectContaining({
       states: expect.not.arrayContaining([
