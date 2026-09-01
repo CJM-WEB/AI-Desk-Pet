@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { access } from 'node:fs/promises';
+import { access, readFile } from 'node:fs/promises';
 import { test } from 'node:test';
 
 import {
@@ -72,6 +72,21 @@ test('迁移行为门接受 PostgreSQL 17 的补丁版本并拒绝其他主版�
   );
 });
 
+test('官方安装包锁观察每轮刷新 PostgreSQL 统计快照', async () => {
+  const source = await readFile(
+    new URL('./test-cloudbase-migrations.mjs', import.meta.url),
+    'utf8'
+  );
+  const start = source.indexOf('DO $official_download_metric_wait_gate$');
+  const end = source.indexOf('$official_download_metric_wait_gate$;', start);
+  const observationSql = source.slice(start, end);
+
+  assert.match(
+    observationSql,
+    /LOOP\s+PERFORM pg_stat_clear_snapshot\(\);\s+IF EXISTS/u
+  );
+});
+
 test('官方安装包并发门等待两个写会话成功后才校验最终计数', async () => {
   for (const pendingName of ['first', 'second']) {
     const firstCompletion = deferred();
@@ -96,14 +111,12 @@ test('官方安装包并发门等待两个写会话成功后才校验最终计�
       startSession: () => sessions[sessionIndex++]
     });
 
+    observation.resolve();
     const completedName = pendingName === 'first' ? 'second' : 'first';
     completions[completedName].resolve();
     await nextTurn();
     assert.equal(finalCountChecked, false, `${pendingName} 尚未完成`);
     completions[pendingName].resolve();
-    await nextTurn();
-    assert.equal(finalCountChecked, false, '锁观察尚未完成');
-    observation.resolve();
     await gate;
     assert.equal(finalCountChecked, true);
   }

@@ -269,6 +269,7 @@ DECLARE
   v_deadline timestamptz := clock_timestamp() + interval '5 seconds';
 BEGIN
   LOOP
+    PERFORM pg_stat_clear_snapshot();
     IF EXISTS (
       SELECT 1 FROM pg_stat_activity
       WHERE application_name = 'ai-pet-official-download-metric-second'
