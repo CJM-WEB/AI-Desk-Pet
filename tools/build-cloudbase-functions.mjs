@@ -11,12 +11,6 @@ const requireFromApi = createRequire(resolve(apiRoot, 'package.json'));
 const { build } = requireFromApi('esbuild');
 const functions = {
   api: resolve(apiRoot, 'src', 'functions', 'api.ts'),
-  'moderation-worker': resolve(
-    apiRoot,
-    'src',
-    'functions',
-    'moderation-worker.ts'
-  ),
   cleanup: resolve(apiRoot, 'src', 'functions', 'cleanup.ts')
 };
 const dynamicDependencies = [
@@ -83,7 +77,7 @@ function assertDistRootIsSafe() {
   }
 }
 
-/** 构建三个可独立部署的 CloudBase 函数目录。 */
+/** 构建两个可独立部署的 CloudBase 函数目录。 */
 export async function buildCloudBaseFunctions() {
   assertDistRootIsSafe();
   await rm(distRoot, { recursive: true, force: true });

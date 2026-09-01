@@ -10,6 +10,14 @@ const workspaceRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const require = createRequire(import.meta.url);
 const distRoot = resolve(workspaceRoot, 'apps', 'cloudbase-api', 'dist');
 const staleFile = resolve(distRoot, 'obsolete', 'stale.txt');
+const cloudBaseConfig = JSON.parse(readFileSync(
+  resolve(workspaceRoot, 'cloudbaserc.json'),
+  'utf8'
+));
+const cloudBaseApiPackage = JSON.parse(readFileSync(
+  resolve(workspaceRoot, 'apps', 'cloudbase-api', 'package.json'),
+  'utf8'
+));
 const { rewriteCloudBaseV3NodeRuntime } = await import(
   './build-cloudbase-functions.mjs'
 );
@@ -40,6 +48,20 @@ test('V3 Node rewrite 缺少任一已锁定动态依赖时失败关闭', () => {
   }
 });
 
+test('CloudBase 部署配置只保留 API 与清理入口', () => {
+  assert.deepEqual(
+    cloudBaseConfig.functions.map(item => item.name),
+    ['ai-pet-api', 'ai-pet-cleanup']
+  );
+});
+
+test('CloudBase API 不再声明 Tencent 内容审核 SDK', () => {
+  assert.equal(
+    Object.hasOwn(cloudBaseApiPackage.dependencies, 'tencentcloud-sdk-nodejs'),
+    false
+  );
+});
+
 test('CloudBase 函数构建脚本兼容当前 esbuild', () => {
   mkdirSync(dirname(staleFile), { recursive: true });
   writeFileSync(staleFile, 'obsolete', 'utf8');
@@ -52,7 +74,7 @@ test('CloudBase 函数构建脚本兼容当前 esbuild', () => {
 
   assert.equal(result.status, 0, result.stderr);
   assert.equal(existsSync(staleFile), false, '构建前的陈旧产物应被清理');
-  for (const name of ['api', 'moderation-worker', 'cleanup']) {
+  for (const name of ['api', 'cleanup']) {
     const entry = resolve(
       workspaceRoot,
       'apps',
@@ -73,4 +95,9 @@ test('CloudBase 函数构建脚本兼容当前 esbuild', () => {
       assert.equal(source.includes(signature), false, `${name} 不应保留 ${signature}`);
     }
   }
+  assert.equal(
+    existsSync(resolve(distRoot, 'moderation-worker')),
+    false,
+    '不应构建自动审核工作器入口'
+  );
 });

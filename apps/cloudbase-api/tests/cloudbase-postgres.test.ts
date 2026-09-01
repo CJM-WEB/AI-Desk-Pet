@@ -377,28 +377,6 @@ class MemoryRdb {
       return { data: structuredClone(row), error: null };
     }
 
-    if (name === 'claim_moderation_jobs') {
-      const limit = params.p_limit as number;
-      const leaseUntil = params.p_lease_until as string;
-      const now = '2026-07-31T00:00:00.000Z';
-      const claimed = this.submissions
-        .filter((row) =>
-          row.status === 'system_reviewing'
-          && (row.moderation_lease_until === null || row.moderation_lease_until <= now)
-        )
-        .sort((left, right) =>
-          left.created_at.localeCompare(right.created_at) || left.id.localeCompare(right.id)
-        )
-        .slice(0, limit);
-
-      for (const row of claimed) {
-        row.moderation_lease_until = leaseUntil;
-        row.updated_at = now;
-      }
-
-      return { data: structuredClone(claimed), error: null };
-    }
-
     if (name === 'complete_submission_upload') {
       const row = this.submissions.find(
         candidate => candidate.id === params.p_submission_id
@@ -785,7 +763,7 @@ describe('CloudBase PostgreSQL RPC 客户端', () => {
       fetcher
     );
 
-    await expect(client.rpc('claim_moderation_jobs', {
+    await expect(client.rpc('claim_cleanup_jobs', {
       p_limit: 1,
       p_lease_until: '2026-07-31T01:00:00.000Z'
     })).resolves.toEqual({
@@ -794,7 +772,7 @@ describe('CloudBase PostgreSQL RPC 客户端', () => {
     });
     expect(fetcher).toHaveBeenCalledOnce();
     expect(fetcher).toHaveBeenCalledWith(
-      'https://env-test.api.tcloudbasegateway.com/v1/rdb/rest/rpc/claim_moderation_jobs',
+      'https://env-test.api.tcloudbasegateway.com/v1/rdb/rest/rpc/claim_cleanup_jobs',
       {
         method: 'POST',
         headers: {
@@ -1337,7 +1315,7 @@ describe('CloudBase PostgreSQL RPC 远程边界', () => {
       fetcher
     );
 
-    const pending = client.rpc('claim_moderation_jobs', {});
+    const pending = client.rpc('claim_cleanup_jobs', {});
     await vi.advanceTimersByTimeAsync(25);
 
     await expect(pending).resolves.toEqual({
@@ -1366,7 +1344,7 @@ describe('CloudBase PostgreSQL RPC 远程边界', () => {
       }))
     );
 
-    const pending = client.rpc('claim_moderation_jobs', {});
+    const pending = client.rpc('claim_cleanup_jobs', {});
     await vi.advanceTimersByTimeAsync(15);
     await vi.advanceTimersByTimeAsync(10);
 
@@ -1388,7 +1366,7 @@ describe('CloudBase PostgreSQL RPC 远程边界', () => {
       }))
     );
 
-    await expect(client.rpc('claim_moderation_jobs', {})).resolves.toEqual({
+    await expect(client.rpc('claim_cleanup_jobs', {})).resolves.toEqual({
       data: null,
       error: { message: 'RPC 响应过大' }
     });
@@ -1651,40 +1629,10 @@ describe('CloudBase PostgreSQL 仓储', () => {
     errorLog.mockRestore();
   });
 
-  it('审核任务领取跳过有效租约并写入新租约', async () => {
-    const database = new MemoryRdb();
-    database.submissions.push(
-      makeSubmission({
-        id: 'expired',
-        status: 'system_reviewing',
-        moderation_lease_until: '2026-07-30T23:59:00.000Z'
-      }),
-      makeSubmission({
-        id: 'leased',
-        status: 'system_reviewing',
-        moderation_lease_until: '2026-07-31T00:30:00.000Z'
-      })
-    );
-    const { store } = createStore(database);
-
-    await expect(
-      store.claimModerationJobs(3, '2026-07-31T00:10:00.000Z')
-    ).resolves.toEqual([
-      expect.objectContaining({ id: 'expired', status: 'system_reviewing' })
-    ]);
-    expect(database.submissions.find((row) => row.id === 'expired'))
-      .toMatchObject({ moderation_lease_until: '2026-07-31T00:10:00.000Z' });
-  });
-
-  it('审核任务和管理员动作只使用独立 RPC 客户端', async () => {
+  it('管理员动作只使用独立 RPC 客户端', async () => {
     const tableDatabase = new MemoryRdb();
     const rpcDatabase = new MemoryRdb();
     rpcDatabase.submissions.push(
-      makeSubmission({
-        id: 'rpc-submission',
-        status: 'system_reviewing',
-        moderation_lease_until: '2026-07-30T23:59:00.000Z'
-      }),
       makeSubmission({
         id: 'rpc-admin-submission',
         status: 'manual_review_pending',
@@ -1693,11 +1641,6 @@ describe('CloudBase PostgreSQL 仓储', () => {
     );
     const store = new CloudBasePostgresStore(tableDatabase, rpcDatabase);
 
-    await expect(
-      store.claimModerationJobs(1, '2026-07-31T00:10:00.000Z')
-    ).resolves.toEqual([
-      expect.objectContaining({ id: 'rpc-submission' })
-    ]);
     await expect(store.applyAdminAction({
       submissionId: 'rpc-admin-submission',
       adminId: 'admin-1',
@@ -1838,113 +1781,6 @@ describe('CloudBase PostgreSQL 仓储', () => {
       });
     }
   );
-
-  it('后到扫描端口复用原子审核 RPC 并只返回 applied 事实', async () => {
-    const rpcClient = {
-      rpc: vi.fn(async () => ({
-        data: { applied: true, lateResult: true },
-        error: null
-      }))
-    };
-    const store = new CloudBasePostgresStore(new MemoryRdb(), rpcClient);
-    const input = {
-      submissionId: 'late-result',
-      expectedVersion: 2,
-      nextStatus: 'auto_rejected' as const,
-      results: [{
-        submissionId: 'late-result',
-        kind: 'package_scan',
-        provider: 'isolated-scanner',
-        ruleVersion: 'character-package-2026-08-15',
-        suggestion: 'Block' as const,
-        label: '技术检查：CHARACTER_PACKAGE_MALWARE_DETECTED',
-        score: null,
-        evidence: { scanCode: 'CHARACTER_PACKAGE_MALWARE_DETECTED' },
-        requestedAt: '2026-08-31T00:00:00.000Z',
-        completedAt: '2026-08-31T00:00:01.000Z',
-        errorMessage: null
-      }],
-      riskSummary: {
-        blocked: true,
-        signalCount: 1,
-        blockedLabels: ['技术检查：CHARACTER_PACKAGE_MALWARE_DETECTED']
-      },
-      autoRejectionReason: '技术检查：CHARACTER_PACKAGE_MALWARE_DETECTED'
-    };
-
-    await expect(store.recordLateModerationResult(input)).resolves.toBe(true);
-    expect(rpcClient.rpc).toHaveBeenCalledWith('apply_moderation_decision', {
-      p_submission_id: 'late-result',
-      p_expected_version: 2,
-      p_next_status: 'auto_rejected',
-      p_results: [expect.objectContaining({
-        kind: 'package_scan',
-        provider: 'isolated-scanner'
-      })],
-      p_risk_summary: input.riskSummary,
-      p_auto_rejection_reason: '技术检查：CHARACTER_PACKAGE_MALWARE_DETECTED'
-    });
-  });
-
-  it('并发强制发布时把混合审核结果原样交给原子 RPC 裁决', async () => {
-    const rpcClient = {
-      rpc: vi.fn(async () => ({
-        data: { applied: true, lateResult: true },
-        error: null
-      }))
-    };
-    const store = new CloudBasePostgresStore(new MemoryRdb(), rpcClient);
-    const technical = {
-      submissionId: 'late-mixed-result',
-      kind: 'package_scan',
-      provider: 'isolated-scanner',
-      ruleVersion: 'character-package-2026-08-15',
-      suggestion: 'Pass' as const,
-      label: '技术检查：CHARACTER_PACKAGE_SCAN_PASSED',
-      score: null,
-      evidence: { scanCode: 'CHARACTER_PACKAGE_SCAN_PASSED' },
-      requestedAt: '2026-08-31T00:00:00.000Z',
-      completedAt: '2026-08-31T00:00:01.000Z',
-      errorMessage: null
-    };
-    const content = {
-      ...technical,
-      kind: 'package_json_text',
-      provider: 'tencent-tms',
-      label: 'Normal'
-    };
-    const input = {
-      submissionId: 'late-mixed-result',
-      expectedVersion: 2,
-      nextStatus: 'manual_review_pending' as const,
-      results: [technical, content],
-      riskSummary: {
-        blocked: false,
-        signalCount: 2,
-        blockedLabels: []
-      },
-      autoRejectionReason: null
-    };
-
-    await expect(store.applyModerationDecision(input)).resolves.toBe(true);
-    expect(rpcClient.rpc).toHaveBeenCalledWith('apply_moderation_decision', {
-      p_submission_id: 'late-mixed-result',
-      p_expected_version: 2,
-      p_next_status: 'manual_review_pending',
-      p_results: [
-        expect.objectContaining({
-          kind: 'package_scan',
-          provider: 'isolated-scanner'
-        }),
-        expect.objectContaining({
-          kind: 'package_json_text',
-          provider: 'tencent-tms'
-        })
-      ],
-      p_risk_summary: input.riskSummary,
-      p_auto_rejection_reason: null
-    });
-  });
 
   it('管理员动作可映射旧 purge 升级后仅含可证明字段的重放快照', async () => {
     const rpcClient = {

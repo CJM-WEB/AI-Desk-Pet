@@ -12,18 +12,8 @@ import type {
   AdminIdentityProvider,
   AdminIdentity,
   Clock,
-  ContentModerator,
-  ModerationImageInput,
-  ModerationSignal,
-  ModerationTextInput,
   ObjectStorage,
   NewSubmission,
-  PackageScanResult,
-  ScanPackageInput,
-  PackageScanner,
-  RelevanceInput,
-  RelevanceClassifier,
-  RelevanceSuggestion,
   SignedDownload,
   SignedUpload,
   SignedUploadOptions,
@@ -36,7 +26,7 @@ import type {
   TextSubmissionStore
 } from '../src/ports.js';
 
-describe('审核 API 端口', () => {
+describe('CloudBase API 端口', () => {
   it('声明各基础设施边界的最小操作', () => {
     expectTypeOf<{ id: string; status: SubmissionRow['status'] }>()
       .toMatchTypeOf<SubmissionRow>();
@@ -54,14 +44,6 @@ describe('审核 API 端口', () => {
       .toEqualTypeOf<(path: string, expiresInSeconds: number) => Promise<SignedDownload>>();
     expectTypeOf<ObjectStorage['delete']>()
       .toEqualTypeOf<(path: string) => Promise<void>>();
-    expectTypeOf<ContentModerator['reviewText']>()
-      .toEqualTypeOf<(input: ModerationTextInput) => Promise<ModerationSignal>>();
-    expectTypeOf<ContentModerator['reviewImage']>()
-      .toEqualTypeOf<(input: ModerationImageInput) => Promise<ModerationSignal>>();
-    expectTypeOf<RelevanceClassifier['classify']>()
-      .toEqualTypeOf<(input: RelevanceInput) => Promise<RelevanceSuggestion>>();
-    expectTypeOf<PackageScanner['scan']>()
-      .toEqualTypeOf<(input: ScanPackageInput) => Promise<PackageScanResult>>();
     expectTypeOf<AdminIdentityProvider['requireAdmin']>()
       .toEqualTypeOf<(accessToken: string) => Promise<AdminIdentity>>();
     expectTypeOf<Clock['now']>().toEqualTypeOf<() => Date>();

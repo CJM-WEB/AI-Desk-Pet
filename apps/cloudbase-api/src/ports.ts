@@ -78,39 +78,6 @@ export interface CompleteUploadInput {
   }[];
 }
 
-/** 单次系统审核结果的持久化记录。 */
-export interface ModerationRecord {
-  submissionId: string;
-  kind: string;
-  provider: string;
-  ruleVersion: string;
-  suggestion: ModerationSignal['suggestion'];
-  label: string;
-  score: number | null;
-  evidence: Record<string, unknown>;
-  requestedAt: string;
-  completedAt: string | null;
-  errorMessage: string | null;
-}
-
-/** 系统审核决策和证据必须由同一数据库事务原子写入。 */
-export interface ApplyModerationDecisionInput {
-  submissionId: string;
-  expectedVersion: number;
-  nextStatus: 'manual_review_pending' | 'auto_rejected';
-  results: readonly ModerationRecord[];
-  riskSummary: Record<string, unknown>;
-  autoRejectionReason: string | null;
-}
-
-/** 依赖失败时保存有限证据并安排数据库持久化退避。 */
-export interface RecordModerationFailureInput {
-  submissionId: string;
-  expectedVersion: number;
-  errorSummary: string;
-  results: readonly ModerationRecord[];
-}
-
 /** 数据库原子管理员动作的完整输入。 */
 export interface AdminActionInput {
   submissionId: string;
@@ -242,76 +209,6 @@ export interface SignedDownload {
   expiresAt: string;
 }
 
-/** 文本审核输入。 */
-export interface ModerationTextInput {
-  text: string;
-}
-
-/** 图片审核输入。 */
-export interface ModerationImageInput {
-  imageUrl: string;
-}
-
-/** 内容审核服务归一化后的建议。 */
-export interface ModerationSignal {
-  suggestion: 'Pass' | 'Review' | 'Block';
-  label: string;
-}
-
-/** AI Pet 相关性判定输入。 */
-export interface RelevanceInput {
-  title: string;
-  body: string;
-}
-
-/** AI Pet 相关性判定结果。 */
-export type RelevanceSuggestion = 'pass' | 'review' | 'reject';
-
-/** 隔离扫描服务输入。 */
-export interface ScanPackageInput {
-  submissionId: string;
-  downloadUrl: string;
-  expiresAt: string;
-}
-
-export interface PackageImageSignal {
-  path: string;
-  suggestion: ModerationSignal['suggestion'];
-  labels: readonly string[];
-  ocrText?: string;
-}
-
-interface PackageScanResultBase {
-  code: string;
-  summary: {
-    fileCount: number;
-    totalUncompressedBytes: number;
-  };
-  jsonTexts: readonly {
-    path: string;
-    text: string;
-  }[];
-  imageSignals: readonly PackageImageSignal[];
-}
-
-/** 隔离扫描服务经过共享协议校验后的有限结构化结论。 */
-export type PackageScanResult = PackageScanResultBase & (
-  | { complete: false; safe: false }
-  | { complete: true; safe: false }
-  | {
-      complete: true;
-      safe: true;
-      protocolVersion: string;
-      ruleVersion: string;
-      submissionId: string;
-      completedAt: string;
-      archive: {
-        sizeBytes: number;
-        sha256: string;
-      };
-    }
-);
-
 /** 管理员身份的最小声明。 */
 export interface AdminIdentity {
   uid: string;
@@ -340,7 +237,7 @@ export interface AdminQueuePage {
 export interface AdminModerationResult {
   kind: string;
   provider: string;
-  suggestion: ModerationSignal['suggestion'];
+  suggestion: 'Pass' | 'Review' | 'Block';
   label: string;
   score: number | null;
   evidence: Record<string, unknown>;
@@ -397,15 +294,6 @@ export interface SubmissionStore {
   findByStatusTokenHash(hash: string): Promise<SubmissionStatusView | null>;
 }
 
-/** 自动审核工作器所需的原子数据库操作。 */
-export interface ModerationJobStore {
-  claimModerationJobs(limit: number, leaseUntil: string): Promise<SubmissionRow[]>;
-  findById(id: string): Promise<SubmissionWithAssets | null>;
-  applyModerationDecision(input: ApplyModerationDecisionInput): Promise<boolean>;
-  recordLateModerationResult(input: ApplyModerationDecisionInput): Promise<boolean>;
-  recordModerationFailure(input: RecordModerationFailureInput): Promise<void>;
-}
-
 /** 多实例共享的请求限流存储。 */
 export interface SecurityStore {
   consumeAbuseLimit(input: AbuseLimitInput): Promise<AbuseLimitResult>;
@@ -434,22 +322,6 @@ export interface ObjectStorage {
   info(path: string): Promise<StoredObjectInfo | null>;
   createSignedUrl(path: string, expiresInSeconds: number): Promise<SignedDownload>;
   delete(path: string): Promise<void>;
-}
-
-/** 文本与图片审核边界。 */
-export interface ContentModerator {
-  reviewText(input: ModerationTextInput): Promise<ModerationSignal>;
-  reviewImage(input: ModerationImageInput): Promise<ModerationSignal>;
-}
-
-/** AI Pet 相关性判定边界。 */
-export interface RelevanceClassifier {
-  classify(input: RelevanceInput): Promise<RelevanceSuggestion>;
-}
-
-/** 隔离扫描服务客户端边界。 */
-export interface PackageScanner {
-  scan(input: ScanPackageInput): Promise<PackageScanResult>;
 }
 
 /** 管理员身份提供者边界。 */

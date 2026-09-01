@@ -23,9 +23,7 @@ import type {
   AdminSubmissionSummary,
   AbuseLimitInput,
   AbuseLimitResult,
-  ApplyModerationDecisionInput,
   CompleteUploadInput,
-  ModerationRecord,
   NewSubmission,
   NewTextSubmission,
   PublicDownloadInput,
@@ -39,13 +37,11 @@ import type {
   PublishedFeedbackPage,
   PublishedFeedbackRecord,
   SecurityStore,
-  RecordModerationFailureInput,
   SubmissionAsset,
   SubmissionRow,
   SubmissionStatusView,
   SubmissionStore,
   TextSubmissionStore,
-  ModerationJobStore,
   CleanupStore,
   MarkPurgedInput,
   SubmissionWithAssets
@@ -73,9 +69,6 @@ export type CloudBasePostgresRpcName =
   | 'record_public_download'
   | 'create_submission'
   | 'complete_submission_upload'
-  | 'claim_moderation_jobs'
-  | 'apply_moderation_decision'
-  | 'record_moderation_failure'
   | 'apply_admin_action'
   | 'claim_cleanup_jobs'
   | 'mark_submission_purged'
@@ -190,7 +183,6 @@ export class CloudBasePostgresRpcClient implements CloudBasePostgresRpc {
  */
 export class CloudBasePostgresStore implements
   SubmissionStore,
-  ModerationJobStore,
   SecurityStore,
   TextSubmissionStore,
   PublicContentStore,
@@ -397,62 +389,6 @@ export class CloudBasePostgresStore implements
       createdAt: requireString(row.created_at, 'created_at'),
       updatedAt: requireString(row.updated_at, 'updated_at')
     };
-  }
-
-  async claimModerationJobs(
-    limit: number,
-    leaseUntil: string
-  ): Promise<SubmissionRow[]> {
-    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 3) {
-      throw new ApiError('INVALID_LIMIT', 400);
-    }
-    const result = await this.rpcClient.rpc('claim_moderation_jobs', {
-      p_limit: limit,
-      p_lease_until: leaseUntil
-    });
-    return requireRows(requireData(result, '领取审核任务失败'), '审核任务')
-      .map(mapSubmission);
-  }
-
-  async applyModerationDecision(
-    input: ApplyModerationDecisionInput
-  ): Promise<boolean> {
-    return this.writeModerationDecision(input, '应用系统审核决策失败');
-  }
-
-  async recordLateModerationResult(
-    input: ApplyModerationDecisionInput
-  ): Promise<boolean> {
-    return this.writeModerationDecision(input, '记录后到扫描结果失败');
-  }
-
-  private async writeModerationDecision(
-    input: ApplyModerationDecisionInput,
-    context: string
-  ): Promise<boolean> {
-    const row = requireRecord(
-      requireData(await this.rpcClient.rpc('apply_moderation_decision', {
-        p_submission_id: input.submissionId,
-        p_expected_version: input.expectedVersion,
-        p_next_status: input.nextStatus,
-        p_results: input.results.map(toModerationRpcRecord),
-        p_risk_summary: input.riskSummary,
-        p_auto_rejection_reason: input.autoRejectionReason
-      }), context),
-      '系统审核决策结果'
-    );
-    return requireBoolean(row.applied, 'applied');
-  }
-
-  async recordModerationFailure(
-    input: RecordModerationFailureInput
-  ): Promise<void> {
-    requireData(await this.rpcClient.rpc('record_moderation_failure', {
-      p_submission_id: input.submissionId,
-      p_expected_version: input.expectedVersion,
-      p_error_summary: input.errorSummary.slice(0, 200),
-      p_results: input.results.map(toModerationRpcRecord)
-    }), '记录系统审核失败状态失败');
   }
 
   async applyAdminAction(input: AdminActionInput): Promise<AdminActionResult> {
@@ -884,21 +820,6 @@ function requireRelationRecord(
     return requireRecord(value[0], context);
   }
   return requireRecord(value, context);
-}
-
-function toModerationRpcRecord(result: ModerationRecord): Record<string, unknown> {
-  return {
-    kind: result.kind,
-    provider: result.provider,
-    rule_version: result.ruleVersion,
-    suggestion: result.suggestion,
-    label: result.label,
-    score: result.score,
-    evidence: result.evidence,
-    requested_at: result.requestedAt,
-    completed_at: result.completedAt,
-    error_message: result.errorMessage
-  };
 }
 
 function mapAsset(value: unknown): SubmissionAsset {

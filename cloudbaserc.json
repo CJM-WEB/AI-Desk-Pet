@@ -10,13 +10,6 @@
       "timeout": 30
     },
     {
-      "name": "ai-pet-moderation-worker",
-      "dir": "./apps/cloudbase-api/dist/moderation-worker",
-      "runtime": "Nodejs20.19",
-      "handler": "index.main",
-      "timeout": 900
-    },
-    {
       "name": "ai-pet-cleanup",
       "dir": "./apps/cloudbase-api/dist/cleanup",
       "runtime": "Nodejs20.19",

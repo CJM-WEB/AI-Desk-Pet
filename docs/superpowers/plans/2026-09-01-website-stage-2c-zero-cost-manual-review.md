@@ -141,7 +141,11 @@ git commit -m "refactor(web): 投稿直接进入人工审核"
 - Modify: `apps/cloudbase-api/src/adapters/cloudbase-postgres.ts`
 - Modify: `apps/cloudbase-api/tests/config.test.ts`
 - Modify: `apps/cloudbase-api/tests/build-output.test.ts`
+- Modify: `apps/cloudbase-api/tests/ports.test.ts`
+- Modify: `apps/cloudbase-api/tests/cloudbase-postgres.test.ts`
+- Modify: `apps/cloudbase-api/tests/support/cloudbase-production.ts`
 - Modify: `apps/cloudbase-api/package.json`
+- Modify: `.dependency-cruiser.mjs`
 - Modify: `tools/build-cloudbase-functions.mjs`
 - Modify: `tools/build-cloudbase-functions.test.mjs`
 - Modify: `cloudbaserc.json`

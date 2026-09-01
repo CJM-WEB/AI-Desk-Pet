@@ -515,11 +515,10 @@ export default {
     },
     {
       name: 'tencent-sdk-only-in-content-adapters',
-      comment: '腾讯内容安全 SDK 只允许由 CloudBase 审核适配器或包扫描服务端适配器封装。',
+      comment: '腾讯内容安全 SDK 只允许由包扫描服务端适配器封装。',
       severity: 'warn',
       from: {
         pathNot: [
-          '^apps/cloudbase-api/src/adapters/tencent-content-moderation\\.ts$',
           '^apps/package-scanner/src/server\\.ts$',
         ],
       },

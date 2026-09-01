@@ -16,22 +16,6 @@ export function stubApiConfig(): void {
   });
 }
 
-/** 为自动审核入口提供最小环境配置。 */
-export function stubModerationWorkerConfig(): void {
-  stubValues({
-    CLOUDBASE_ENV_ID: 'env-test',
-    PRIVATE_BUCKET_ID: 'private-bucket',
-    CLOUDBASE_API_KEY: 'service-role-key',
-    TENCENTCLOUD_SECRETID: 'secret-id',
-    TENCENTCLOUD_SECRETKEY: 'secret-key',
-    MODERATION_REGION: 'ap-shanghai',
-    TMS_BIZ_TYPE: 'text-moderation',
-    IMS_BIZ_TYPE: 'image-moderation',
-    SCANNER_URL: 'https://scanner.example.com',
-    SCANNER_HMAC_SECRET: 'scanner-secret'
-  });
-}
-
 /** 为隔离清理入口提供最小环境配置。 */
 export function stubCleanupConfig(): void {
   stubValues({
