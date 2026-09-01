@@ -79,6 +79,8 @@ function AdminWorkspace({
   const [activeView, setActiveView] = useState<AdminView>('manual_review_pending');
   const [items, setItems] = useState<AdminSubmissionSummary[]>([]);
   const [nextCursor, setNextCursor] = useState<string | null>(null);
+  const [clickCount, setClickCount] = useState<number | null>(null);
+  const [metricUnavailable, setMetricUnavailable] = useState(false);
   const [queueLoading, setQueueLoading] = useState(false);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [detail, setDetail] = useState<AdminSubmissionDetail | null>(null);
@@ -89,8 +91,10 @@ function AdminWorkspace({
   const [notice, setNotice] = useState<string | null>(null);
   const queueSequence = useRef(0);
   const detailSequence = useRef(0);
+  const metricSequence = useRef(0);
   const queueAbort = useRef<AbortController | null>(null);
   const detailAbort = useRef<AbortController | null>(null);
+  const metricAbort = useRef<AbortController | null>(null);
   const seenCursors = useRef(new Set<string>());
   const pendingCursors = useRef(new Set<string>());
   const sessionEpoch = useRef(0);
@@ -99,8 +103,10 @@ function AdminWorkspace({
   const clearSensitiveSessionState = useCallback((nextPhase: 'login' | 'forbidden') => {
     queueAbort.current?.abort();
     detailAbort.current?.abort();
+    metricAbort.current?.abort();
     queueSequence.current += 1;
     detailSequence.current += 1;
+    metricSequence.current += 1;
     sessionEpoch.current += 1;
     actingRef.current = false;
     seenCursors.current.clear();
@@ -108,6 +114,8 @@ function AdminWorkspace({
     setAccessToken(null);
     setItems([]);
     setNextCursor(null);
+    setClickCount(null);
+    setMetricUnavailable(false);
     setSelectedId(null);
     setDetail(null);
     setNotice(null);
@@ -121,8 +129,10 @@ function AdminWorkspace({
   useEffect(() => () => {
     queueAbort.current?.abort();
     detailAbort.current?.abort();
+    metricAbort.current?.abort();
     queueSequence.current += 1;
     detailSequence.current += 1;
+    metricSequence.current += 1;
     sessionEpoch.current += 1;
   }, []);
 
@@ -214,6 +224,32 @@ function AdminWorkspace({
     void loadQueue(queueStatusForView(activeView));
     return () => queueAbort.current?.abort();
   }, [activeView, loadQueue, phase]);
+
+  useEffect(() => {
+    if (phase !== 'workspace' || !accessToken) return;
+    const epoch = sessionEpoch.current;
+    const sequence = ++metricSequence.current;
+    metricAbort.current?.abort();
+    const controller = new AbortController();
+    metricAbort.current = controller;
+    setClickCount(null);
+    setMetricUnavailable(false);
+
+    void resolvedApi.getOfficialWindowsDownloadClickCount(accessToken, controller.signal)
+      .then(count => {
+        if (
+          epoch === sessionEpoch.current
+          && sequence === metricSequence.current
+          && !controller.signal.aborted
+        ) setClickCount(count);
+      })
+      .catch(async error => {
+        if (epoch !== sessionEpoch.current || controller.signal.aborted) return;
+        if (!await handleApiError(error)) setMetricUnavailable(true);
+      });
+
+    return () => controller.abort();
+  }, [accessToken, handleApiError, phase, resolvedApi]);
 
   const loadDetail = useCallback(async (id: string): Promise<void> => {
     if (!accessToken) return;
@@ -334,7 +370,16 @@ function AdminWorkspace({
       <div className={styles.workspace}>
         <header className={styles.topbar}>
           <div><p className={styles.eyebrow}>PRIVATE ADMIN MODE</p><h1>{t('admin.app.title')}</h1></div>
-          <button type="button" className={styles.textButton} onClick={signOut}>{t('admin.app.logout')}</button>
+          <div className={styles.topbarActions}>
+            <section className={styles.downloadMetric} aria-label={t('admin.metric.label')}>
+              <span>{t('admin.metric.label')}</span>
+              <strong>{clickCount ?? (metricUnavailable
+                ? t('admin.metric.unavailable')
+                : t('admin.metric.loading'))}</strong>
+              <p>{t('admin.metric.description')}</p>
+            </section>
+            <button type="button" className={styles.textButton} onClick={signOut}>{t('admin.app.logout')}</button>
+          </div>
         </header>
         {notice ? <p className={styles.notice} role="status">{notice}</p> : null}
         <div className={styles.reviewGrid}>

@@ -53,6 +53,7 @@ function setup(overrides: Partial<AdminApi> = {}, authOverrides: Partial<AdminAu
   const api = {
     listQueue: vi.fn().mockResolvedValue(queuePage(row)),
     getDetail: vi.fn().mockResolvedValue(row),
+    getOfficialWindowsDownloadClickCount: vi.fn().mockResolvedValue(12),
     applyAction: vi.fn().mockResolvedValue({
       submission: { ...row, status: 'published', statusVersion: 4 },
       replayed: false
@@ -156,6 +157,69 @@ describe('管理员审核工作台', () => {
     expect(getDetail).toHaveBeenCalledTimes(2);
     expect(api.listQueue).toHaveBeenCalledTimes(2);
     expect((screen.getByLabelText('审核理由') as HTMLTextAreaElement).value).toBe('');
+  });
+
+  it('已认证工作台显示官方安装包累计点击及其统计限制', async () => {
+    const { api } = setup({ getOfficialWindowsDownloadClickCount: vi.fn().mockResolvedValue(12) });
+
+    expect(await screen.findByText('12')).toBeTruthy();
+    expect(screen.getByText('官方安装包下载点击')).toBeTruthy();
+    expect(screen.getByText('这是可重复、可能含自动请求的近似按钮点击，不代表独立用户、传输完成或安装成功。')).toBeTruthy();
+    expect(api.getOfficialWindowsDownloadClickCount).toHaveBeenCalledWith(
+      'access-token',
+      expect.any(AbortSignal)
+    );
+  });
+
+  it('指标读取失败只显示暂不可用且审核队列仍可使用', async () => {
+    setup({ getOfficialWindowsDownloadClickCount: vi.fn().mockRejectedValue(new Error('offline')) });
+
+    expect(await screen.findByText('暂不可用')).toBeTruthy();
+    expect(screen.getByText('改进建议')).toBeTruthy();
+  });
+
+  it('退出后不接收迟到的指标响应', async () => {
+    let resolveMetric: ((value: number) => void) | undefined;
+    const getOfficialWindowsDownloadClickCount = vi.fn().mockReturnValue(new Promise<number>(resolve => {
+      resolveMetric = resolve;
+    }));
+    setup({ getOfficialWindowsDownloadClickCount });
+
+    await waitFor(() => expect(getOfficialWindowsDownloadClickCount).toHaveBeenCalledOnce());
+    fireEvent.click(screen.getByRole('button', { name: '退出登录' }));
+    resolveMetric?.(99);
+
+    await Promise.resolve();
+    expect(screen.queryByText('99')).toBeNull();
+    expect(screen.getByRole('heading', { name: '管理员模式' })).toBeTruthy();
+  });
+
+  it('卸载工作台时取消未完成的指标读取', async () => {
+    let resolveMetric: ((value: number) => void) | undefined;
+    let metricSignal: AbortSignal | undefined;
+    const getOfficialWindowsDownloadClickCount = vi.fn((_: string, signal?: AbortSignal) => {
+      metricSignal = signal;
+      return new Promise<number>(resolve => { resolveMetric = resolve; });
+    });
+    const { view } = setup({ getOfficialWindowsDownloadClickCount });
+
+    await waitFor(() => expect(getOfficialWindowsDownloadClickCount).toHaveBeenCalledOnce());
+    view.unmount();
+    resolveMetric?.(99);
+
+    await Promise.resolve();
+    expect(metricSignal?.aborted).toBe(true);
+  });
+
+  it('指标读取返回 403 时清除会话且不显示累计值', async () => {
+    setup({
+      getOfficialWindowsDownloadClickCount: vi.fn().mockRejectedValue(
+        new ApiClientError('FORBIDDEN', 403)
+      )
+    });
+
+    expect(await screen.findByText('该邮箱没有管理员权限')).toBeTruthy();
+    expect(screen.queryByText('12')).toBeNull();
   });
 
   it('管理员详情只在服务端提供待审 ZIP 时显示五分钟下载链接', async () => {
@@ -644,6 +708,7 @@ describe('管理员审核工作台', () => {
     const api = {
       listQueue: vi.fn().mockResolvedValue(queuePage(row)),
       getDetail: vi.fn().mockResolvedValue(row),
+      getOfficialWindowsDownloadClickCount: vi.fn().mockResolvedValue(12),
       applyAction: vi.fn()
     } satisfies AdminApi;
     const auth = {

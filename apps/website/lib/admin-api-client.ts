@@ -4,6 +4,7 @@ import {
   adminActionResponseSchema,
   adminDetailResponseSchema,
   adminQueueResponseSchema,
+  adminSiteMetricsResponseSchema,
   type AdminQueueResponse,
   type AdminSubmissionDetail
 } from '@myself/shared-types/website-http';
@@ -27,6 +28,10 @@ export interface AdminApi {
     id: string,
     signal?: AbortSignal
   ): Promise<AdminSubmissionDetail>;
+  getOfficialWindowsDownloadClickCount(
+    accessToken: string,
+    signal?: AbortSignal
+  ): Promise<number>;
   applyAction(
     accessToken: string,
     id: string,
@@ -63,6 +68,18 @@ export class AdminApiClient implements AdminApi {
       adminDetailResponseSchema,
       requestInit(accessToken, signal)
     );
+  }
+
+  async getOfficialWindowsDownloadClickCount(
+    accessToken: string,
+    signal?: AbortSignal
+  ): Promise<number> {
+    const result = await this.api.request(
+      '/admin/metrics/official-windows-download',
+      adminSiteMetricsResponseSchema,
+      requestInit(accessToken, signal)
+    );
+    return result.clickCount;
   }
 
   async applyAction(

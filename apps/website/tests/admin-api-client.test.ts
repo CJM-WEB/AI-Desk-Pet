@@ -60,6 +60,21 @@ describe('管理员 API 客户端', () => {
       .rejects.toEqual(new ApiClientError('INVALID_RESPONSE', 200));
   });
 
+  it('读取官方下载点击时沿用管理员令牌并严格解析累计值', async () => {
+    const fetcher = vi.fn().mockResolvedValue(response({ clickCount: 12 }));
+    const client = new AdminApiClient(new ApiClient('/api/v1', fetcher));
+
+    await expect(client.getOfficialWindowsDownloadClickCount('access-token'))
+      .resolves.toBe(12);
+
+    expect(fetcher).toHaveBeenCalledWith(
+      '/api/v1/admin/metrics/official-windows-download',
+      expect.objectContaining({
+        headers: expect.objectContaining({ 'x-ai-pet-admin-token': 'access-token' })
+      })
+    );
+  });
+
   it('管理员分页原样回传并安全编码服务端 opaque token', async () => {
     const fetcher = vi.fn().mockResolvedValue(new Response(JSON.stringify({
       data: { items: [], nextCursor: null },

@@ -6,6 +6,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { CSSProperties } from 'react';
 import { Clock3, Download } from 'lucide-react';
 import { formatReleaseSize } from '../../../lib/release-manifest';
+import { recordOfficialDownloadClick } from '../../../lib/official-download-metric-client';
 import { interpolateMessage, useI18n } from '../../i18n/I18nProvider';
 import type { Translate } from '../../i18n/i18n-types';
 import type { PointerPoint } from '../../home-experience/types';
@@ -328,6 +329,9 @@ export function DownloadChapter({
             <a
               className={styles.downloadAction}
               href={activePlatform.downloadUrl}
+              onClick={() => {
+                if (activePlatform.id === 'windows-x64') recordOfficialDownloadClick();
+              }}
             >
               <Download aria-hidden="true" />
               {t('download.download', { name: activePlatform.name })}
