@@ -572,6 +572,20 @@ test('新共享包直入人工队列并经两步强制发布后在卡片、详�
   ]) {
     expect(pending).not.toHaveProperty(field);
   }
+  expect(pending).not.toHaveProperty('packageDownload');
+  const pendingDetailResponse = await request.get(
+    `/api/v1/admin/submissions/${encodeURIComponent(receipt.submissionId)}`,
+    { headers: { 'x-ai-pet-admin-token': E2E_ADMIN_TOKEN } }
+  );
+  expect(pendingDetailResponse.ok(), await pendingDetailResponse.text()).toBe(true);
+  const pendingDetail = (await pendingDetailResponse.json()).data;
+  expect(pendingDetail.packageDownload).toMatchObject({
+    url: expect.any(String),
+    expiresAt: expect.any(String)
+  });
+  const packageDownload = await request.get(pendingDetail.packageDownload.url);
+  expect(packageDownload.status(), await packageDownload.text()).toBe(200);
+  expect(packageDownload.headers()['content-type']).toContain('application/zip');
   const actionUrl = `/api/v1/admin/submissions/${encodeURIComponent(receipt.submissionId)}/actions`;
   const ordinaryApprove = await request.post(actionUrl, {
     headers: { 'x-ai-pet-admin-token': E2E_ADMIN_TOKEN },
@@ -634,10 +648,14 @@ test('新共享包直入人工队列并经两步强制发布后在卡片、详�
   expect((await conflict.json()).error.code).toBe('IDEMPOTENCY_CONFLICT');
 
   const publicList = await request.get('/api/v1/community?limit=100');
-  expect((await publicList.json()).data.items).toContainEqual(expect.objectContaining({
+  const publicItem = (await publicList.json()).data.items
+    .find((item: { id: string }) => item.id === receipt.submissionId);
+  expect(publicItem).toEqual(expect.objectContaining({
     id: receipt.submissionId,
-    publicationBasis: 'admin_override'
+    publicationBasis: 'admin_override',
+    downloadCount: 0
   }));
+  expect(publicItem).not.toHaveProperty('packageDownload');
   const download = await request.post(
     `/api/v1/community/${encodeURIComponent(receipt.submissionId)}/download`,
     { data: { operationId: 'a5e6612a-73ce-4ed9-8930-f8b4ddcb44d8' } }

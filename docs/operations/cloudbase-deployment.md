@@ -2,7 +2,7 @@
 
 本文是网站阶段 2C 零费用人工审核方案的现行运维入口。它只描述上海 CloudBase PostgreSQL 开发环境的最小运行面；不构成远端操作授权，更不构成正式生产上线授权。
 
-> 当前状态（2026-09-01）：`remote: unverified`。本地实现、测试和真实 Docker 候选已完成验证；尚未创建上海 PostgreSQL 环境、执行远端 migration、部署函数、配置私有 Bucket、身份、网关或静态托管。共享包匿名投稿开关保持 `SHARED_PACKAGE_SUBMISSIONS_ENABLED=false`。
+> 当前状态（2026-09-01）：`remote: unverified`。本地实现、测试和真实 Docker 候选已完成验证；尚未创建上海 PostgreSQL 环境、执行远端 migration、部署函数、配置私有 Bucket、身份、网关或静态托管。共享包匿名投稿开关保持 `SHARED_PACKAGE_SUBMISSIONS_ENABLED=false`。现行证据见 `website-stage-2c-zero-cost-manual-review-acceptance.md`。
 
 ## 1. 正式运行面与禁止部署项
 

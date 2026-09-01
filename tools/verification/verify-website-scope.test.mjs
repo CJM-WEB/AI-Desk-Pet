@@ -20,6 +20,26 @@ const baseManifest = {
   },
 };
 
+const STAGE_2C_RETIRED_PATHS = Object.freeze([
+  'apps/cloudbase-api/src/adapters/scanner-client.ts',
+  'apps/cloudbase-api/src/adapters/tencent-content-moderation.ts',
+  'apps/cloudbase-api/src/functions/moderation-worker.ts',
+  'apps/cloudbase-api/src/services/keyword-relevance.ts',
+  'apps/cloudbase-api/src/services/moderation-service.ts',
+  'apps/cloudbase-api/tests/keyword-relevance.test.ts',
+  'apps/cloudbase-api/tests/moderation-service.test.ts',
+  'apps/cloudbase-api/tests/moderation-worker.test.ts',
+  'apps/cloudbase-api/tests/scanner-client.test.ts',
+  'apps/cloudbase-api/tests/tencent-content-moderation.test.ts',
+  'apps/package-scanner/src/request-signature.ts',
+  'apps/package-scanner/src/server.ts',
+  'apps/package-scanner/tests/adapters.test.ts',
+  'apps/package-scanner/tests/request-signature.test.ts',
+  'apps/package-scanner/tests/server.test.ts',
+  'packages/shared-types/src/scanner-protocol.ts',
+  'packages/shared-types/tests/scanner-protocol.test.ts',
+]);
+
 test('黑名单优先于白名单', () => {
   assert.deepEqual(classifyChangedPaths([
     'tools/verification/new.mjs',
@@ -145,25 +165,23 @@ test('Task 8 只放行精确的网站优化验收记录', () => {
   });
 });
 
-test('阶段二 ScannerProtocol 只放行共享协议和扫描器路径', () => {
+test('阶段二现行 Scanner 只放行本地 CLI 与仍有效的共享契约路径', () => {
   const approvedStagePaths = [
     'docs/superpowers/specs/2026-08-31-website-stage-2-3-local-closure-design.md',
     'docs/superpowers/plans/2026-08-31-website-stage-2-3-local-closure.md',
     '.dependency-cruiser.mjs',
     '.dependency-cruiser.web.mjs',
     'packages/shared-types/package.json',
-    'packages/shared-types/src/scanner-protocol.ts',
     'packages/shared-types/src/website-http.ts',
-    'packages/shared-types/tests/scanner-protocol.test.ts',
     'packages/shared-types/tests/website-http.test.ts',
     'apps/package-scanner/package.json',
     'apps/package-scanner/README.md',
-    'apps/package-scanner/src/server.ts',
-    'apps/package-scanner/src/request-signature.ts',
     'apps/package-scanner/src/scan-package.ts',
-    'apps/package-scanner/tests/server.test.ts',
-    'apps/package-scanner/tests/request-signature.test.ts',
+    'apps/package-scanner/src/local-scan-cli.ts',
+    'apps/package-scanner/src/clamav-command-scanner.ts',
     'apps/package-scanner/tests/scan-package.test.ts',
+    'apps/package-scanner/tests/local-scan-cli.test.ts',
+    'apps/package-scanner/tests/clamav-command-scanner.test.ts',
   ];
 
   assert.deepEqual(classifyChangedPaths(approvedStagePaths), {
@@ -250,7 +268,7 @@ test('阶段 2C 零费用人工审核只放行规格、计划与精确实现路�
     'apps/package-scanner/tests/local-scan-cli.test.ts',
     'apps/package-scanner/tests/clamav-command-scanner.test.ts',
     'apps/package-scanner/vite.build.config.ts',
-    'docs/operations/website-stage-2c-shanghai-acceptance.md',
+    'docs/operations/website-stage-2c-zero-cost-manual-review-acceptance.md',
   ];
   const unapprovedPaths = [
     'docs/superpowers/specs/2026-09-01-website-stage-2c-zero-cost-manual-review-design.txt',
@@ -358,6 +376,25 @@ test('工作树已删除但 Git 索引仍跟踪退役入口时拒绝范围验证
     ]),
     /已退役路径不得恢复：tools\/apply-cloudbase-migrations\.test\.mjs/u,
   );
+});
+
+test('阶段 2C 删除的自动审核与远程 Scanner 路径在工作树和索引中均不可恢复', async t => {
+  for (const retiredPath of STAGE_2C_RETIRED_PATHS) {
+    await t.test(retiredPath, () => {
+      const windowsSuffix = retiredPath.replaceAll('/', '\\');
+      assert.throws(
+        () => assertRetiredWebsiteScopePathsAbsent('C:/workspace', path =>
+          path.endsWith(windowsSuffix)),
+        /已退役路径不得恢复/u,
+        `工作树恢复未被拒绝：${retiredPath}`,
+      );
+      assert.throws(
+        () => assertRetiredWebsiteScopePathsAbsent('C:/workspace', () => false, [retiredPath]),
+        /已退役路径不得恢复/u,
+        `Git 索引恢复未被拒绝：${retiredPath}`,
+      );
+    });
+  }
 });
 
 test('根 manifest 只允许增加阶段 0 脚本和 dependency-cruiser', () => {

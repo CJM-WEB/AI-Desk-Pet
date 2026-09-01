@@ -61,6 +61,7 @@ export const ALLOWED_WEBSITE_SCOPE_PATHS = Object.freeze([
   'docs/operations/content-moderation.md',
   'docs/operations/cloudbase-deployment.md',
   'docs/operations/website-stage-2c-shanghai-acceptance.md',
+  'docs/operations/website-stage-2c-zero-cost-manual-review-acceptance.md',
   'docs/superpowers/specs/2026-08-01-cloudbase-js-sdk-v3-pg-compatibility-design.md',
   'docs/superpowers/specs/2026-09-01-website-stage-2c-shanghai-rebuild-design.md',
   'docs/superpowers/specs/2026-09-01-website-stage-2c-zero-cost-manual-review-design.md',
@@ -125,6 +126,23 @@ export const ALLOWED_WEBSITE_SCOPE_PATHS = Object.freeze([
 export const RETIRED_WEBSITE_SCOPE_PATHS = Object.freeze([
   'tools/apply-cloudbase-migrations.mjs',
   'tools/apply-cloudbase-migrations.test.mjs',
+  'apps/cloudbase-api/src/adapters/scanner-client.ts',
+  'apps/cloudbase-api/src/adapters/tencent-content-moderation.ts',
+  'apps/cloudbase-api/src/functions/moderation-worker.ts',
+  'apps/cloudbase-api/src/services/keyword-relevance.ts',
+  'apps/cloudbase-api/src/services/moderation-service.ts',
+  'apps/cloudbase-api/tests/keyword-relevance.test.ts',
+  'apps/cloudbase-api/tests/moderation-service.test.ts',
+  'apps/cloudbase-api/tests/moderation-worker.test.ts',
+  'apps/cloudbase-api/tests/scanner-client.test.ts',
+  'apps/cloudbase-api/tests/tencent-content-moderation.test.ts',
+  'apps/package-scanner/src/request-signature.ts',
+  'apps/package-scanner/src/server.ts',
+  'apps/package-scanner/tests/adapters.test.ts',
+  'apps/package-scanner/tests/request-signature.test.ts',
+  'apps/package-scanner/tests/server.test.ts',
+  'packages/shared-types/src/scanner-protocol.ts',
+  'packages/shared-types/tests/scanner-protocol.test.ts',
 ]);
 
 /** 桌宠、Agent、角色及其根测试始终优先拒绝，即使未来误入白名单也不放行。 */

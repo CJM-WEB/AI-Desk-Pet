@@ -43,7 +43,7 @@
 - Modify: `tests/memory-website-api.mjs`
 - Modify: `tests/website-contract/production-driver.test.ts`
 
-- [ ] **Step 1.1：RED**
+- [x] **Step 1.1：RED**
 
 在 scope 单测中加入本计划新增的两个文档、两个 migration、本地 Scanner CLI/测试和阶段 2C 验收文件的精确允许路径，并确认现有策略拒绝这些路径。
 
@@ -55,11 +55,11 @@ node --test tools/verification/verify-website-scope.test.mjs
 
 Expected: 新增路径断言因白名单缺失而失败，现有越界拒绝断言仍通过。
 
-- [ ] **Step 1.2：GREEN 与减法复核**
+- [x] **Step 1.2：GREEN 与减法复核**
 
 只扩展精确路径或既有网站目录规则，不放宽桌宠路径，不增加通配到仓库根目录。检查新规格明确替代 CloudBase Run/TMS/IMS/worker，并保留管理员强制发布与公开风险标记。
 
-- [ ] **Step 1.3：验证并提交**
+- [x] **Step 1.3：验证并提交**
 
 ```powershell
 node --test tools/verification/verify-website-scope.test.mjs
@@ -92,7 +92,7 @@ git commit -m "docs(web): 采用零费用人工审核方案"
 - Modify: `tools/test-cloudbase-migrations.mjs`
 - Modify: `tools/test-cloudbase-migrations.test.mjs`
 
-- [ ] **Step 2.1：RED**
+- [x] **Step 2.1：RED**
 
 先把 HTTP 回执、服务、Memory Adapter 和真实 PostgreSQL 行为测试改为期望 `manual_review_pending`。增加真实 SQL 断言：共享包完成上传与反馈创建直入人工队列；既有 `system_reviewing` 迁移时版本递增、worker 运行态清空、历史 `moderation_results` 与风险字段不变；无有效证据的共享包普通批准仍返回 `TECHNICAL_SCAN_REQUIRED`，强制发布仍写入 `admin_override`。
 
@@ -106,7 +106,7 @@ node --test tools/test-cloudbase-migrations.test.mjs
 
 Expected: 旧 `system_reviewing` 实现或缺失 migration 导致新增断言失败。
 
-- [ ] **Step 2.2：GREEN**
+- [x] **Step 2.2：GREEN**
 
 以最小修改完成：
 
@@ -115,7 +115,7 @@ Expected: 旧 `system_reviewing` 实现或缺失 migration 导致新增断言失
 - 新 migration 只覆盖 `create_text_submission`、`complete_submission_upload` 和遗留状态迁移，保留所有对象/MIME/大小、审计和发布结构校验；
 - migration 行为门从全部历史文件动态读取执行顺序，测试只更新到实际可证明的 migration 数量和行为数。
 
-- [ ] **Step 2.3：验证并提交**
+- [x] **Step 2.3：验证并提交**
 
 ```powershell
 pnpm.cmd --filter @myself/shared-types test
@@ -163,19 +163,19 @@ git commit -m "refactor(web): 投稿直接进入人工审核"
 - Modify: `cloudbaserc.json`
 - Modify: `pnpm-lock.yaml`
 
-- [ ] **Step 3.1：删除行动门**
+- [x] **Step 3.1：删除行动门**
 
 主智能体逐项展示本 Task 的十个删除文件，确认它们只服务自动审核且 Git 可恢复，并取得用户第二次明确批准。未取得批准时不得执行本 Task。
 
-- [ ] **Step 3.2：RED**
+- [x] **Step 3.2：RED**
 
 先修改构建产物、配置和依赖测试，使其期望仅有 `api` 与 `cleanup` 两个函数入口，拒绝 moderation worker 环境变量与入口，并确认旧实现导致失败。
 
-- [ ] **Step 3.3：GREEN 与删除**
+- [x] **Step 3.3：GREEN 与删除**
 
 删除 worker 函数、服务、Tencent Adapter、Scanner Client、专用端口和对应测试；从 `cloudbaserc.json`、构建工具和配置 loader 删除 worker；从 CloudBase API 依赖中删除 `tencentcloud-sdk-nodejs`。保留 cleanup、管理员服务、`moderation_results` 读取和强制发布。
 
-- [ ] **Step 3.4：验证并提交**
+- [x] **Step 3.4：验证并提交**
 
 ```powershell
 pnpm.cmd install --lockfile-only
@@ -217,19 +217,19 @@ git commit -m "refactor(web): 删除云端自动审核链"
 - Delete: `packages/shared-types/src/scanner-protocol.ts`
 - Delete: `packages/shared-types/tests/scanner-protocol.test.ts`
 
-- [ ] **Step 4.1：删除行动门**
+- [x] **Step 4.1：删除行动门**
 
 Task 3 的二次确认同时列出并覆盖本 Task 的七个删除文件；若清单或范围变化，必须重新确认变化部分。
 
-- [ ] **Step 4.2：RED**
+- [x] **Step 4.2：RED**
 
 先增加 CLI 与 Docker 候选测试，固定以下契约：单个 ZIP 路径输入；结构与 ClamAV 复用现有扫描内核；图片产生 `manual-review-required` 信号；输出含 `manualReviewRequired: true`；错误退出码非零；不监听端口、不读取腾讯凭据或 Secret；镜像可在 `--network none`、只读输入、非 root 下运行；EICAR 被阻断。
 
-- [ ] **Step 4.3：GREEN 与删除**
+- [x] **Step 4.3：GREEN 与删除**
 
 提取 `ClamAvCommandScanner`，新增薄 CLI，向现有 `scanPackage` 注入只返回人工检查信号的本地图片审核器。删除 HTTP server、HMAC、远程下载、IMS Adapter、共享 Scanner 网络协议及 `tencentcloud-sdk-nodejs`。Dockerfile 只构建 CLI，不暴露端口或 healthcheck。
 
-- [ ] **Step 4.4：验证并提交**
+- [x] **Step 4.4：验证并提交**
 
 ```powershell
 pnpm.cmd install --lockfile-only
@@ -309,7 +309,7 @@ git commit -m "refactor(web): 退役审核队列运行结构"
 
 - Modify: `docs/operations/cloudbase-deployment.md`
 - Modify: `docs/operations/content-moderation.md`
-- Modify: `docs/operations/website-stage-2c-shanghai-acceptance.md`
+- Modify: `docs/operations/website-stage-2c-zero-cost-manual-review-acceptance.md`
 - Modify: `docs/superpowers/specs/2026-09-01-website-stage-2c-shanghai-rebuild-design.md`
 - Modify: `docs/superpowers/plans/2026-09-01-website-stage-2c-shanghai-rebuild.md`
 - Modify: `docs/superpowers/plans/2026-08-15-website-optimization-index.md`
@@ -328,15 +328,15 @@ git commit -m "refactor(web): 退役审核队列运行结构"
 - Modify: `tests/memory-website-api.mjs`
 - Modify: `tests/website-contract/production-driver.test.ts`
 
-- [ ] **Step 6.1：文档减法**
+- [x] **Step 6.1：文档减法**
 
 把现行部署手册收敛为上海 PG、私有 Bucket、API、cleanup、身份、网关和静态托管；删除 CloudBase Run、TMS/IMS、Scanner Secret、moderation worker 部署与 smoke 步骤。内容审核手册改为本地 Docker 命令、报告解释、人工查看图片、普通批准/强制发布边界。
 
-- [ ] **Step 6.2：状态治理**
+- [x] **Step 6.2：状态治理**
 
 在旧上海重建规格和计划顶部标明其自动审核部分已被本规格替代；更新优化索引的当前入口。验收记录只写已执行事实：本地完成时写 `remote: unverified`，不得宣称正式上线。
 
-- [ ] **Step 6.3：验证并提交**
+- [x] **Step 6.3：验证并提交**
 
 ```powershell
 rg -n "CloudBase Run|TMS|IMS|moderation-worker|SCANNER_HMAC_SECRET|SCANNER_INTERNAL_SECRET" docs/operations docs/superpowers/specs/2026-09-01-website-stage-2c-shanghai-rebuild-design.md docs/superpowers/plans/2026-09-01-website-stage-2c-shanghai-rebuild.md
@@ -377,7 +377,7 @@ Expected: 搜索结果只允许出现在“已退役/禁止部署”的历史说
 - Modify: `tools/verification/verify-scanner-candidate.mjs`
 - Modify: `tools/verification/verify-scanner-candidate.test.mjs`
 - Modify: `tools/verification/web-dependency-audit.test.mjs`
-- Modify: `docs/operations/website-stage-2c-shanghai-acceptance.md`
+- Modify: `docs/operations/website-stage-2c-zero-cost-manual-review-acceptance.md`
 - Modify: `.superpowers/sdd/2026-09-01-website-stage-2c-zero-cost-manual-review/progress.md`（Git 忽略）
 
 - [x] **Step 7.1：完整验证**
@@ -409,7 +409,7 @@ Expected: 全部通过；没有桌宠路径、Secret、临时归档、CloudBase 
 
 **Files:**
 
-- Modify: `docs/operations/website-stage-2c-shanghai-acceptance.md`
+- Modify: `docs/operations/website-stage-2c-zero-cost-manual-review-acceptance.md`
 
 - [ ] **Step 8.1：不可逆删除行动门**
 

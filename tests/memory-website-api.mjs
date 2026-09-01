@@ -925,7 +925,7 @@ function adminDetail(record, request) {
       expiresAt: plusMinutes(record.updatedAt, 5)
     } : null,
     packageDownload: packageAsset ? {
-      url: `http://${request.headers.host}/__e2e/package/${record.id}`,
+      url: `http://${request.headers.host}/__e2e/download/${record.id}`,
       expiresAt: plusMinutes(record.updatedAt, 5)
     } : null,
     assets: record.assets,

@@ -4,6 +4,7 @@
 > 分支：`WebsiteExtension`
 > 状态：已于 2026-09-01 获用户确认
 > 替代范围：在网站阶段 2C 的审核与部署路径内，替代“必须部署 CloudBase Run Scanner、腾讯 TMS/IMS 和 moderation worker”的旧结论；继续沿用上海 PostgreSQL 免费环境、私有存储、唯一管理员、强制发布、审计和公开风险披露边界
+> 验收事实源：`docs/operations/website-stage-2c-zero-cost-manual-review-acceptance.md`
 
 ## 1. 目标
 
