@@ -18,7 +18,7 @@
 | CloudBase API | 265 项单元测试通过；构建与 typecheck 通过；另有 2 项构建产物测试通过，产物只含 `api`、`cleanup`。 |
 | 包扫描器 | 67 项测试通过；typecheck 通过。 |
 | 依赖审查 | 260 个模块、683 条依赖；0 个错误，8 个已批准历史 warning。 |
-| 真实 Docker 候选 | imageId `sha256:c87b1a9dcf28b6fc329e7e9667f74c3450b953e5c6325266816e25c8baa4d5ed`；Node `v22.23.2`、ClamAV `1.4.3`、UID `999`；ClamAV DB `28110`，更新时间 `2026-09-01T11:10:23.000Z`，裁决时年龄 0 天；无网络、全部 capability 移除、只读根文件系统、只读输入与 `mode=1777` tmpfs 条件下，干净包进入人工审核、EICAR 阻断、非法包拒绝。 |
+| 真实 Docker 候选 | imageId `sha256:76dbf8ced55c08f673c4b142161804241599a761629913b7011ce4f8d0b1551a`；Node `v22.23.2`、ClamAV `1.4.3`、UID `999`；ClamAV DB `28110`，更新时间 `2026-09-01T11:10:23.000Z`，裁决时年龄 0 天；无网络、全部 capability 移除、只读根文件系统、只读输入与 `mode=1777` tmpfs 条件下，干净包进入人工审核、EICAR 阻断、非法包拒绝。 |
 
 Task 7 最终复验实际执行：
 

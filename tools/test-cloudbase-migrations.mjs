@@ -1341,14 +1341,16 @@ BEGIN
       'gate-restore', 'admin-1', 'restore', 'manual_review_pending', 2,
       'gate-restore-new-key', '恢复后人工复核'
     );
-    RAISE EXCEPTION '行为门失败：新 key 绕过共享包当前生命周期';
-  EXCEPTION WHEN SQLSTATE 'P1002' THEN NULL;
+    RAISE EXCEPTION '行为门失败：新 key 绕过共享包旧版本';
+  EXCEPTION WHEN SQLSTATE '40001' THEN NULL;
   END;
-  IF EXISTS (
-    SELECT 1 FROM admin_audit_logs
-    WHERE idempotency_key = 'gate-restore-new-key'
-  ) THEN
-    RAISE EXCEPTION '行为门失败：共享包无效新 key 写入审计';
+  IF (SELECT status FROM submissions WHERE id = 'gate-restore') <> 'published'
+    OR (SELECT status_version FROM submissions WHERE id = 'gate-restore') <> 4
+    OR EXISTS (
+      SELECT 1 FROM admin_audit_logs
+      WHERE idempotency_key = 'gate-restore-new-key'
+    ) THEN
+    RAISE EXCEPTION '行为门失败：共享包无效新 key 改写状态、版本或审计';
   END IF;
 
   INSERT INTO submissions (
@@ -1380,17 +1382,20 @@ BEGIN
   END IF;
   BEGIN
     PERFORM apply_admin_action(
-      'gate-text-restore', 'admin-1', 'restore', 'published', 0,
+      'gate-text-restore', 'admin-1', 'restore', 'deleted_quarantined', 0,
       'gate-text-restore-new-key', '恢复文本'
     );
     RAISE EXCEPTION '行为门失败：新 key 绕过文本恢复旧版本';
   EXCEPTION WHEN SQLSTATE '40001' THEN NULL;
   END;
-  IF EXISTS (
-    SELECT 1 FROM admin_audit_logs
-    WHERE idempotency_key = 'gate-text-restore-new-key'
-  ) THEN
-    RAISE EXCEPTION '行为门失败：文本恢复无效新 key 写入审计';
+  IF (SELECT status FROM submissions WHERE id = 'gate-text-restore')
+      <> 'deleted_quarantined'
+    OR (SELECT status_version FROM submissions WHERE id = 'gate-text-restore') <> 2
+    OR EXISTS (
+      SELECT 1 FROM admin_audit_logs
+      WHERE idempotency_key = 'gate-text-restore-new-key'
+    ) THEN
+    RAISE EXCEPTION '行为门失败：文本恢复无效新 key 改写状态、版本或审计';
   END IF;
 END
 $gate$;

@@ -88,6 +88,7 @@ DECLARE
   v_submission_kind text;
   v_pre_quarantine_status text;
   v_cleanup_started_at timestamptz;
+  v_status_version bigint;
   v_request_identity jsonb;
   v_request_payload jsonb;
   v_latest_scan_summary jsonb;
@@ -147,14 +148,19 @@ BEGIN
     RETURN v_existing.result_snapshot || jsonb_build_object('replayed', true);
   END IF;
 
-  SELECT status, kind, pre_quarantine_status, cleanup_started_at
+  SELECT status, kind, pre_quarantine_status, cleanup_started_at,
+    status_version
   INTO v_previous_status, v_submission_kind, v_pre_quarantine_status,
-    v_cleanup_started_at
+    v_cleanup_started_at, v_status_version
   FROM submissions
   WHERE id = p_submission_id
   FOR UPDATE;
   IF NOT FOUND THEN
     RAISE EXCEPTION 'submission not found' USING ERRCODE = 'P0002';
+  END IF;
+  IF p_action = 'restore'
+    AND v_status_version IS DISTINCT FROM p_expected_version THEN
+    RAISE EXCEPTION 'submission version conflict' USING ERRCODE = '40001';
   END IF;
   IF v_cleanup_started_at IS NOT NULL AND v_previous_status <> 'purged' THEN
     RAISE EXCEPTION 'submission cleanup already started' USING ERRCODE = '40001';
