@@ -301,6 +301,8 @@ git commit -m "refactor(web): 退役审核队列运行结构"
 - Modify: `docs/superpowers/specs/2026-09-01-website-stage-2c-shanghai-rebuild-design.md`
 - Modify: `docs/superpowers/plans/2026-09-01-website-stage-2c-shanghai-rebuild.md`
 - Modify: `docs/superpowers/plans/2026-08-15-website-optimization-index.md`
+- Modify: `tools/verification/website-scope-policy.mjs`
+- Modify: `tools/verification/verify-website-scope.test.mjs`
 
 - [ ] **Step 6.1：文档减法**
 

@@ -271,8 +271,9 @@ test('阶段 2C 零费用人工审核只放行规格、计划与精确实现路�
   });
 });
 
-test('阶段 2C 最终范围只放行仍有效的本地文件与精确历史计划', () => {
+test('阶段 2C 最终范围只放行部署清单、仍有效的本地文件与精确历史计划', () => {
   const approvedStagePaths = [
+    'cloudbaserc.json',
     'apps/package-scanner/tests/adapters.test.ts',
     'docs/operations/website-stage-2c-shanghai-acceptance.md',
     'docs/superpowers/specs/2026-08-01-cloudbase-js-sdk-v3-pg-compatibility-design.md',
@@ -282,19 +283,20 @@ test('阶段 2C 最终范围只放行仍有效的本地文件与精确历史计�
     'docs/superpowers/plans/2026-08-08-direct-manual-review.md',
     'docs/superpowers/plans/2026-08-08-remove-submission-captcha.md',
   ];
-  const retiredRemotePaths = [
-    'cloudbaserc.json',
+  const unapprovedPaths = [
+    'cloudbaserc.local.json',
     'tools/run-cloudbase-development-migrations.mjs',
     'tools/run-cloudbase-development-migrations.test.mjs',
+    'apps/desktop/src/main/index.ts',
   ];
 
   assert.deepEqual(classifyChangedPaths([
     ...approvedStagePaths,
-    ...retiredRemotePaths,
+    ...unapprovedPaths,
   ]), {
     allowed: approvedStagePaths,
-    forbidden: [],
-    outside: retiredRemotePaths,
+    forbidden: ['apps/desktop/src/main/index.ts'],
+    outside: unapprovedPaths.slice(0, -1),
   });
 });
 

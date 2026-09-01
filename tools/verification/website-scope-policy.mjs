@@ -4,6 +4,8 @@ export const WEBSITE_SCOPE_BASELINE = '0dab17de8863a7c726a5bb5fceff35a1713daad1'
 /** 当前网站优化阶段只允许官网业务、验证基础设施及其精确获批文档。 */
 export const ALLOWED_WEBSITE_SCOPE_PATHS = Object.freeze([
   '.gitignore',
+  /** Task 3 已获批收敛为 api 与 cleanup 的 CloudBase 部署清单。 */
+  'cloudbaserc.json',
   'AGENTS.md',
   'CONTEXT.md',
   '.dependency-cruiser.mjs',
