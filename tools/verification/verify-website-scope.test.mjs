@@ -239,6 +239,25 @@ test('阶段二受控迁移只放行纯编排器、适配器与测试', () => {
   });
 });
 
+test('阶段 2C 只放行上海重建的精确本地范围', () => {
+  const approvedStagePaths = [
+    'cloudbaserc.json',
+    'apps/package-scanner/tests/adapters.test.ts',
+    'tools/run-cloudbase-development-migrations.mjs',
+    'tools/run-cloudbase-development-migrations.test.mjs',
+    'docs/operations/website-stage-2c-shanghai-acceptance.md',
+    'docs/superpowers/specs/2026-08-01-cloudbase-js-sdk-v3-pg-compatibility-design.md',
+    'docs/superpowers/specs/2026-09-01-website-stage-2c-shanghai-rebuild-design.md',
+    'docs/superpowers/plans/2026-09-01-website-stage-2c-shanghai-rebuild.md',
+  ];
+
+  assert.deepEqual(classifyChangedPaths(approvedStagePaths), {
+    allowed: approvedStagePaths,
+    forbidden: [],
+    outside: [],
+  });
+});
+
 test('管理员强制发布修复只放行新的前向租约迁移', () => {
   const migration = 'cloudbase/migrations/20260831020000_late_moderation_lease_guard.sql';
 
@@ -344,6 +363,14 @@ test('根 manifest 拒绝阶段 0 脚本的错误命令值', () => {
     () => assertRootManifestChange(baseManifest, changedCommand),
     /verify:web-chain/u,
   );
+});
+
+test('根 manifest 只接受阶段 2C 开发迁移的精确命令', () => {
+  const changedManifest = structuredClone(baseManifest);
+  changedManifest.scripts['run:cloudbase-migrations:development'] =
+    'node tools/run-cloudbase-development-migrations.mjs';
+
+  assert.doesNotThrow(() => assertRootManifestChange(baseManifest, changedManifest));
 });
 
 test('根 manifest 接受全部精确阶段 0 脚本和 dependency-cruiser', () => {
