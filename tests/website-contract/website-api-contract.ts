@@ -265,6 +265,11 @@ export function runWebsiteApiContract(
         method: 'GET',
         path: '/api/v1/admin/metrics/official-windows-download',
       }), 401, 'UNAUTHORIZED');
+      failure(await driver.request({
+        method: 'GET',
+        path: '/api/v1/admin/metrics/official-windows-download',
+        headers: { 'x-ai-pet-admin-token': 'valid-non-admin-token' },
+      }), 403, 'FORBIDDEN');
       expect(success(await driver.request({
         method: 'GET',
         path: '/api/v1/admin/metrics/official-windows-download',
