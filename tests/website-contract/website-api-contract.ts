@@ -243,6 +243,22 @@ export function runWebsiteApiContract(
       }), publicLikeResponseSchema)).toEqual({ liked: false, likeCount: 0 });
     });
 
+    it('同 operation 不能跨社区与反馈 endpoint 回放', async () => {
+      const operationId = '00000000-0000-4000-8000-00000000bcde';
+      const body = { liked: true, operationId };
+      expect(success(await driver.request({
+        method: 'POST',
+        path: `/api/v1/community/${refs.publicCommunityId}/like`,
+        body,
+      }), publicLikeResponseSchema)).toEqual({ liked: true, likeCount: 1 });
+
+      failure(await driver.request({
+        method: 'POST',
+        path: `/api/v1/feedback/${refs.publicCommunityId}/like`,
+        body,
+      }), 409, 'IDEMPOTENCY_CONFLICT');
+    });
+
     it('三条列表只回传 scoped opaque token 且第二页不重复第一项', async () => {
       const first = success(await driver.request({
         method: 'GET',

@@ -279,6 +279,7 @@ export function createMemoryWebsiteApi({ runId }) {
         if (!body.success) return sendError(response, 400, 'INVALID_REQUEST');
         return sendData(response, 200, setLike({
           record: requireSubmission(communityLikeId),
+          endpointKind: 'community',
           allowedKinds: ['shared_package'],
           deviceHash: memoryDeviceHash(request),
           request: body.data,
@@ -318,6 +319,7 @@ export function createMemoryWebsiteApi({ runId }) {
         if (!body.success) return sendError(response, 400, 'INVALID_REQUEST');
         return sendData(response, 200, setLike({
           record: requireSubmission(feedbackLikeId),
+          endpointKind: 'feedback',
           allowedKinds: ['feedback', 'suggestion'],
           deviceHash: memoryDeviceHash(request),
           request: body.data,
@@ -896,6 +898,7 @@ function adminDetail(record, request) {
 /** Memory 与生产共用 desired-state 语义，并按设备和投稿保存独立 vote。 */
 function setLike({
   record,
+  endpointKind,
   allowedKinds,
   deviceHash,
   request,
@@ -912,6 +915,7 @@ function setLike({
       || existing.submissionId !== record.id
       || existing.deviceHash !== deviceHash
       || existing.desiredLiked !== request.liked
+      || existing.endpointKind !== endpointKind
     ) throw new MemoryApiError('IDEMPOTENCY_CONFLICT', 409);
     return structuredClone(existing.result);
   }
@@ -935,6 +939,7 @@ function setLike({
     submissionId: record.id,
     deviceHash,
     desiredLiked: request.liked,
+    endpointKind,
     result: structuredClone(result),
     expiresAt: plusDays(now, 1)
   });

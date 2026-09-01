@@ -245,7 +245,8 @@ export class CloudBasePostgresStore implements
       p_submission_id: input.submissionId,
       p_fingerprint_hash: input.fingerprintHash,
       p_desired_liked: input.desiredLiked,
-      p_operation_id: input.operationId
+      p_operation_id: input.operationId,
+      p_endpoint_kind: input.endpointKind
     });
     throwPublicNotFound(result);
     if (result.error?.code === 'P1001') {

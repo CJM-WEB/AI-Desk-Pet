@@ -140,7 +140,7 @@ export async function runCloudBaseMigrationBehaviorGate({
       postgresVersion: postgresVersion.version,
       postgresMajorVersion: postgresVersion.major,
       migrationsApplied: migrations.length,
-      behaviorsVerified: 66
+      behaviorsVerified: 69
     };
   } finally {
     if (started) {
@@ -221,7 +221,8 @@ SELECT set_config('request.jwt.claims', '{"role":"service_role"}', true);
 SELECT pg_advisory_xact_lock(hashtextextended('${operationId}', 0));
 \echo interaction-lock-acquired
 SELECT set_public_like(
-  'gate-like-concurrent', repeat('a', 64), true, '${operationId}'::uuid
+  'gate-like-concurrent', repeat('a', 64), true, '${operationId}'::uuid,
+  'feedback'
 );
 SELECT pg_sleep(0.35);
 COMMIT;
@@ -232,7 +233,8 @@ COMMIT;
   const second = run(psql, [...connection, '-f', '-'], String.raw`
 SELECT set_config('request.jwt.claims', '{"role":"service_role"}', false);
 SELECT set_public_like(
-  'gate-like-concurrent', repeat('a', 64), true, '${operationId}'::uuid
+  'gate-like-concurrent', repeat('a', 64), true, '${operationId}'::uuid,
+  'feedback'
 );
 `);
   const earlyResult = await Promise.race([
@@ -1790,24 +1792,27 @@ const interactionBehaviorSql = String.raw`
 DO $interaction_security_gate$
 BEGIN
   IF has_function_privilege(
-      'anon', 'set_public_like(text,character,boolean,uuid)', 'EXECUTE')
+      'anon', 'set_public_like(text,character,boolean,uuid,text)', 'EXECUTE')
     OR has_function_privilege(
       'authenticated',
       'purge_expired_public_interaction_operations(integer)',
       'EXECUTE')
     OR NOT has_function_privilege(
-      'service_role', 'set_public_like(text,character,boolean,uuid)', 'EXECUTE') THEN
+      'service_role', 'set_public_like(text,character,boolean,uuid,text)', 'EXECUTE') THEN
     RAISE EXCEPTION '行为门失败：互动 RPC 权限不符合 service_role 边界';
   END IF;
   IF to_regprocedure('toggle_public_like(text,character)') IS NOT NULL THEN
     RAISE EXCEPTION '行为门失败：旧 toggle RPC 仍然存在';
+  END IF;
+  IF to_regprocedure('set_public_like(text,character,boolean,uuid)') IS NOT NULL THEN
+    RAISE EXCEPTION '行为门失败：旧四参数点赞 RPC 仍然存在';
   END IF;
 
   PERFORM set_config('request.jwt.claims', '{"role":"anon"}', false);
   BEGIN
     PERFORM set_public_like(
       'missing', repeat('a', 64), true,
-      '00000000-0000-4000-8000-000000000401'::uuid
+      '00000000-0000-4000-8000-000000000401'::uuid, 'feedback'
     );
     RAISE EXCEPTION '行为门失败：点赞未拒绝非 service_role claims';
   EXCEPTION WHEN SQLSTATE '42501' THEN NULL;
@@ -1839,17 +1844,20 @@ BEGIN
     ('gate-like-devices', 'suggestion', '点赞二', '点赞二', 'published', md5('gate-like-devices') || md5('gate-like-devices'), now(), 'standard'),
     ('gate-like-expiry', 'feedback', '点赞过期', '点赞过期', 'published', md5('gate-like-expiry') || md5('gate-like-expiry'), now(), 'standard'),
     ('gate-like-rate', 'feedback', '点赞限流', '点赞限流', 'published', md5('gate-like-rate') || md5('gate-like-rate'), now(), 'standard'),
-    ('gate-like-unpublished', 'feedback', '未发布点赞', '未发布点赞', 'manual_review_pending', md5('gate-like-unpublished') || md5('gate-like-unpublished'), NULL, NULL);
+    ('gate-like-unpublished', 'feedback', '未发布点赞', '未发布点赞', 'manual_review_pending', md5('gate-like-unpublished') || md5('gate-like-unpublished'), NULL, NULL),
+    ('gate-like-wrong-kind', 'feedback', '错误入口点赞', '错误入口点赞', 'published', md5('gate-like-wrong-kind') || md5('gate-like-wrong-kind'), now(), 'standard'),
+    ('gate-like-community', 'shared_package', '社区点赞', '社区点赞', 'published', md5('gate-like-community') || md5('gate-like-community'), now(), 'standard');
   INSERT INTO public_engagement (submission_id)
-  VALUES ('gate-like-one'), ('gate-like-devices'), ('gate-like-expiry'), ('gate-like-rate');
+  VALUES ('gate-like-one'), ('gate-like-devices'), ('gate-like-expiry'),
+    ('gate-like-rate'), ('gate-like-wrong-kind'), ('gate-like-community');
 
   v_first := set_public_like(
     'gate-like-one', repeat('a', 64), true,
-    '00000000-0000-4000-8000-000000000401'::uuid
+    '00000000-0000-4000-8000-000000000401'::uuid, 'feedback'
   );
   v_replay := set_public_like(
     'gate-like-one', repeat('a', 64), true,
-    '00000000-0000-4000-8000-000000000401'::uuid
+    '00000000-0000-4000-8000-000000000401'::uuid, 'feedback'
   );
   IF v_first IS DISTINCT FROM jsonb_build_object('liked', true, 'like_count', 1)
     OR v_replay IS DISTINCT FROM v_first
@@ -1861,7 +1869,7 @@ BEGIN
   BEGIN
     PERFORM set_public_like(
       'gate-like-one', repeat('a', 64), false,
-      '00000000-0000-4000-8000-000000000401'::uuid
+      '00000000-0000-4000-8000-000000000401'::uuid, 'feedback'
     );
     RAISE EXCEPTION '行为门失败：同 operation 异参未冲突';
   EXCEPTION WHEN SQLSTATE 'P1001' THEN NULL;
@@ -1869,7 +1877,7 @@ BEGIN
 
   PERFORM set_public_like(
     'gate-like-one', repeat('a', 64), true,
-    '00000000-0000-4000-8000-000000000402'::uuid
+    '00000000-0000-4000-8000-000000000402'::uuid, 'feedback'
   );
   IF (SELECT like_count FROM public_engagement
       WHERE submission_id = 'gate-like-one') <> 1
@@ -1880,11 +1888,11 @@ BEGIN
 
   PERFORM set_public_like(
     'gate-like-one', repeat('a', 64), false,
-    '00000000-0000-4000-8000-000000000403'::uuid
+    '00000000-0000-4000-8000-000000000403'::uuid, 'feedback'
   );
   PERFORM set_public_like(
     'gate-like-one', repeat('a', 64), false,
-    '00000000-0000-4000-8000-000000000404'::uuid
+    '00000000-0000-4000-8000-000000000404'::uuid, 'feedback'
   );
   IF (SELECT like_count FROM public_engagement
       WHERE submission_id = 'gate-like-one') <> 0 THEN
@@ -1893,11 +1901,11 @@ BEGIN
 
   PERFORM set_public_like(
     'gate-like-devices', repeat('b', 64), true,
-    '00000000-0000-4000-8000-000000000405'::uuid
+    '00000000-0000-4000-8000-000000000405'::uuid, 'feedback'
   );
   PERFORM set_public_like(
     'gate-like-devices', repeat('c', 64), true,
-    '00000000-0000-4000-8000-000000000406'::uuid
+    '00000000-0000-4000-8000-000000000406'::uuid, 'feedback'
   );
   IF (SELECT like_count FROM public_engagement
       WHERE submission_id = 'gate-like-devices') <> 2
@@ -1908,14 +1916,14 @@ BEGIN
 
   PERFORM set_public_like(
     'gate-like-expiry', repeat('e', 64), true,
-    '00000000-0000-4000-8000-000000000407'::uuid
+    '00000000-0000-4000-8000-000000000407'::uuid, 'feedback'
   );
   UPDATE public_interaction_operations
   SET expires_at = now()
   WHERE operation_id = '00000000-0000-4000-8000-000000000407'::uuid;
   PERFORM set_public_like(
     'gate-like-expiry', repeat('e', 64), false,
-    '00000000-0000-4000-8000-000000000407'::uuid
+    '00000000-0000-4000-8000-000000000407'::uuid, 'feedback'
   );
   IF (SELECT desired_liked FROM public_interaction_operations
       WHERE operation_id = '00000000-0000-4000-8000-000000000407'::uuid) IS DISTINCT FROM false
@@ -1927,12 +1935,13 @@ BEGIN
   FOR v_index IN 1..10 LOOP
     PERFORM set_public_like(
       'gate-like-rate', repeat('f', 64), true,
-      ('00000000-0000-4000-8002-' || lpad(to_hex(v_index), 12, '0'))::uuid
+      ('00000000-0000-4000-8002-' || lpad(to_hex(v_index), 12, '0'))::uuid,
+      'feedback'
     );
   END LOOP;
   v_rate_limited := set_public_like(
     'gate-like-rate', repeat('f', 64), false,
-    '00000000-0000-4000-8002-000000000011'::uuid
+    '00000000-0000-4000-8002-000000000011'::uuid, 'feedback'
   );
   IF v_rate_limited IS DISTINCT FROM jsonb_build_object(
       'rate_limited', true,
@@ -1947,7 +1956,7 @@ BEGIN
   WHERE id = 'gate-like-rate';
   v_replay := set_public_like(
     'gate-like-rate', repeat('f', 64), true,
-    '00000000-0000-4000-8002-000000000001'::uuid
+    '00000000-0000-4000-8002-000000000001'::uuid, 'feedback'
   );
   IF v_replay IS DISTINCT FROM jsonb_build_object('liked', true, 'like_count', 1) THEN
     RAISE EXCEPTION '行为门失败：配额耗尽或取消发布阻断同 operation 首次结果回放';
@@ -1957,7 +1966,8 @@ BEGIN
     BEGIN
       v_not_found := set_public_like(
         'gate-like-unpublished', repeat('9', 64), true,
-        ('00000000-0000-4000-8003-' || lpad(to_hex(v_index), 12, '0'))::uuid
+        ('00000000-0000-4000-8003-' || lpad(to_hex(v_index), 12, '0'))::uuid,
+        'feedback'
       );
       IF v_not_found IS DISTINCT FROM jsonb_build_object('not_found', true) THEN
         RAISE EXCEPTION '行为门失败：未发布首次点赞没有返回私有 not-found 事实';
@@ -1968,10 +1978,64 @@ BEGIN
   END LOOP;
   v_rate_limited := set_public_like(
     'gate-like-unpublished', repeat('9', 64), true,
-    '00000000-0000-4000-8003-000000000011'::uuid
+    '00000000-0000-4000-8003-000000000011'::uuid, 'feedback'
   );
   IF v_rate_limited ->> 'rate_limited' IS DISTINCT FROM 'true' THEN
     RAISE EXCEPTION '行为门失败：未发布投稿可用新 UUID 绕过首次限流';
+  END IF;
+
+  FOR v_index IN 1..10 LOOP
+    v_not_found := set_public_like(
+      'gate-like-missing', repeat('8', 64), true,
+      ('00000000-0000-4000-8004-' || lpad(to_hex(v_index), 12, '0'))::uuid,
+      'feedback'
+    );
+    IF v_not_found IS DISTINCT FROM jsonb_build_object('not_found', true) THEN
+      RAISE EXCEPTION '行为门失败：缺失投稿未返回统一私有 not-found 事实';
+    END IF;
+  END LOOP;
+  v_rate_limited := set_public_like(
+    'gate-like-missing', repeat('8', 64), true,
+    '00000000-0000-4000-8004-000000000011'::uuid, 'feedback'
+  );
+  IF v_rate_limited ->> 'rate_limited' IS DISTINCT FROM 'true' THEN
+    RAISE EXCEPTION '行为门失败：缺失投稿未消费统一首次限流配额';
+  END IF;
+
+  FOR v_index IN 1..10 LOOP
+    v_not_found := set_public_like(
+      'gate-like-wrong-kind', repeat('7', 64), true,
+      ('00000000-0000-4000-8005-' || lpad(to_hex(v_index), 12, '0'))::uuid,
+      'community'
+    );
+    IF v_not_found IS DISTINCT FROM jsonb_build_object('not_found', true) THEN
+      RAISE EXCEPTION '行为门失败：错误 endpoint kind 未返回统一私有 not-found 事实';
+    END IF;
+  END LOOP;
+  v_rate_limited := set_public_like(
+    'gate-like-wrong-kind', repeat('7', 64), true,
+    '00000000-0000-4000-8005-000000000011'::uuid, 'community'
+  );
+  IF v_rate_limited ->> 'rate_limited' IS DISTINCT FROM 'true' THEN
+    RAISE EXCEPTION '行为门失败：错误 endpoint kind 未消费统一首次限流配额';
+  END IF;
+
+  v_first := set_public_like(
+    'gate-like-community', repeat('6', 64), true,
+    '00000000-0000-4000-8006-000000000001'::uuid, 'community'
+  );
+  BEGIN
+    PERFORM set_public_like(
+      'gate-like-community', repeat('6', 64), true,
+      '00000000-0000-4000-8006-000000000001'::uuid, 'feedback'
+    );
+    RAISE EXCEPTION '行为门失败：社区 operation 可从反馈 endpoint 回放';
+  EXCEPTION WHEN SQLSTATE 'P1001' THEN NULL;
+  END;
+  IF v_first IS DISTINCT FROM jsonb_build_object('liked', true, 'like_count', 1)
+    OR (SELECT like_count FROM public_engagement
+        WHERE submission_id = 'gate-like-community') <> 1 THEN
+    RAISE EXCEPTION '行为门失败：跨 endpoint 冲突改写了首次点赞结果';
   END IF;
 
   IF EXISTS (

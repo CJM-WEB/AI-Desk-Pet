@@ -277,9 +277,13 @@ function createDependencies(state: ProductionFixtureState): ApiDependencies {
         }].filter(item => item.kind === kind), input, `feedback:${kind}`,
         item => item.createdAt, item => item),
       setCommunityLike: async (id, fingerprint, desiredLiked, operationId) =>
-        setContractLike(state, id, fingerprint, desiredLiked, operationId),
+        setContractLike(
+          state, id, fingerprint, desiredLiked, operationId, 'community'
+        ),
       setFeedbackLike: async (id, fingerprint, desiredLiked, operationId) =>
-        setContractLike(state, id, fingerprint, desiredLiked, operationId),
+        setContractLike(
+          state, id, fingerprint, desiredLiked, operationId, 'feedback'
+        ),
       getDownload: async id => {
         const record = state.records.get(id);
         if (!record || !isPublished(record)) throw new ApiError('NOT_FOUND', 404);
@@ -340,6 +344,7 @@ function setContractLike(
   fingerprint: string,
   desiredLiked: boolean,
   operationId: string,
+  endpointKind: 'community' | 'feedback',
 ): { liked: boolean; likeCount: number } {
   const canonicalOperationId = operationId.toLowerCase();
   const payload = JSON.stringify({
@@ -347,6 +352,7 @@ function setContractLike(
     submissionId,
     fingerprint,
     desiredLiked,
+    endpointKind,
   });
   const previous = state.interactionOperations.get(canonicalOperationId);
   if (previous && previous.expiresAtMs <= state.nowMs) {

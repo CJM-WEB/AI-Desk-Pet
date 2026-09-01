@@ -45,10 +45,12 @@ export class CloudFeedbackRepository implements FeedbackRepository {
 
   async refresh(kind: FeedbackKind): Promise<void> {
     const generation = (this.refreshGenerations.get(kind) ?? 0) + 1;
-    const interactionRevisionAtStart = this.likeRevision;
     this.refreshGenerations.set(kind, generation);
     try {
-      const records: FeedbackEntry[] = [];
+      const records: Array<{
+        entry: FeedbackEntry;
+        interactionRevisionAtSnapshot: number;
+      }> = [];
       const seenCursors = new Set<string>();
       let cursor: string | undefined;
       for (let pageIndex = 0; pageIndex < MAX_PUBLIC_FEEDBACK_PAGES; pageIndex += 1) {
@@ -56,13 +58,20 @@ export class CloudFeedbackRepository implements FeedbackRepository {
           `/feedback?kind=${kind}&limit=100${cursor === undefined ? '' : `&cursor=${encodeURIComponent(cursor)}`}`,
           publicFeedbackPageSchema
         );
+        const interactionRevisionAtSnapshot = this.likeRevision;
         records.push(...page.items
           .filter(item => item.kind === kind)
-          .map(item => this.toEntry(item)));
+          .map(item => ({
+            entry: this.toEntry(item),
+            interactionRevisionAtSnapshot
+          })));
         if (page.nextCursor === null) {
           if (!this.isLatestRefresh(kind, generation)) return;
-          this.entries.set(kind, records.map(record =>
-            this.preserveConcurrentLike(record, interactionRevisionAtStart)
+          this.entries.set(kind, records.map(snapshot =>
+            this.preserveConcurrentLike(
+              snapshot.entry,
+              snapshot.interactionRevisionAtSnapshot
+            )
           ));
           this.statusNotices.delete(kind);
           this.notify();
@@ -182,14 +191,14 @@ export class CloudFeedbackRepository implements FeedbackRepository {
     };
   }
 
-  /** 最终批量提交只覆盖未发生互动的记录，避免首屏旧快照回滚后续点赞。 */
+  /** 每条记录只保留其页快照之后的互动，后页新计数不会被更早本地结果覆盖。 */
   private preserveConcurrentLike(
     record: FeedbackEntry,
-    interactionRevisionAtStart: number
+    interactionRevisionAtSnapshot: number
   ): FeedbackEntry {
     const pending = this.pendingLikes.get(record.id);
     const changedDuringRefresh = (this.likeRevisions.get(record.id) ?? 0)
-      > interactionRevisionAtStart;
+      > interactionRevisionAtSnapshot;
     if (!pending && !changedDuringRefresh) return record;
     const current = (this.entries.get(record.kind) ?? [])
       .find(entry => entry.id === record.id);

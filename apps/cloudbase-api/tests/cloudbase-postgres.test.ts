@@ -1006,7 +1006,8 @@ describe('CloudBase PostgreSQL 安全与公开互动存储', () => {
       submissionId: 'community-1',
       fingerprintHash: 'd'.repeat(64),
       desiredLiked: true,
-      operationId: '00000000-0000-4000-8000-000000000201'
+      operationId: '00000000-0000-4000-8000-000000000201',
+      endpointKind: 'community'
     })).resolves.toEqual({ liked: true, likeCount: 2 });
     await expect(store.recordPublicDownload('community-1'))
       .resolves.toEqual({ downloadCount: 4 });
@@ -1019,7 +1020,8 @@ describe('CloudBase PostgreSQL 安全与公开互动存储', () => {
       p_submission_id: 'community-1',
       p_fingerprint_hash: 'd'.repeat(64),
       p_desired_liked: true,
-      p_operation_id: '00000000-0000-4000-8000-000000000201'
+      p_operation_id: '00000000-0000-4000-8000-000000000201',
+      p_endpoint_kind: 'community'
     });
   });
 
@@ -1036,7 +1038,8 @@ describe('CloudBase PostgreSQL 安全与公开互动存储', () => {
       submissionId: 'community-1',
       fingerprintHash: 'd'.repeat(64),
       desiredLiked: false,
-      operationId: '00000000-0000-4000-8000-000000000202'
+      operationId: '00000000-0000-4000-8000-000000000202',
+      endpointKind: 'community'
     })).rejects.toMatchObject({
       code: 'IDEMPOTENCY_CONFLICT',
       statusCode: 409
@@ -1056,7 +1059,8 @@ describe('CloudBase PostgreSQL 安全与公开互动存储', () => {
       submissionId: 'community-1',
       fingerprintHash: 'd'.repeat(64),
       desiredLiked: true,
-      operationId: '00000000-0000-4000-8000-000000000203'
+      operationId: '00000000-0000-4000-8000-000000000203',
+      endpointKind: 'community'
     })).rejects.toMatchObject({
       code: 'RATE_LIMITED',
       statusCode: 429,
@@ -1074,7 +1078,8 @@ describe('CloudBase PostgreSQL 安全与公开互动存储', () => {
       submissionId: 'pending-feedback',
       fingerprintHash: 'd'.repeat(64),
       desiredLiked: true,
-      operationId: '00000000-0000-4000-8000-000000000204'
+      operationId: '00000000-0000-4000-8000-000000000204',
+      endpointKind: 'feedback'
     })).rejects.toMatchObject({ code: 'NOT_FOUND', statusCode: 404 });
   });
 

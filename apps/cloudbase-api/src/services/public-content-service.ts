@@ -95,8 +95,9 @@ export class PublicContentService {
     desiredLiked: boolean,
     operationId: string
   ): Promise<PublicLikeResult> {
-    await this.requireKind(id, ['feedback', 'suggestion']);
-    return this.setPublicLike(id, fingerprint, desiredLiked, operationId);
+    return this.setPublicLike(
+      id, fingerprint, desiredLiked, operationId, 'feedback'
+    );
   }
 
   async setCommunityLike(
@@ -105,8 +106,9 @@ export class PublicContentService {
     desiredLiked: boolean,
     operationId: string
   ): Promise<PublicLikeResult> {
-    await this.requireKind(id, ['shared_package']);
-    return this.setPublicLike(id, fingerprint, desiredLiked, operationId);
+    return this.setPublicLike(
+      id, fingerprint, desiredLiked, operationId, 'community'
+    );
   }
 
   async getDownload(
@@ -179,32 +181,19 @@ export class PublicContentService {
     };
   }
 
-  /** endpoint 只约束不可变种类；Store 在同一事务中先回放，再校验首次写的发布状态。 */
-  private async requireKind(
-    id: string,
-    kinds: readonly string[]
-  ): Promise<void> {
-    const submission = await this.store.findById(id);
-    if (
-      !submission
-      || !submission.kind
-      || !kinds.includes(submission.kind)
-    ) {
-      throw notFound();
-    }
-  }
-
   private async setPublicLike(
     id: string,
     fingerprint: string,
     desiredLiked: boolean,
-    operationId: string
+    operationId: string,
+    endpointKind: 'community' | 'feedback'
   ): Promise<PublicLikeResult> {
     return this.store.setPublicLike({
       submissionId: id,
       fingerprintHash: fingerprint,
       desiredLiked,
-      operationId
+      operationId,
+      endpointKind
     });
   }
 }

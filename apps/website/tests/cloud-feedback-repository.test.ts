@@ -316,6 +316,61 @@ describe('云端反馈仓库', () => {
     expect(lastBody.liked).toBe(false);
   });
 
+  it('目标项在点赞成功后才由后页返回时采用该页更新计数', async () => {
+    const secondPage = deferred<unknown>();
+    let rootReads = 0;
+    const api = {
+      request: vi.fn((path: string) => {
+        if (path.includes('cursor=v1.feedback-later')) return secondPage.promise;
+        if (path.endsWith('/like')) {
+          return Promise.resolve({ liked: true, likeCount: 4 });
+        }
+        rootReads += 1;
+        if (rootReads === 1) {
+          return Promise.resolve({
+            items: [{
+              id: 'published-later', kind: 'feedback', authorName: '公开用户',
+              content: '后页交错反馈。', likeCount: 3,
+              createdAt: '2026-08-01T00:00:00.000Z'
+            }],
+            nextCursor: null
+          });
+        }
+        return Promise.resolve({
+          items: [{
+            id: 'page-one-other', kind: 'feedback', authorName: '第一页用户',
+            content: '第一页其他反馈。', likeCount: 1,
+            createdAt: '2026-08-02T00:00:00.000Z'
+          }],
+          nextCursor: 'v1.feedback-later'
+        });
+      })
+    } as unknown as ApiClient;
+    const repository = new CloudFeedbackRepository(api);
+    await repository.refresh('feedback');
+
+    const refresh = repository.refresh('feedback');
+    await vi.waitFor(() => expect(vi.mocked(api.request).mock.calls.some(
+      ([path]) => String(path).includes('cursor=v1.feedback-later')
+    )).toBe(true));
+    await repository.toggleLike('published-later');
+    secondPage.resolve({
+      items: [{
+        id: 'published-later', kind: 'feedback', authorName: '公开用户',
+        content: '后页交错反馈。', likeCount: 5,
+        createdAt: '2026-08-01T00:00:00.000Z'
+      }],
+      nextCursor: null
+    });
+    await refresh;
+
+    expect(repository.list('feedback')).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: 'published-later', likedByCurrentBrowser: true, likeCount: 5
+      })
+    ]));
+  });
+
   it('刷新保留 pending 目标但采用更新的服务端计数', async () => {
     const pendingLike = deferred<unknown>();
     let reads = 0;

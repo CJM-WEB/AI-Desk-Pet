@@ -110,11 +110,15 @@ describe('公开列表与互动服务', () => {
     ['suggestion', 'published', true],
     ['shared_package', 'published', false],
     ['feedback', 'system_reviewing', false]
-  ] as const)('反馈点赞保留 endpoint kind 并由 Store 裁决首次状态：%s/%s', async (kind, status, allowed) => {
+  ] as const)('反馈点赞把 endpoint kind 与首次状态统一交给 Store：%s/%s', async (kind, status, allowed) => {
     const store = {
-      findById: vi.fn(async () => ({ id: 'submission-1', kind, status })),
+      findById: vi.fn(async () => {
+        throw new Error('点赞不应在原子 Store 前读取投稿');
+      }),
       setPublicLike: vi.fn(async () => {
-        if (status !== 'published') throw new ApiError('NOT_FOUND', 404);
+        if (status !== 'published' || !['feedback', 'suggestion'].includes(kind)) {
+          throw new ApiError('NOT_FOUND', 404);
+        }
         return { liked: true, likeCount: 2 };
       })
     };
@@ -134,16 +138,14 @@ describe('公开列表与互动服务', () => {
         submissionId: 'submission-1',
         fingerprintHash: 'a'.repeat(64),
         desiredLiked: true,
-        operationId
+        operationId,
+        endpointKind: 'feedback'
       });
     } else {
       await expect(result).rejects.toMatchObject({ code: 'NOT_FOUND' });
-      if (kind !== 'shared_package') {
-        expect(store.setPublicLike).toHaveBeenCalledOnce();
-      } else {
-        expect(store.setPublicLike).not.toHaveBeenCalled();
-      }
+      expect(store.setPublicLike).toHaveBeenCalledOnce();
     }
+    expect(store.findById).not.toHaveBeenCalled();
   });
 
   it('社区 desired-state 点赞不反转状态并原样传递操作事实', async () => {
@@ -166,7 +168,8 @@ describe('公开列表与互动服务', () => {
       submissionId: 'community-1',
       fingerprintHash: 'b'.repeat(64),
       desiredLiked: false,
-      operationId
+      operationId,
+      endpointKind: 'community'
     });
   });
 
@@ -202,7 +205,9 @@ describe('公开列表与互动服务', () => {
       findById: vi.fn(async () => ({
         id: 'feedback-1', kind: 'feedback', status: 'published'
       })),
-      setPublicLike: vi.fn(async () => ({ liked: true, likeCount: 2 }))
+      setPublicLike: vi.fn(async () => {
+        throw new ApiError('NOT_FOUND', 404);
+      })
     };
     const service = new PublicContentService(store as never, {} as never);
 
@@ -212,7 +217,13 @@ describe('公开列表与互动服务', () => {
       true,
       '00000000-0000-4000-8000-000000000003'
     )).rejects.toMatchObject({ code: 'NOT_FOUND' });
-    expect(store.setPublicLike).not.toHaveBeenCalled();
+    expect(store.setPublicLike).toHaveBeenCalledWith({
+      submissionId: 'feedback-1',
+      fingerprintHash: 'a'.repeat(64),
+      desiredLiked: true,
+      operationId: '00000000-0000-4000-8000-000000000003',
+      endpointKind: 'community'
+    });
   });
 
   it('社区列表只返回公开 DTO 并为封面签发五分钟地址', async () => {

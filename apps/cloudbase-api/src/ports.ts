@@ -160,6 +160,7 @@ export interface PublicLikeInput {
   fingerprintHash: string;
   desiredLiked: boolean;
   operationId: string;
+  endpointKind: 'community' | 'feedback';
 }
 
 export interface PublicLikeResult {
