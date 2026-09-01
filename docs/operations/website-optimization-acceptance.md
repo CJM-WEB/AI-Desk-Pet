@@ -1,43 +1,54 @@
-# 网站架构优化阶段 2—3 本地验收记录
+# 网站阶段四本地治理真实状态记录
 
-> 日期：2026-08-31
+> 日期：2026-09-01
 > 分支：`WebsiteExtension`
-> 实现候选：`e0a38f33645fc3e0d6fd5f7f80f13d5fb46a3751`
-> 总裁决：PASS；恢复普通非投稿网站功能开发资格
-> 适用范围：阶段 2A、阶段 2B、阶段 3 的本地证据及阶段 2C、生产状态；不替代 2026-08-20 的网站视觉验收记录
+> 固定实现基线：`3ce8303773477bde9f429bef87f662ab8912e5c9`
+> Standards 最小代码修复：`3729da587120f1ffbb3a1e3904b7b508a6125096`
+> 总裁决：阶段四整体未通过；八项本地治理代码已完成，但完整 `verify:web-chain` 在 Docker `scanner-candidate` 环境门失败
+> 审查状态：最终 Spec 轴 Approved；Standards 初审发现 1 个 Important 与 1 个 Minor，修复已落地，仍待 scoped 复审
+> 适用范围：阶段四本地代码、分段门、完整门失败事实与外部未执行项；不替代 2026-08-20 的网站视觉验收记录
 
 ## 1. 阶段裁决
 
-| 阶段 | 结论 | 实际证据与边界 |
+| 项目 | 结论 | 实际证据与边界 |
 | --- | --- | --- |
-| 2A 本地结构门 | PASS | CloudBase V3 SDK、唯一 ScannerProtocol、受控 migration Adapter、scope 与 ownership 门通过。 |
-| 2B 本地运行候选门 | PASS | PostgreSQL 17.11 顺序执行 7 个 migration 并通过 42 项行为验证；真实 Node 22 容器候选以非 root UID 999 运行，Docker health、EICAR 阻断和 timeout 失败关闭均通过。 |
-| 3 HTTP 契约门 | PASS | 共享 strict HTTP 信封与 endpoint Schema、Production 与 Memory 双 Adapter 行为合同及独立规格/工程标准双审通过。 |
-| 2C CloudBase 开发环境门 | 未执行 | 未连接 CloudBase 开发环境，未执行远端 migration、函数/Scanner/Hosting 部署，也未验证真实网关、对象身份、整轮锁或远端续跑。 |
-| 正式生产 | 未部署 | 现在线上仍是旧测试版；本分支未上线，共享包投稿开关继续关闭。 |
+| 八项本地治理实现 | complete | keyset cursor、desired-state 点赞/互动幂等、下载成功签发计数、发布结构不变量/坏记录隔离、有界 RPC JSON、Release Manifest 单一契约、CloudBase 能力端口收窄和 i18n 单向权威已进入唯一正式路径。 |
+| `LiquidGlassHome` 事件项 | 已接替 | 2026-08-20 减法规格已删除相关跨章节事件且不替换；阶段四未重建事件总线。 |
+| 生产 Router | 等待阶段 2C | 本地证据不能裁决真实 CloudBase 网关是否带 `/api` 前缀；当前不记通过、失败或永久双轨。 |
+| 最终代码 Spec 轴 | Approved | 固定实现差异审查为 Critical 0、Important 0、Minor 0。 |
+| Standards 轴 | 待 scoped 复审 | 初审的计划事实不同步和 `publicAssetSize()` 浅中转已按最小范围修复；本记录不把待复审写成 Approved。 |
+| 完整 `verify:web-chain` | FAIL（环境门） | 同次运行在 `scanner-candidate` 连接 Docker Desktop Linux engine 时失败；后续 website build/E2E 未执行，不能以分段门替代。 |
+| 阶段 2C / 正式生产 | 未执行 / 未部署 | 未连接 CloudBase 开发环境；未执行远端 migration、cleanup 调度、真实网关与对象存储验证、函数/Scanner/Hosting 部署、发布或正式上线。 |
 
-## 2. 新鲜自动化证据
+## 2. 2026-09-01 分段真实证据
 
-| 命令 | 2026-08-31 结果 |
+下表除“Standards 最小修复复验”外，均来自 2026-09-01 Task 9 预检批次；这里按原批次登记，不冒充为完整门同次结果。
+
+| 命令或门 | 结果 |
 | --- | --- |
-| `pnpm.cmd verify:cloudbase` | CloudBase API 268/268、Scanner 71/71；构建与 typecheck 通过。 |
-| `pnpm.cmd verify:website` | Website 348/348、两次构建、E2E 21/21。 |
-| `pnpm.cmd test:website-contract` | 专属 strict TypeScript 编译与 Production/Memory 双 Adapter 行为合同 12/12。 |
-| `pnpm.cmd verify:scanner-candidate` | PASS；不可变镜像 `sha256:1f50baa75ac83201d71252b367945d44683455d810ebbadbd2f72fa36100bf1`，Node v22.23.2、ClamAV 1.4.3/28109、UID 999、health PASS、EICAR blocked、timeout HTTP 503。 |
-| `pnpm.cmd verify:web-chain`（显式提供本地 PG17 runtime） | PASS；验证工具 71/71、shared-types 51/51、Website 348、CloudBase fast 266、Scanner 71、release-tools 4、migration 工具 36、PostgreSQL 行为 42、网站合同 12、CloudBase 构建产物 2、构建工具 3、真实 Scanner 候选和浏览器 E2E 21；依赖审查 0 error、9 个既有 warning。 |
+| `pnpm.cmd deps:audit:web` | PASS；274 modules、723 dependencies、0 error、8 个阶段五 orphan warning。 |
+| `pnpm.cmd test:website-contract` | PASS；Production/Memory 2 个 driver，30/30。 |
+| `pnpm.cmd verify:web-chain:scope` | PASS；阶段四路径按精确白名单放行，桌宠黑名单零差异。 |
+| `pnpm.cmd verify:web-chain:ownership` | PASS。 |
+| `pnpm.cmd verify:cloudbase` | PASS；CloudBase API 21 个文件、328/328；Scanner 6 个文件、71/71；构建与 typecheck 通过。 |
+| `pnpm.cmd verify:website` | PASS；Website 41 个文件、361/361；两次 production build；E2E 21/21。 |
+| PostgreSQL 17 行为门 | PASS；PostgreSQL 17.11 顺序执行 13 个前向 migration，通过 103 项行为验证。 |
+| migration 工具门 | PASS；`tools/test-cloudbase-migrations.test.mjs` 与 inventory 合计 16/16，inventory 固定为 13 个前向 migration。 |
+| `pnpm.cmd typecheck` | PASS；10 个适用 workspace 全部通过。 |
+| Standards 最小修复复验 | 改前与改后同一 CloudBase 定向命令均为 21 个文件、328/328；独立 CloudBase typecheck 与 `verify:cloudbase` 通过，Scanner 71/71。 |
 
-范围、归属、`git diff --check`、旧 HTTP 契约/旧管理员认证残余、桌宠路径零差异与工作树清洁检查均通过。这些本地证据不证明真实网关或任何远端资源已经验证。
+## 3. 完整门失败事实
 
-## 3. 故障修复与最终完整门事实
+使用显式本地 PostgreSQL 17 runtime 执行的完整 `verify:web-chain` 退出 1。失败关闭前，同一次进程已通过 scope、ownership、验证工具 74/74、shared-types 56/56、Website 361/361、CloudBase 快速集 326/326、Scanner 71/71、release-tools 4/4、migration 工具 36/36、PostgreSQL 17.11 的 13 个 migration/103 项行为、网站合同 30/30、依赖审查以及 CloudBase 构建相关目标。
 
-早期完整门曾分别在 CloudBase `build-output` 瞬时超时和 Docker Linux engine 缺失处停止，这些失败不计为通过。后续诊断发现 Docker Desktop 遗留两个不可访问的零字节运行时 socket；停止后端并将对应临时目录可恢复地隔离后，Linux engine 恢复为 29.7.2/linux/x86_64。
+唯一失败点是 `scanner-candidate` 无法连接 `npipe:////./pipe/dockerDesktopLinuxEngine`。诊断指向工作区外陈旧 `sailor-ingest.sock` reparse socket 导致 Docker Desktop backend 崩溃；清理该外部 socket 被执行策略阻止。仓库明确禁止以静态报告或无 Docker 模式替代真实候选镜像门，因此没有绕过或伪造通过。该次完整门在失败后没有执行后续 website build/E2E。
 
-真实候选首次执行继续以 503 失败，根因是候选探针的下载替身复制 ZIP 后没有返回生产 `Download` 契约要求的 `ArchiveIdentity`，尚未进入 ClamAV。提交 `e0a38f3` 仅补齐真实字节数与 SHA-256；同一真实候选随后通过，独立规格与工程质量复审均为 PASS、0 个 finding。
+后续必须先恢复 Docker Desktop Linux engine，再从头重跑完整 `verify:web-chain`。只有同一次完整门退出 0，且 Standards scoped 复审无阻塞项，才能把阶段四整体改为通过。
 
-修复后的第一次完整门因调用进程没有提供 `AI_PET_POSTGRES_RUNTIME` 而在 PostgreSQL 行为门前停止；显式提供已验证的本地 PostgreSQL 17.11 runtime 后，从 scope 到浏览器 E2E 的同一次完整门全部通过。期间没有放宽 timeout、跳过候选、连接远端环境或把单项复跑冒充完整门。
+## 4. 外部未验证项
 
-## 4. 条件裁决与剩余门
-
-获批规格要求阶段 2A、2B、3 全部 PASS 后才能恢复普通非投稿网站功能开发。三门现已全部通过，联合门满足，因此恢复普通非投稿网站功能开发资格；该裁决不代表已经开始阶段 4，也不授权任何远端操作。
-
-阶段 2C 不属于普通开发联合门，但在实际完成前持续阻塞共享包投稿开启、远端 migration、部署和上线声明。任何 CloudBase 开发环境或生产操作仍需独立授权并保存真实环境验收记录。
+- CloudBase 开发环境、远端 migration、真实存量结构与索引计划均未执行或验证。
+- cleanup 代码存在不等于已配置真实定时调度；互动账本 24 小时清理和隔离区清理均未在远端运行。
+- 真实网关路径、认证请求头传递、RPC 压缩/流行为、私有对象存储与短期签名地址均未验证。
+- 三个函数、Scanner、Hosting、域名、CORS/CSP、监控告警、发布、回滚与正式上线均未执行。
+- 现在线上仍是旧测试版；本分支未上线，共享包投稿开关继续关闭。

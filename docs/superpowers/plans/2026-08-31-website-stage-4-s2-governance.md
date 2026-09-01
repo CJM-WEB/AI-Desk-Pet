@@ -356,6 +356,7 @@ git commit -m "refactor(web): 改用稳定键集游标"
 - Modify: `packages/shared-types/src/website-http.ts`
 - Modify: `packages/shared-types/tests/website-http.test.ts`
 - Create: `cloudbase/migrations/20260831040000_idempotent_public_interactions.sql`
+- Create: `cloudbase/migrations/20260831040001_public_like_endpoint_guard.sql`
 - Modify: `apps/cloudbase-api/src/ports.ts`
 - Modify: `apps/cloudbase-api/src/adapters/cloudbase-postgres.ts`
 - Modify: `apps/cloudbase-api/src/services/public-content-service.ts`
@@ -606,9 +607,13 @@ git commit -m "refactor(web): 收窄云端业务能力端口"
 
 ### Task 9：阶段四联合门、验收记录与 Router 条件门
 
+> 2026-09-01 实际状态：代码与分段门已完成；完整 `verify:web-chain` 在 `scanner-candidate` 因 Docker Desktop Linux engine 环境不可用而失败关闭，同次后续 website build/E2E 未执行。最终 Spec 轴已批准；Standards 审查项已按最小范围修复，仍待 scoped 复审，因此本 Task 不得标记 complete。
+
 **Files:**
 - Create: `.superpowers/sdd/2026-08-31-website-stage-4-s2-governance/task-9-preflight-report.md`
+- Create: `.superpowers/sdd/2026-08-31-website-stage-4-s2-governance/task-9-finalization-report.md`
 - Create: `cloudbase/migrations/20260831070000_feedback_kind_null_guard.sql`
+- Modify: `apps/cloudbase-api/src/services/public-content-service.ts`
 - Modify: `apps/cloudbase-api/tests/cloudbase-postgres.test.ts`
 - Modify: `apps/cloudbase-api/tests/keyset-cursor.test.ts`
 - Modify: `apps/website/components/website-experience/community/cloud-shared-pet-repository.ts`
@@ -629,7 +634,7 @@ git commit -m "refactor(web): 收窄云端业务能力端口"
 **Interfaces:**
 - Produces: 阶段四本地可执行项的日期化真实证据；Router 明确为等待阶段 2C，不写成失败或通过。
 
-- [ ] **Step 1: 运行定向剩余门**
+- [x] **Step 1: 运行定向剩余门**
 
 Run: `pnpm.cmd deps:audit:web`
 Run: `pnpm.cmd test:website-contract`
@@ -638,11 +643,15 @@ Run: `pnpm.cmd verify:web-chain:ownership`
 Run: `git diff --check`
 Expected: 全部退出 0；依赖审查只剩 8 个阶段五 orphan warning；黑名单桌宠路径零差异。
 
-- [ ] **Step 2: 运行 CloudBase 与 website 门**
+2026-09-01 预检实际结果：全部退出 0；依赖审查为 274 modules、723 dependencies、0 error、8 warning；合同 30/30，scope 与 ownership 均通过。
+
+- [x] **Step 2: 运行 CloudBase 与 website 门**
 
 Run: `pnpm.cmd verify:cloudbase`
 Run: `pnpm.cmd verify:website`
 Expected: 全部 PASS；失败、超时或取消不得登记为通过。
+
+2026-09-01 分段实际结果：CloudBase API 328/328、Scanner 71/71；Website 361/361、两次 production build、E2E 21/21。
 
 - [ ] **Step 3: 运行 PostgreSQL 17 与完整网站链**
 
@@ -655,29 +664,33 @@ pnpm.cmd verify:web-chain
 
 Expected: 从 scope 到 browser E2E 的同一次完整门退出 0；记录实际 migration 数、行为断言数、各 package 测试数、构建与 E2E 数，不复制旧数字。
 
+2026-09-01 实际结果：FAIL。PostgreSQL 17.11 已顺序执行 13 个 migration 并通过 103 项行为验证；完整门在后续 `scanner-candidate` Docker 环境门失败，同次 website build/E2E 未执行。分段通过不得替代本步骤。
+
 - [ ] **Step 4: 独立最终双审**
 
 对本计划起点到 HEAD 执行规格审查与工程质量审查，重点核对：无 numeric/toggle/先计数/重复 Manifest/无界 reader/过宽死方法；`force_publish` 保持；Memory/Production 同构；Router 未被预判。Critical/Important 必须由一个修复子智能体统一修复并做一次 scoped re-review。
 
-- [ ] **Step 5: 更新文档真实状态**
+2026-09-01 实际结果：Spec 轴 Approved；Standards 初审发现 1 个 Important 与 1 个 Minor，已在 Task 9 最终修复中处理，scoped 复审待执行。
+
+- [x] **Step 5: 更新文档真实状态**
 
 索引把阶段四八项本地治理标记为完成，把 Liquid 项标记为 8/20 已接替，把 Router 标记为“等待阶段 2C 真实网关证据”。验收记录写实际日期、命令、结果、未覆盖项；CloudBase 开发环境、远端 migration、cleanup 调度、部署和正式上线继续写“未执行”。
 
-- [ ] **Step 6: 提交阶段四验收**
+- [x] **Step 6: 提交阶段四真实状态文档**
 
 ```powershell
 git add docs/superpowers/plans/2026-08-15-website-optimization-index.md docs/superpowers/plans/2026-08-31-website-stage-4-s2-governance.md docs/operations/website-optimization-acceptance.md docs/operations/cloudbase-deployment.md docs/operations/content-moderation.md
-git commit -m "docs: 完成网站阶段四本地治理"
+git commit -m "docs: 记录网站阶段四本地治理状态"
 ```
 
 ## 执行台账
 
-- Task 1：pending
-- Task 2：pending
-- Task 3：pending
-- Task 4：pending
-- Task 5：pending
-- Task 6：pending
-- Task 7：pending
-- Task 8：pending
-- Task 9：pending
+- Task 1：complete（`01811e1..9340097`；scoped review clean）
+- Task 2：complete（`9340097..1b0cb78`；scoped review clean）
+- Task 3：complete（`1b0cb78..fd83658`；scoped review clean）
+- Task 4：complete（`fd83658..7e183d0`；scoped review clean）
+- Task 5：complete（`7e183d0..51160d2`；scoped review clean）
+- Task 6：complete（`51160d2..5c8dc40`；Standards/Spec review approved）
+- Task 7：complete（`5c8dc40..8aa122b`；Standards/Spec scoped re-review approved）
+- Task 8：complete（`8aa122b..a792c83`；Standards/Spec scoped re-review approved）
+- Task 9：未完成（代码/分段门完成，Docker `scanner-candidate` 环境门未通过；Standards 修复待 scoped 复审）

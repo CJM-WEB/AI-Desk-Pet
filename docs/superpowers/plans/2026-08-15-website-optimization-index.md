@@ -8,7 +8,7 @@
 
 **Tech Stack:** pnpm workspace、TypeScript 5、Vitest 3、Playwright 1.61、Zod 3、Next.js 15、CloudBase JS SDK 3.6.8、PostgreSQL、CloudBase Run。
 
-> 2026-08-31 当前裁决：阶段 2A、2B 与阶段 3 均为 PASS，普通非投稿网站功能开发资格恢复；阶段 2C 未执行，生产未部署，投稿、远端 migration 与上线继续冻结。新鲜证据见 `docs/operations/website-optimization-acceptance.md`。
+> 2026-09-01 当前裁决：阶段 2A、2B 与阶段 3 的既有本地裁决保持 PASS；阶段四八项本地治理实现已完成，但完整 `verify:web-chain` 在 Docker `scanner-candidate` 环境门失败，因此阶段四整体仍未达标。阶段 2C 未执行，生产未部署，投稿、远端 migration 与上线继续冻结。真实状态见 `docs/operations/website-optimization-acceptance.md`。
 
 ## Global Constraints
 
@@ -77,15 +77,27 @@ git commit -m "docs: 记录网站阶段2至3验收裁决"
 
 确认阶段 0—3 全部通过；缺少任一证据时停止，不创建代码任务。
 
-阶段 0—3 的本地进入条件已经满足；阶段 4 不在本轮执行，尚未创建其规格或代码任务。
+阶段 0—3 的本地进入条件已经满足；阶段四已由 `docs/superpowers/specs/2026-08-15-website-s2-governance-design.md` 与 `docs/superpowers/plans/2026-08-31-website-stage-4-s2-governance.md` 规格化并执行。
 
-- [ ] **Step 2: 分别规格化八项治理工作**
+- [x] **Step 2: 分别规格化并实现八项本地治理工作**
 
 规格必须分别裁决：keyset cursor、desired-state 点赞与 `operationId`、下载计数语义、坏公开记录隔离、有界 RPC、Release Manifest 单一契约、`LiquidGlassHome` 事件上移、i18n 单向消息键；生产 Router 只在取得真实网关证据后保留或删除。
 
-- [ ] **Step 3: 为涉及旧实现清理的任务建立二次批准清单**
+2026-09-01 实际结果：版本化 keyset cursor、desired-state 点赞与互动幂等账本、下载成功签发计数、发布结构不变量与坏记录隔离、有界 RPC JSON、Release Manifest 单一契约、CloudBase 能力端口收窄和 i18n 单向权威八项本地实现均已完成。`LiquidGlassHome` 跨章节事件项已由 2026-08-20 减法规格接替为“删除且不替换”；生产 Router 明确等待阶段 2C 的真实 CloudBase 网关路径证据，本阶段未预判保留或删除。
+
+- [x] **Step 3: 核对旧实现清理范围**
 
 清单必须含精确文件、调用引用、恢复方式、定向测试和阶段门；未获二次批准不得大量删除。
+
+阶段四按纵向切片删除被替代的旧符号、函数和浅接口，没有执行 IndexedDB/LocalStorage Repository、旧首页文件簇、CSS 或资产的大量文件删除，因此未触发大量删除二次批准门。阶段五仍须单独列出文件簇并取得二次批准。
+
+### 阶段四当前退出状态
+
+- 八项本地治理实现：complete；最终代码 Spec 轴 Approved。
+- `LiquidGlassHome` 事件项：由 2026-08-20 减法规格接替，不重新建立事件总线。
+- 生产 Router：等待阶段 2C 真实网关证据，不记通过或失败。
+- 阶段四整体：未达标。2026-09-01 完整 `verify:web-chain` 唯一失败点是 Docker `scanner-candidate` 环境门，同次后续 website build/E2E 未执行；分段通过不能替代完整门。
+- 外部状态：CloudBase 开发环境、远端 migration、cleanup 调度、真实网关、对象存储、部署、发布和正式上线均未执行。
 
 ### Task 3: 阶段 5 正式生产重部署入口
 

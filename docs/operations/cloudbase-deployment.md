@@ -2,7 +2,9 @@
 
 本文记录 CloudBase PostgreSQL、私有对象存储、三个云函数、隔离扫描容器和 Next.js 静态导出的目标配置与当前止血状态。命令中的密钥均通过环境变量提供，不在仓库、构建日志或前端变量中填写真实值；仓库中的配置和迁移文件不证明任何环境已经部署。
 
-> 2026-08-31 状态：阶段 2A、2B 与阶段 3 本地门通过，普通非投稿网站功能开发资格恢复；阶段 2C 未执行。生产未部署，线上仍是旧测试版，本分支未上线且共享包投稿继续关闭。详见 [网站架构优化阶段 2—3 本地验收记录](website-optimization-acceptance.md)。
+> 2026-09-01 状态：阶段四八项本地治理代码已完成，但完整 `verify:web-chain` 在 Docker `scanner-candidate` 环境门失败，阶段四整体未达标。CloudBase 开发环境、远端 migration、cleanup 调度、真实网关、私有对象存储、函数/Scanner/Hosting 部署、发布和正式上线均未执行；线上仍是旧测试版，本分支未上线且共享包投稿继续关闭。详见 [网站阶段四本地治理真实状态记录](website-optimization-acceptance.md)。
+
+当前仓库本地代码已包含版本化 keyset cursor、互动幂等账本、下载成功签发计数、发布结构不变量、坏公开记录隔离、有界 RPC JSON、单一 Release Manifest 契约和收窄后的 CloudBase 能力端口。临时 PostgreSQL 17.11 已顺序执行 13 个前向 migration 并通过 103 项行为验证；这些事实只证明本地实现，不证明任何远端资源已迁移、配置或运行。
 
 ## 1. 环境隔离
 
@@ -13,8 +15,8 @@
    SHARED_PACKAGE_SUBMISSIONS_ENABLED=false
    ```
 
-3. 只有阶段 2B 的真实 Scanner 容器候选与阶段 2C 开发环境完整 smoke 均已完成并验收后，才可将该值改为 `true`；该条件不构成实际部署或上线授权。
-4. 新增的前向 migration 目前仅在临时本地 PostgreSQL 17.11 中顺序执行 7 个 migration 并通过 42 项行为验证，尚未在任何 CloudBase PostgreSQL 环境执行。当前默认迁移入口仍是以下只读 dry-run；它只读取仓库 migration 并输出 checksum plan，不读取凭据、不加载管理 SDK，也不连接或写入数据库：
+3. 只有真实 Scanner 容器候选与阶段 2C 开发环境完整 smoke 均已完成并验收后，才可将该值改为 `true`；2026-09-01 最新完整门在本机 Docker 候选环境失败，既有分段或历史候选结果不能替代本次完整门。该条件不构成实际部署或上线授权。
+4. 新增的前向 migration 目前仅在临时本地 PostgreSQL 17.11 中顺序执行 13 个 migration 并通过 103 项行为验证，尚未在任何 CloudBase PostgreSQL 环境执行。当前默认迁移入口仍是以下只读 dry-run；它只读取仓库 migration 并输出 checksum plan，不读取凭据、不加载管理 SDK，也不连接或写入数据库：
 
    ```powershell
    pnpm.cmd plan:cloudbase-migrations
@@ -46,6 +48,8 @@
 4. 系统通过与转人工都进入管理员队列，只有管理员批准后才能公开。
 
 ## 5. 隔离扫描容器（仅阶段 2 获批解冻后）
+
+2026-09-01 完整网站链在 `scanner-candidate` 连接 Docker Desktop Linux engine 时失败；该环境失败不是候选通过证据，也不允许以静态报告或无 Docker 模式替代。CloudBase Run Scanner 尚未部署或冒烟。
 
 1. 使用 `apps/package-scanner/Dockerfile` 部署 CloudBase Run 服务。
 2. 运行参数：Node.js 22 容器、最小实例数 0、单实例并发 1、内存至少 1 GB、健康检查 `/healthz`。
@@ -92,17 +96,19 @@ CLOUDBASE_API_KEY
 
 - `ai-pet-api`：公开与管理员 HTTP API；
 - `ai-pet-moderation-worker`：定时领取审核任务；
-- `ai-pet-cleanup`：清理到期隔离内容。
+- `ai-pet-cleanup`：清理到期隔离内容与过期互动幂等账本。
 
-阶段 2B 完成真实 Scanner 容器候选且阶段 2C 完成开发环境 migration、函数与完整 smoke 前，不得部署上述入口或为审核 worker、cleanup 配置定时触发器。解冻后每次只处理代码限定的小批量，失败后告警并保持内容隐藏。
+阶段 2C 完成开发环境 migration、函数、真实 Scanner 候选与完整 smoke 前，不得部署上述入口或为审核 worker、cleanup 配置定时触发器。当前 cleanup 调度未配置；本地清理函数和测试通过不等于 24 小时互动账本或三天隔离清理已在远端生效。解冻后每次只处理代码限定的小批量，失败后告警并保持内容隐藏。
 
 ## 8. HTTP 网关
 
-冻结期间不得将 `/api/v1` 关联到新的 `ai-pet-api` 部署。解冻后：
+冻结期间不得把任何新网关路径关联到 `ai-pet-api` 部署。阶段 2C 必须先捕获脱敏的真实 CloudBase event/path，确认平台传给函数的路径是否保留 `/api` 前缀，再裁决由现有 `createApi/dispatch` 还是 `createRouter` 成为唯一正式路径；当前不能从本地注释预判。
 
-1. 将 `/api/v1` 关联到 `ai-pet-api`。
+取得证据并获部署授权后：
+
+1. 按真实平台路径配置外部 API 前缀并关联到 `ai-pet-api`，不得为兼容猜测长期保留双 Router。
 2. 公开投稿、状态和公开列表路径允许匿名访问；匿名投稿依靠 IP 限流、内容审核和管理员审批控制风险。
-3. `/api/v1/admin/*` 同时启用 CloudBase 身份认证；当前应用层精确读取 `x-ai-pet-admin-token`，并校验令牌对应的管理员身份、邮箱白名单与角色。真实 CloudBase 网关如何传递并保护该请求头尚未在阶段 2C 验证，网关认证不能替代应用层授权。
+3. 管理员路径同时启用 CloudBase 身份认证；当前应用层精确读取 `x-ai-pet-admin-token`，并校验令牌对应的管理员身份、邮箱白名单与角色。真实 CloudBase 网关如何传递并保护该请求头尚未在阶段 2C 验证，网关认证不能替代应用层授权。
 4. CORS 只允许正式网站和已批准的开发域名及所需方法/请求头，不使用通配来源携带认证信息。
 
 ## 9. 静态站点、域名与浏览器配置
@@ -114,7 +120,7 @@ CLOUDBASE_API_KEY
    ```
 
 2. 绑定已备案的自定义域名并强制 HTTPS；将实际域名加入 CloudBase Web 安全域名配置。
-3. 配置 CSP，至少限制默认来源、脚本来源、连接目标、图片来源和 frame 祖先；为 `/api/v1` 配置匹配的 CORS。
+3. 配置 CSP，至少限制默认来源、脚本来源、连接目标、图片来源和 frame 祖先；为阶段 2C 证实的实际 API 前缀配置匹配的 CORS。
 4. 检查 `apps/website/out/admin/index.html`、`apps/website/out/submission-status/index.html` 和三个 `/legal/*.html` 均可访问。
 
 ## 10. 监控、告警与备份
@@ -126,7 +132,7 @@ CLOUDBASE_API_KEY
 
 ## 11. 开发环境冒烟门禁
 
-当前开发环境完整 smoke 尚未执行，部署继续冻结。解冻前必须在开发环境验证：共享包投稿默认返回暂停状态，反馈投稿不受影响且不直接公开；状态链接只在 Fragment 携带令牌；强产品词和有效组合进入管理员队列，零命中与弱命中也进入管理员队列且不会自动驳回；明确内容安全风险仍进入自动驳回；共享包普通批准只有当前有效技术扫描证据才能执行，缺证据时独立强制发布仍保留原扫描事实与公开风险标记；删除立即隐藏且三天内可恢复；错误或非管理员 `x-ai-pet-admin-token` 返回 401/403；并验证真实网关与该应用层请求头兼容；下载只发短期签名地址。
+当前开发环境完整 smoke 尚未执行，部署继续冻结。解冻前必须在开发环境验证：共享包投稿默认返回暂停状态，反馈投稿不受影响且不直接公开；状态链接只在 Fragment 携带令牌；强产品词和有效组合进入管理员队列，零命中与弱命中也进入管理员队列且不会自动驳回；明确内容安全风险仍保留真实扫描结论；管理员可把 `system_reviewing` 或 `auto_rejected` 投稿转入人工队列，共享包缺少有效通过证据或系统未通过时可在独立风险确认后强制发布，但不能绕过非空文本、唯一 cover/package、固定对象键、MIME 与正大小等结构不变量，且不得改写扫描事实；删除立即隐藏且三天内可恢复；错误或非管理员 `x-ai-pet-admin-token` 返回 401/403；并验证真实网关与该应用层请求头兼容；下载只发短期签名地址。
 
 执行仓库验证：
 
