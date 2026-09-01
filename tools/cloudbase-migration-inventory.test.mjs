@@ -72,7 +72,7 @@ test('真实仓库迁移清单保持十个不可变前向版本', async () => {
     '20260831020000_late_moderation_lease_guard.sql',
     '20260831030000_keyset_pagination.sql',
     '20260831040000_idempotent_public_interactions.sql',
-    '20260831050000_public_like_endpoint_guard.sql'
+    '20260831040001_public_like_endpoint_guard.sql'
   ]);
 });
 
