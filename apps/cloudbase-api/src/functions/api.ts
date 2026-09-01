@@ -8,10 +8,13 @@ import {
   adminDetailResponseSchema,
   adminQueueRequestSchema,
   adminQueueResponseSchema,
+  adminSiteMetricsResponseSchema,
   feedbackSubmissionRequestSchema,
   feedbackSubmissionResponseSchema,
   finalizeSubmissionRequestSchema,
   finalizeSubmissionResponseSchema,
+  officialDownloadClickRequestSchema,
+  officialDownloadClickResponseSchema,
   prepareSubmissionRequestSchema,
   prepareSubmissionResponseSchema,
   publicCommunityItemSchema,
@@ -45,6 +48,7 @@ import {
   type CloudBaseHttpResponse
 } from '../errors.js';
 import type { CloudBaseHttpEvent } from '../http/router.js';
+import type { OfficialDownloadMetricStore } from '../ports.js';
 import { AbuseControl } from '../services/abuse-control.js';
 import { AdminService } from '../services/admin-service.js';
 import {
@@ -146,6 +150,7 @@ export interface ApiDependencies {
   textSubmissions: TextSubmissionApi;
   publicContent: PublicContentApi;
   abuseControl: AbuseControlApi;
+  officialDownloadMetrics: OfficialDownloadMetricStore;
   adminIdentity: AdminIdentityApi;
   admin: AdminApi;
   fingerprintSecret: string;
@@ -195,6 +200,14 @@ async function dispatch(
     return adminQueueResponseSchema.parse(
       await dependencies.admin.listQueue(adminListQuery(event))
     );
+  }
+
+  if (method === 'GET' && path === '/api/v1/admin/metrics/official-windows-download') {
+    await dependencies.adminIdentity.requireAdmin(requireAdminToken(event));
+    return adminSiteMetricsResponseSchema.parse({
+      clickCount: await dependencies.officialDownloadMetrics
+        .getOfficialWindowsDownloadClickCount()
+    });
   }
 
   const adminActionId = dynamicId(
@@ -291,6 +304,19 @@ async function dispatch(
     return publicCommunityPageSchema.parse(
       await dependencies.publicContent.listCommunity(publicListQuery(event))
     );
+  }
+
+  if (method === 'POST' && path === '/api/v1/official-downloads/windows/click') {
+    const body = officialDownloadClickRequestSchema.safeParse(requestRecord(event));
+    if (!body.success) throw invalidRequest();
+    await dependencies.officialDownloadMetrics.recordOfficialWindowsDownloadClick({
+      fingerprintHash: deviceFingerprint(
+        requireSourceIp(event, context),
+        header(event.headers, 'user-agent'),
+        dependencies.fingerprintSecret
+      )
+    });
+    return officialDownloadClickResponseSchema.parse({});
   }
 
   if (method === 'GET' && path === '/api/v1/feedback') {
@@ -664,6 +690,7 @@ export function createProductionHandler(
     textSubmissions: new TextSubmissionService(store),
     publicContent: new PublicContentService(store, storage),
     abuseControl: new AbuseControl(store),
+    officialDownloadMetrics: store,
     adminIdentity: new CloudBaseAdminIdentityProvider(
       config.envId,
       config.adminEmail,

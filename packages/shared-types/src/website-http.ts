@@ -126,6 +126,11 @@ export const publicLikeRequestSchema = z.object({
 export const publicDownloadRequestSchema = z.object({
   operationId: z.string().uuid().transform(value => value.toLowerCase())
 }).strict();
+export const officialDownloadClickRequestSchema = emptyRequestSchema;
+export const officialDownloadClickResponseSchema = emptyRequestSchema;
+export const adminSiteMetricsResponseSchema = z.object({
+  clickCount: z.number().int().safe().nonnegative()
+}).strict();
 
 const signedUrlSchema = z.object({
   url: z.string().url(),

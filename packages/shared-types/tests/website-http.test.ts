@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { z } from 'zod';
+import * as websiteHttp from '../src/website-http';
 
 import {
   adminActionRequestSchema,
@@ -127,6 +128,25 @@ describe('投稿 endpoint 契约', () => {
 });
 
 describe('公开 endpoint 契约', () => {
+  it('官方 Windows 安装包点击只接受空请求且不公开累计值', () => {
+    const schemas = websiteHttp as typeof websiteHttp & {
+      officialDownloadClickRequestSchema: z.ZodType<{}>;
+      officialDownloadClickResponseSchema: z.ZodType<{}>;
+      adminSiteMetricsResponseSchema: z.ZodType<{ clickCount: number }>;
+    };
+
+    expect(schemas.officialDownloadClickRequestSchema.parse({})).toEqual({});
+    expect(schemas.officialDownloadClickRequestSchema.safeParse({ count: 1 }).success)
+      .toBe(false);
+    expect(schemas.officialDownloadClickResponseSchema.parse({})).toEqual({});
+    expect(schemas.officialDownloadClickResponseSchema.safeParse({ clickCount: 1 }).success)
+      .toBe(false);
+    expect(schemas.adminSiteMetricsResponseSchema.parse({ clickCount: 12 }))
+      .toEqual({ clickCount: 12 });
+    expect(schemas.adminSiteMetricsResponseSchema.safeParse({ clickCount: -1 }).success)
+      .toBe(false);
+  });
+
   const community = {
     id: 'pet-1', name: '桌宠', description: '说明',
     cover: { url: 'https://example.test/cover', expiresAt: dateTime },

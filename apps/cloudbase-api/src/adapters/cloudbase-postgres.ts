@@ -26,6 +26,7 @@ import type {
   CompleteUploadInput,
   NewSubmission,
   NewTextSubmission,
+  OfficialDownloadMetricStore,
   PublicDownloadInput,
   PublicDownloadResult,
   PublicContentStore,
@@ -67,6 +68,8 @@ export type CloudBasePostgresRpcName =
   | 'create_text_submission'
   | 'set_public_like'
   | 'record_public_download'
+  | 'record_official_windows_download_click'
+  | 'get_official_windows_download_click_count'
   | 'create_submission'
   | 'complete_submission_upload'
   | 'apply_admin_action'
@@ -186,6 +189,7 @@ export class CloudBasePostgresStore implements
   SecurityStore,
   TextSubmissionStore,
   PublicContentStore,
+  OfficialDownloadMetricStore,
   AdminStore,
   CleanupStore {
   constructor(
@@ -259,6 +263,30 @@ export class CloudBasePostgresStore implements
         'download_count'
       )
     };
+  }
+
+  async recordOfficialWindowsDownloadClick(
+    input: { fingerprintHash: string }
+  ): Promise<void> {
+    requireHash(input.fingerprintHash);
+    const result = await this.rpcClient.rpc('record_official_windows_download_click', {
+      p_fingerprint_hash: input.fingerprintHash
+    });
+    if (result.error?.code === 'P1004') {
+      throw new ApiError('RATE_LIMITED', 429, '官方安装包点击超过固定窗口限制', 60);
+    }
+    if (result.error) requireData(result, '记录官方安装包点击失败');
+  }
+
+  async getOfficialWindowsDownloadClickCount(): Promise<number> {
+    const row = requireRecord(
+      requireData(
+        await this.rpcClient.rpc('get_official_windows_download_click_count', {}),
+        '读取官方安装包点击数失败'
+      ),
+      '官方安装包点击数'
+    );
+    return requireNonnegativeInteger(row.click_count, 'click_count');
   }
 
   async listPublicCommunity(

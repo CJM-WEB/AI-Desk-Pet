@@ -55,6 +55,6 @@ test('真实临时 PostgreSQL 顺序执行全部迁移并验证事务行为', {
 
   assert.equal(result.postgresMajorVersion, 17);
   assert.match(result.postgresVersion, /^17\./u);
-  assert.equal(result.migrationsApplied, 15);
-  assert.equal(result.behaviorsVerified, 76);
+  assert.equal(result.migrationsApplied, 16);
+  assert.equal(result.behaviorsVerified, 80);
 });

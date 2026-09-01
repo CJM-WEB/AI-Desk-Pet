@@ -4,7 +4,6 @@ import {
   CloudBasePostgresStore,
   type CloudBaseRdbQuery
 } from '../src/adapters/cloudbase-postgres.js';
-import { AdminService } from '../src/services/admin-service.js';
 import { PublicContentService } from '../src/services/public-content-service.js';
 import { SubmissionService } from '../src/services/submission-service.js';
 import { TextSubmissionService } from '../src/services/text-submission-service.js';
@@ -13,6 +12,7 @@ import type {
   AdminIdentity,
   Clock,
   ObjectStorage,
+  OfficialDownloadMetricStore,
   NewSubmission,
   SignedDownload,
   SignedUpload,
@@ -47,6 +47,10 @@ describe('CloudBase API 端口', () => {
     expectTypeOf<AdminIdentityProvider['requireAdmin']>()
       .toEqualTypeOf<(accessToken: string) => Promise<AdminIdentity>>();
     expectTypeOf<Clock['now']>().toEqualTypeOf<() => Date>();
+    expectTypeOf<OfficialDownloadMetricStore['recordOfficialWindowsDownloadClick']>()
+      .toEqualTypeOf<(input: { fingerprintHash: string }) => Promise<void>>();
+    expectTypeOf<OfficialDownloadMetricStore['getOfficialWindowsDownloadClickCount']>()
+      .toEqualTypeOf<() => Promise<number>>();
   });
 
   it('业务服务只接收各自所需的最小能力端口', () => {
@@ -65,6 +69,10 @@ describe('CloudBase API 端口', () => {
       | 'setPublicLike'
       | 'recordPublicDownload'
     >();
+    expectTypeOf<keyof OfficialDownloadMetricStore>().toEqualTypeOf<
+      | 'recordOfficialWindowsDownloadClick'
+      | 'getOfficialWindowsDownloadClickCount'
+    >();
     expectTypeOf<ConstructorParameters<typeof SubmissionService>[0]>()
       .toEqualTypeOf<SubmissionStore>();
     expectTypeOf<ConstructorParameters<typeof SubmissionService>[1]>()
@@ -75,13 +83,11 @@ describe('CloudBase API 端口', () => {
       .toEqualTypeOf<PublicContentStore>();
     expectTypeOf<ConstructorParameters<typeof PublicContentService>[1]>()
       .toEqualTypeOf<Pick<ObjectStorage, 'createSignedUrl'>>();
-    expectTypeOf<ConstructorParameters<typeof AdminService>[1]>()
-      .toEqualTypeOf<Pick<ObjectStorage, 'createSignedUrl'>>();
   });
 
   it('生产 Store 同时满足最终业务端口且 RDB 查询不暴露死写能力', () => {
     expectTypeOf<CloudBasePostgresStore>().toMatchTypeOf<
-      SubmissionStore & TextSubmissionStore & PublicContentStore
+      SubmissionStore & TextSubmissionStore & PublicContentStore & OfficialDownloadMetricStore
     >();
     expectTypeOf<Extract<
       keyof CloudBaseRdbQuery,

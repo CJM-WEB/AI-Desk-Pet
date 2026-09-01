@@ -190,12 +190,14 @@ export async function runCloudBaseMigrationBehaviorGate({
     await run(executable('psql'), [...connection, '-f', '-'], interactionBehaviorSql);
     await run(executable('psql'), [...connection, '-f', '-'], publicationShapeBehaviorSql);
     await runConcurrentInteractionGate(executable('psql'), connection);
+    await run(executable('psql'), [...connection, '-f', '-'], officialDownloadMetricBehaviorSql);
+    await runConcurrentOfficialDownloadMetricGate(executable('psql'), connection);
 
     return {
       postgresVersion: postgresVersion.version,
       postgresMajorVersion: postgresVersion.major,
       migrationsApplied: migrations.length,
-      behaviorsVerified: 76
+      behaviorsVerified: 80
     };
   } finally {
     if (started) {
@@ -208,6 +210,30 @@ export async function runCloudBaseMigrationBehaviorGate({
     }
     await rm(temporaryRoot, { recursive: true, force: true });
   }
+}
+
+/** 独立会话同时递增固定指标，确保 UPSERT 不会发生客户端读改写丢失。 */
+async function runConcurrentOfficialDownloadMetricGate(psql, connection) {
+  await Promise.all([
+    run(psql, [...connection, '-f', '-'], String.raw`
+SELECT set_config('request.jwt.claims', '{"role":"service_role"}', false);
+SELECT record_official_windows_download_click(repeat('c', 64));
+`),
+    run(psql, [...connection, '-f', '-'], String.raw`
+SELECT set_config('request.jwt.claims', '{"role":"service_role"}', false);
+SELECT record_official_windows_download_click(repeat('d', 64));
+`)
+  ]);
+  await run(psql, [...connection, '-f', '-'], String.raw`
+DO $concurrent_official_download_metric_gate$
+BEGIN
+  IF (SELECT click_count FROM official_windows_download_click_metric
+      WHERE metric_key = 'official_windows_download_clicks') <> 14 THEN
+    RAISE EXCEPTION '行为门失败：并发官方安装包点击丢失增量';
+  END IF;
+END
+$concurrent_official_download_metric_gate$;
+`);
 }
 
 async function availablePort() {
@@ -2333,6 +2359,45 @@ BEGIN
   END IF;
 END
 $publication_shape_gate$;
+`;
+
+const officialDownloadMetricBehaviorSql = String.raw`
+SELECT set_config('request.jwt.claims', '{"role":"service_role"}', false);
+
+DO $official_download_metric_gate$
+DECLARE
+  v_index integer;
+BEGIN
+  PERFORM record_official_windows_download_click(repeat('a', 64));
+  PERFORM record_official_windows_download_click(repeat('b', 64));
+  IF (SELECT click_count FROM official_windows_download_click_metric
+      WHERE metric_key = 'official_windows_download_clicks') <> 2 THEN
+    RAISE EXCEPTION '行为门失败：连续官方安装包点击未累计为 2';
+  END IF;
+
+  FOR v_index IN 1..10 LOOP
+    PERFORM record_official_windows_download_click(repeat('e', 64));
+  END LOOP;
+  BEGIN
+    PERFORM record_official_windows_download_click(repeat('e', 64));
+    RAISE EXCEPTION '行为门失败：官方安装包点击未受固定限流保护';
+  EXCEPTION WHEN SQLSTATE 'P1004' THEN NULL;
+  END;
+  IF (SELECT click_count FROM official_windows_download_click_metric
+      WHERE metric_key = 'official_windows_download_clicks') <> 12 THEN
+    RAISE EXCEPTION '行为门失败：限流拒绝与点击递增不在同一事务';
+  END IF;
+
+  IF has_table_privilege('anon', 'official_windows_download_click_metric', 'SELECT')
+    OR has_table_privilege('authenticated', 'official_windows_download_click_metric', 'SELECT')
+    OR has_function_privilege('anon', 'record_official_windows_download_click(character)', 'EXECUTE')
+    OR has_function_privilege('authenticated', 'record_official_windows_download_click(character)', 'EXECUTE')
+    OR has_function_privilege('anon', 'get_official_windows_download_click_count()', 'EXECUTE')
+    OR has_function_privilege('authenticated', 'get_official_windows_download_click_count()', 'EXECUTE') THEN
+    RAISE EXCEPTION '行为门失败：官方安装包指标表或函数授予公开角色';
+  END IF;
+END
+$official_download_metric_gate$;
 `;
 
 if (process.argv[1]

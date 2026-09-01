@@ -129,6 +129,10 @@ function createDependencies() {
     abuseControl: {
       consume: vi.fn(async () => undefined)
     },
+    officialDownloadMetrics: {
+      recordOfficialWindowsDownloadClick: vi.fn(async () => undefined),
+      getOfficialWindowsDownloadClickCount: vi.fn(async () => 12)
+    },
     adminIdentity: {
       requireAdmin: vi.fn(async () => ({
         uid: 'uid-admin',
@@ -246,6 +250,65 @@ describe('API 生产组合', () => {
 });
 
 describe('公开 HTTP API', () => {
+  it('官方 Windows 安装包点击把 HMAC 设备指纹交给独立指标 Store 且响应为空', async () => {
+    const dependencies = createDependencies();
+    const main = createApi(dependencies);
+
+    const response = await main(
+      event('POST', '/api/v1/official-downloads/windows/click', {}),
+      context
+    );
+
+    expect(response.statusCode).toBe(200);
+    expect(JSON.parse(response.body)).toEqual({
+      requestId: 'request-1', data: {}
+    });
+    expect(dependencies.officialDownloadMetrics.recordOfficialWindowsDownloadClick)
+      .toHaveBeenCalledWith({
+        fingerprintHash: createHmac('sha256', fingerprintSecret)
+          .update(`${sourceIp}\ntest-agent`)
+          .digest('hex')
+      });
+    expect(dependencies.abuseControl.consume).not.toHaveBeenCalled();
+  });
+
+  it('官方 Windows 安装包点击拒绝多余请求字段且不写指标', async () => {
+    const dependencies = createDependencies();
+    const main = createApi(dependencies);
+
+    const response = await main(
+      event('POST', '/api/v1/official-downloads/windows/click', { count: 1 }),
+      context
+    );
+
+    expect(response.statusCode).toBe(400);
+    expect(dependencies.officialDownloadMetrics.recordOfficialWindowsDownloadClick)
+      .not.toHaveBeenCalled();
+  });
+
+  it('站点指标先鉴权，403 时不读取计数', async () => {
+    const dependencies = createDependencies();
+    dependencies.adminIdentity.requireAdmin.mockRejectedValueOnce(
+      new ApiError('FORBIDDEN', 403)
+    );
+    const main = createApi(dependencies);
+
+    const forbidden = await main(
+      event('GET', '/api/v1/admin/metrics/official-windows-download'), context
+    );
+    const allowed = await main(
+      event('GET', '/api/v1/admin/metrics/official-windows-download'), context
+    );
+
+    expect(forbidden.statusCode).toBe(403);
+    expect(allowed.statusCode).toBe(200);
+    expect(JSON.parse(allowed.body)).toEqual({
+      requestId: 'request-1', data: { clickCount: 12 }
+    });
+    expect(dependencies.officialDownloadMetrics.getOfficialWindowsDownloadClickCount)
+      .toHaveBeenCalledOnce();
+  });
+
   it('发送前响应校验失败时使用新 requestId 且不泄漏原对象', async () => {
     const dependencies = createDependencies();
     dependencies.publicContent.setCommunityLike.mockResolvedValueOnce({

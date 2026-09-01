@@ -815,6 +815,27 @@ describe('CloudBase PostgreSQL RPC 客户端', () => {
 });
 
 describe('CloudBase PostgreSQL 安全与公开互动存储', () => {
+  it('官方 Windows 安装包点击使用独立原子 RPC 并读取累计值', async () => {
+    const rpc = {
+      rpc: vi.fn()
+        .mockResolvedValueOnce({ data: null, error: null })
+        .mockResolvedValueOnce({ data: { click_count: 2 }, error: null })
+    };
+    const store = new CloudBasePostgresStore({ from: vi.fn() } as never, rpc);
+
+    await expect(store.recordOfficialWindowsDownloadClick({
+      fingerprintHash: 'f'.repeat(64)
+    })).resolves.toBeUndefined();
+    await expect(store.getOfficialWindowsDownloadClickCount()).resolves.toBe(2);
+    expect(rpc.rpc.mock.calls.map(([name]) => name)).toEqual([
+      'record_official_windows_download_click',
+      'get_official_windows_download_click_count'
+    ]);
+    expect(rpc.rpc).toHaveBeenNthCalledWith(1, 'record_official_windows_download_click', {
+      p_fingerprint_hash: 'f'.repeat(64)
+    });
+  });
+
   it('最终 schema 测试行不声明或生成已删除的 worker 租约字段', () => {
     expectTypeOf<MemorySubmission>().not.toHaveProperty('moderation_lease_until');
     expect(makeSubmission({ id: 'current-schema-row' }))

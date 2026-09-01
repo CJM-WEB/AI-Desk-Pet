@@ -116,6 +116,14 @@ export interface AbuseLimitResult {
   retryAfterSeconds: number;
 }
 
+/** 官方安装包指标与公开内容隔离，写入与读取均经数据库原子函数。 */
+export interface OfficialDownloadMetricStore {
+  recordOfficialWindowsDownloadClick(
+    input: { fingerprintHash: string }
+  ): Promise<void>;
+  getOfficialWindowsDownloadClickCount(): Promise<number>;
+}
+
 /** 公开互动写入的设备哈希输入。 */
 export interface PublicLikeInput {
   submissionId: string;
