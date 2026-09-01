@@ -73,34 +73,43 @@ test('迁移行为门接受 PostgreSQL 17 的补丁版本并拒绝其他主版�
 });
 
 test('官方安装包并发门等待两个写会话成功后才校验最终计数', async () => {
-  const firstCompletion = deferred();
-  const secondCompletion = deferred();
-  const barrier = controlledSession();
-  const first = controlledSession(firstCompletion.promise);
-  const second = controlledSession(secondCompletion.promise);
-  let sessionIndex = 0;
-  let finalCountChecked = false;
+  for (const pendingName of ['first', 'second']) {
+    const firstCompletion = deferred();
+    const secondCompletion = deferred();
+    const completions = { first: firstCompletion, second: secondCompletion };
+    const sessions = [
+      controlledSession(firstCompletion.promise),
+      controlledSession(secondCompletion.promise)
+    ];
+    const observation = deferred();
+    let sessionIndex = 0;
+    let finalCountChecked = false;
+    const gate = runConcurrentOfficialDownloadMetricGate('psql', [], {
+      runCommand: async (_executable, _arguments, input) => {
+        if (input.includes('$concurrent_official_download_metric_gate$')) {
+          finalCountChecked = true;
+          return;
+        }
+        await observation.promise;
+      },
+      startInteractiveSession: () => controlledSession(),
+      startSession: () => sessions[sessionIndex++]
+    });
 
-  const gate = runConcurrentOfficialDownloadMetricGate('psql', [], {
-    runCommand: async (_executable, _arguments, input) => {
-      if (input.includes('$concurrent_official_download_metric_gate$')) {
-        finalCountChecked = true;
-      }
-    },
-    startInteractiveSession: () => barrier,
-    startSession: () => [first, second][sessionIndex++]
-  });
-
-  await nextTurn();
-  firstCompletion.resolve();
-  await nextTurn();
-  assert.equal(finalCountChecked, false);
-  secondCompletion.resolve();
-  await gate;
-  assert.equal(finalCountChecked, true);
+    const completedName = pendingName === 'first' ? 'second' : 'first';
+    completions[completedName].resolve();
+    await nextTurn();
+    assert.equal(finalCountChecked, false, `${pendingName} 尚未完成`);
+    completions[pendingName].resolve();
+    await nextTurn();
+    assert.equal(finalCountChecked, false, '锁观察尚未完成');
+    observation.resolve();
+    await gate;
+    assert.equal(finalCountChecked, true);
+  }
 });
 
-test('并发会话注册后可延迟观察失败且不产生未处理 rejection', async () => {
+test('第二会话原始失败不会被延迟观察错误遮蔽', async () => {
   const observation = deferred();
   const barrier = controlledSession();
   const first = controlledSession();
@@ -111,21 +120,24 @@ test('并发会话注册后可延迟观察失败且不产生未处理 rejection'
     startSession: () => {
       sessionIndex += 1;
       if (sessionIndex === 1) return first;
-      return controlledSession(Promise.reject(new Error('第二会话提前失败')));
+      return controlledSession(Promise.reject(new Error('SECOND_ORIGINAL')));
     }
   });
 
+  const rejection = assert.rejects(gate, /SECOND_ORIGINAL/u);
   await nextTurn();
-  observation.reject(new Error('观察窗口失败'));
-  await assert.rejects(gate, /观察窗口失败/u);
+  observation.reject(new Error('OBSERVATION_MASK'));
+  await rejection;
 });
 
 test('交互会话释放写入失败后仍可幂等取消子进程', () => {
   let killCount = 0;
+  let writeCount = 0;
   const lifecycle = createSessionLifecycle({
     stdin: {
       end() {},
       write() {
+        writeCount += 1;
         throw new Error('COMMIT 写入失败');
       }
     },
@@ -135,8 +147,31 @@ test('交互会话释放写入失败后仍可幂等取消子进程', () => {
   });
 
   assert.throws(() => lifecycle.release(), /COMMIT 写入失败/u);
+  assert.doesNotThrow(() => lifecycle.release());
   lifecycle.cancel();
   lifecycle.cancel();
+  assert.equal(writeCount, 1);
+  assert.equal(killCount, 1);
+});
+
+test('交互会话取消后释放不再写入 COMMIT', () => {
+  let killCount = 0;
+  let writeCount = 0;
+  const lifecycle = createSessionLifecycle({
+    stdin: {
+      end() {},
+      write() {
+        writeCount += 1;
+      }
+    },
+    kill: () => {
+      killCount += 1;
+    }
+  });
+
+  lifecycle.cancel();
+  lifecycle.release();
+  assert.equal(writeCount, 0);
   assert.equal(killCount, 1);
 });
 

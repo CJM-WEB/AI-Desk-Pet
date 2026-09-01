@@ -263,7 +263,7 @@ SELECT record_official_windows_download_click(repeat('d', 64));
 `,
     'official-download-metric-second-dispatched'
   ));
-  await runCommand(psql, [...connection, '-f', '-'], String.raw`
+  const lockObservation = runCommand(psql, [...connection, '-f', '-'], String.raw`
 DO $official_download_metric_wait_gate$
 DECLARE
   v_deadline timestamptz := clock_timestamp() + interval '5 seconds';
@@ -286,6 +286,10 @@ BEGIN
 END
 $official_download_metric_wait_gate$;
 `);
+  await Promise.race([
+    lockObservation,
+    second.completion.then(() => new Promise(() => undefined))
+  ]);
   barrier.release();
   await barrier.completion;
   await Promise.all([first.completion, second.completion]);
@@ -313,7 +317,7 @@ function registerConcurrentSession(sessions, session) {
 }
 
 /** 无论观察或标记在哪一步失败，都取消所有会话并吞并回收其 completion。 */
-export async function cleanupConcurrentSessions(sessions) {
+async function cleanupConcurrentSessions(sessions) {
   for (const session of sessions) {
     try {
       session.cancel();
@@ -623,9 +627,9 @@ export function createSessionLifecycle(child) {
       }
     },
     release: () => {
-      if (settled || released) return;
-      child.stdin.write('COMMIT;\n');
+      if (settled || cancelled || released) return;
       released = true;
+      child.stdin.write('COMMIT;\n');
       child.stdin.end();
     }
   };
