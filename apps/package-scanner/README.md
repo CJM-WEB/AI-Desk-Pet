@@ -16,7 +16,7 @@ docker build --file apps/package-scanner/Dockerfile `
   --build-arg "CLAMAV_DB_REFRESH_DATE=$clamavRefreshDate" `
   --tag ai-pet-package-scanner:local .
 $archivePath = (Resolve-Path '.\package.zip').Path
-docker run --rm --network none --read-only `
+docker run --rm --network none --read-only --cap-drop ALL `
   --tmpfs /tmp/scan:rw,noexec,nosuid,nodev,mode=1777 `
   --mount "type=bind,source=$archivePath,target=/input/package.zip,readonly" `
   ai-pet-package-scanner:local /input/package.zip
@@ -43,5 +43,5 @@ pnpm.cmd verify:scanner-candidate
 ```
 
 最后一条命令要求本机 Docker runtime 可用。它使用不可变 image ID，在 `--network none`、
-只读根文件系统、只读输入和非 root 条件下分别验证干净包成功、EICAR 阻断与非法包拒绝；
+`--cap-drop ALL`、只读根文件系统、只读输入和非 root 条件下分别验证干净包成功、EICAR 阻断与非法包拒绝；
 任一门禁缺失都会以非零状态失败。命令只生成本地候选报告，不部署或修改云端环境。

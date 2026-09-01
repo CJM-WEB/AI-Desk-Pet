@@ -830,7 +830,7 @@ test('管理员幂等键跨投稿全局唯一，严格 Schema 拒绝越界和额
   }
 });
 
-test('反馈恢复已发布状态保留 standard，强制发布快照逐字段匹配生产语义', async ({ request }) => {
+test('反馈恢复保留 standard，共享包恢复回人工并保留风险与审计事实', async ({ request }) => {
   const feedback = await submitFeedbackViaApi(request, 'E2E 恢复已发布反馈。');
   const pendingFeedback = (await adminItems(request, 'manual_review_pending'))
     .find(item => item.id === feedback.submissionId)!;
@@ -883,6 +883,37 @@ test('反馈恢复已发布状态保留 standard，强制发布快照逐字段�
     },
     replayed: false
   });
+  const publishedShared = (await adminItems(request, 'published'))
+    .find(item => item.id === shared.submissionId)!;
+  await applyAdminAction(request, publishedShared, 'delete', '隔离共享包');
+  const quarantinedShared = (await adminItems(request, 'deleted_quarantined'))
+    .find(item => item.id === shared.submissionId)!;
+  await applyAdminAction(request, quarantinedShared, 'restore', '恢复后人工复核');
+  const restoredShared = (await adminItems(request, 'manual_review_pending'))
+    .find(item => item.id === shared.submissionId)!;
+  expect(restoredShared).toMatchObject({
+    publicationBasis: null,
+    riskSummary: pending.riskSummary,
+    autoRejectionReason: pending.autoRejectionReason
+  });
+  const restoredDetailResponse = await request.get(
+    `/api/v1/admin/submissions/${encodeURIComponent(shared.submissionId)}`,
+    { headers: { 'x-ai-pet-admin-token': E2E_ADMIN_TOKEN } }
+  );
+  expect(restoredDetailResponse.ok(), await restoredDetailResponse.text()).toBe(true);
+  const restoredDetail = (await restoredDetailResponse.json()).data;
+  expect(restoredDetail.auditLogs.slice(-2)).toEqual([
+    expect.objectContaining({
+      action: 'delete',
+      beforeStatus: 'published',
+      afterStatus: 'deleted_quarantined'
+    }),
+    expect.objectContaining({
+      action: 'restore',
+      beforeStatus: 'deleted_quarantined',
+      afterStatus: 'manual_review_pending'
+    })
+  ]);
 });
 
 test('匿名反馈批准前隐藏且批准后进入真实网页列表', async ({ page, request }) => {

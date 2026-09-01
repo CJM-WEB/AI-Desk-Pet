@@ -225,7 +225,7 @@ describe('合并后的反馈与支持模块', () => {
     fireEvent.click(screen.getByRole('button', { name: '发布投稿' }));
 
     await waitFor(() => expect(repository.create).toHaveBeenCalledTimes(1));
-    expect(await screen.findByText('投稿已收到，正在系统审核。')).toBeTruthy();
+    expect(await screen.findByText('投稿已收到，正在等待人工审核。')).toBeTruthy();
   });
 
   it('放弃非空草稿需要确认并在放弃后恢复入口焦点', async () => {

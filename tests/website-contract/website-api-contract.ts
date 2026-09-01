@@ -611,6 +611,60 @@ export function runWebsiteApiContract(
         path: `/api/v1/community/${refs.overrideSubmissionId}`,
       }), publicCommunityItemSchema);
       expect(detail.publicationBasis).toBe('admin_override');
+
+      const deleted = success(await driver.request({
+        method: 'POST', path,
+        headers: { 'x-ai-pet-admin-token': refs.adminToken },
+        body: {
+          action: 'delete',
+          version: published.submission.statusVersion,
+          idempotencyKey: 'contract-delete-override-001',
+          reason: '隔离后重新人工审核',
+        },
+      }), adminActionResponseSchema);
+      expect(deleted.submission).toMatchObject({
+        status: 'deleted_quarantined',
+        publicationBasis: null,
+      });
+      const restored = success(await driver.request({
+        method: 'POST', path,
+        headers: { 'x-ai-pet-admin-token': refs.adminToken },
+        body: {
+          action: 'restore',
+          version: deleted.submission.statusVersion,
+          idempotencyKey: 'contract-restore-override-001',
+          reason: '恢复后人工复核',
+        },
+      }), adminActionResponseSchema);
+      expect(restored.submission).toMatchObject({
+        status: 'manual_review_pending',
+        publicationBasis: null,
+      });
+      const restoredDetail = success(await driver.request({
+        method: 'GET',
+        path: `/api/v1/admin/submissions/${refs.overrideSubmissionId}`,
+        headers: { 'x-ai-pet-admin-token': refs.adminToken },
+      }), adminDetailResponseSchema);
+      expect(restoredDetail).toMatchObject({
+        status: 'manual_review_pending',
+        publicationBasis: null,
+        riskSummary: { summary: '合同固定种子', labels: [] },
+        autoRejectionReason: '历史自动拒绝事实',
+      });
+      expect(restoredDetail.auditLogs.slice(-2)).toEqual([
+        expect.objectContaining({
+          action: 'delete',
+          beforeStatus: 'published',
+          afterStatus: 'deleted_quarantined',
+          reason: '隔离后重新人工审核',
+        }),
+        expect.objectContaining({
+          action: 'restore',
+          beforeStatus: 'deleted_quarantined',
+          afterStatus: 'manual_review_pending',
+          reason: '恢复后人工复核',
+        }),
+      ]);
     });
   });
 }

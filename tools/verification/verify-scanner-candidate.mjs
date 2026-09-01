@@ -125,7 +125,7 @@ function assertCanonicalCliFailure(result, detailCode, purpose) {
 function packageRunArgs(imageId, archivePath) {
   const mount = `type=bind,source=${resolve(archivePath)},target=/input/package.zip,readonly`;
   return [
-    'run', '--rm', '--network', 'none', '--read-only',
+    'run', '--rm', '--network', 'none', '--read-only', '--cap-drop', 'ALL',
     '--tmpfs', '/tmp/scan:rw,noexec,nosuid,nodev,mode=1777',
     '--mount', mount,
     imageId, '/input/package.zip',
@@ -182,7 +182,7 @@ export function verifyScannerCandidate(
 
   const probeMount = `type=bind,source=${resolve(probePath)},target=/candidate/probe.mjs,readonly`;
   const probeOutput = runChecked(runDocker, [
-    'run', '--rm', '--network', 'none', '--read-only',
+    'run', '--rm', '--network', 'none', '--read-only', '--cap-drop', 'ALL',
     '--mount', probeMount,
     '--entrypoint', 'node',
     imageId, '/candidate/probe.mjs',

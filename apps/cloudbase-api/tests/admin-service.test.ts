@@ -411,7 +411,7 @@ describe('管理员审核服务', () => {
     expect(store.applyAdminAction).not.toHaveBeenCalled();
   });
 
-  it('隔离共享包恢复仍回到系统审核重扫', async () => {
+  it('隔离共享包恢复只回到人工审核', async () => {
     const quarantined = submission('deleted_quarantined', {
       preQuarantineStatus: 'published'
     });
@@ -421,11 +421,11 @@ describe('管理员审核服务', () => {
       quarantined.id,
       {
         action: 'restore', version: 3,
-        idempotencyKey: 'rescan-restored-package', reason: '恢复并重扫'
+        idempotencyKey: 'manual-restored-package', reason: '恢复后人工复核'
       }
     );
     expect(store.applyAdminAction).toHaveBeenCalledWith(
-      expect.objectContaining({ nextStatus: 'system_reviewing' })
+      expect.objectContaining({ nextStatus: 'manual_review_pending' })
     );
   });
 
@@ -697,7 +697,7 @@ describe('管理员审核服务', () => {
       name: '共享包恢复',
       action: 'restore' as const,
       initial: submission('deleted_quarantined', { preQuarantineStatus: 'published' }),
-      changed: submission('system_reviewing', { statusVersion: 4, preQuarantineStatus: null })
+      changed: submission('manual_review_pending', { statusVersion: 4, preQuarantineStatus: null })
     },
     {
       name: '文本恢复',

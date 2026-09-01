@@ -47,21 +47,16 @@ async function createRuleFixture() {
     'apps/website/lib/sdk-offender.ts': "import cloudbase from '@cloudbase/js-sdk';\nexport { cloudbase };\n",
     'apps/website/lib/cloud-offender.ts':
       "import { internal } from '../../cloudbase-api/src/internal.ts';\nexport { internal };\n",
-    'apps/website/lib/scanner-protocol-offender.ts':
-      "import { protocol } from '../../../packages/shared-types/src/scanner-protocol.ts';\nexport { protocol };\n",
     'apps/website/components/website-experience/shader-offender.ts':
       "import { LIQUID_GLASS_FRAGMENT_SHADER } from '../home-experience/liquid-glass-shaders.ts';\nexport { LIQUID_GLASS_FRAGMENT_SHADER };\n",
     'apps/website/components/home-experience/liquid-glass-shaders.ts':
       "export const LIQUID_GLASS_FRAGMENT_SHADER = '';\n",
-    'apps/desktop/src/renderer/scanner-protocol-offender.ts':
-      "import { protocol } from '../../../../packages/shared-types/src/scanner-protocol.ts';\nexport { protocol };\n",
     'apps/desktop/src/renderer/website-http-offender.ts':
       "import { contract } from '../../../../packages/shared-types/src/website-http.ts';\nexport { contract };\n",
     'apps/desktop/src/renderer/release-manifest-offender.ts':
       "import { releaseManifestSchema } from '../../../../packages/shared-types/src/release-manifest.ts';\nexport { releaseManifestSchema };\n",
     'apps/website/lib/migration-target.ts': 'export const website = true;\n',
     'apps/cloudbase-api/src/internal.ts': 'export const internal = true;\nexport const cloud = true;\n',
-    'packages/shared-types/src/scanner-protocol.ts': 'export const protocol = true;\n',
     'packages/shared-types/src/website-http.ts': 'export const contract = true;\n',
     'packages/shared-types/src/release-manifest.ts': 'export const releaseManifestSchema = true;\n',
     'apps/cloudbase-api/src/services/offender.ts':
@@ -126,6 +121,10 @@ test('依赖审查配置不再为已退役迁移入口或管理 SDK 保留例外
     'apply-cloudbase-migrations',
     '@cloudbase/' + 'manager-node',
     'migration-production-to-dev-dependency',
+    'scanner-protocol',
+    'apps/package-scanner/src/server',
+    'tencent-sdk-only-in-content-adapters',
+    'tencentcloud-sdk-nodejs',
   ];
 
   assert.doesNotMatch(serialized, new RegExp(retiredTerms.join('|'), 'u'));
@@ -184,7 +183,7 @@ test('网站专属规则阻止跨应用、服务反向依赖与越界 SDK 调用
   );
   assert.equal(result.status, 0, result.stderr);
   const report = JSON.parse(result.stdout);
-  assert.equal(report.summary.error, 5);
+  assert.equal(report.summary.error, 3);
   const hasViolation = (ruleName, from) =>
     report.summary.violations.some(
       violation => violation.rule.name === ruleName && violation.from === from,
@@ -221,15 +220,6 @@ test('网站专属规则阻止跨应用、服务反向依赖与越界 SDK 调用
     ),
     false,
   );
-  for (const offender of [
-    'apps/website/lib/scanner-protocol-offender.ts',
-    'apps/desktop/src/renderer/scanner-protocol-offender.ts',
-  ]) {
-    assert.ok(
-      hasViolation('scanner-protocol-only-in-server-chain', offender),
-      offender,
-    );
-  }
   assert.ok(
     hasViolation(
       'website-http-only-in-web-chain',

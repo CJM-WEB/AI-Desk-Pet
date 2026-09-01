@@ -36,7 +36,7 @@ export default {
         dependencyTypes: ['unknown', 'undetermined', 'npm-no-pkg', 'npm-unknown'],
         // 工作区公开入口由下方五条目标专属规则校验声明关系，避免合法别名产生重复告警。
         pathNot:
-          '^packages/(agent-core|character-assets|character-runtime|file-tools|shared-types)/src/index\\.[cm]?[jt]s$|^packages/shared-types/src/(release-manifest|scanner-protocol|website-http)\\.[cm]?[jt]s$',
+          '^packages/(agent-core|character-assets|character-runtime|file-tools|shared-types)/src/index\\.[cm]?[jt]s$|^packages/shared-types/src/(release-manifest|website-http)\\.[cm]?[jt]s$',
       },
     },
     {
@@ -90,7 +90,7 @@ export default {
           '^(apps/(cloudbase-api|desktop|package-scanner|website)|packages/(agent-core|character-runtime|file-tools)|tools/release)/',
       },
       to: {
-        path: '^packages/shared-types/src/(index|release-manifest|scanner-protocol|website-http)\\.[cm]?[jt]s$',
+        path: '^packages/shared-types/src/(index|release-manifest|website-http)\\.[cm]?[jt]s$',
         dependencyTypes: ['undetermined'],
       },
     },
@@ -276,19 +276,6 @@ export default {
       to: { path: '^packages/(?!shared-types/)' },
     },
     {
-      name: 'scanner-protocol-only-in-server-chain',
-      comment: 'Scanner 远程协议只允许 CloudBase、扫描器和共享协议测试消费。',
-      severity: 'error',
-      from: {
-        pathNot:
-          '^(apps/(cloudbase-api|package-scanner)/|packages/shared-types/tests/)',
-      },
-      to: {
-        path: '^packages/shared-types/src/scanner-protocol\\.[cm]?[jt]s$',
-        reachable: true,
-      },
-    },
-    {
       name: 'website-http-only-in-web-chain',
       comment: '网站 HTTP 契约只允许官网、CloudBase API 与共享契约测试消费。',
       severity: 'error',
@@ -446,7 +433,7 @@ export default {
       comment: '跨工作区依赖 shared-types 必须经过包入口，不得绕入内部源码。',
       severity: 'warn',
       from: { pathNot: '^packages/shared-types/' },
-      to: { path: '^packages/shared-types/src/(?!(index|release-manifest|scanner-protocol|website-http)\\.[cm]?[jt]s$)' },
+      to: { path: '^packages/shared-types/src/(?!(index|release-manifest|website-http)\\.[cm]?[jt]s$)' },
     },
     {
       name: 'no-website-to-cloud-source',
@@ -512,17 +499,6 @@ export default {
       severity: 'warn',
       from: { pathNot: '^apps/cloudbase-api/src/adapters/cloudbase-runtime\\.ts$' },
       to: { path: '(^|/)node_modules/@cloudbase/node-sdk/|^@cloudbase/node-sdk$' },
-    },
-    {
-      name: 'tencent-sdk-only-in-content-adapters',
-      comment: '腾讯内容安全 SDK 只允许由包扫描服务端适配器封装。',
-      severity: 'warn',
-      from: {
-        pathNot: [
-          '^apps/package-scanner/src/server\\.ts$',
-        ],
-      },
-      to: { path: '(^|/)node_modules/tencentcloud-sdk-nodejs/|^tencentcloud-sdk-nodejs$' },
     },
     {
       name: 'website-features-do-not-import-liquid-glass',

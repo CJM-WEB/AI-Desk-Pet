@@ -43,6 +43,10 @@ describe('官网国际化核心', () => {
     expect(zhCN['sharedPet.chapter.upload']).toBe('分享您的 AI Pet');
     expect(en['sharedPet.chapter.title']).toBe('AI Pet Community');
     expect(en['sharedPet.chapter.upload']).toBe('Share Your AI Pet');
+    expect(zhCN['sharedPet.submission.received']).toBe('投稿已收到，正在等待人工审核。');
+    expect(zhCN['feedback.submission.received']).toBe('投稿已收到，正在等待人工审核。');
+    expect(en['sharedPet.submission.received']).toBe('Submission received and awaiting manual review.');
+    expect(en['feedback.submission.received']).toBe('Submission received and awaiting manual review.');
   });
 
   it('只替换已提供变量并保留缺失变量标记', () => {

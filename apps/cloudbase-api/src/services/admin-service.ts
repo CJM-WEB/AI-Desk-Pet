@@ -159,13 +159,13 @@ function nextStatusFor(
   if (action === 'restore') {
     if (submission.preQuarantineStatus) {
       return submission.kind === 'shared_package'
-        ? 'system_reviewing'
+        ? 'manual_review_pending'
         : submission.preQuarantineStatus;
     }
     if (
       submission.statusVersion !== requestedVersion
       && (
-        (submission.kind === 'shared_package' && status === 'system_reviewing')
+        (submission.kind === 'shared_package' && status === 'manual_review_pending')
         || (
           submission.kind !== 'shared_package'
           && status !== 'deleted_quarantined'

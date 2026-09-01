@@ -4,6 +4,7 @@
 
 - 日期：2026-09-01。
 - 范围：阶段 2C 零费用人工审核的本地实现、自动化验证、真实 Docker 候选与运维文档收敛。
+- 提交范围：`5c914ef`（不含）至 Task 7 验收提交（含，本记录所在提交）。
 - 远端状态：`remote: unverified`。
 - 本记录不表示已创建上海 PostgreSQL 环境、执行远端 migration、部署 API/cleanup、创建 Bucket、配置身份/网关/静态托管，也不表示正式生产上线。
 
@@ -12,11 +13,25 @@
 | 项目 | 实际结果 |
 | --- | --- |
 | PostgreSQL 行为门 | 本地 PostgreSQL 17.11，顺序执行 15 个 migration，74 项行为验证通过。 |
-| 网站 | 362 项单测通过；生产构建通过；Playwright E2E 18/18 通过。 |
-| CloudBase API | 258 项测试通过；构建与 typecheck 通过；构建产物只含 `api`、`cleanup`。 |
+| 自动化测试 | 共 918 项通过：门禁测试 89、共享契约 42、网站单测 364、CloudBase API 261、包扫描器 67、发行工具 4、migration 工具 36、网站合同 30、CloudBase 构建产物 2、CloudBase 构建工具 5、Playwright E2E 18。 |
+| 网站 | 364 项单测通过；生产构建通过；Playwright E2E 18/18 通过。 |
+| CloudBase API | 261 项测试通过；构建与 typecheck 通过；构建产物只含 `api`、`cleanup`。 |
 | 包扫描器 | 67 项测试通过；typecheck 通过。 |
-| Scanner candidate verifier | 19/19 通过。 |
-| 真实 Docker 候选 | Node `v22.23.2`、ClamAV `1.4.3`、UID `999`；无网络、只读根文件系统、只读输入与 `mode=1777` tmpfs 条件下，干净包完成检查、EICAR 阻断、非法包拒绝。 |
+| 依赖审查 | 260 个模块、683 条依赖；0 个错误，8 个已批准历史 warning。 |
+| 真实 Docker 候选 | imageId `sha256:f6bf4d6a73f6f5ccc4f51a629ebec5164d2049d73ed2ed4d1baf4bce828cc0f4`；Node `v22.23.2`、ClamAV `1.4.3`、UID `999`；ClamAV DB `28110`，更新时间 `2026-09-01T11:10:23.000Z`，裁决时年龄 0 天；无网络、全部 capability 移除、只读根文件系统、只读输入与 `mode=1777` tmpfs 条件下，干净包进入人工审核、EICAR 阻断、非法包拒绝。 |
+
+Task 7 最终复验实际执行：
+
+```powershell
+$env:AI_PET_POSTGRES_RUNTIME='C:\Users\Administrator\AppData\Local\Temp\ai-pet-pg17-stage2\runtime'
+pnpm.cmd verify:web-chain
+pnpm.cmd verify:web-chain:scope
+pnpm.cmd verify:web-chain:ownership
+git diff --check 5c914ef..HEAD
+git status --short
+```
+
+完整网站链、范围门、测试所有权门和提交差异检查均返回 0；`git status --short` 在记录提交前只列出本任务已解释的恢复语义、Docker capability、投稿成功文案、依赖规则清理、migration 清单测试、契约/E2E、计划与本验收记录修改。
 
 本地行为已收敛为：新共享包和反馈/建议直入 `manual_review_pending`；反馈可普通 `approve` 并记录 `standard`；新共享包没有有效系统证据时普通批准失败关闭，只能经风险确认执行 `force_publish`，并记录 `admin_override` 与公开风险提示。
 

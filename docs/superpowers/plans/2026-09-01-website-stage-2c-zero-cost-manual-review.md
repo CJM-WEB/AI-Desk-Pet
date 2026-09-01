@@ -357,10 +357,29 @@ Expected: 搜索结果只允许出现在“已退役/禁止部署”的历史说
 
 **Files:**
 
+- Modify: `.dependency-cruiser.mjs`
+- Modify: `.dependency-cruiser.web.mjs`
+- Modify: `apps/cloudbase-api/src/services/admin-service.ts`
+- Modify: `apps/cloudbase-api/tests/admin-service.test.ts`
+- Modify: `apps/package-scanner/README.md`
+- Modify: `apps/website/components/i18n/messages.ts`
+- Modify: `apps/website/tests/i18n.test.tsx`
+- Modify: `apps/website/tests/shared-pet-chapter.test.tsx`
+- Modify: `apps/website/tests/support-chapter.test.tsx`
+- Modify: `cloudbase/migrations/20260901010000_remove_moderation_worker.sql`
+- Modify: `tests/e2e/website.spec.ts`
+- Modify: `tests/memory-website-api.mjs`
+- Modify: `tests/website-contract/production-driver.test.ts`
+- Modify: `tests/website-contract/website-api-contract.ts`
+- Modify: `tools/cloudbase-migration-inventory.test.mjs`
+- Modify: `tools/test-cloudbase-migrations.mjs`
+- Modify: `tools/verification/verify-scanner-candidate.mjs`
+- Modify: `tools/verification/verify-scanner-candidate.test.mjs`
+- Modify: `tools/verification/web-dependency-audit.test.mjs`
 - Modify: `docs/operations/website-stage-2c-shanghai-acceptance.md`
 - Modify: `.superpowers/sdd/2026-09-01-website-stage-2c-zero-cost-manual-review/progress.md`（Git 忽略）
 
-- [ ] **Step 7.1：完整验证**
+- [x] **Step 7.1：完整验证**
 
 ```powershell
 $env:AI_PET_POSTGRES_RUNTIME='C:\Users\Administrator\AppData\Local\Temp\ai-pet-pg17-stage2\runtime'
@@ -373,11 +392,11 @@ git status --short
 
 Expected: 全部通过；没有桌宠路径、Secret、临时归档、CloudBase Run/TMS/IMS/worker 正式入口或未解释改动。
 
-- [ ] **Step 7.2：全分支复审**
+- [x] **Step 7.2：全分支复审**
 
 由独立高级审查子智能体同时检查规格符合性与代码质量。发现 Critical/Important 时只发起一轮集中修复，再做一次范围复审；不得执行 merge、rebase 或 push。
 
-- [ ] **Step 7.3：记录本地验收**
+- [x] **Step 7.3：记录本地验收**
 
 把实际命令、日期、迁移数、行为验证数、测试数、本地 Docker 镜像摘要和未验证远端项写入验收记录后提交。只有观察到的结果才能写为通过。
 

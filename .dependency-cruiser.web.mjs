@@ -22,7 +22,6 @@ const WEB_RULE_NAMES = new Set([
   'no-relative-cross-workspace-import-tools-release',
   'shared-types-is-foundational',
   'release-manifest-only-in-release-chain',
-  'scanner-protocol-only-in-server-chain',
   'website-http-only-in-web-chain',
   'no-internal-source-import-shared-types',
   'no-website-to-cloud-source',
@@ -34,7 +33,6 @@ const WEB_RULE_NAMES = new Set([
   'website-production-does-not-use-node-core',
   'website-cloudbase-sdk-only-in-client-adapter',
   'cloudbase-node-sdk-only-in-runtime-adapter',
-  'tencent-sdk-only-in-content-adapters',
   'website-features-do-not-import-liquid-glass'
 ]);
 

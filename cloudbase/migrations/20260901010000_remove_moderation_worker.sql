@@ -174,7 +174,7 @@ BEGIN
       AND v_previous_status = 'deleted_quarantined'
       AND p_next_status = CASE
         WHEN v_submission_kind = 'shared_package'
-          THEN 'system_reviewing'
+          THEN 'manual_review_pending'
         ELSE v_pre_quarantine_status
       END)
   ) THEN
@@ -242,14 +242,6 @@ BEGIN
           'approve', 'force_publish', 'move_to_manual', 'restore'
         ) THEN NULL
         ELSE public_reason
-      END,
-      auto_rejection_reason = CASE
-        WHEN p_next_status = 'system_reviewing' THEN NULL
-        ELSE auto_rejection_reason
-      END,
-      risk_summary = CASE
-        WHEN p_next_status = 'system_reviewing' THEN '{}'::jsonb
-        ELSE risk_summary
       END,
       rejected_at = CASE
         WHEN p_action = 'reject' THEN now()

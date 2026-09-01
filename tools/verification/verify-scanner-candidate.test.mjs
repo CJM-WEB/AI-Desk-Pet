@@ -106,6 +106,8 @@ test('候选镜像以无网络、只读输入、非 root 的本地 CLI 验证三
     assert.ok(command.args.includes('--network'));
     assert.ok(command.args.includes('none'));
     assert.ok(command.args.includes('--read-only'));
+    assert.ok(command.args.includes('--cap-drop'));
+    assert.ok(command.args.includes('ALL'));
     assert.ok(command.args.some(argument => argument.includes('readonly')));
     assert.ok(command.args.includes('/tmp/scan:rw,noexec,nosuid,nodev,mode=1777'));
     assert.equal(command.args.some(argument => argument === '--env'), false);
@@ -116,6 +118,8 @@ test('候选镜像以无网络、只读输入、非 root 的本地 CLI 验证三
   assert.ok(identityRun?.args.includes('--network'));
   assert.ok(identityRun?.args.includes('none'));
   assert.ok(identityRun?.args.includes('--read-only'));
+  assert.ok(identityRun?.args.includes('--cap-drop'));
+  assert.ok(identityRun?.args.includes('ALL'));
   assert.equal(identityRun?.args.includes('--env'), false);
   const buildCommand = commands.find(command => command.args[0] === 'build');
   assert.ok(buildCommand);

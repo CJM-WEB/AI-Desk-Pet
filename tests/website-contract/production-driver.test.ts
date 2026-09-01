@@ -33,7 +33,8 @@ const FIXTURE_REFS: ContractFixtureRefs = Object.freeze({
 
 interface ContractRecord {
   id: string;
-  status: 'system_reviewing' | 'manual_review_pending' | 'published';
+  status: 'system_reviewing' | 'manual_review_pending' | 'published'
+    | 'deleted_quarantined';
   statusVersion: number;
   kind: 'shared_package' | 'feedback' | 'suggestion';
   title: string;
@@ -49,6 +50,9 @@ interface ContractRecord {
   }>;
   publicationBasis: 'standard' | 'admin_override' | null;
   publishedAt: string | null;
+  preQuarantineStatus: ContractRecord['status'] | null;
+  riskSummary: Record<string, unknown>;
+  autoRejectionReason: string | null;
 }
 
 interface ContractAsset {
@@ -115,6 +119,9 @@ function sharedContractRecord(
     auditLogs: [],
     publicationBasis,
     publishedAt,
+    preQuarantineStatus: null,
+    riskSummary: { summary: '合同固定种子', labels: [] },
+    autoRejectionReason: null,
   };
 }
 
@@ -143,6 +150,7 @@ function createState(): ProductionFixtureState {
     null,
   );
   override.title = '待强制发布合同投稿';
+  override.autoRejectionReason = '历史自动拒绝事实';
   const community = sharedContractRecord(
     FIXTURE_REFS.publicCommunityId,
     'published',
@@ -299,13 +307,13 @@ function adminSummary(record: ContractRecord) {
     title: record.title,
     body: record.body,
     purgeAfter: null,
-    preQuarantineStatus: null,
+    preQuarantineStatus: record.preQuarantineStatus,
     publishedAt: record.publishedAt,
     publicationBasis: record.publicationBasis,
     createdAt: CREATED_AT,
     updatedAt: UPDATED_AT,
-    riskSummary: {},
-    autoRejectionReason: null,
+    riskSummary: record.riskSummary,
+    autoRejectionReason: record.autoRejectionReason,
   };
 }
 
@@ -532,6 +540,23 @@ function createDependencies(state: ProductionFixtureState): ApiDependencies {
           record.status = 'published';
           record.publicationBasis = 'admin_override';
           record.publishedAt = UPDATED_AT;
+        } else if (action.action === 'delete' && record.status !== 'deleted_quarantined') {
+          record.preQuarantineStatus = record.status;
+          record.status = 'deleted_quarantined';
+          record.publicationBasis = null;
+        } else if (
+          action.action === 'restore'
+          && record.status === 'deleted_quarantined'
+          && record.preQuarantineStatus
+        ) {
+          record.status = record.kind === 'shared_package'
+            ? 'manual_review_pending'
+            : record.preQuarantineStatus;
+          record.publicationBasis = record.kind !== 'shared_package'
+            && record.preQuarantineStatus === 'published'
+            ? 'standard'
+            : null;
+          record.preQuarantineStatus = null;
         } else {
           throw new ApiError('INVALID_ADMIN_ACTION', 409);
         }

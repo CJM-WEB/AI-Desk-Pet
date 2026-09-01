@@ -1252,22 +1252,37 @@ BEGIN
     RAISE EXCEPTION '行为门失败：历史危险结果转人工时被改写';
   END IF;
 
-  -- 共享包恢复仍回历史系统状态；文本恢复继续兼容七参数默认调用。
+  -- 共享包恢复只回人工审核，并保留风险、版本与审计事实；文本恢复继续兼容七参数默认调用。
   INSERT INTO submissions (
-    id, kind, status, status_token_hash, pre_quarantine_status, quarantined_at
+    id, kind, status, status_token_hash, pre_quarantine_status, quarantined_at,
+    risk_summary, auto_rejection_reason
   ) VALUES (
     'gate-restore', 'shared_package', 'deleted_quarantined', repeat('5', 64),
-    'published', now()
+    'published', now(), '{"blocked":true,"severity":"high"}'::jsonb,
+    '历史自动拒绝事实'
   );
   PERFORM apply_admin_action(
-    'gate-restore', 'admin-1', 'restore', 'system_reviewing', 0,
-    'gate-restore-rescan', '恢复并重扫'
+    'gate-restore', 'admin-1', 'restore', 'manual_review_pending', 0,
+    'gate-restore-manual', '恢复后人工复核'
   );
   IF (SELECT status FROM submissions WHERE id = 'gate-restore')
-      <> 'system_reviewing'
+      <> 'manual_review_pending'
+    OR (SELECT status_version FROM submissions WHERE id = 'gate-restore') <> 1
     OR (SELECT publication_basis FROM submissions WHERE id = 'gate-restore')
-      IS NOT NULL THEN
-    RAISE EXCEPTION '行为门失败：共享包恢复未回历史系统状态';
+      IS NOT NULL
+    OR (SELECT risk_summary FROM submissions WHERE id = 'gate-restore')
+      IS DISTINCT FROM '{"blocked":true,"severity":"high"}'::jsonb
+    OR (SELECT auto_rejection_reason FROM submissions WHERE id = 'gate-restore')
+      IS DISTINCT FROM '历史自动拒绝事实'
+    OR NOT EXISTS (
+      SELECT 1 FROM admin_audit_logs
+      WHERE idempotency_key = 'gate-restore-manual'
+        AND action = 'restore'
+        AND before_status = 'deleted_quarantined'
+        AND after_status = 'manual_review_pending'
+        AND result_snapshot #>> '{submission,status}' = 'manual_review_pending'
+    ) THEN
+    RAISE EXCEPTION '行为门失败：共享包恢复的人工状态、风险或审计事实不完整';
   END IF;
 
   INSERT INTO submissions (

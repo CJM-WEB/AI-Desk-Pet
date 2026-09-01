@@ -511,6 +511,7 @@ function seedContractFixtures(submissions, tokenIndex, uploads) {
     CONTRACT_REFS.overrideSubmissionVersion,
     null
   );
+  override.autoRejectionReason = '历史自动拒绝事实';
   const standardFeedback = {
     ...sharedRecord(
       CONTRACT_REFS.standardSubmissionId,
@@ -1098,7 +1099,7 @@ function applyAdminAction(response, record, body, now, adminIdempotency) {
     record.purgeAfter = plusDays(now(), 3);
   } else if (action === 'restore' && record.status === 'deleted_quarantined' && record.preQuarantineStatus) {
     record.status = record.kind === 'shared_package'
-      ? 'system_reviewing'
+      ? 'manual_review_pending'
       : record.preQuarantineStatus;
     record.publicationBasis = record.kind !== 'shared_package'
       && record.preQuarantineStatus === 'published'
