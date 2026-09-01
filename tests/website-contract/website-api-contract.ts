@@ -1,5 +1,6 @@
 import {
   adminActionResponseSchema,
+  adminDetailResponseSchema,
   adminQueueResponseSchema,
   feedbackSubmissionResponseSchema,
   finalizeSubmissionResponseSchema,
@@ -35,7 +36,14 @@ export interface ContractFixtureRefs {
   adminSubmissionVersion: number;
   overrideSubmissionId: string;
   overrideSubmissionVersion: number;
+  standardSubmissionId: string;
+  standardSubmissionVersion: number;
+  invalidForceSubmissionId: string;
+  invalidForceSubmissionVersion: number;
+  invalidStandardSubmissionId: string;
+  invalidStandardSubmissionVersion: number;
   publicCommunityId: string;
+  damagedPublicCommunityId: string;
   publicFeedbackId: string;
 }
 
@@ -95,7 +103,14 @@ export function runWebsiteApiContract(
         adminSubmissionVersion: 1,
         overrideSubmissionId: 'contract-override',
         overrideSubmissionVersion: 2,
+        standardSubmissionId: 'contract-standard-feedback',
+        standardSubmissionVersion: 2,
+        invalidForceSubmissionId: 'contract-invalid-force',
+        invalidForceSubmissionVersion: 2,
+        invalidStandardSubmissionId: 'contract-invalid-standard',
+        invalidStandardSubmissionVersion: 2,
         publicCommunityId: 'contract-community',
+        damagedPublicCommunityId: 'contract-zz-damaged',
         publicFeedbackId: 'contract-feedback',
       });
       expect(await driver.reset()).toEqual(refs);
@@ -361,18 +376,23 @@ export function runWebsiteApiContract(
       }), 400, 'INVALID_CURSOR');
     });
 
-    it('社区键集保留 PostgreSQL 微秒顺序并规范化等价 offset', async () => {
+    it('社区键集保留微秒顺序并以原始坏行推进游标', async () => {
       const first = success(await driver.request({
         method: 'GET',
-        path: '/api/v1/community?limit=1',
+        path: '/api/v1/community?limit=2',
       }), publicCommunityPageSchema);
-      expect(first.items.map(item => item.id)).toEqual(['contract-community']);
+      expect(first.items.map(item => item.id)).toEqual([
+        'contract-community',
+        'contract-b',
+      ]);
+      expect(first.nextCursor).toMatch(/^v1\.[A-Za-z0-9_-]+$/u);
 
       const second = success(await driver.request({
         method: 'GET',
         path: `/api/v1/community?limit=1&cursor=${encodeURIComponent(first.nextCursor!)}`,
       }), publicCommunityPageSchema);
-      expect(second.items.map(item => item.id)).toEqual(['contract-b']);
+      expect(second.items).toEqual([]);
+      expect(second.nextCursor).toMatch(/^v1\.[A-Za-z0-9_-]+$/u);
 
       const third = success(await driver.request({
         method: 'GET',
@@ -380,6 +400,18 @@ export function runWebsiteApiContract(
       }), publicCommunityPageSchema);
       expect(third.items.map(item => item.id)).toEqual(['contract-z']);
       expect(third.nextCursor).toBeNull();
+    });
+
+    it('损坏的公开共享包详情与下载均失败关闭', async () => {
+      failure(await driver.request({
+        method: 'GET',
+        path: `/api/v1/community/${refs.damagedPublicCommunityId}`,
+      }), 404, 'NOT_FOUND');
+      failure(await driver.request({
+        method: 'POST',
+        path: `/api/v1/community/${refs.damagedPublicCommunityId}/download`,
+        body: { operationId: '00000000-0000-4000-8000-0000000003ff' },
+      }), 404, 'NOT_FOUND');
     });
 
     it('管理接口只接受专用令牌并区分 401 与 403', async () => {
@@ -442,6 +474,71 @@ export function runWebsiteApiContract(
         body: { ...body, idempotencyKey: 'contract-move-002' },
       }), 409, 'VERSION_CONFLICT');
     });
+
+    it('普通批准发布合法反馈且不要求资产或 Scanner 证据', async () => {
+      const published = success(await driver.request({
+        method: 'POST',
+        path: `/api/v1/admin/submissions/${refs.standardSubmissionId}/actions`,
+        headers: { 'x-ai-pet-admin-token': refs.adminToken },
+        body: {
+          action: 'approve',
+          version: refs.standardSubmissionVersion,
+          idempotencyKey: 'contract-standard-001',
+          reason: '反馈结构完整，批准公开',
+        },
+      }), adminActionResponseSchema);
+      expect(published.submission).toMatchObject({
+        status: 'published',
+        publicationBasis: 'standard',
+      });
+
+      const feedback = success(await driver.request({
+        method: 'GET',
+        path: '/api/v1/feedback?kind=feedback&limit=20',
+      }), publicFeedbackPageSchema);
+      expect(feedback.items).toContainEqual(expect.objectContaining({
+        id: refs.standardSubmissionId,
+      }));
+    });
+
+    it.each([
+      ['普通批准', 'invalidStandardSubmissionId', 'invalidStandardSubmissionVersion', {
+        action: 'approve',
+        idempotencyKey: 'contract-invalid-standard-001',
+        reason: '损坏文本不得发布',
+      }],
+      ['强制发布', 'invalidForceSubmissionId', 'invalidForceSubmissionVersion', {
+        action: 'force_publish',
+        idempotencyKey: 'contract-invalid-force-001',
+        reason: '损坏资产不得发布',
+        riskAcknowledgement: 'ADMIN_OVERRIDE_ACCEPTED',
+      }],
+    ] as const)(
+      '%s遇到结构损坏时不改变版本、发布依据或审计',
+      async (_label, idKey, versionKey, action) => {
+        const submissionId = refs[idKey];
+        const version = refs[versionKey];
+        const path = `/api/v1/admin/submissions/${submissionId}/actions`;
+        failure(await driver.request({
+          method: 'POST',
+          path,
+          headers: { 'x-ai-pet-admin-token': refs.adminToken },
+          body: { ...action, version },
+        }), 409, 'INVALID_ADMIN_ACTION');
+
+        const detail = success(await driver.request({
+          method: 'GET',
+          path: `/api/v1/admin/submissions/${submissionId}`,
+          headers: { 'x-ai-pet-admin-token': refs.adminToken },
+        }), adminDetailResponseSchema);
+        expect(detail).toMatchObject({
+          status: 'manual_review_pending',
+          statusVersion: version,
+          publicationBasis: null,
+          auditLogs: [],
+        });
+      },
+    );
 
     it('强制发布要求精确风险确认并公开 admin_override', async () => {
       const path = `/api/v1/admin/submissions/${refs.overrideSubmissionId}/actions`;

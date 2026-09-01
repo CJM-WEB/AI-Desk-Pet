@@ -20,7 +20,14 @@ const FIXTURE_REFS: ContractFixtureRefs = Object.freeze({
   adminSubmissionVersion: 1,
   overrideSubmissionId: 'contract-override',
   overrideSubmissionVersion: 2,
+  standardSubmissionId: 'contract-standard-feedback',
+  standardSubmissionVersion: 2,
+  invalidForceSubmissionId: 'contract-invalid-force',
+  invalidForceSubmissionVersion: 2,
+  invalidStandardSubmissionId: 'contract-invalid-standard',
+  invalidStandardSubmissionVersion: 2,
   publicCommunityId: 'contract-community',
+  damagedPublicCommunityId: 'contract-zz-damaged',
   publicFeedbackId: 'contract-feedback',
 });
 
@@ -28,9 +35,29 @@ interface ContractRecord {
   id: string;
   status: 'system_reviewing' | 'manual_review_pending' | 'published';
   statusVersion: number;
+  kind: 'shared_package' | 'feedback' | 'suggestion';
   title: string;
+  body: string;
+  assets: ContractAsset[];
+  auditLogs: Array<{
+    action: 'approve' | 'force_publish' | 'move_to_manual'
+      | 'reject' | 'delete' | 'restore';
+    beforeStatus: string;
+    afterStatus: string;
+    reason: string;
+    createdAt: string;
+  }>;
   publicationBasis: 'standard' | 'admin_override' | null;
   publishedAt: string | null;
+}
+
+interface ContractAsset {
+  role: 'cover' | 'package' | 'derived';
+  storageKey: string;
+  fileName: string;
+  declaredBytes: number;
+  actualBytes: number | null;
+  contentType: string;
 }
 
 type ContractInteractionResult =
@@ -56,49 +83,128 @@ interface ProductionFixtureState {
   nowMs: number;
 }
 
+function sharedContractRecord(
+  id: string,
+  status: ContractRecord['status'],
+  statusVersion: number,
+  publicationBasis: ContractRecord['publicationBasis'],
+  publishedAt: string | null,
+): ContractRecord {
+  return {
+    id,
+    status,
+    statusVersion,
+    kind: 'shared_package',
+    title: id,
+    body: '合同资源说明',
+    assets: [{
+      role: 'cover',
+      storageKey: `submissions/${id}/cover.webp`,
+      fileName: 'cover.webp',
+      declaredBytes: 12,
+      actualBytes: 12,
+      contentType: 'image/webp',
+    }, {
+      role: 'package',
+      storageKey: `submissions/${id}/package.zip`,
+      fileName: 'pet.zip',
+      declaredBytes: 24,
+      actualBytes: 24,
+      contentType: 'application/zip',
+    }],
+    auditLogs: [],
+    publicationBasis,
+    publishedAt,
+  };
+}
+
 function createState(): ProductionFixtureState {
+  const uploaded = sharedContractRecord(
+    FIXTURE_REFS.uploadedSubmissionId,
+    'system_reviewing',
+    FIXTURE_REFS.adminSubmissionVersion,
+    null,
+    null,
+  );
+  uploaded.title = '待审核合同投稿';
+  const override = sharedContractRecord(
+    FIXTURE_REFS.overrideSubmissionId,
+    'manual_review_pending',
+    FIXTURE_REFS.overrideSubmissionVersion,
+    null,
+    null,
+  );
+  override.title = '待强制发布合同投稿';
+  const community = sharedContractRecord(
+    FIXTURE_REFS.publicCommunityId,
+    'published',
+    3,
+    'standard',
+    '2026-07-31T00:00:00.000002Z',
+  );
+  community.title = '公开合同资源';
+  const equivalentOffset = sharedContractRecord(
+    'contract-b', 'published', 1, 'standard',
+    '2026-07-31T08:00:00.000002+08:00',
+  );
+  equivalentOffset.title = '等价 offset 合同资源';
+  const microsecondOlder = sharedContractRecord(
+    'contract-z', 'published', 1, 'standard',
+    '2026-07-31T00:00:00.000001Z',
+  );
+  microsecondOlder.title = '亚毫秒较早合同资源';
+  const damagedCommunity = sharedContractRecord(
+    'contract-zz-damaged', 'published', 1, 'standard',
+    '2026-07-31T00:00:00.000001Z',
+  );
+  damagedCommunity.assets[1]!.storageKey =
+    'submissions/contract-zz-damaged/wrong.zip';
+  const standardFeedback: ContractRecord = {
+    ...sharedContractRecord(
+      FIXTURE_REFS.standardSubmissionId,
+      'manual_review_pending',
+      FIXTURE_REFS.standardSubmissionVersion,
+      null,
+      null,
+    ),
+    kind: 'feedback',
+    title: '待普通批准合同反馈',
+    body: '合法反馈正文',
+    assets: [],
+  };
+  const invalidStandard: ContractRecord = {
+    ...sharedContractRecord(
+      FIXTURE_REFS.invalidStandardSubmissionId,
+      'manual_review_pending',
+      FIXTURE_REFS.invalidStandardSubmissionVersion,
+      null,
+      null,
+    ),
+    kind: 'feedback',
+    title: '   ',
+    body: '标题损坏的反馈',
+    assets: [],
+  };
+  const invalidForce = sharedContractRecord(
+    FIXTURE_REFS.invalidForceSubmissionId,
+    'manual_review_pending',
+    FIXTURE_REFS.invalidForceSubmissionVersion,
+    null,
+    null,
+  );
+  invalidForce.assets = invalidForce.assets.filter(asset => asset.role === 'package');
+
   return {
     records: new Map([
-      [FIXTURE_REFS.uploadedSubmissionId, {
-        id: FIXTURE_REFS.uploadedSubmissionId,
-        status: 'system_reviewing',
-        statusVersion: FIXTURE_REFS.adminSubmissionVersion,
-        title: '待审核合同投稿',
-        publicationBasis: null,
-        publishedAt: null,
-      }],
-      [FIXTURE_REFS.overrideSubmissionId, {
-        id: FIXTURE_REFS.overrideSubmissionId,
-        status: 'manual_review_pending',
-        statusVersion: FIXTURE_REFS.overrideSubmissionVersion,
-        title: '待强制发布合同投稿',
-        publicationBasis: null,
-        publishedAt: null,
-      }],
-      [FIXTURE_REFS.publicCommunityId, {
-        id: FIXTURE_REFS.publicCommunityId,
-        status: 'published',
-        statusVersion: 3,
-        title: '公开合同资源',
-        publicationBasis: 'standard',
-        publishedAt: '2026-07-31T00:00:00.000002Z',
-      }],
-      ['contract-b', {
-        id: 'contract-b',
-        status: 'published',
-        statusVersion: 1,
-        title: '等价 offset 合同资源',
-        publicationBasis: 'standard',
-        publishedAt: '2026-07-31T08:00:00.000002+08:00',
-      }],
-      ['contract-z', {
-        id: 'contract-z',
-        status: 'published',
-        statusVersion: 1,
-        title: '亚毫秒较早合同资源',
-        publicationBasis: 'standard',
-        publishedAt: '2026-07-31T00:00:00.000001Z',
-      }],
+      [uploaded.id, uploaded],
+      [override.id, override],
+      [community.id, community],
+      [equivalentOffset.id, equivalentOffset],
+      [microsecondOlder.id, microsecondOlder],
+      [damagedCommunity.id, damagedCommunity],
+      [standardFeedback.id, standardFeedback],
+      [invalidStandard.id, invalidStandard],
+      [invalidForce.id, invalidForce],
     ]),
     idempotency: new Map(),
     interactionOperations: new Map(),
@@ -115,16 +221,19 @@ function isPublished(record: ContractRecord): record is PublishedContractRecord 
 }
 
 function publicCommunity(record: PublishedContractRecord, downloadCount: number) {
+  if (!hasValidContractPublicationShape(record)) throw new Error('INVALID_PUBLIC_SHAPE');
+  const cover = record.assets.find(asset => asset.role === 'cover')!;
+  const packageAsset = record.assets.find(asset => asset.role === 'package')!;
   return {
     id: record.id,
     name: record.title,
-    description: '合同资源说明',
+    description: record.body,
     cover: {
-      url: `https://storage.example/${record.id}/cover.webp`,
+      url: `https://storage.example/${cover.storageKey}`,
       expiresAt: '2026-07-31T00:05:00.000Z',
     },
-    packageFileName: 'pet.zip',
-    packageSizeBytes: 24,
+    packageFileName: packageAsset.fileName,
+    packageSizeBytes: packageAsset.actualBytes!,
     likeCount: 0,
     downloadCount,
     publishedAt: record.publishedAt,
@@ -132,14 +241,39 @@ function publicCommunity(record: PublishedContractRecord, downloadCount: number)
   };
 }
 
+/** Production 合同替身在发布与公开投影两侧复现同一结构规则。 */
+function hasValidContractPublicationShape(record: ContractRecord): boolean {
+  if (record.title.trim().length === 0 || record.body.trim().length === 0) return false;
+  if (record.kind !== 'shared_package') return true;
+
+  const covers = record.assets.filter(asset => asset.role === 'cover');
+  const packages = record.assets.filter(asset => asset.role === 'package');
+  if (covers.length !== 1 || packages.length !== 1) return false;
+  const cover = covers[0]!;
+  const packageAsset = packages[0]!;
+  const coverMimeByKey = new Map([
+    [`submissions/${record.id}/cover.png`, 'image/png'],
+    [`submissions/${record.id}/cover.webp`, 'image/webp'],
+    [`submissions/${record.id}/cover.jpg`, 'image/jpeg'],
+    [`submissions/${record.id}/cover.jpeg`, 'image/jpeg'],
+  ]);
+  return packageAsset.storageKey === `submissions/${record.id}/package.zip`
+    && packageAsset.contentType === 'application/zip'
+    && Number.isSafeInteger(packageAsset.actualBytes)
+    && packageAsset.actualBytes! > 0
+    && coverMimeByKey.get(cover.storageKey) === cover.contentType
+    && Number.isSafeInteger(cover.actualBytes)
+    && cover.actualBytes! > 0;
+}
+
 function adminSummary(record: ContractRecord) {
   return {
     id: record.id,
     status: record.status,
     statusVersion: record.statusVersion,
-    kind: 'shared_package',
+    kind: record.kind,
     title: record.title,
-    body: '合同资源说明',
+    body: record.body,
     moderationLeaseUntil: null,
     purgeAfter: null,
     preQuarantineStatus: null,
@@ -153,39 +287,23 @@ function adminSummary(record: ContractRecord) {
 }
 
 function adminDetail(record: ContractRecord) {
+  const cover = record.assets.find(asset => asset.role === 'cover');
   return {
     ...adminSummary(record),
-    coverPreview: {
+    coverPreview: cover ? {
       url: `https://storage.example/${record.id}/cover.webp`,
       expiresAt: '2026-07-31T00:05:00.000Z',
-    },
-    assets: [
-      {
-        role: 'cover',
-        storageKey: `${record.id}/cover.webp`,
-        fileName: 'cover.webp',
-        declaredBytes: 12,
-        contentType: 'image/webp',
-        actualBytes: 12,
-      },
-      {
-        role: 'package',
-        storageKey: `${record.id}/pet.zip`,
-        fileName: 'pet.zip',
-        declaredBytes: 24,
-        contentType: 'application/zip',
-        actualBytes: 24,
-      },
-    ],
+    } : null,
+    assets: record.assets,
     moderationResults: [],
-    auditLogs: [],
+    auditLogs: record.auditLogs,
   };
 }
 
 function actionSnapshot(record: ContractRecord) {
   return {
     id: record.id,
-    kind: 'shared_package',
+    kind: record.kind,
     status: record.status,
     statusVersion: record.statusVersion,
     publicationBasis: record.publicationBasis,
@@ -255,15 +373,21 @@ function createDependencies(state: ProductionFixtureState): ApiDependencies {
     },
     publicContent: {
       listCommunity: async input => contractPage(
-        [...state.records.values()].filter(isPublished),
+        [...state.records.values()].filter((record): record is PublishedContractRecord =>
+          isPublished(record) && record.kind === 'shared_package'
+        ),
         input,
         'community',
         record => record.publishedAt,
         record => publicCommunity(record, state.downloadCounts.get(record.id) ?? 0),
+        true,
       ),
       getCommunity: async id => {
         const record = state.records.get(id);
-        if (!record || !isPublished(record)) throw new ApiError('NOT_FOUND', 404);
+        if (
+          !record || !isPublished(record) || record.kind !== 'shared_package'
+          || !hasValidContractPublicationShape(record)
+        ) throw new ApiError('NOT_FOUND', 404);
         return publicCommunity(record, state.downloadCounts.get(record.id) ?? 0);
       },
       listFeedback: async (kind, input) => contractPage([{
@@ -280,8 +404,27 @@ function createDependencies(state: ProductionFixtureState): ApiDependencies {
           content: '同时间公开合同反馈',
           likeCount: 0,
           createdAt: CREATED_AT,
-        }].filter(item => item.kind === kind), input, `feedback:${kind}`,
-        item => item.createdAt, item => item),
+        }, ...[...state.records.values()]
+          .filter((record): record is PublishedContractRecord =>
+            isPublished(record) && record.kind === kind
+          )
+          .map(record => ({
+            id: record.id,
+            kind: record.kind as 'feedback' | 'suggestion',
+            authorName: record.title,
+            content: record.body,
+            likeCount: 0,
+            createdAt: record.publishedAt,
+          }))].filter(item => item.kind === kind), input, `feedback:${kind}`,
+        item => item.createdAt,
+        item => {
+          const record = state.records.get(item.id);
+          if (record && !hasValidContractPublicationShape(record)) {
+            throw new Error('INVALID_PUBLIC_SHAPE');
+          }
+          return item;
+        },
+        true),
       setCommunityLike: async (id, fingerprint, desiredLiked, operationId) =>
         setContractLike(
           state, id, fingerprint, desiredLiked, operationId, 'community'
@@ -292,7 +435,10 @@ function createDependencies(state: ProductionFixtureState): ApiDependencies {
         ),
       getDownload: async (id, fingerprint, operationId) => {
         const record = state.records.get(id);
-        if (!record || !isPublished(record)) throw new ApiError('NOT_FOUND', 404);
+        if (
+          !record || !isPublished(record) || record.kind !== 'shared_package'
+          || !hasValidContractPublicationShape(record)
+        ) throw new ApiError('NOT_FOUND', 404);
         recordContractDownload(state, id, fingerprint, operationId);
         return {
           url: `https://storage.example/${id}/pet.zip`,
@@ -326,9 +472,19 @@ function createDependencies(state: ProductionFixtureState): ApiDependencies {
           return { ...(structuredClone(previous.result) as object), replayed: true };
         }
         if (record.statusVersion !== action.version) throw new ApiError('VERSION_CONFLICT', 409);
+        if (
+          (action.action === 'approve' || action.action === 'force_publish')
+          && !hasValidContractPublicationShape(record)
+        ) throw new ApiError('INVALID_ADMIN_ACTION', 409);
+        const beforeStatus = record.status;
         if (action.action === 'move_to_manual' && record.status === 'system_reviewing') {
           record.status = 'manual_review_pending';
+        } else if (action.action === 'approve' && record.status === 'manual_review_pending') {
+          record.status = 'published';
+          record.publicationBasis = 'standard';
+          record.publishedAt = UPDATED_AT;
         } else if (action.action === 'force_publish' && record.status === 'manual_review_pending') {
+          if (record.kind !== 'shared_package') throw new ApiError('INVALID_ADMIN_ACTION', 409);
           record.status = 'published';
           record.publicationBasis = 'admin_override';
           record.publishedAt = UPDATED_AT;
@@ -336,6 +492,13 @@ function createDependencies(state: ProductionFixtureState): ApiDependencies {
           throw new ApiError('INVALID_ADMIN_ACTION', 409);
         }
         record.statusVersion += 1;
+        record.auditLogs.push({
+          action: action.action,
+          beforeStatus,
+          afterStatus: record.status,
+          reason: action.reason,
+          createdAt: UPDATED_AT,
+        });
         const result = { submission: actionSnapshot(record), replayed: false as const };
         state.idempotency.set(action.idempotencyKey, { payload, result: structuredClone(result) });
         return result;
@@ -421,6 +584,7 @@ function contractPage<T extends { id: string }, R>(
   scope: string,
   sortTime: (record: T) => string,
   project: (record: T) => R,
+  isolateProjection = false,
 ): { items: R[]; nextCursor: string | null } {
   const boundary = input.cursor ? decodeContractCursor(input.cursor, scope) : null;
   const rows = [...records]
@@ -435,8 +599,16 @@ function contractPage<T extends { id: string }, R>(
     ))
     .slice(0, input.limit + 1);
   const last = rows[input.limit - 1];
+  const items: R[] = [];
+  for (const row of rows.slice(0, input.limit)) {
+    try {
+      items.push(project(row));
+    } catch (error) {
+      if (!isolateProjection) throw error;
+    }
+  }
   return {
-    items: rows.slice(0, input.limit).map(project),
+    items,
     nextCursor: rows.length > input.limit && last
       ? encodeContractCursor(scope, sortTime(last), last.id)
       : null,

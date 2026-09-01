@@ -6,8 +6,34 @@ import { ApiError } from '../src/errors.js';
 const downloadFingerprint = 'd'.repeat(64);
 const downloadOperationId = '00000000-0000-4000-8000-000000000010';
 
+function publishedCommunity(id: string) {
+  return {
+    id,
+    title: `共享名称-${id}`,
+    body: `共享说明-${id}`,
+    assets: [{
+      role: 'cover' as const,
+      storageKey: `submissions/${id}/cover.webp`,
+      fileName: 'cover.webp',
+      sizeBytes: 12,
+      contentType: 'image/webp'
+    }, {
+      role: 'package' as const,
+      storageKey: `submissions/${id}/package.zip`,
+      fileName: 'pet.zip',
+      sizeBytes: 24,
+      contentType: 'application/zip'
+    }],
+    likeCount: 0,
+    downloadCount: 0,
+    publishedAt: '2026-08-31T06:00:00.000Z',
+    publicationBasis: 'standard' as const
+  };
+}
+
 function createFixture(status: string | null): {
   store: {
+    findById: ReturnType<typeof vi.fn>;
     recordPublicDownload: ReturnType<typeof vi.fn>;
   };
   storage: {
@@ -20,12 +46,22 @@ function createFixture(status: string | null): {
       id,
       status,
       kind: 'shared_package',
+      title: '已发布共享包',
+      body: '完整共享包说明',
       publicationBasis: status === 'published' ? 'admin_override' : null,
       assets: [{
+        role: 'cover',
+        storageKey: `submissions/${id}/cover.webp`,
+        fileName: 'cover.webp',
+        declaredBytes: 512,
+        actualBytes: 512,
+        contentType: 'image/webp'
+      }, {
         role: 'package',
         storageKey: `submissions/${id}/package.zip`,
         fileName: 'pet.zip',
         declaredBytes: 1024,
+        actualBytes: 1024,
         contentType: 'application/zip'
       }]
     })),
@@ -110,6 +146,32 @@ describe('公开内容服务', () => {
       downloadOperationId
     ))
       .rejects.toMatchObject({ code: 'NOT_FOUND' });
+    expect(storage.createSignedUrl).not.toHaveBeenCalled();
+    expect(store.recordPublicDownload).not.toHaveBeenCalled();
+  });
+
+  it('已发布记录缺少封面时下载失败关闭且不签名', async () => {
+    const { service, store, storage } = createFixture('published');
+    store.findById.mockResolvedValueOnce({
+        id: 'published-id',
+        status: 'published',
+        kind: 'shared_package',
+        title: '缺少封面',
+        body: '损坏发布记录',
+        publicationBasis: 'standard',
+        assets: [{
+          role: 'package',
+          storageKey: 'submissions/published-id/package.zip',
+          fileName: 'pet.zip',
+          declaredBytes: 1024,
+          actualBytes: 1024,
+          contentType: 'application/zip'
+        }]
+      });
+
+    await expect(service.getDownload(
+      'published-id', downloadFingerprint, downloadOperationId
+    )).rejects.toMatchObject({ code: 'NOT_FOUND', message: 'NOT_FOUND' });
     expect(storage.createSignedUrl).not.toHaveBeenCalled();
     expect(store.recordPublicDownload).not.toHaveBeenCalled();
   });
@@ -372,6 +434,121 @@ describe('公开列表与互动服务', () => {
     );
   });
 
+  it('社区封面单项签名失败时仍返回其余成功项', async () => {
+    const store = {
+      listPublicCommunity: vi.fn(async () => ({
+        items: [
+          publishedCommunity('community-valid-new'),
+          publishedCommunity('community-storage-failed'),
+          publishedCommunity('community-valid-old')
+        ],
+        nextCursor: 'v1.raw-row-boundary'
+      }))
+    };
+    const storage = {
+      createSignedUrl: vi.fn(async (storageKey: string) => {
+        if (storageKey.includes('storage-failed')) {
+          throw new Error('private/object/key 不得外泄');
+        }
+        return {
+          url: `https://storage.example/${storageKey.split('/')[1]}`,
+          expiresAt: '2026-08-31T06:05:00.000Z'
+        };
+      })
+    };
+    const service = new PublicContentService(store as never, storage as never);
+
+    const page = await service.listCommunity({ limit: 3 });
+
+    expect(page.items.map(item => item.id)).toEqual([
+      'community-valid-new',
+      'community-valid-old'
+    ]);
+    expect(page.nextCursor).toBe('v1.raw-row-boundary');
+  });
+
+  it('社区列表逐项隐藏 MIME、大小或文本损坏记录且不发起签名', async () => {
+    const wrongMime = publishedCommunity('community-wrong-mime');
+    wrongMime.assets[0]!.contentType = 'image/png';
+    const zeroSize = publishedCommunity('community-zero-size');
+    zeroSize.assets[1]!.sizeBytes = 0;
+    const emptyTitle = publishedCommunity('community-empty-title');
+    emptyTitle.title = '   ';
+    const store = {
+      listPublicCommunity: vi.fn(async () => ({
+        items: [wrongMime, zeroSize, emptyTitle],
+        nextCursor: 'v1.raw-damaged-boundary'
+      }))
+    };
+    const storage = { createSignedUrl: vi.fn(async () => ({
+      url: 'https://storage.example/should-not-sign',
+      expiresAt: '2026-08-31T06:05:00.000Z'
+    })) };
+    const service = new PublicContentService(store as never, storage as never);
+
+    await expect(service.listCommunity({ limit: 3 })).resolves.toEqual({
+      items: [],
+      nextCursor: 'v1.raw-damaged-boundary'
+    });
+    expect(storage.createSignedUrl).not.toHaveBeenCalled();
+  });
+
+  it('社区列表候选全是缺封面坏行时返回空页而非存储错误', async () => {
+    const damaged = ['community-a', 'community-b'].map(id => ({
+      ...publishedCommunity(id),
+      assets: publishedCommunity(id).assets.filter(asset => asset.role === 'package')
+    }));
+    const store = {
+      listPublicCommunity: vi.fn(async () => ({
+        items: damaged,
+        nextCursor: 'v1.raw-damaged-boundary'
+      }))
+    };
+    const storage = { createSignedUrl: vi.fn() };
+    const service = new PublicContentService(store as never, storage as never);
+
+    await expect(service.listCommunity({ limit: 2 })).resolves.toEqual({
+      items: [],
+      nextCursor: 'v1.raw-damaged-boundary'
+    });
+    expect(storage.createSignedUrl).not.toHaveBeenCalled();
+  });
+
+  it('社区详情的结构损坏稳定失败关闭且不签名', async () => {
+    const damaged = publishedCommunity('community-damaged-detail');
+    damaged.assets[0]!.contentType = 'application/octet-stream';
+    const store = { findPublicCommunity: vi.fn(async () => damaged) };
+    const storage = { createSignedUrl: vi.fn() };
+    const service = new PublicContentService(store as never, storage as never);
+
+    await expect(service.getCommunity(damaged.id)).rejects.toMatchObject({
+      code: 'NOT_FOUND',
+      message: 'NOT_FOUND'
+    });
+    expect(storage.createSignedUrl).not.toHaveBeenCalled();
+  });
+
+  it('非空社区候选全部签名失败时只抛稳定存储错误', async () => {
+    const store = {
+      listPublicCommunity: vi.fn(async () => ({
+        items: [publishedCommunity('community-a'), publishedCommunity('community-b')],
+        nextCursor: null
+      }))
+    };
+    const storage = {
+      createSignedUrl: vi.fn(async () => {
+        throw new Error('C:\\private\\absolute-path 与 object-key 不得外泄');
+      })
+    };
+    const service = new PublicContentService(store as never, storage as never);
+
+    await expect(service.listCommunity({ limit: 2 })).rejects.toMatchObject({
+      code: 'STORAGE_ERROR',
+      statusCode: 500,
+      message: 'STORAGE_ERROR'
+    });
+  });
+
   it('公开反馈把存储字段裁剪为反馈 DTO', async () => {
     const store = {
       listPublicFeedback: vi.fn(async () => ({
@@ -400,5 +577,25 @@ describe('公开列表与互动服务', () => {
         }],
         nextCursor: null
       });
+  });
+
+  it('公开反馈逐项隐藏空白文本并保留原始游标', async () => {
+    const store = {
+      listPublicFeedback: vi.fn(async () => ({
+        items: [{
+          id: 'feedback-damaged',
+          kind: 'feedback',
+          title: '匿名用户',
+          body: '   ',
+          likeCount: 0,
+          createdAt: '2026-07-31T00:00:00.000Z'
+        }],
+        nextCursor: 'v1.raw-feedback-boundary'
+      }))
+    };
+    const service = new PublicContentService(store as never, {} as never);
+
+    await expect(service.listFeedback('feedback', { limit: 1 }))
+      .resolves.toEqual({ items: [], nextCursor: 'v1.raw-feedback-boundary' });
   });
 });

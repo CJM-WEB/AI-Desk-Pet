@@ -3,11 +3,13 @@ import type { PublicationBasis } from '@myself/shared-types';
 import { ApiError } from '../errors.js';
 import type {
   ObjectStorage,
+  PublicAsset,
   PublishedCommunityRecord,
   PublicInteractionStore,
   PublicListQuery,
   PublicLikeResult,
   SignedDownload,
+  SubmissionAsset,
   SubmissionStore
 } from '../ports.js';
 
@@ -56,16 +58,30 @@ export class PublicContentService {
     nextCursor: string | null;
   }> {
     const page = await this.store.listPublicCommunity(input);
+    const candidates = page.items.filter(item =>
+      hasValidPublicSubmissionShape(item, 'shared_package')
+    );
+    const settled = await Promise.allSettled(
+      candidates.map(item => this.signCommunity(item))
+    );
+    const items = settled.flatMap(result => (
+      result.status === 'fulfilled' ? [result.value] : []
+    ));
+    if (candidates.length > 0 && items.length === 0) {
+      throw new ApiError('STORAGE_ERROR', 500);
+    }
     return {
-      items: await Promise.all(page.items.map(item => this.toCommunity(item))),
+      items,
       nextCursor: page.nextCursor
     };
   }
 
   async getCommunity(id: string): Promise<PublicCommunityItem> {
     const item = await this.store.findPublicCommunity(id);
-    if (!item) throw notFound();
-    return this.toCommunity(item);
+    if (!item || !hasValidPublicSubmissionShape(item, 'shared_package')) {
+      throw notFound();
+    }
+    return this.signCommunity(item);
   }
 
   async listFeedback(
@@ -77,14 +93,16 @@ export class PublicContentService {
   }> {
     const page = await this.store.listPublicFeedback(kind, input);
     return {
-      items: page.items.map(item => ({
-        id: item.id,
-        kind: item.kind,
-        authorName: item.title,
-        content: item.body,
-        likeCount: item.likeCount,
-        createdAt: item.createdAt
-      })),
+      items: page.items
+        .filter(item => hasValidPublicSubmissionShape(item, item.kind))
+        .map(item => ({
+          id: item.id,
+          kind: item.kind,
+          authorName: item.title,
+          content: item.body,
+          likeCount: item.likeCount,
+          createdAt: item.createdAt
+        })),
       nextCursor: page.nextCursor
     };
   }
@@ -125,20 +143,14 @@ export class PublicContentService {
         submission.publicationBasis !== 'standard'
         && submission.publicationBasis !== 'admin_override'
       )
+      || !hasValidPublicSubmissionShape(submission, submission.kind)
     ) {
       throw notFound();
     }
 
-    const packages = submission.assets.filter((asset) => asset.role === 'package');
-    const expectedPath = `submissions/${id}/package.zip`;
-    if (
-      packages.length !== 1
-      || packages[0]!.storageKey !== expectedPath
-    ) {
-      throw notFound();
-    }
+    const packageAsset = submission.assets.find(asset => asset.role === 'package')!;
     const signed = await this.storage.createSignedUrl(
-      packages[0]!.storageKey,
+      packageAsset.storageKey,
       signedDownloadLifetimeSeconds
     );
     await this.store.recordPublicDownload({
@@ -152,22 +164,11 @@ export class PublicContentService {
     };
   }
 
-  private async toCommunity(
+  private async signCommunity(
     item: PublishedCommunityRecord
   ): Promise<PublicCommunityItem> {
-    const covers = item.assets.filter(asset => asset.role === 'cover');
-    const packages = item.assets.filter(asset => asset.role === 'package');
-    if (covers.length !== 1 || packages.length !== 1) throw notFound();
-    const cover = covers[0]!;
-    const packageAsset = packages[0]!;
-    if (
-      !cover.storageKey.startsWith(`submissions/${item.id}/cover.`)
-      || cover.storageKey.slice(`submissions/${item.id}/cover.`.length)
-        .includes('/')
-      || packageAsset.storageKey !== `submissions/${item.id}/package.zip`
-    ) {
-      throw notFound();
-    }
+    const cover = item.assets.find(asset => asset.role === 'cover')!;
+    const packageAsset = item.assets.find(asset => asset.role === 'package')!;
     const signedCover = await this.storage.createSignedUrl(
       cover.storageKey,
       signedDownloadLifetimeSeconds
@@ -201,6 +202,49 @@ export class PublicContentService {
       endpointKind
     });
   }
+}
+
+type PublicShapeAsset = PublicAsset | SubmissionAsset;
+
+/** 读侧只在这一处复现发布结构；列表过滤、详情与下载共同复用。 */
+function hasValidPublicSubmissionShape(
+  record: {
+    id: string;
+    title?: string | null;
+    body?: string | null;
+    assets?: readonly PublicShapeAsset[];
+  },
+  kind: unknown
+): boolean {
+  if (
+    typeof record.title !== 'string'
+    || record.title.trim().length === 0
+    || typeof record.body !== 'string'
+    || record.body.trim().length === 0
+  ) return false;
+  if (kind === 'feedback' || kind === 'suggestion') return true;
+  if (kind !== 'shared_package' || !record.assets) return false;
+
+  const covers = record.assets.filter(asset => asset.role === 'cover');
+  const packages = record.assets.filter(asset => asset.role === 'package');
+  if (covers.length !== 1 || packages.length !== 1) return false;
+  const cover = covers[0]!;
+  const packageAsset = packages[0]!;
+  const coverMimeByKey = new Map([
+    [`submissions/${record.id}/cover.png`, 'image/png'],
+    [`submissions/${record.id}/cover.webp`, 'image/webp'],
+    [`submissions/${record.id}/cover.jpg`, 'image/jpeg'],
+    [`submissions/${record.id}/cover.jpeg`, 'image/jpeg']
+  ]);
+  return coverMimeByKey.get(cover.storageKey) === cover.contentType
+    && publicAssetSize(cover) > 0
+    && packageAsset.storageKey === `submissions/${record.id}/package.zip`
+    && packageAsset.contentType === 'application/zip'
+    && publicAssetSize(packageAsset) > 0;
+}
+
+function publicAssetSize(asset: PublicShapeAsset): number {
+  return 'sizeBytes' in asset ? asset.sizeBytes : asset.actualBytes ?? 0;
 }
 
 function notFound(): ApiError {

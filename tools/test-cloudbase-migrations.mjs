@@ -126,6 +126,39 @@ export async function runCloudBaseMigrationBehaviorGate({
           );
         }
       }
+      if (migration.fileName
+        === '20260831060000_publication_shape_guard.sql') {
+        await run(
+          executable('psql'),
+          [...connection, '-f', '-'],
+          damagedPublishedShapeFixtureSql
+        );
+        let damagedPublicationRejected = false;
+        try {
+          await run(executable('psql'), [
+            ...connection,
+            '-f', join(migrationDirectory, migration.fileName)
+          ]);
+        } catch (error) {
+          if (!String(error).includes('invalid published submission shape')) {
+            throw error;
+          }
+          damagedPublicationRejected = true;
+        }
+        if (!damagedPublicationRejected) {
+          throw new Error('损坏的已发布记录未阻止发布结构迁移');
+        }
+        await run(
+          executable('psql'),
+          [...connection, '-f', '-'],
+          publicationShapeMigrationRollbackAssertionSql
+        );
+        await run(
+          executable('psql'),
+          [...connection, '-f', '-'],
+          cleanupDamagedPublishedShapeFixtureSql
+        );
+      }
       await run(executable('psql'), [
         ...connection,
         '-f', join(migrationDirectory, migration.fileName)
@@ -134,13 +167,14 @@ export async function runCloudBaseMigrationBehaviorGate({
     await run(executable('psql'), [...connection, '-f', '-'], behaviorSql);
     await run(executable('psql'), [...connection, '-f', '-'], keysetBehaviorSql);
     await run(executable('psql'), [...connection, '-f', '-'], interactionBehaviorSql);
+    await run(executable('psql'), [...connection, '-f', '-'], publicationShapeBehaviorSql);
     await runConcurrentInteractionGate(executable('psql'), connection);
 
     return {
       postgresVersion: postgresVersion.version,
       postgresMajorVersion: postgresVersion.major,
       migrationsApplied: migrations.length,
-      behaviorsVerified: 80
+      behaviorsVerified: 100
     };
   } finally {
     if (started) {
@@ -498,6 +532,62 @@ WHERE id IN (
   'gate-damaged-submission-id',
   'gate-damaged-null-version'
 );
+`;
+
+/** 在新迁移前构造一条缺失封面的已发布记录，验证 preflight 只读失败。 */
+const damagedPublishedShapeFixtureSql = String.raw`
+INSERT INTO submissions (
+  id, kind, title, body, status, status_token_hash, published_at,
+  publication_basis
+) VALUES (
+  'gate-damaged-published-shape', 'shared_package', '损坏已发布记录',
+  '迁移不得静默修复', 'published', repeat('f', 64), now(), 'standard'
+);
+INSERT INTO assets (
+  submission_id, object_key, original_name, declared_size, actual_size,
+  mime_type, role
+) VALUES (
+  'gate-damaged-published-shape',
+  'submissions/gate-damaged-published-shape/package.zip',
+  'pet.zip', 8, 8, 'application/zip', 'package'
+);
+INSERT INTO public_engagement (submission_id)
+VALUES ('gate-damaged-published-shape');
+`;
+
+const publicationShapeMigrationRollbackAssertionSql = String.raw`
+DO $publication_shape_rollback$
+BEGIN
+  IF to_regprocedure('assert_submission_publication_shape(text)') IS NOT NULL
+    OR to_regprocedure('enforce_submission_publication_shape()') IS NOT NULL
+    OR to_regclass('assets_one_cover_per_submission_idx') IS NOT NULL
+    OR to_regclass('assets_one_package_per_submission_idx') IS NOT NULL
+    OR EXISTS (
+      SELECT 1 FROM pg_trigger
+      WHERE tgname IN (
+        'submissions_publication_shape_guard',
+        'assets_publication_shape_guard'
+      )
+    ) THEN
+    RAISE EXCEPTION '行为门失败：发布结构迁移失败后留下半迁移对象';
+  END IF;
+  IF NOT EXISTS (
+    SELECT 1 FROM submissions
+    WHERE id = 'gate-damaged-published-shape'
+      AND status = 'published'
+      AND title = '损坏已发布记录'
+  ) OR (
+    SELECT count(*) FROM assets
+    WHERE submission_id = 'gate-damaged-published-shape'
+  ) IS DISTINCT FROM 1::bigint THEN
+    RAISE EXCEPTION '行为门失败：发布结构迁移静默修改了损坏存量';
+  END IF;
+END
+$publication_shape_rollback$;
+`;
+
+const cleanupDamagedPublishedShapeFixtureSql = String.raw`
+DELETE FROM submissions WHERE id = 'gate-damaged-published-shape';
 `;
 
 const behaviorSql = String.raw`
@@ -981,13 +1071,22 @@ BEGIN
 
   -- 独立的无租约强制发布记录不得接受第一次后到结果。
   INSERT INTO submissions (
-    id, kind, status, status_version, status_token_hash,
+    id, kind, title, body, status, status_version, status_token_hash,
     publication_basis, risk_summary
   ) VALUES (
-    'gate-no-lease-late', 'shared_package', 'published', 4,
+    'gate-no-lease-late', 'shared_package', '无租约记录', '验证后到结果',
+    'published', 4,
     repeat('8', 64), 'admin_override',
     '{"blocked":false,"severity":"low"}'::jsonb
   );
+  INSERT INTO assets (
+    submission_id, object_key, original_name, declared_size, actual_size,
+    mime_type, role
+  ) VALUES
+    ('gate-no-lease-late', 'submissions/gate-no-lease-late/cover.png',
+     'cover.png', 7, 7, 'image/png', 'cover'),
+    ('gate-no-lease-late', 'submissions/gate-no-lease-late/package.zip',
+     'pet.zip', 8, 8, 'application/zip', 'package');
   v_result := apply_moderation_decision(
     'gate-no-lease-late', 2, 'auto_rejected',
     gate_block_result('gate-no-lease-late', v_now),
@@ -1602,9 +1701,11 @@ BEGIN
 
   -- 补充兼容门：文本恢复保持既有七参数 RPC 调用及幂等快照语义。
   INSERT INTO submissions (
-    id, kind, status, status_token_hash, pre_quarantine_status, quarantined_at
+    id, kind, title, body, status, status_token_hash,
+    pre_quarantine_status, quarantined_at
   ) VALUES (
-    'gate-text-restore', 'feedback', 'deleted_quarantined', repeat('e', 64),
+    'gate-text-restore', 'feedback', '恢复标题', '恢复正文',
+    'deleted_quarantined', repeat('e', 64),
     'published', now()
   );
   v_result := apply_admin_action(
@@ -1723,6 +1824,13 @@ BEGIN
   SELECT id, 'submissions/' || id || '/package.zip', 'pet.zip', 8, 8,
          'application/zip', 'package'
   FROM submissions WHERE id LIKE 'keyset-community-%';
+  INSERT INTO assets (
+    submission_id, object_key, original_name, declared_size, actual_size,
+    mime_type, role
+  )
+  SELECT id, 'submissions/' || id || '/cover.png', 'cover.png', 7, 7,
+         'image/png', 'cover'
+  FROM submissions WHERE id LIKE 'keyset-community-%';
 
   SELECT array_agg(page.id) INTO v_ids
   FROM list_public_community(1, NULL, NULL) AS page
@@ -1745,6 +1853,13 @@ BEGIN
   ) VALUES (
     'keyset-community-d', 'submissions/keyset-community-d/package.zip',
     'pet.zip', 8, 8, 'application/zip', 'package'
+  );
+  INSERT INTO assets (
+    submission_id, object_key, original_name, declared_size, actual_size,
+    mime_type, role
+  ) VALUES (
+    'keyset-community-d', 'submissions/keyset-community-d/cover.png',
+    'cover.png', 7, 7, 'image/png', 'cover'
   );
   SELECT array_agg(page.id) INTO v_ids
   FROM list_public_community(2, v_time, 'keyset-community-c') AS page
@@ -1869,6 +1984,28 @@ BEGIN
   VALUES ('gate-like-one'), ('gate-like-devices'), ('gate-like-expiry'),
     ('gate-like-rate'), ('gate-like-wrong-kind'), ('gate-like-community'),
     ('gate-download-one'), ('gate-download-two'), ('gate-download-rate');
+  INSERT INTO assets (
+    submission_id, object_key, original_name, declared_size, actual_size,
+    mime_type, role
+  )
+  SELECT submission_id,
+    'submissions/' || submission_id || '/cover.png',
+    'cover.png', 7, 7, 'image/png', 'cover'
+  FROM unnest(ARRAY[
+    'gate-like-community', 'gate-download-one', 'gate-download-two',
+    'gate-download-rate'
+  ]) AS ids(submission_id);
+  INSERT INTO assets (
+    submission_id, object_key, original_name, declared_size, actual_size,
+    mime_type, role
+  )
+  SELECT submission_id,
+    'submissions/' || submission_id || '/package.zip',
+    'pet.zip', 8, 8, 'application/zip', 'package'
+  FROM unnest(ARRAY[
+    'gate-like-community', 'gate-download-one', 'gate-download-two',
+    'gate-download-rate'
+  ]) AS ids(submission_id);
 
   BEGIN
     INSERT INTO public_interaction_operations (
@@ -2215,6 +2352,299 @@ BEGIN
   END;
 END
 $interaction_gate$;
+`;
+
+/** 发布态结构门验证普通/强制发布、事务回滚和已发布资产持续不变量。 */
+const publicationShapeBehaviorSql = String.raw`
+SELECT set_config('request.jwt.claims', '{"role":"service_role"}', false);
+
+CREATE OR REPLACE FUNCTION gate_seed_publication_shape(
+  p_id text,
+  p_kind text DEFAULT 'shared_package'
+)
+RETURNS void LANGUAGE plpgsql AS $seed$
+BEGIN
+  INSERT INTO submissions (
+    id, kind, title, body, status, status_token_hash
+  ) VALUES (
+    p_id, p_kind, '发布结构标题', '发布结构正文',
+    'manual_review_pending', md5(p_id) || md5(p_id)
+  );
+  IF p_kind = 'shared_package' THEN
+    INSERT INTO assets (
+      submission_id, object_key, original_name, declared_size, actual_size,
+      mime_type, role
+    ) VALUES
+      (p_id, 'submissions/' || p_id || '/cover.webp', 'cover.webp',
+       7, 7, 'image/webp', 'cover'),
+      (p_id, 'submissions/' || p_id || '/package.zip', 'pet.zip',
+       8, 8, 'application/zip', 'package');
+  END IF;
+END
+$seed$;
+
+CREATE OR REPLACE FUNCTION gate_add_publication_shape_evidence(p_id text)
+RETURNS void LANGUAGE plpgsql AS $evidence$
+DECLARE
+  v_completed_at timestamptz := clock_timestamp() - interval '1 hour';
+  v_package assets%ROWTYPE;
+BEGIN
+  SELECT * INTO STRICT v_package
+  FROM assets WHERE submission_id = p_id AND role = 'package';
+  UPDATE assets SET sha256 = repeat('a', 64) WHERE id = v_package.id;
+  INSERT INTO moderation_results (
+    submission_id, kind, provider, rule_version, suggestion, label, score,
+    evidence, requested_at, completed_at, error_message
+  ) VALUES (
+    p_id, 'package_scan', 'isolated-scanner',
+    'character-package-2026-08-15', 'Pass',
+    '技术检查：CHARACTER_PACKAGE_SCAN_PASSED', NULL,
+    jsonb_build_object(
+      'submissionId', p_id,
+      'packageStorageKey', v_package.object_key,
+      'packageSizeBytes', v_package.actual_size,
+      'archiveSizeBytes', v_package.actual_size,
+      'archiveSha256', repeat('a', 64),
+      'protocolVersion', '2026-08-15',
+      'ruleVersion', 'character-package-2026-08-15',
+      'scanCode', 'CHARACTER_PACKAGE_SCAN_PASSED',
+      'completedAt', v_completed_at,
+      'expiresAt', v_completed_at + interval '24 hours',
+      'submissionStatusVersion', 0
+    ),
+    v_completed_at, v_completed_at, NULL
+  );
+END
+$evidence$;
+
+DO $publication_shape_gate$
+DECLARE
+  v_case text;
+  v_id text;
+  v_action text;
+  v_result jsonb;
+BEGIN
+  IF to_regprocedure('assert_submission_publication_shape(text)') IS NULL
+    OR to_regprocedure('enforce_submission_publication_shape()') IS NULL
+    OR to_regclass('assets_one_cover_per_submission_idx') IS NULL
+    OR to_regclass('assets_one_package_per_submission_idx') IS NULL
+    OR NOT EXISTS (
+      SELECT 1 FROM pg_trigger
+      WHERE tgname = 'submissions_publication_shape_guard'
+        AND tgdeferrable AND tginitdeferred
+    )
+    OR NOT EXISTS (
+      SELECT 1 FROM pg_trigger
+      WHERE tgname = 'assets_publication_shape_guard'
+        AND tgdeferrable AND tginitdeferred
+    ) THEN
+    RAISE EXCEPTION '行为门失败：发布结构函数、索引或延迟触发器缺失';
+  END IF;
+
+  FOREACH v_case IN ARRAY ARRAY[
+    'missing-cover', 'wrong-package-key', 'nested-cover',
+    'null-cover-size', 'zero-package-size', 'wrong-cover-mime',
+    'wrong-package-mime', 'empty-title', 'empty-body'
+  ] LOOP
+    v_id := 'gate-shape-' || v_case;
+    PERFORM gate_seed_publication_shape(v_id);
+    CASE v_case
+      WHEN 'missing-cover' THEN
+        DELETE FROM assets WHERE submission_id = v_id AND role = 'cover';
+      WHEN 'wrong-package-key' THEN
+        UPDATE assets SET object_key = 'submissions/' || v_id || '/wrong.zip'
+        WHERE submission_id = v_id AND role = 'package';
+      WHEN 'nested-cover' THEN
+        UPDATE assets SET object_key = 'submissions/' || v_id || '/nested/cover.webp'
+        WHERE submission_id = v_id AND role = 'cover';
+      WHEN 'null-cover-size' THEN
+        UPDATE assets SET actual_size = NULL
+        WHERE submission_id = v_id AND role = 'cover';
+      WHEN 'zero-package-size' THEN
+        UPDATE assets SET actual_size = 0
+        WHERE submission_id = v_id AND role = 'package';
+      WHEN 'wrong-cover-mime' THEN
+        UPDATE assets SET mime_type = 'image/png'
+        WHERE submission_id = v_id AND role = 'cover';
+      WHEN 'wrong-package-mime' THEN
+        UPDATE assets SET mime_type = 'application/octet-stream'
+        WHERE submission_id = v_id AND role = 'package';
+      WHEN 'empty-title' THEN
+        UPDATE submissions SET title = '   ' WHERE id = v_id;
+      WHEN 'empty-body' THEN
+        UPDATE submissions SET body = E'\n\t' WHERE id = v_id;
+    END CASE;
+    v_action := CASE
+      WHEN v_case IN (
+        'missing-cover', 'wrong-package-key', 'wrong-cover-mime', 'empty-body'
+      ) THEN 'approve'
+      ELSE 'force_publish'
+    END;
+    IF v_action = 'approve' THEN
+      PERFORM gate_add_publication_shape_evidence(v_id);
+    END IF;
+
+    BEGIN
+      v_result := apply_admin_action(
+        v_id, 'admin-1', v_action, 'published', 0,
+        v_id || '-action', '结构损坏不得发布',
+        CASE WHEN v_action = 'force_publish'
+          THEN 'ADMIN_OVERRIDE_ACCEPTED' ELSE NULL END
+      );
+      SET CONSTRAINTS ALL IMMEDIATE;
+      RAISE EXCEPTION '行为门失败：结构损坏 % 仍可执行 %', v_case, v_action;
+    EXCEPTION WHEN SQLSTATE 'P1002' THEN
+      SET CONSTRAINTS ALL DEFERRED;
+    END;
+    IF EXISTS (
+      SELECT 1 FROM submissions
+      WHERE id = v_id
+        AND (status <> 'manual_review_pending'
+          OR status_version <> 0 OR publication_basis IS NOT NULL)
+    ) OR EXISTS (
+      SELECT 1 FROM admin_audit_logs WHERE idempotency_key = v_id || '-action'
+    ) OR EXISTS (
+      SELECT 1 FROM public_engagement WHERE submission_id = v_id
+    ) THEN
+      RAISE EXCEPTION '行为门失败：结构拒绝留下状态、依据、审计或互动半状态';
+    END IF;
+  END LOOP;
+
+  PERFORM gate_seed_publication_shape('gate-shape-duplicate-package');
+  BEGIN
+    INSERT INTO assets (
+      submission_id, object_key, original_name, declared_size, actual_size,
+      mime_type, role
+    ) VALUES (
+      'gate-shape-duplicate-package',
+      'submissions/gate-shape-duplicate-package/second.zip',
+      'second.zip', 9, 9, 'application/zip', 'package'
+    );
+    RAISE EXCEPTION '行为门失败：部分唯一索引接受重复 package';
+  EXCEPTION WHEN unique_violation THEN NULL;
+  END;
+
+  PERFORM gate_seed_publication_shape('gate-shape-valid-force');
+  INSERT INTO assets (
+    submission_id, object_key, original_name, declared_size, actual_size,
+    mime_type, role
+  ) VALUES
+    ('gate-shape-valid-force',
+     'submissions/gate-shape-valid-force/derived/preview-1.webp',
+     'preview-1.webp', 3, 3, 'image/webp', 'derived'),
+    ('gate-shape-valid-force',
+     'submissions/gate-shape-valid-force/derived/preview-2.webp',
+     'preview-2.webp', 4, 4, 'image/webp', 'derived');
+  v_result := apply_admin_action(
+    'gate-shape-valid-force', 'admin-1', 'force_publish', 'published', 0,
+    'gate-shape-valid-force-action', '管理员确认无扫描证据风险',
+    'ADMIN_OVERRIDE_ACCEPTED'
+  );
+  SET CONSTRAINTS ALL IMMEDIATE;
+  SET CONSTRAINTS ALL DEFERRED;
+  IF v_result #>> '{submission,publication_basis}' <> 'admin_override'
+    OR (SELECT status FROM submissions WHERE id = 'gate-shape-valid-force')
+      <> 'published'
+    OR (SELECT count(*) FROM assets
+        WHERE submission_id = 'gate-shape-valid-force' AND role = 'derived')
+      <> 2 THEN
+    RAISE EXCEPTION '行为门失败：合法多 derived 共享包无法强制发布';
+  END IF;
+
+  FOREACH v_case IN ARRAY ARRAY['feedback', 'suggestion'] LOOP
+    v_id := 'gate-shape-valid-' || v_case;
+    PERFORM gate_seed_publication_shape(v_id, v_case);
+    v_result := apply_admin_action(
+      v_id, 'admin-1', 'approve', 'published', 0,
+      v_id || '-approve', '合法文本投稿批准'
+    );
+    SET CONSTRAINTS ALL IMMEDIATE;
+    SET CONSTRAINTS ALL DEFERRED;
+    IF v_result #>> '{submission,publication_basis}' <> 'standard'
+      OR (SELECT count(*) FROM assets WHERE submission_id = v_id) <> 0 THEN
+      RAISE EXCEPTION '行为门失败：合法文本投稿被要求资产或扫描证据';
+    END IF;
+  END LOOP;
+
+  PERFORM gate_seed_publication_shape('gate-shape-invalid-feedback', 'feedback');
+  UPDATE submissions SET title = ' ' WHERE id = 'gate-shape-invalid-feedback';
+  PERFORM gate_seed_publication_shape('gate-shape-invalid-suggestion', 'suggestion');
+  UPDATE submissions SET body = ' ' WHERE id = 'gate-shape-invalid-suggestion';
+  FOREACH v_id IN ARRAY ARRAY[
+    'gate-shape-invalid-feedback', 'gate-shape-invalid-suggestion'
+  ] LOOP
+    BEGIN
+      PERFORM apply_admin_action(
+        v_id, 'admin-1', 'approve', 'published', 0,
+        v_id || '-approve', '空文本不得批准'
+      );
+      SET CONSTRAINTS ALL IMMEDIATE;
+      RAISE EXCEPTION '行为门失败：空文本反馈或建议仍可发布';
+    EXCEPTION WHEN SQLSTATE 'P1002' THEN
+      SET CONSTRAINTS ALL DEFERRED;
+    END;
+    IF EXISTS (
+      SELECT 1 FROM submissions
+      WHERE id = v_id AND (
+        status <> 'manual_review_pending' OR status_version <> 0
+        OR publication_basis IS NOT NULL
+      )
+    ) OR EXISTS (
+      SELECT 1 FROM admin_audit_logs WHERE idempotency_key = v_id || '-approve'
+    ) THEN
+      RAISE EXCEPTION '行为门失败：文本结构拒绝留下半状态';
+    END IF;
+  END LOOP;
+
+  BEGIN
+    UPDATE assets SET actual_size = 0
+    WHERE submission_id = 'gate-shape-valid-force' AND role = 'cover';
+    SET CONSTRAINTS ALL IMMEDIATE;
+    RAISE EXCEPTION '行为门失败：已发布封面可在事务末保留零大小';
+  EXCEPTION WHEN SQLSTATE 'P1002' THEN
+    SET CONSTRAINTS ALL DEFERRED;
+  END;
+  IF (SELECT actual_size FROM assets
+      WHERE submission_id = 'gate-shape-valid-force' AND role = 'cover') <> 7 THEN
+    RAISE EXCEPTION '行为门失败：已发布资产更新拒绝未回滚';
+  END IF;
+
+  BEGIN
+    DELETE FROM assets
+    WHERE submission_id = 'gate-shape-valid-force' AND role = 'package';
+    SET CONSTRAINTS ALL IMMEDIATE;
+    RAISE EXCEPTION '行为门失败：已发布 package 可在事务末缺失';
+  EXCEPTION WHEN SQLSTATE 'P1002' THEN
+    SET CONSTRAINTS ALL DEFERRED;
+  END;
+  IF NOT EXISTS (
+    SELECT 1 FROM assets
+    WHERE submission_id = 'gate-shape-valid-force' AND role = 'package'
+  ) THEN
+    RAISE EXCEPTION '行为门失败：已发布资产删除拒绝未回滚';
+  END IF;
+
+  DELETE FROM assets
+  WHERE submission_id = 'gate-shape-valid-force' AND role = 'cover';
+  INSERT INTO assets (
+    submission_id, object_key, original_name, declared_size, actual_size,
+    mime_type, role
+  ) VALUES (
+    'gate-shape-valid-force',
+    'submissions/gate-shape-valid-force/cover.webp',
+    'replacement.webp', 9, 9, 'image/webp', 'cover'
+  );
+  SET CONSTRAINTS ALL IMMEDIATE;
+  SET CONSTRAINTS ALL DEFERRED;
+  IF (SELECT count(*) FROM assets
+      WHERE submission_id = 'gate-shape-valid-force' AND role = 'cover') <> 1
+    OR (SELECT original_name FROM assets
+        WHERE submission_id = 'gate-shape-valid-force' AND role = 'cover')
+      <> 'replacement.webp' THEN
+    RAISE EXCEPTION '行为门失败：同一事务先删旧封面再插新封面被错误拒绝';
+  END IF;
+END
+$publication_shape_gate$;
 `;
 
 if (process.argv[1]

@@ -28,7 +28,14 @@ const CONTRACT_REFS = Object.freeze({
   adminSubmissionVersion: 1,
   overrideSubmissionId: 'contract-override',
   overrideSubmissionVersion: 2,
+  standardSubmissionId: 'contract-standard-feedback',
+  standardSubmissionVersion: 2,
+  invalidForceSubmissionId: 'contract-invalid-force',
+  invalidForceSubmissionVersion: 2,
+  invalidStandardSubmissionId: 'contract-invalid-standard',
+  invalidStandardSubmissionVersion: 2,
   publicCommunityId: 'contract-community',
+  damagedPublicCommunityId: 'contract-zz-damaged',
   publicFeedbackId: 'contract-feedback'
 });
 const MAX_BODY_BYTES = 2 * 1024 * 1024;
@@ -151,8 +158,16 @@ export function createMemoryWebsiteApi({ runId }) {
           autoRejectionReason: null,
           riskSummary: { summary: '等待系统审核', labels: [] },
           assets: [
-            assetFrom(body.coverFile, 'cover', `${id}/cover`),
-            assetFrom(body.packageFile, 'package', `${id}/package`)
+            assetFrom(
+              body.coverFile,
+              'cover',
+              `submissions/${id}/cover.${fileExtension(body.coverFile.fileName)}`
+            ),
+            assetFrom(
+              body.packageFile,
+              'package',
+              `submissions/${id}/package.zip`
+            )
           ],
           moderationResults: [],
           auditLogs: [],
@@ -266,7 +281,8 @@ export function createMemoryWebsiteApi({ runId }) {
           searchParams,
           record => publicCommunity(record, request.headers.host),
           'community',
-          'publishedAt'
+          'publishedAt',
+          true
         ));
       }
 
@@ -320,7 +336,8 @@ export function createMemoryWebsiteApi({ runId }) {
           searchParams,
           publicFeedback,
           `feedback:${kind}`,
-          'publishedAt'
+          'publishedAt',
+          true
         ));
       }
 
@@ -416,7 +433,11 @@ export function createMemoryWebsiteApi({ runId }) {
   function requirePublished(id, kinds) {
     const record = requireSubmission(id);
     const allowed = Array.isArray(kinds) ? kinds.includes(record.kind) : record.kind === kinds;
-    if (!allowed || record.status !== 'published') throw new MemoryApiError('NOT_FOUND', 404);
+    if (
+      !allowed
+      || record.status !== 'published'
+      || !hasValidPublicationShape(record)
+    ) throw new MemoryApiError('NOT_FOUND', 404);
     return record;
   }
 
@@ -441,8 +462,16 @@ function seedContractFixtures(submissions, tokenIndex, uploads) {
     autoRejectionReason: null,
     riskSummary: { summary: '合同固定种子', labels: [] },
     assets: [
-      assetFrom({ fileName: 'cover.webp', sizeBytes: 12, contentType: 'image/webp' }, 'cover', `${id}/cover`),
-      assetFrom({ fileName: 'pet.zip', sizeBytes: 24, contentType: 'application/zip' }, 'package', `${id}/package`)
+      assetFrom(
+        { fileName: 'cover.webp', sizeBytes: 12, contentType: 'image/webp' },
+        'cover',
+        `submissions/${id}/cover.webp`
+      ),
+      assetFrom(
+        { fileName: 'pet.zip', sizeBytes: 24, contentType: 'application/zip' },
+        'package',
+        `submissions/${id}/package.zip`
+      )
     ].map(asset => ({ ...asset, actualBytes: asset.role === 'cover' ? 12 : 24 })),
     moderationResults: [],
     auditLogs: [],
@@ -501,12 +530,54 @@ function seedContractFixtures(submissions, tokenIndex, uploads) {
     CONTRACT_REFS.overrideSubmissionVersion,
     null
   );
+  const standardFeedback = {
+    ...sharedRecord(
+      CONTRACT_REFS.standardSubmissionId,
+      '待普通批准合同反馈',
+      'manual_review_pending',
+      CONTRACT_REFS.standardSubmissionVersion,
+      null
+    ),
+    kind: 'feedback',
+    body: '合法反馈正文',
+    assets: []
+  };
+  const invalidStandard = {
+    ...sharedRecord(
+      CONTRACT_REFS.invalidStandardSubmissionId,
+      '   ',
+      'manual_review_pending',
+      CONTRACT_REFS.invalidStandardSubmissionVersion,
+      null
+    ),
+    kind: 'feedback',
+    body: '标题损坏的反馈',
+    assets: []
+  };
+  const invalidForce = sharedRecord(
+    CONTRACT_REFS.invalidForceSubmissionId,
+    '资产损坏的共享包',
+    'manual_review_pending',
+    CONTRACT_REFS.invalidForceSubmissionVersion,
+    null
+  );
+  invalidForce.assets = invalidForce.assets.filter(asset => asset.role === 'package');
+  const damagedCommunity = sharedRecord(
+    'contract-zz-damaged',
+    '损坏公开记录',
+    'published',
+    1,
+    'standard'
+  );
+  damagedCommunity.publishedAt = '2026-07-31T00:00:00.000001Z';
+  damagedCommunity.assets.find(asset => asset.role === 'package').storageKey =
+    'submissions/contract-zz-damaged/wrong.zip';
   const feedback = {
     ...sharedRecord(CONTRACT_REFS.publicFeedbackId, '合同用户', 'published', 1, 'standard'),
     kind: 'feedback',
     body: '公开合同反馈',
     assets: [],
-    publicationBasis: null
+    publicationBasis: 'standard'
   };
   const sameTimeFeedback = {
     ...feedback,
@@ -521,8 +592,12 @@ function seedContractFixtures(submissions, tokenIndex, uploads) {
     equivalentOffsetCommunity,
     microsecondOlderCommunity,
     override,
+    standardFeedback,
+    invalidStandard,
+    invalidForce,
     feedback,
-    sameTimeFeedback
+    sameTimeFeedback,
+    damagedCommunity
   ]) {
     submissions.set(record.id, record);
   }
@@ -651,6 +726,11 @@ function assetFrom(value, role, storageKey) {
   };
 }
 
+function fileExtension(fileName) {
+  const value = String(fileName ?? '').toLowerCase();
+  return value.includes('.') ? value.slice(value.lastIndexOf('.') + 1) : '';
+}
+
 function uploadTarget(origin, id, role) {
   return {
     path: `${id}/${role}`,
@@ -690,7 +770,14 @@ function matchId(pathname, prefix, suffix) {
   try { return decodeURIComponent(encoded); } catch { return null; }
 }
 
-function pageOf(records, searchParams, project, scope, sortField) {
+function pageOf(
+  records,
+  searchParams,
+  project,
+  scope,
+  sortField,
+  isolateProjection = false
+) {
   const limit = Number(searchParams.get('limit') ?? 20);
   if (!Number.isInteger(limit) || limit < 1 || limit > 100) {
     throw new MemoryApiError('INVALID_REQUEST', 400);
@@ -708,7 +795,14 @@ function pageOf(records, searchParams, project, scope, sortField) {
       { sortTime: String(left[sortField]), id: left.id }
     ));
   const rows = sorted.slice(0, limit + 1);
-  const items = rows.slice(0, limit).map(project);
+  const items = [];
+  for (const row of rows.slice(0, limit)) {
+    try {
+      items.push(project(row));
+    } catch (error) {
+      if (!isolateProjection) throw error;
+    }
+  }
   const last = rows[limit - 1];
   return {
     items,
@@ -813,6 +907,7 @@ const CURSOR_SCOPES = new Set([
 ]);
 
 function publicCommunity(record, host) {
+  if (!hasValidPublicationShape(record)) throw new Error('INVALID_PUBLIC_SHAPE');
   const cover = record.assets.find(asset => asset.role === 'cover');
   const packageAsset = record.assets.find(asset => asset.role === 'package');
   return {
@@ -833,6 +928,7 @@ function publicCommunity(record, host) {
 }
 
 function publicFeedback(record) {
+  if (!hasValidPublicationShape(record)) throw new Error('INVALID_PUBLIC_SHAPE');
   return {
     id: record.id,
     kind: record.kind,
@@ -890,6 +986,37 @@ function adminActionSnapshot(record) {
     createdAt: record.createdAt,
     updatedAt: record.updatedAt
   };
+}
+
+/** Memory 在发布写入与公开读取两侧复现数据库的同一结构语义。 */
+function hasValidPublicationShape(record) {
+  if (
+    !['shared_package', 'feedback', 'suggestion'].includes(record.kind)
+    || typeof record.title !== 'string'
+    || record.title.trim().length === 0
+    || typeof record.body !== 'string'
+    || record.body.trim().length === 0
+  ) return false;
+  if (record.kind !== 'shared_package') return true;
+
+  const covers = record.assets.filter(asset => asset.role === 'cover');
+  const packages = record.assets.filter(asset => asset.role === 'package');
+  if (covers.length !== 1 || packages.length !== 1) return false;
+  const cover = covers[0];
+  const packageAsset = packages[0];
+  const coverMimeByKey = new Map([
+    [`submissions/${record.id}/cover.png`, 'image/png'],
+    [`submissions/${record.id}/cover.webp`, 'image/webp'],
+    [`submissions/${record.id}/cover.jpg`, 'image/jpeg'],
+    [`submissions/${record.id}/cover.jpeg`, 'image/jpeg']
+  ]);
+  return packageAsset.storageKey === `submissions/${record.id}/package.zip`
+    && packageAsset.contentType === 'application/zip'
+    && Number.isSafeInteger(packageAsset.actualBytes)
+    && packageAsset.actualBytes > 0
+    && coverMimeByKey.get(cover.storageKey) === cover.contentType
+    && Number.isSafeInteger(cover.actualBytes)
+    && cover.actualBytes > 0;
 }
 
 function adminDetail(record, request) {
@@ -1029,6 +1156,12 @@ function applyAdminAction(response, record, body, now, adminIdempotency) {
     return sendError(response, 409, 'TECHNICAL_SCAN_REQUIRED');
   }
   if (action === 'force_publish' && hasCurrentTechnicalEvidence(record, now())) {
+    return sendError(response, 409, 'INVALID_ADMIN_ACTION');
+  }
+  if (
+    (action === 'approve' || action === 'force_publish')
+    && !hasValidPublicationShape(record)
+  ) {
     return sendError(response, 409, 'INVALID_ADMIN_ACTION');
   }
 

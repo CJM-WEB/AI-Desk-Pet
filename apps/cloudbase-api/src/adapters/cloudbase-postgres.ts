@@ -334,7 +334,7 @@ export class CloudBasePostgresStore implements
       '公开社区'
     );
     return {
-      items: rows.slice(0, input.limit).map(mapPublishedCommunity),
+      items: mapPublicRows(rows.slice(0, input.limit), mapPublishedCommunity),
       nextCursor: nextCursor(rows, input.limit, scope, 'published_at')
     };
   }
@@ -371,7 +371,7 @@ export class CloudBasePostgresStore implements
       '公开反馈'
     );
     return {
-      items: rows.slice(0, input.limit).map(mapPublishedFeedback),
+      items: mapPublicRows(rows.slice(0, input.limit), mapPublishedFeedback),
       nextCursor: nextCursor(rows, input.limit, scope, 'published_at')
     };
   }
@@ -935,6 +935,24 @@ function mapPublishedFeedback(value: unknown): PublishedFeedbackRecord {
     likeCount: requireNonnegativeInteger(engagement.like_count, 'like_count'),
     createdAt: requireString(row.created_at, 'created_at')
   };
+}
+
+/** 公开列表按原始候选逐行隔离格式损坏，游标仍由调用方使用原始行生成。 */
+function mapPublicRows<T>(
+  rows: unknown[],
+  mapRow: (value: unknown) => T
+): T[] {
+  const items: T[] = [];
+  for (const row of rows) {
+    try {
+      items.push(mapRow(row));
+    } catch (error) {
+      if (!(error instanceof ApiError) && !(error instanceof z.ZodError)) {
+        throw error;
+      }
+    }
+  }
+  return items;
 }
 
 function requireRelationRecord(

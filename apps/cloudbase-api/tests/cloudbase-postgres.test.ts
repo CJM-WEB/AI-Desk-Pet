@@ -1233,6 +1233,102 @@ describe('CloudBase PostgreSQL 安全与公开互动存储', () => {
     });
   });
 
+  it('公开社区逐行隔离损坏记录且游标锚定最后扫描的原始行', async () => {
+    const publishedAt = '2026-08-31T06:00:00.000Z';
+    const row = (id: string, actualSize: number | null) => ({
+      id,
+      title: `标题-${id}`,
+      body: `正文-${id}`,
+      published_at: publishedAt,
+      publication_basis: 'standard',
+      assets: [{
+        object_key: `submissions/${id}/cover.webp`,
+        original_name: 'cover.webp',
+        actual_size: actualSize,
+        mime_type: 'image/webp',
+        role: 'cover'
+      }, {
+        object_key: `submissions/${id}/package.zip`,
+        original_name: 'pet.zip',
+        actual_size: 24,
+        mime_type: 'application/zip',
+        role: 'package'
+      }],
+      public_engagement: { like_count: 0, download_count: 0 }
+    });
+    const rpc = {
+      rpc: vi.fn()
+        .mockResolvedValueOnce({
+          data: [
+            row('community-valid-new', 12),
+            row('community-damaged', null),
+            row('community-valid-old', 12),
+            row('community-lookahead', 12)
+          ],
+          error: null
+        })
+        .mockResolvedValueOnce({ data: [], error: null })
+    };
+    const store = new CloudBasePostgresStore({ from: vi.fn() } as never, rpc);
+
+    const page = await store.listPublicCommunity({ limit: 3 });
+
+    expect(page.items.map(item => item.id)).toEqual([
+      'community-valid-new',
+      'community-valid-old'
+    ]);
+    expect(page.nextCursor).toMatch(/^v1\.[A-Za-z0-9_-]+$/u);
+    await store.listPublicCommunity({ limit: 3, cursor: page.nextCursor });
+    expect(rpc.rpc).toHaveBeenNthCalledWith(2, 'list_public_community', {
+      p_limit: 3,
+      p_cursor_time: publishedAt,
+      p_cursor_id: 'community-valid-old'
+    });
+  });
+
+  it('公开反馈逐行隔离类型或文本损坏的记录', async () => {
+    const rpc = {
+      rpc: vi.fn().mockResolvedValue({
+        data: [{
+          id: 'feedback-valid-new',
+          kind: 'feedback',
+          title: '匿名用户',
+          body: '合法反馈',
+          created_at: '2026-08-31T06:00:00.000Z',
+          published_at: '2026-08-31T06:00:00.000Z',
+          public_engagement: { like_count: 0 }
+        }, {
+          id: 'feedback-damaged',
+          kind: 'unknown',
+          title: '损坏记录',
+          body: '不得拖垮整页',
+          created_at: '2026-08-31T05:59:00.000Z',
+          published_at: '2026-08-31T05:59:00.000Z',
+          public_engagement: { like_count: 0 }
+        }, {
+          id: 'feedback-valid-old',
+          kind: 'feedback',
+          title: '匿名用户',
+          body: '另一条合法反馈',
+          created_at: '2026-08-31T05:58:00.000Z',
+          published_at: '2026-08-31T05:58:00.000Z',
+          public_engagement: { like_count: 0 }
+        }],
+        error: null
+      })
+    };
+    const store = new CloudBasePostgresStore({ from: vi.fn() } as never, rpc);
+
+    await expect(store.listPublicFeedback('feedback', { limit: 20 }))
+      .resolves.toMatchObject({
+        items: [
+          { id: 'feedback-valid-new' },
+          { id: 'feedback-valid-old' }
+        ],
+        nextCursor: null
+      });
+  });
+
   it('公开社区详情只披露发布依据枚举而不泄漏管理员与扫描字段', async () => {
     const detail = {
       id: 'community-detail',
