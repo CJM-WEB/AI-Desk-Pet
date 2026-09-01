@@ -2,9 +2,7 @@
 
 本文是网站阶段 2C 零费用人工审核方案的现行运维入口。它只描述上海 CloudBase PostgreSQL 开发环境的最小运行面；不构成远端操作授权，更不构成正式生产上线授权。
 
-> 当前状态（2026-09-01）：`remote: unverified`。本地实现、测试和真实 Docker 候选已完成验证；尚未创建上海 PostgreSQL 环境、执行远端 migration、部署函数、配置私有 Bucket、身份、网关或静态托管。共享包匿名投稿开关保持 `SHARED_PACKAGE_SUBMISSIONS_ENABLED=false`。现行证据见 `website-stage-2c-zero-cost-manual-review-acceptance.md`。
-
-> 官方 Windows 安装包点击计数的本地合同与浏览器验证已于 2026-09-02 追加；远端第 16 条 migration、`ai-pet-api` 函数版本、网关路由和管理员真实读取仍未验证。该本地结论不改变本节 `remote: unverified`，更不表示上海环境或正式生产已通过。
+> 当前状态（2026-09-02）：`remote: in_progress`。上海免费开发环境 `ai-pet-scanner-dev-d0cp…826` 的 16 条 migration、私有 Bucket、`ai-pet-api`/`ai-pet-cleanup`、邮箱 OTP、最小网关与静态托管已经实际部署；完整真实管理员业务 smoke 尚未完成。共享包匿名投稿开关保持 `SHARED_PACKAGE_SUBMISSIONS_ENABLED=false`。这不是正式生产上线，现行证据见 `website-stage-2c-zero-cost-manual-review-acceptance.md`。
 
 ## 1. 正式运行面与禁止部署项
 
@@ -33,8 +31,8 @@
 
 ## 3. PostgreSQL 与私有对象存储
 
-1. 先在同一上海 PostgreSQL 环境顺序执行全部 16 条前向 migration（包含 `20260901020000_official_windows_download_click_metric.sql`）；不得修改、重排或回滚历史 migration。失败只能用新的前向 migration 修复。
-2. 创建仅服务端可访问的私有 Bucket，并配置为 `PRIVATE_BUCKET_ID`。禁止公开读写；上传和下载只使用短期签名地址。
+1. 同一上海 PostgreSQL 环境已通过 CLI 对比确认全部 16 条前向 migration 一致，最新版本 `20260901020000`，没有 pending 或 conflict；不得修改、重排或回滚历史 migration。失败只能用新的前向 migration 修复。
+2. 仅服务端可访问的私有 Bucket `ai-pet-private` 已存在且 `public=false`，并配置为 `PRIVATE_BUCKET_ID`。禁止公开读写；上传和下载只使用短期签名地址。
 3. 正式安装包使用独立发布目录和 CDN 策略，不得复用匿名投稿隔离区。
 4. 真实 PostgreSQL 的锁、并发、任务失败和续跑必须以远端 smoke 证据确认；本地 PostgreSQL 结果不能替代该证据。
 
@@ -66,9 +64,9 @@ CLOUDBASE_API_KEY
 
 以上清单与当前 `config.ts` 的两个 loader 对齐。不得为 worker、Scanner 或腾讯内容安全添加变量，也不得复制旧的 HMAC、Scanner Secret 或腾讯凭据。
 
-身份认证启用邮箱 OTP，并预先创建唯一管理员账号。管理员路径同时经过网关认证与应用层身份、邮箱白名单和角色校验；网关认证不能替代应用层授权。公开投稿与状态路径允许匿名访问，仍由限流、管理员审批和私有对象边界保护。
+身份认证已启用邮箱 OTP，唯一管理员账号为 ACTIVE；真实 OTP 登录尚待验证。管理员路径同时经过网关认证与应用层身份、邮箱白名单和角色校验；客户端在同一 access token 上同时发送 `Authorization: Bearer <token>`（网关）与 `x-ai-pet-admin-token: <token>`（应用层复验），网关认证不能替代应用层授权。公开投稿与状态路径允许匿名访问，仍由限流、管理员审批和私有对象边界保护。
 
-配置最小网关时，必须先捕获脱敏的真实 event/path，确认平台传递的路径形状后再选择唯一 Router。CORS 只允许实际开发或正式站点来源及所需方法/请求头，不允许带认证信息的通配来源。
+最小网关已使用两条 `SCF` 路由：公开 `/api` 不启用网关认证；管理员 `/api/v1/admin` 启用网关认证。最长前缀使管理员路由优先；公开 `GET /api/v1/community?limit=1` 返回 200，未认证管理员请求在网关返回 401 `MISSING_CREDENTIALS`。CORS 只允许实际开发或正式站点来源及所需方法/请求头，不允许带认证信息的通配来源。
 
 ## 5. 静态托管与观测
 
@@ -78,9 +76,9 @@ CLOUDBASE_API_KEY
 pnpm.cmd --filter @myself/website build
 ```
 
-将实际 HTTPS 域名加入 Web 安全域名；配置 CSP 与已验证 API 前缀匹配的 CORS。日志、告警和审计不得记录状态令牌、签名 URL、管理员令牌、OTP、密钥或私有对象地址。
+静态网站已使用以下三个前端环境变量构建：`NEXT_PUBLIC_CLOUDBASE_ENV_ID`、`NEXT_PUBLIC_CLOUDBASE_PUBLISHABLE_KEY`、`NEXT_PUBLIC_API_BASE_URL`（网关 `/api/v1` 基址）；67/67 个构建文件上传成功，当前静态托管对象总数为 73。将实际 HTTPS 域名加入 Web 安全域名；配置 CSP 与已验证 API 前缀匹配的 CORS。日志、告警和审计不得记录状态令牌、签名 URL、管理员令牌、OTP、密钥或私有对象地址。
 
-监控函数、网关、数据库和存储的错误、5xx/429、审核积压、异常上传和清理失败；费用、资源点、自动续费和按量开关须以远端实际页面为准。远端未验证前不得填写费用、版本或部署成功结论。
+监控函数、网关、数据库和存储的错误、5xx/429、审核积压、异常上传和清理失败；当前计费周期总资源点为 3000、已使用 0.13，`packageDeduct=0`、`payAsYouGoDeduct=0`。这只证明尚未发生资源包外或按量扣费，不替代正式生产费用结论。
 
 ## 6. 投稿与人工审核部署后语义
 

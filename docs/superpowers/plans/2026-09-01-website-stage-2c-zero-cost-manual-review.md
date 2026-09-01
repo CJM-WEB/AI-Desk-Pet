@@ -409,7 +409,15 @@ Expected: 全部通过；没有桌宠路径、Secret、临时归档、CloudBase 
 
 **Files:**
 
+- Modify: `tools/build-cloudbase-functions.mjs`
+- Modify: `apps/cloudbase-api/src/functions/api.ts`
+- Modify: `apps/cloudbase-api/tests/build-output.test.ts`
+- Modify: `apps/website/lib/admin-api-client.ts`
+- Modify: `apps/website/tests/admin-api-client.test.ts`
+- Modify: `docs/superpowers/plans/2026-09-01-website-stage-2c-shanghai-rebuild.md`
 - Modify: `docs/operations/website-stage-2c-zero-cost-manual-review-acceptance.md`
+- Modify: `docs/operations/cloudbase-deployment.md`
+- Modify: `docs/operations/content-moderation.md`
 
 - [x] **Step 8.1：不可逆删除行动门**
 
@@ -419,17 +427,17 @@ Expected: 全部通过；没有桌宠路径、Secret、临时归档、CloudBase 
 
 创建页必须明确显示上海、PostgreSQL、免费体验、应付 0 元、按量付费关闭、自动续费关闭；任一条件不满足立即停止。
 
-- [ ] **Step 8.3：最小部署**
+- [x] **Step 8.3：最小部署**
 
-顺序执行全部 16 条 migration（包括 `20260901020000_official_windows_download_click_metric.sql`），创建私有 Bucket，只部署 `ai-pet-api` 与 `ai-pet-cleanup`，配置身份、最小网关和静态托管。不得开通或部署 CloudBase Run、TMS、IMS、moderation worker。
+顺序执行全部 16 条 migration（包括 `20260901020000_official_windows_download_click_metric.sql`），创建私有 Bucket，只部署 `ai-pet-api` 与 `ai-pet-cleanup`，配置身份、最小网关和静态托管。不得开通或部署 CloudBase Run、TMS、IMS、moderation worker。实际远端已完成这些最小部署项；`ai-pet-api` 与 `ai-pet-cleanup` 均为 Node.js 20.19 的 Event 函数，免费体验版实际固定超时 3 秒、内存 256 MB。静态构建使用目标环境 ID、Publishable Key 与网关 `/api/v1` 基址，67/67 个构建文件上传成功。此记录不包含任何密钥值，也不表示真实管理员业务 smoke 已完成。
 
 - [ ] **Step 8.4：真实 smoke**
 
-验证投稿直入人工队列、反馈批准、共享包强制发布风险提示、点赞、评论、短期下载、非管理员拒绝、cleanup 和本地 Docker 干净包/EICAR；另验证官方下载公开 POST 只返回空对象、管理员指标读取受现有认证保护且公开页面/DTO 不泄露累计值。投稿开关保持关闭，测试数据按已批准清理边界处理。
+已通过的远端子项：公开社区 GET 返回 200；未认证管理员请求由网关返回 401 `MISSING_CREDENTIALS`；`ai-pet-cleanup` 真实直调返回 `claimed=0/purged=0/failed=0/expiredOperationsPurged=0`。本地 Docker 干净包/EICAR 与本地全链证据继续有效，但不构成远端 smoke。仍待真实 OTP 管理员登录、官方下载点击的管理员指标读取、反馈完整批准、共享包强制发布、点赞、评论、短期下载和完整远端数据清理；cleanup 尚未配置定时触发器，因为规格未定义周期，须另行裁决与验证。投稿开关保持关闭，测试数据按已批准清理边界处理。
 
 - [ ] **Step 8.5：记录状态**
 
-记录脱敏环境 ID、migration 结果、函数版本、网关/存储/身份配置、smoke、资源点和费用。阶段 2C 可写 `pass`、`blocked` 或 `unverified`；不得写成正式生产上线。
+在 Task 8.4 完整闭环后，记录脱敏环境 ID、migration 结果、函数版本、网关/存储/身份配置、smoke、资源点和费用，并据实写最终 `pass`、`blocked` 或 `unverified`。当前远端状态必须保持 `remote: in_progress`，不得写成正式生产上线。
 
 完成标准：上海免费开发环境形成零额外费用的真实网站闭环，且没有任何已退役云服务。
 

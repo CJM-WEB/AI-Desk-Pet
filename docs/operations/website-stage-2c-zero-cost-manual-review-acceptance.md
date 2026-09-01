@@ -2,11 +2,11 @@
 
 ## 结论
 
-- 日期：2026-09-01。
-- 范围：阶段 2C 零费用人工审核的本地实现、自动化验证、真实 Docker 候选、运维文档收敛，以及上海开发环境的删除与零费用创建门。
+- 日期：2026-09-02。
+- 范围：阶段 2C 零费用人工审核的本地实现、自动化验证、真实 Docker 候选、运维文档收敛，以及上海免费开发环境的实际最小部署与已完成远端 smoke 子项。
 - 提交范围：`5c914ef`（不含）至本次阶段 2C 整分支终审修复提交（含，本记录所在提交）。
-- 远端状态：`remote: in_progress`；删除门与零费用创建门已通过，部署与 smoke 尚未验证。
-- 本记录不表示已执行远端 migration、部署 API/cleanup、创建 Bucket、配置身份/网关/静态托管，也不表示正式生产上线。
+- 远端状态：`remote: in_progress`；最小部署已完成，真实 smoke 仅完成公开社区、未认证管理员拒绝和 cleanup 直调子项。
+- 本记录不表示阶段 2C 已通过或正式生产上线；真实 OTP 管理员登录与完整业务 smoke 仍待完成。
 
 ## 已执行的远端环境门
 
@@ -15,7 +15,14 @@
 | 旧环境删除 | 已只读核对旧上海环境 `ai-pet-scanner-dev-d8cq…e` 的地域、体验套餐和资源；展示销毁范围并取得行动时第二次明确确认后，先销毁再永久释放。环境列表复核确认该环境已不存在；新加坡旧环境未触碰。 |
 | 新环境创建 | 创建页明确显示上海、PostgreSQL、免费体验版、6 个月、配置与实付均为 0.00 元，且未勾选任何搭配购买；兑换码验证通过后创建。 |
 | 费用保护 | 新环境 `ai-pet-scanner-dev-d0cp…826` 的套餐页显示免费体验版、有效期至 2027-03-01、体验版不支持自动续费、资源点 `0/3000`；按量付费开关未开启。 |
-| PostgreSQL 初态 | 控制台提供 PostgreSQL 管理，`public` Schema 当前无表；尚未执行任何远端 migration。 |
+| PostgreSQL migration | CLI 对比确认远端与本地全部 16 条 migration 一致；远端最新版本为 `20260901020000`，没有 pending 或 conflict。 |
+| 私有对象存储 | 私有 Bucket `ai-pet-private` 已存在，`public=false`。 |
+| 函数 | 仅部署 `ai-pet-api` 与 `ai-pet-cleanup`；两者均为 Event 云函数、Node.js 20.19，部署状态完成。免费体验版实际固定超时 3 秒、内存 256 MB。 |
+| 网关 | 两条 `SCF` 路由：公开 `/api` 不启用网关认证；管理员 `/api/v1/admin` 启用网关认证。最长前缀使管理员路由优先。公开 `GET /api/v1/community?limit=1` 返回 200；未认证管理员请求返回 401 `MISSING_CREDENTIALS`。 |
+| 身份 | 邮箱 OTP 已启用，唯一管理员账号为 ACTIVE；真实 OTP 登录和管理员指标读取尚未完成。 |
+| 静态托管 | 网站以目标环境、Publishable Key 与网关 `/api/v1` 基址构建，67/67 个构建文件上传成功；当前静态托管对象总数为 73。未记录任何 Key 值。 |
+| 投稿与费用 | `SHARED_PACKAGE_SUBMISSIONS_ENABLED=false`。当前计费周期总资源点 3000、已使用 0.13；`packageDeduct=0`、`payAsYouGoDeduct=0`，未发生资源包外或按量扣费。 |
+| cleanup | 真实函数直调返回 `claimed=0/purged=0/failed=0/expiredOperationsPurged=0`。规格未定义周期，未配置定时触发器，待另行裁决与验证。 |
 
 ## 已执行的本地事实
 
@@ -59,6 +66,6 @@ git status --short
 
 ## 未验证项
 
-以下均尚未验证：远端 migration、私有对象存储、函数部署、cleanup 调度、身份认证、网关、静态托管、远端 smoke、部署后的资源点与账单、监控、告警和正式生产发布。
+以下仍未验证：真实 OTP 管理员登录、官方下载点击的管理员指标读取、反馈完整批准、共享包强制发布、点赞、评论、短期下载、完整远端数据清理、cleanup 定时调度、监控、告警和正式生产发布。本地 Docker 干净包/EICAR 与本地全链证据仍有效，但不得冒充远端 smoke。
 
 共享包投稿开关继续保持 `SHARED_PACKAGE_SUBMISSIONS_ENABLED=false`。后续远端写操作继续执行行动时预览与失败关闭；任何远端验证成功也不自动等于正式生产上线。

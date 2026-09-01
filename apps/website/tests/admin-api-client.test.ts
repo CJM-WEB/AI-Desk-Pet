@@ -4,7 +4,7 @@ import { AdminApiClient } from '../lib/admin-api-client';
 import { ApiClient, ApiClientError } from '../lib/api-client';
 
 describe('管理员 API 客户端', () => {
-  it('管理员令牌使用专用请求头，避免被 CloudBase 网关抢先认证', async () => {
+  it('管理员令牌同时供网关与应用层独立验证', async () => {
     const fetcher = vi.fn().mockResolvedValue(new Response(JSON.stringify({
       data: { items: [], nextCursor: null },
       requestId: 'request-1'
@@ -16,10 +16,12 @@ describe('管理员 API 客户端', () => {
     expect(fetcher).toHaveBeenCalledWith(
       '/api/v1/admin/submissions?limit=20&status=manual_review_pending',
       expect.objectContaining({
-        headers: expect.objectContaining({ 'x-ai-pet-admin-token': 'access-token' })
+        headers: expect.objectContaining({
+          Authorization: 'Bearer access-token',
+          'x-ai-pet-admin-token': 'access-token'
+        })
       })
     );
-    expect(fetcher.mock.calls[0]?.[1]?.headers).not.toHaveProperty('authorization');
   });
 
   it('严格拒绝包含未知字段的管理员响应', async () => {
@@ -70,7 +72,10 @@ describe('管理员 API 客户端', () => {
     expect(fetcher).toHaveBeenCalledWith(
       '/api/v1/admin/metrics/official-windows-download',
       expect.objectContaining({
-        headers: expect.objectContaining({ 'x-ai-pet-admin-token': 'access-token' })
+        headers: expect.objectContaining({
+          Authorization: 'Bearer access-token',
+          'x-ai-pet-admin-token': 'access-token'
+        })
       })
     );
   });

@@ -39,7 +39,7 @@ export interface AdminApi {
   ): Promise<AdminActionResult>;
 }
 
-/** 管理员客户端复用公开 ApiClient 的错误信封，并用专用头避开 CloudBase 网关认证。 */
+/** 管理员客户端复用公开 ApiClient 的错误信封，令牌同时供网关与应用层验证。 */
 export class AdminApiClient implements AdminApi {
   constructor(private readonly api: ApiClient) {}
 
@@ -102,7 +102,10 @@ export class AdminApiClient implements AdminApi {
 
 function requestInit(accessToken: string, signal?: AbortSignal): RequestInit {
   return {
-    headers: { 'x-ai-pet-admin-token': accessToken },
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      'x-ai-pet-admin-token': accessToken
+    },
     ...(signal ? { signal } : {})
   };
 }
