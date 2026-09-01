@@ -321,6 +321,30 @@ describe('公开 HTTP API', () => {
     expect(response.body).not.toContain('不得公开的内部原因');
   });
 
+  it('反馈创建状态冲突返回稳定 409 而非内部错误', async () => {
+    const dependencies = createDependencies();
+    dependencies.textSubmissions.submit.mockRejectedValueOnce(
+      new ApiError('SUBMISSION_STATE_CONFLICT', 409, '数据库返回了异常状态')
+    );
+    const main = createApi(dependencies);
+
+    const response = await main(
+      event('POST', '/api/v1/feedback', {
+        kind: 'feedback',
+        authorName: '反馈用户',
+        content: '反馈内容'
+      }),
+      context
+    );
+
+    expect(response.statusCode).toBe(409);
+    expect(JSON.parse(response.body)).toEqual({
+      requestId: 'request-1',
+      error: { code: 'SUBMISSION_STATE_CONFLICT' }
+    });
+    expect(response.body).not.toContain('数据库返回了异常状态');
+  });
+
   it('兼容 CloudBase HTTP 服务剥离 api 前缀后的路径', async () => {
     const dependencies = createDependencies();
     const main = createApi(dependencies);
