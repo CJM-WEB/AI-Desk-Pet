@@ -27,7 +27,7 @@
 
 ### 方案一：独立单行站点指标（采用）
 
-新增 `site_metrics` 单行计数表与 `record_official_windows_download_click()` 原子函数。公开路由只返回 `recorded: true`，管理员路由单独返回 `officialDownloadCount`。
+新增官方 Windows 下载单例计数表与原子函数。公开路由只返回严格空对象，管理员路由单独返回 `clickCount`。
 
 该方案不会把官方资产伪装成用户投稿，接口很小，并能通过 PostgreSQL 原子更新避免并发丢失。
 
@@ -43,32 +43,32 @@
 
 ### 5.1 公开写入
 
-`POST /api/v1/releases/windows/download-click`
+`POST /api/v1/official-downloads/windows/click`
 
 - 请求体必须为严格空对象 `{}`。
-- API 使用既有 HMAC 设备指纹，并先消费 `download:official-windows` 的既有限流策略。
-- PostgreSQL 使用单条 upsert 原子加一。
-- 成功只返回 `{ "recorded": true }`，不返回累计值。
+- API 使用既有 HMAC 设备指纹；PostgreSQL 在同一事务内消费 `download:official-windows` 的既有限流策略并原子加一。
+- 成功只返回严格空对象 `{}`，不返回累计值。
 - 失败保持现有稳定错误信封；浏览器端忽略该辅助请求的失败并继续原始下载链接。
 
 ### 5.2 管理员读取
 
-`GET /api/v1/admin/site-metrics`
+`GET /api/v1/admin/metrics/official-windows-download`
 
 - 必须先执行现有 `requireAdmin`，非管理员统一拒绝。
-- 成功返回 `{ "officialDownloadCount": <非负整数> }`。
+- 成功返回 `{ "clickCount": <非负安全整数> }`。
 - 管理员工作台登录后读取一次，并在顶栏显示“官方安装包下载点击”。读取失败显示不可用状态，不影响审核队列。
 
 ### 5.3 浏览器点击
 
-只有 `activePlatform.id === 'windows-x64'` 且状态为 `available` 的真实安装包链接登记点击。处理器不调用 `preventDefault`，不等待计数结果，也不改写发行清单提供的 `href`。
+只有 `activePlatform.id === 'windows-x64'` 且状态为 `available` 的真实安装包链接登记点击。处理器不调用 `preventDefault`，不等待计数结果，也不改写发行清单提供的 `href`；旁路请求使用 `keepalive: true` 与 `credentials: 'omit'`，不重试或持久化排队。
 
 ## 6. 数据与安全
 
-- `site_metrics.metric_key` 只允许 `official_windows_download_clicks`，`metric_value` 为非负 `bigint`。
-- 表对 `PUBLIC`、`anon`、`authenticated` 均不可读写；只有服务端 `service_role` 可执行递增函数。
-- 递增函数校验服务角色，使用 `INSERT ... ON CONFLICT ... DO UPDATE` 原子更新。
-- 公开请求不接收版本、URL、增量或计数值，调用方不能选择其他指标或任意增加数值。
+- 指标表只允许一条 `singleton=true` 的记录，`click_count` 为非负 `bigint`。
+- 表启用并强制 RLS，对 `PUBLIC`、`anon`、`authenticated` 均不可读写；只有服务端 `service_role` 可执行两个指标函数。
+- `record_official_windows_download_click(char(64))` 校验服务角色与 HMAC 指纹，在同一事务中消费既有限流并使用 `INSERT ... ON CONFLICT ... DO UPDATE` 原子更新；`get_official_windows_download_click_count()` 空表返回 0。
+- CloudBase API 通过独立的 `OfficialDownloadMetricStore` 两方法接口访问指标；不把全局指标耦合进社区内容、投稿审核或发行清单。
+- 公开请求不接收版本、URL、增量或计数值，采用全站生命周期单例；调用方不能选择其他指标或任意增加数值。
 - 原始 IP、User-Agent、下载地址和管理员令牌不得进入指标表或普通日志。
 - 计数是受固定窗口保护的“被接受点击数”；恶意或高频请求可被限流，下载本身仍可继续。
 
@@ -81,7 +81,7 @@
 
 ## 8. 迁移、删除与范围
 
-- 新增不可变前向 migration `20260901020000_official_download_counter.sql`，现有迁移总数由 15 增至 16。
+- 新增不可变前向 migration `20260901020000_official_windows_download_click_metric.sql`，现有迁移总数由 15 增至 16。
 - 不修改任何历史 migration。
 - 不新增独立统计服务、定时任务、CloudBase Run、SDK 或环境变量。
 - `apps/website/components/DownloadCard.tsx` 是未被现行页面引用的旧组件，本功能不恢复或扩展该路径，也不借机清理无关文件。
@@ -89,9 +89,9 @@
 
 ## 9. 测试与验收
 
-- RED：共享契约拒绝公开累计值；公开写入仅接受空对象；管理员响应只接受非负整数。
+- RED：共享契约拒绝公开累计值；公开写入仅接受并返回空对象；管理员响应只接受非负安全整数。
 - RED：CloudBase API 公开路由执行限流与登记但不泄露累计值；管理员路由先鉴权再读取；非管理员拒绝。
-- RED：真实 PostgreSQL 并发/顺序点击不丢失计数，匿名角色不能读取表或执行函数。
+- RED：真实 PostgreSQL 顺序与独立并发点击不丢失计数，限流与递增同事务，匿名角色不能读取表或执行函数。
 - RED：正式 Windows 链接点击发送一次辅助请求且不阻止原始 `href`；请求失败仍不阻止下载。
 - RED：管理员登录后显示累计值，读取失败不影响审核队列。
 - 验证：相关定向测试、migration 行为门、`pnpm.cmd verify:website`、`pnpm.cmd verify:cloudbase`、`pnpm.cmd verify:web-chain`、范围门、所有权门和 `git diff --check`。

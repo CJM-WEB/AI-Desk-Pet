@@ -4,7 +4,7 @@
 
 **Goal:** 以最小网站链改动记录正式 Windows 安装包按钮点击，并只在管理员模式显示累计值。
 
-**Architecture:** 复用现有 CloudBase API 和 PostgreSQL Adapter，在新前向 migration 中加入单行指标表与原子递增函数。公开路由只登记且不返回累计值；管理员路由经过现有鉴权后读取累计值；下载链接不等待辅助请求。
+**Architecture:** 复用现有 CloudBase API 和 PostgreSQL Adapter，在新前向 migration 中加入单例指标表与两个受控函数。独立指标 Store 隐藏限流、原子递增和读取；公开路由只登记且返回空对象，管理员路由经过现有鉴权后读取累计值；下载链接不等待辅助请求。
 
 **Tech Stack:** Next.js、React、TypeScript、Zod、CloudBase Functions、PostgreSQL、Vitest、Playwright、pnpm。
 
@@ -14,7 +14,7 @@
 - 公开页面和公开响应不得出现累计值；只有现有管理员鉴权后的接口和工作台可读。
 - 计数失败、超时或限流不得调用 `preventDefault`，不得等待请求，也不得阻止发行清单中的原始下载地址。
 - 复用 `download:official-windows` 的既有 10 次/60 秒设备限流，不存储原始 IP、User-Agent 或第三方标识。
-- 新增且只新增一条 `20260901020000_official_download_counter.sql` 前向 migration；历史 migration 不修改，总数从 15 增至 16。
+- 新增且只新增一条 `20260901020000_official_windows_download_click_metric.sql` 前向 migration；历史 migration 不修改，总数从 15 增至 16。
 - 不新增依赖、环境变量、服务、任务、CloudBase Run、TMS、IMS 或桌宠改动。
 - 文档和结构性注释使用中文；所有实现遵守 RED → GREEN → REFACTOR。
 
@@ -24,17 +24,14 @@
 
 **Files:**
 
-- Create: `cloudbase/migrations/20260901020000_official_download_counter.sql`
+- Create: `cloudbase/migrations/20260901020000_official_windows_download_click_metric.sql`
 - Modify: `packages/shared-types/src/website-http.ts`
 - Modify: `packages/shared-types/tests/website-http.test.ts`
 - Modify: `apps/cloudbase-api/src/ports.ts`
 - Modify: `apps/cloudbase-api/src/adapters/cloudbase-postgres.ts`
-- Modify: `apps/cloudbase-api/src/services/public-content-service.ts`
-- Modify: `apps/cloudbase-api/src/services/admin-service.ts`
 - Modify: `apps/cloudbase-api/src/functions/api.ts`
+- Modify: `apps/cloudbase-api/tests/ports.test.ts`
 - Modify: `apps/cloudbase-api/tests/cloudbase-postgres.test.ts`
-- Modify: `apps/cloudbase-api/tests/public-content-service.test.ts`
-- Modify: `apps/cloudbase-api/tests/admin-service.test.ts`
 - Modify: `apps/cloudbase-api/tests/api.test.ts`
 - Modify: `tools/cloudbase-migration-inventory.test.mjs`
 - Modify: `tools/test-cloudbase-migrations.mjs`
@@ -42,8 +39,8 @@
 
 **Interfaces:**
 
-- Consumes: 现有 `ApiClient` JSON 信封、`download:<scope>` 限流策略、`requireAdmin`、`CloudBasePostgresStore`。
-- Produces: `POST /api/v1/releases/windows/download-click`、`GET /api/v1/admin/site-metrics`、`officialDownloadClickResponseSchema`、`adminSiteMetricsResponseSchema`、内部原子计数读写方法。
+- Consumes: 现有 JSON 信封、`consume_abuse_limit`、HMAC 设备指纹、`requireAdmin`、`CloudBasePostgresStore`。
+- Produces: `POST /api/v1/official-downloads/windows/click`、`GET /api/v1/admin/metrics/official-windows-download`、严格空公开响应、`{ clickCount }` 管理员响应，以及 `OfficialDownloadMetricStore` 两方法接口。
 
 - [ ] **Step 1: 写共享契约、服务、API、Adapter 与 migration 行为的失败测试**
 
@@ -52,12 +49,13 @@
 ```ts
 expect(officialDownloadClickRequestSchema.parse({})).toEqual({});
 expect(officialDownloadClickRequestSchema.safeParse({ count: 1 }).success).toBe(false);
-expect(officialDownloadClickResponseSchema.parse({ recorded: true })).toEqual({ recorded: true });
-expect(adminSiteMetricsResponseSchema.parse({ officialDownloadCount: 12 }))
-  .toEqual({ officialDownloadCount: 12 });
+expect(officialDownloadClickResponseSchema.parse({})).toEqual({});
+expect(officialDownloadClickResponseSchema.safeParse({ clickCount: 1 }).success).toBe(false);
+expect(adminSiteMetricsResponseSchema.parse({ clickCount: 12 }))
+  .toEqual({ clickCount: 12 });
 ```
 
-API 测试必须以真实 `createApi` 断言：公开路由消费 `download:official-windows` 后登记一次、响应不含累计值；管理员路由先调用身份校验再读取；403 时不读取指标。PostgreSQL 行为门必须断言连续两次递增得到 2，表和函数不授予公开角色。
+API 测试必须以真实 `createApi` 断言：公开路由把 HMAC 设备指纹交给独立 Store、响应严格为空；管理员路由先调用身份校验再读取，403 时不读取指标。PostgreSQL 行为门必须断言连续两次递增得到 2、多个独立并发会话不丢失、限流与递增同事务，表和函数不授予公开角色。
 
 - [ ] **Step 2: 运行 RED 并确认失败原因是功能不存在**
 
@@ -65,7 +63,7 @@ Run:
 
 ```powershell
 pnpm.cmd --filter @myself/shared-types test -- website-http.test.ts
-pnpm.cmd --filter @myself/cloudbase-api test -- api.test.ts cloudbase-postgres.test.ts public-content-service.test.ts admin-service.test.ts
+pnpm.cmd --filter @myself/cloudbase-api test -- api.test.ts cloudbase-postgres.test.ts ports.test.ts
 node --test tools/cloudbase-migration-inventory.test.mjs tools/test-cloudbase-migrations.test.mjs
 ```
 
@@ -73,19 +71,18 @@ Expected: 因 schema、端点、Store 方法、RPC 或第 16 条 migration 不�
 
 - [ ] **Step 3: 写最小 GREEN 实现**
 
-共享契约固定为严格空请求、仅 `recorded: true` 的公开响应，以及仅含非负整数 `officialDownloadCount` 的管理员响应。公开 dispatcher 的核心顺序固定为：
+共享契约固定为严格空请求、严格空公开响应，以及仅含非负安全整数 `clickCount` 的管理员响应。独立指标接口固定为：
 
 ```ts
-await dependencies.abuseControl.consume(
-  'download:official-windows',
-  deviceFingerprint(sourceIp, userAgent, dependencies.fingerprintSecret)
-);
-return officialDownloadClickResponseSchema.parse(
-  await dependencies.publicContent.recordOfficialWindowsDownloadClick()
-);
+interface OfficialDownloadMetricStore {
+  recordOfficialWindowsDownloadClick(
+    input: { fingerprintHash: string }
+  ): Promise<void>;
+  getOfficialWindowsDownloadClickCount(): Promise<number>;
+}
 ```
 
-管理员 dispatcher 必须先 `requireAdmin`，再解析 `adminSiteMetricsResponseSchema`。SQL 使用固定 key `official_windows_download_clicks` 和 `INSERT ... ON CONFLICT ... DO UPDATE`，函数只授予 `service_role`。
+公开 dispatcher 只生成 HMAC 设备指纹并交给该 Store；SQL 在一次 RPC 事务内消费 `download:official-windows` 的 10 次/60 秒既有限流并原子加一。管理员 dispatcher 必须先 `requireAdmin` 再调用读取方法。两个函数只授予 `service_role`，表启用并强制 RLS。
 
 - [ ] **Step 4: 运行 GREEN 与相关回归**
 
@@ -104,7 +101,7 @@ Expected: 全部通过；migration 汇总为 16 条，行为数只按新增真�
 
 ```powershell
 git diff --check
-git add packages/shared-types cloudbase/migrations/20260901020000_official_download_counter.sql apps/cloudbase-api tools/cloudbase-migration-inventory.test.mjs tools/test-cloudbase-migrations.mjs tools/test-cloudbase-migrations.test.mjs
+git add packages/shared-types cloudbase/migrations/20260901020000_official_windows_download_click_metric.sql apps/cloudbase-api tools/cloudbase-migration-inventory.test.mjs tools/test-cloudbase-migrations.mjs tools/test-cloudbase-migrations.test.mjs
 git commit -m "feat(web): 记录官方安装包下载点击"
 ```
 
@@ -116,8 +113,9 @@ git commit -m "feat(web): 记录官方安装包下载点击"
 
 **Files:**
 
-- Create: `apps/website/lib/official-download-counter.ts`
-- Create: `apps/website/tests/official-download-counter.test.tsx`
+- Create: `apps/website/lib/official-download-metric-client.ts`
+- Create: `apps/website/tests/official-download-click.test.tsx`
+- Create: `apps/website/tests/official-download-metric-client.test.ts`
 - Modify: `apps/website/components/website-experience/download/DownloadChapter.tsx`
 - Modify: `apps/website/lib/admin-api-client.ts`
 - Modify: `apps/website/components/admin/AdminApp.tsx`
@@ -133,14 +131,14 @@ git commit -m "feat(web): 记录官方安装包下载点击"
 
 - [ ] **Step 1: 写真实按钮、客户端和管理员界面的失败测试**
 
-测试必须先覆盖：已发布 Windows 链接点击只发出一次 `POST /releases/windows/download-click` 且请求体为 `{}`；链接 `href` 未改变、事件未被阻止；网络拒绝后链接仍可继续。管理员客户端必须请求 `/admin/site-metrics` 并携带现有管理员头；工作台显示服务端累计值，读取失败只显示不可用且审核队列仍存在。
+测试必须先覆盖：已发布 Windows 链接点击只发出一次 `POST /official-downloads/windows/click` 且请求体为 `{}`、`keepalive: true`、`credentials: 'omit'`；链接 `href` 未改变、事件未被阻止；同步抛错、网络拒绝和 429/500 后链接仍可继续。管理员客户端必须请求 `/admin/metrics/official-windows-download` 并携带现有管理员头；工作台显示服务端累计值及其近似含义，读取失败只显示不可用且审核队列仍存在。
 
 - [ ] **Step 2: 运行 RED**
 
 Run:
 
 ```powershell
-pnpm.cmd --filter @myself/website test -- official-download-counter.test.tsx admin-api-client.test.ts admin-app.test.tsx
+pnpm.cmd --filter @myself/website test -- official-download-click.test.tsx official-download-metric-client.test.ts admin-api-client.test.ts admin-app.test.tsx
 ```
 
 Expected: 因点击上报模块、管理员方法和界面指标缺失而失败。
@@ -152,12 +150,12 @@ Expected: 因点击上报模块、管理员方法和界面指标缺失而失败�
 ```ts
 onClick={() => {
   if (activePlatform.id === 'windows-x64') {
-    void recordOfficialDownloadClick().catch(() => undefined);
+    recordOfficialDownloadClick();
   }
 }}
 ```
 
-管理员工作台登录成功后读取一次指标；用单独状态保存 `officialDownloadCount`，退出时清除。不得把指标并入公开下载内容或公开 DTO。
+`recordOfficialDownloadClick()` 自身吞掉同步和异步辅助错误，内部不重试、不持久化。管理员工作台登录成功后读取一次指标；用单独状态保存 `clickCount`，退出、403 和卸载时清除或中止迟到请求。不得把指标并入公开下载内容或公开 DTO。
 
 - [ ] **Step 4: 运行 GREEN、网站构建与回归**
 
