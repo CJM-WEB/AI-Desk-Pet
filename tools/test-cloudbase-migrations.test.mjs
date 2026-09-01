@@ -87,16 +87,20 @@ test('官方安装包锁观察每轮刷新 PostgreSQL 统计快照', async () =>
   );
 });
 
-test('官方安装包并发门等待两个写会话成功后才校验最终计数', async () => {
-  for (const pendingName of ['first', 'second']) {
+test('官方安装包并发门等待所有并发依赖后才校验最终计数', async () => {
+  for (const pendingName of ['first', 'second', 'observation']) {
     const firstCompletion = deferred();
     const secondCompletion = deferred();
-    const completions = { first: firstCompletion, second: secondCompletion };
+    const observation = deferred();
+    const dependencies = {
+      first: firstCompletion,
+      second: secondCompletion,
+      observation
+    };
     const sessions = [
       controlledSession(firstCompletion.promise),
       controlledSession(secondCompletion.promise)
     ];
-    const observation = deferred();
     let sessionIndex = 0;
     let finalCountChecked = false;
     const gate = runConcurrentOfficialDownloadMetricGate('psql', [], {
@@ -111,12 +115,12 @@ test('官方安装包并发门等待两个写会话成功后才校验最终计�
       startSession: () => sessions[sessionIndex++]
     });
 
-    observation.resolve();
-    const completedName = pendingName === 'first' ? 'second' : 'first';
-    completions[completedName].resolve();
+    for (const [name, dependency] of Object.entries(dependencies)) {
+      if (name !== pendingName) dependency.resolve();
+    }
     await nextTurn();
     assert.equal(finalCountChecked, false, `${pendingName} 尚未完成`);
-    completions[pendingName].resolve();
+    dependencies[pendingName].resolve();
     await gate;
     assert.equal(finalCountChecked, true);
   }
