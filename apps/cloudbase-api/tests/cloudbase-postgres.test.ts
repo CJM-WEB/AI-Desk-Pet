@@ -422,7 +422,7 @@ class MemoryRdb {
         );
         if (asset) asset.actual_size = completed.actual_bytes as number;
       }
-      row.status = 'system_reviewing';
+      row.status = 'manual_review_pending';
       row.status_version += 1;
       row.purge_after = null;
       row.updated_at = '2026-07-31T00:00:00.000Z';
@@ -872,7 +872,7 @@ describe('CloudBase PostgreSQL 安全与公开互动存储', () => {
         .mockResolvedValueOnce({
           data: {
             id: 'feedback-1',
-            status: 'system_reviewing',
+            status: 'manual_review_pending',
             status_version: 0,
             kind: 'feedback',
             title: '匿名用户',
@@ -905,7 +905,7 @@ describe('CloudBase PostgreSQL 安全与公开互动存储', () => {
       statusTokenHash: 'c'.repeat(64)
     })).resolves.toMatchObject({
       id: 'feedback-1',
-      status: 'system_reviewing'
+      status: 'manual_review_pending'
     });
     await expect(store.setPublicLike({
       submissionId: 'community-1',
@@ -1539,7 +1539,7 @@ describe('CloudBase PostgreSQL 仓储', () => {
     await expect(store.findByStatusTokenHash('c'.repeat(64))).resolves.toBeNull();
   });
 
-  it('完成上传只把 uploading 投稿推进到系统审核', async () => {
+  it('完成上传把 uploading 投稿直接推进到人工队列', async () => {
     const { database, store } = createStore();
     await store.createSubmission(newSubmission('submission-1'));
     await expect(store.findById('submission-1')).resolves.toMatchObject({
@@ -1552,11 +1552,11 @@ describe('CloudBase PostgreSQL 仓储', () => {
     }))
       .resolves.toMatchObject({
         id: 'submission-1',
-        status: 'system_reviewing',
+        status: 'manual_review_pending',
         purgeAfter: null
       });
     expect(database.submissions[0]).toMatchObject({
-      status: 'system_reviewing',
+      status: 'manual_review_pending',
       purge_after: null
     });
   });

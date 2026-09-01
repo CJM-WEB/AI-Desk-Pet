@@ -88,7 +88,7 @@ export const prepareSubmissionResponseSchema = submissionReceiptBaseSchema.exten
 
 export const finalizeSubmissionRequestSchema = emptyRequestSchema;
 export const finalizeSubmissionResponseSchema = z.object({
-  status: z.literal('system_reviewing')
+  status: z.literal('manual_review_pending')
 }).strict();
 
 export const feedbackSubmissionRequestSchema = z.object({
@@ -98,7 +98,7 @@ export const feedbackSubmissionRequestSchema = z.object({
 }).strict();
 
 export const feedbackSubmissionResponseSchema = submissionReceiptBaseSchema.extend({
-  status: z.literal('system_reviewing')
+  status: z.literal('manual_review_pending')
 }).strict();
 
 export const submissionStatusRequestSchema = z.object({

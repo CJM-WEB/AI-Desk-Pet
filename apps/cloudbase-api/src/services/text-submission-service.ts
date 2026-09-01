@@ -33,18 +33,21 @@ export class TextSubmissionService {
 
     const submissionId = this.createId();
     const statusToken = createStatusToken();
-    await this.store.createTextSubmission({
+    const created = await this.store.createTextSubmission({
       id: submissionId,
       kind: normalized.kind,
       title: normalized.authorName || '匿名用户',
       body: normalized.content,
       statusTokenHash: hashStatusToken(statusToken)
     });
+    if (created.status !== 'manual_review_pending') {
+      throw new ApiError('SUBMISSION_STATE_CONFLICT', 409);
+    }
     return {
       submissionId,
       statusToken,
       statusPath: '/submission-status/',
-      status: 'system_reviewing'
+      status: created.status
     };
   }
 }

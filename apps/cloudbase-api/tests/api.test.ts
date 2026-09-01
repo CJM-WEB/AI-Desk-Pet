@@ -56,7 +56,7 @@ function createDependencies() {
           expiresAt: '2026-07-31T01:00:00.000Z'
         }
       })),
-      finalize: vi.fn(async () => ({ status: 'system_reviewing' })),
+      finalize: vi.fn(async () => ({ status: 'manual_review_pending' })),
       getStatus: vi.fn(async () => ({
         submissionId: 'submission-1',
         status: 'system_reviewing',
@@ -70,7 +70,7 @@ function createDependencies() {
         submissionId: 'feedback-1',
         statusToken: 'b'.repeat(43),
         statusPath: '/submission-status/',
-        status: 'system_reviewing'
+        status: 'manual_review_pending'
       }))
     },
     publicContent: {

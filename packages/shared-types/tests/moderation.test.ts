@@ -149,7 +149,7 @@ describe('投稿审核契约', () => {
     })).toThrow();
   });
 
-  it('投稿回执只接受上传中或系统审核中状态', () => {
+  it('投稿回执只接受上传中或待人工审核状态', () => {
     const receipt = {
       submissionId: 'submission-1',
       statusToken: 'a'.repeat(43),
@@ -162,11 +162,11 @@ describe('投稿审核契约', () => {
     }).status).toBe('uploading');
     expect(submissionReceiptSchema.parse({
       ...receipt,
-      status: 'system_reviewing'
-    }).status).toBe('system_reviewing');
+      status: 'manual_review_pending'
+    }).status).toBe('manual_review_pending');
     expect(() => submissionReceiptSchema.parse({
       ...receipt,
-      status: 'manual_review_pending'
+      status: 'system_reviewing'
     })).toThrow();
     expect(() => submissionReceiptSchema.parse({
       ...receipt,

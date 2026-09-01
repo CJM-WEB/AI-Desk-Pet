@@ -201,8 +201,8 @@ export function createMemoryWebsiteApi({ runId }) {
       if (request.method === 'POST' && finalizeId) {
         await readJson(request);
         const record = requireSubmission(finalizeId);
-        if (record.status === 'system_reviewing') {
-          return sendData(response, 200, { status: 'system_reviewing' });
+        if (record.status === 'manual_review_pending') {
+          return sendData(response, 200, { status: record.status });
         }
         if (record.status !== 'uploading') {
           return sendError(response, 404, 'NOT_FOUND');
@@ -210,16 +210,16 @@ export function createMemoryWebsiteApi({ runId }) {
         if (!uploads.has(`${record.id}:cover`) || !uploads.has(`${record.id}:package`)) {
           return sendError(response, 409, 'UPLOAD_INCOMPLETE');
         }
-        record.status = 'system_reviewing';
+        record.status = 'manual_review_pending';
         record.statusVersion += 1;
         record.updatedAt = now();
         record.riskSummary = {
-          summary: '等待系统审核',
+          summary: '等待人工审核',
           labels: []
         };
         record.autoRejectionReason = null;
         record.moderationResults = [];
-        return sendData(response, 200, { status: 'system_reviewing' });
+        return sendData(response, 200, { status: record.status });
       }
 
       if (request.method === 'POST' && pathname === '/api/v1/feedback') {
@@ -235,12 +235,12 @@ export function createMemoryWebsiteApi({ runId }) {
           kind: body.kind,
           title: String(body.authorName ?? '').trim() || '匿名用户',
           body: body.content.trim(),
-          status: 'system_reviewing',
+          status: 'manual_review_pending',
           statusVersion: 0,
           statusToken,
           publicReason: null,
           autoRejectionReason: null,
-          riskSummary: { summary: '等待系统审核', labels: [] },
+          riskSummary: { summary: '等待人工审核', labels: [] },
           assets: [],
           moderationResults: [],
           auditLogs: [],
@@ -263,7 +263,7 @@ export function createMemoryWebsiteApi({ runId }) {
           submissionId: id,
           statusToken,
           statusPath: '/submission-status/',
-          status: 'system_reviewing'
+          status: record.status
         });
       }
 

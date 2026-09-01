@@ -103,16 +103,16 @@ describe('投稿 endpoint 契约', () => {
   it('finalize、feedback 与 submission-status 使用精确状态和 strict 请求', () => {
     expect(finalizeSubmissionRequestSchema.parse({})).toEqual({});
     expect(finalizeSubmissionRequestSchema.safeParse({ force: true }).success).toBe(false);
-    expect(finalizeSubmissionResponseSchema.parse({ status: 'system_reviewing' }))
-      .toEqual({ status: 'system_reviewing' });
+    expect(finalizeSubmissionResponseSchema.parse({ status: 'manual_review_pending' }))
+      .toEqual({ status: 'manual_review_pending' });
 
     const feedback = { kind: 'feedback', authorName: '匿名用户', content: '建议' };
     expect(feedbackSubmissionRequestSchema.parse(feedback)).toEqual(feedback);
     expect(feedbackSubmissionResponseSchema.parse({
-      submissionId: 'feedback-1', statusToken, statusPath: '/submission-status/', status: 'system_reviewing'
-    }).status).toBe('system_reviewing');
-    expect(feedbackSubmissionResponseSchema.safeParse({
       submissionId: 'feedback-1', statusToken, statusPath: '/submission-status/', status: 'manual_review_pending'
+    }).status).toBe('manual_review_pending');
+    expect(feedbackSubmissionResponseSchema.safeParse({
+      submissionId: 'feedback-1', statusToken, statusPath: '/submission-status/', status: 'system_reviewing'
     }).success).toBe(false);
 
     expect(submissionStatusRequestSchema.parse({ statusToken })).toEqual({ statusToken });

@@ -56,7 +56,7 @@ class MemorySubmissionStore {
   async completeUpload(input: { submissionId: string }): Promise<any> {
     const row = this.rows.get(input.submissionId);
     if (!row) return null;
-    if (row.status === 'uploading') row.status = 'system_reviewing';
+    if (row.status === 'uploading') row.status = 'manual_review_pending';
     return structuredClone(row);
   }
 
@@ -283,7 +283,7 @@ describe('投稿服务', () => {
     expect(store.rows.get('submission-1')).toMatchObject({ status: 'uploading' });
   });
 
-  it('finalize 核对两个对象后只推进到系统审核且重复调用幂等', async () => {
+  it('finalize 核对两个对象后直接进入人工队列且重复调用幂等', async () => {
     const { service, store, storage } = createFixture({
       sharedPackageSubmissionsEnabled: true
     });
@@ -300,11 +300,11 @@ describe('投稿服务', () => {
     });
 
     await expect(service.finalize({ submissionId: 'submission-1' }))
-      .resolves.toEqual({ status: 'system_reviewing' });
+      .resolves.toEqual({ status: 'manual_review_pending' });
     await expect(service.finalize({ submissionId: 'submission-1' }))
-      .resolves.toEqual({ status: 'system_reviewing' });
+      .resolves.toEqual({ status: 'manual_review_pending' });
     expect(store.rows.get('submission-1')).toMatchObject({
-      status: 'system_reviewing'
+      status: 'manual_review_pending'
     });
   });
 

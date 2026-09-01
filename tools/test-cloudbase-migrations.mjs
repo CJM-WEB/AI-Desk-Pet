@@ -159,10 +159,26 @@ export async function runCloudBaseMigrationBehaviorGate({
           cleanupDamagedPublishedShapeFixtureSql
         );
       }
+      if (migration.fileName
+        === '20260901000000_zero_cost_manual_review.sql') {
+        await run(
+          executable('psql'),
+          [...connection, '-f', '-'],
+          legacySystemReviewingFixtureSql
+        );
+      }
       await run(executable('psql'), [
         ...connection,
         '-f', join(migrationDirectory, migration.fileName)
       ]);
+      if (migration.fileName
+        === '20260901000000_zero_cost_manual_review.sql') {
+        await run(
+          executable('psql'),
+          [...connection, '-f', '-'],
+          manualReviewMigrationAssertionSql
+        );
+      }
     }
     await run(executable('psql'), [...connection, '-f', '-'], behaviorSql);
     await run(executable('psql'), [...connection, '-f', '-'], keysetBehaviorSql);
@@ -174,7 +190,7 @@ export async function runCloudBaseMigrationBehaviorGate({
       postgresVersion: postgresVersion.version,
       postgresMajorVersion: postgresVersion.major,
       migrationsApplied: migrations.length,
-      behaviorsVerified: 103
+      behaviorsVerified: 107
     };
   } finally {
     if (started) {
@@ -654,10 +670,74 @@ const cleanupDamagedPublishedShapeFixtureSql = String.raw`
 DELETE FROM submissions WHERE id = 'gate-damaged-published-shape';
 `;
 
+/** 在切换 migration 前构造带 worker 运行态和历史审核事实的遗留投稿。 */
+const legacySystemReviewingFixtureSql = String.raw`
+INSERT INTO submissions (
+  id, kind, title, body, status, status_version, status_token_hash,
+  moderation_lease_until, moderation_attempts, moderation_next_retry_at,
+  moderation_last_error, moderation_alerted_at, risk_summary,
+  auto_rejection_reason
+) VALUES (
+  'gate-legacy-system-reviewing', 'shared_package', '遗留系统审核',
+  '迁移时保留历史事实', 'system_reviewing', 4,
+  md5('gate-legacy-system-reviewing') || md5('gate-legacy-system-reviewing'),
+  now() + interval '10 minutes', 3,
+  now() + interval '20 minutes', 'worker-timeout', now(),
+  '{"legacyRisk":"kept"}'::jsonb, '原自动驳回原因'
+);
+INSERT INTO moderation_results (
+  submission_id, kind, provider, rule_version, suggestion, label, score,
+  evidence, requested_at, completed_at, error_message
+) VALUES (
+  'gate-legacy-system-reviewing', 'package_scan', 'legacy-scanner',
+  'legacy-rule', 'Block', '历史危险结论', 1,
+  '{"scanCode":"LEGACY_BLOCK"}'::jsonb,
+  now() - interval '2 hours', now() - interval '1 hour', NULL
+);
+`;
+
+/** 切换后只改变队列与 worker 运行态，不改写历史扫描和风险事实。 */
+const manualReviewMigrationAssertionSql = String.raw`
+DO $manual_review_migration$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1
+    FROM submissions
+    WHERE id = 'gate-legacy-system-reviewing'
+      AND status = 'manual_review_pending'
+      AND status_version = 5
+      AND moderation_lease_until IS NULL
+      AND moderation_attempts = 0
+      AND moderation_next_retry_at IS NULL
+      AND moderation_last_error IS NULL
+      AND moderation_alerted_at IS NULL
+  ) THEN
+    RAISE EXCEPTION '行为门失败：遗留状态、版本或 worker 运行态未正确迁移';
+  END IF;
+  IF (SELECT risk_summary FROM submissions
+      WHERE id = 'gate-legacy-system-reviewing')
+      IS DISTINCT FROM '{"legacyRisk":"kept"}'::jsonb
+    OR (SELECT auto_rejection_reason FROM submissions
+        WHERE id = 'gate-legacy-system-reviewing')
+      IS DISTINCT FROM '原自动驳回原因'
+    OR (SELECT count(*) FROM moderation_results
+        WHERE submission_id = 'gate-legacy-system-reviewing') <> 1
+    OR (SELECT evidence FROM moderation_results
+        WHERE submission_id = 'gate-legacy-system-reviewing')
+      IS DISTINCT FROM '{"scanCode":"LEGACY_BLOCK"}'::jsonb THEN
+    RAISE EXCEPTION '行为门失败：迁移改写了历史审核或风险事实';
+  END IF;
+END
+$manual_review_migration$;
+`;
+
 const behaviorSql = String.raw`
 SELECT set_config('request.jwt.claims', '{"role":"service_role"}', false);
 
-CREATE OR REPLACE FUNCTION gate_seed(p_id text)
+CREATE OR REPLACE FUNCTION gate_seed(
+  p_id text,
+  p_keep_system_reviewing boolean DEFAULT true
+)
 RETURNS void LANGUAGE plpgsql AS $seed$
 BEGIN
   PERFORM create_submission(
@@ -702,6 +782,9 @@ BEGIN
       )
     )
   );
+  IF p_keep_system_reviewing THEN
+    UPDATE submissions SET status = 'system_reviewing' WHERE id = p_id;
+  END IF;
 END
 $seed$;
 
@@ -936,7 +1019,27 @@ BEGIN
     NULL;
   END;
 
-  -- 2. 上传完成只进入系统审核。
+  -- 2. 新共享包和文本投稿均直接进入人工队列。
+  PERFORM gate_seed('gate-direct-manual', false);
+  SELECT status, status_version INTO v_status, v_version
+  FROM submissions WHERE id = 'gate-direct-manual';
+  IF v_status <> 'manual_review_pending' OR v_version <> 1 THEN
+    RAISE EXCEPTION '行为门失败：共享包完成上传未直入人工队列';
+  END IF;
+  PERFORM create_text_submission(jsonb_build_object(
+    'id', 'gate-direct-feedback',
+    'kind', 'feedback',
+    'title', '匿名用户',
+    'body', '文本投稿直入人工队列',
+    'status_token_hash',
+      md5('gate-direct-feedback') || md5('gate-direct-feedback')
+  ));
+  IF (SELECT status FROM submissions WHERE id = 'gate-direct-feedback')
+    <> 'manual_review_pending' THEN
+    RAISE EXCEPTION '行为门失败：文本投稿未直入人工队列';
+  END IF;
+
+  -- 历史 worker 行为仍使用兼容状态夹具验证。
   PERFORM gate_seed('gate-valid');
   SELECT status, status_version INTO v_status, v_version
   FROM submissions WHERE id = 'gate-valid';
@@ -947,13 +1050,11 @@ BEGIN
     'id', 'gate-feedback',
     'kind', 'feedback',
     'title', '匿名用户',
-    'body', '文本投稿也先系统审核',
+    'body', '历史 worker 兼容夹具',
     'status_token_hash', repeat('d', 64)
   ));
-  IF (SELECT status FROM submissions WHERE id = 'gate-feedback')
-    <> 'system_reviewing' THEN
-    RAISE EXCEPTION '行为门失败：文本投稿直接进入人工队列';
-  END IF;
+  UPDATE submissions SET status = 'system_reviewing'
+  WHERE id = 'gate-feedback';
 
   -- 2. 弱证据被拒绝，函数内插入在异常子事务中完整回滚。
   PERFORM gate_seed('gate-weak');
