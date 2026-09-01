@@ -103,12 +103,6 @@ class MemoryStorage {
   } | null> {
     return this.infoByPath.get(path) ?? null;
   }
-
-  async createSignedUrl(): Promise<never> {
-    throw new Error('本测试不会调用下载签名');
-  }
-
-  async delete(): Promise<void> {}
 }
 
 function createFixture(options: SubmissionServiceOptions): {

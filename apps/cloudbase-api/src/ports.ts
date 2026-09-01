@@ -395,10 +395,6 @@ export interface SubmissionStore {
   findById(id: string): Promise<SubmissionWithAssets | null>;
   completeUpload(input: CompleteUploadInput): Promise<SubmissionRow>;
   findByStatusTokenHash(hash: string): Promise<SubmissionStatusView | null>;
-  claimModerationJobs(limit: number, leaseUntil: string): Promise<SubmissionRow[]>;
-  recordModerationResult(result: ModerationRecord): Promise<void>;
-  applyAdminAction(input: AdminActionInput): Promise<AdminActionResult>;
-  listPurgeCandidates(now: string, limit: number): Promise<SubmissionRow[]>;
 }
 
 /** 自动审核工作器所需的原子数据库操作。 */
@@ -415,9 +411,13 @@ export interface SecurityStore {
   consumeAbuseLimit(input: AbuseLimitInput): Promise<AbuseLimitResult>;
 }
 
-/** 文本投稿和公开互动的持久化边界。 */
-export interface PublicInteractionStore {
+/** 纯文本投稿创建的最小持久化边界。 */
+export interface TextSubmissionStore {
   createTextSubmission(input: NewTextSubmission): Promise<SubmissionRow>;
+}
+
+/** 公开读取与幂等互动的持久化边界。 */
+export interface PublicContentStore {
   listPublicCommunity(input: PublicListQuery): Promise<PublishedCommunityPage>;
   findPublicCommunity(id: string): Promise<PublishedCommunityRecord | null>;
   listPublicFeedback(

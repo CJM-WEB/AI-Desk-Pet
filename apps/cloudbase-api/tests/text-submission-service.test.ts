@@ -7,13 +7,13 @@ function createFixture() {
   const store = {
     createTextSubmission: vi.fn(async () => ({
       id: 'feedback-1',
-      status: 'manual_review_pending'
+      status: 'manual_review_pending' as const
     }))
   };
   return {
     store,
     service: new TextSubmissionService(
-      store as never,
+      store,
       () => 'feedback-1'
     )
   };

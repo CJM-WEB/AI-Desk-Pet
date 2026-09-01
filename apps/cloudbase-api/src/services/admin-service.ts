@@ -24,7 +24,7 @@ const technicalEvidenceTtlMilliseconds = 24 * 60 * 60 * 1000;
 export class AdminService {
   constructor(
     private readonly store: AdminStore,
-    private readonly storage: ObjectStorage,
+    private readonly storage: Pick<ObjectStorage, 'createSignedUrl'>,
     private readonly clock: Clock
   ) {}
 
@@ -83,7 +83,7 @@ export class AdminService {
 
 /** 预览属于辅助信息；签名失败不得阻断审核正文、证据和动作。 */
 async function safeCoverPreview(
-  storage: ObjectStorage,
+  storage: Pick<ObjectStorage, 'createSignedUrl'>,
   storageKey: string
 ): Promise<Awaited<ReturnType<ObjectStorage['createSignedUrl']>> | null> {
   try {

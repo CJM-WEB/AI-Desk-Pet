@@ -67,7 +67,10 @@ type CreateId = () => string;
 export class SubmissionService {
   constructor(
     private readonly store: SubmissionStore,
-    private readonly storage: ObjectStorage,
+    private readonly storage: Pick<
+      ObjectStorage,
+      'createSignedUploadUrl' | 'info'
+    >,
     private readonly options: SubmissionServiceOptions,
     private readonly createId: CreateId = randomUUID
   ) {}

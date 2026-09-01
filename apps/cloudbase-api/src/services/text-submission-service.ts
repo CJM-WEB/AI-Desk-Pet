@@ -5,7 +5,7 @@ import type { SubmissionReceipt } from '@myself/shared-types';
 import { createStatusToken, hashStatusToken } from '../crypto/status-token.js';
 import { ApiError } from '../errors.js';
 import type {
-  PublicInteractionStore,
+  TextSubmissionStore,
   TextSubmissionKind
 } from '../ports.js';
 import type { RequestContext } from './submission-service.js';
@@ -21,10 +21,7 @@ type CreateId = () => string;
 /** 验证并创建无需资产上传的反馈或建议。 */
 export class TextSubmissionService {
   constructor(
-    private readonly store: Pick<
-      PublicInteractionStore,
-      'createTextSubmission'
-    >,
+    private readonly store: TextSubmissionStore,
     private readonly createId: CreateId = randomUUID
   ) {}
 

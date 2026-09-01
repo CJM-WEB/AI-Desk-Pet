@@ -30,7 +30,7 @@ import type {
   NewTextSubmission,
   PublicDownloadInput,
   PublicDownloadResult,
-  PublicInteractionStore,
+  PublicContentStore,
   PublicLikeInput,
   PublicLikeResult,
   PublicListQuery,
@@ -44,6 +44,7 @@ import type {
   SubmissionRow,
   SubmissionStatusView,
   SubmissionStore,
+  TextSubmissionStore,
   ModerationJobStore,
   CleanupStore,
   MarkPurgedInput,
@@ -95,16 +96,9 @@ export const DEFAULT_RPC_CLIENT_OPTIONS: RpcClientOptions = {
 
 /** CloudBase PostgreSQL 客户端在本仓储中使用的最小链式查询表面。 */
 export interface CloudBaseRdbQuery extends PromiseLike<RdbResult> {
-  insert(values: unknown): CloudBaseRdbQuery;
-  update(values: unknown): CloudBaseRdbQuery;
-  upsert(values: unknown, options?: Record<string, unknown>): CloudBaseRdbQuery;
   select(columns?: string): CloudBaseRdbQuery;
   eq(column: string, value: unknown): CloudBaseRdbQuery;
-  lte(column: string, value: unknown): CloudBaseRdbQuery;
-  not(column: string, operator: string, value: unknown): CloudBaseRdbQuery;
   order(column: string, options: { ascending: boolean }): CloudBaseRdbQuery;
-  limit(maximum: number): CloudBaseRdbQuery;
-  single(): CloudBaseRdbQuery;
   maybeSingle(): CloudBaseRdbQuery;
 }
 
@@ -198,7 +192,8 @@ export class CloudBasePostgresStore implements
   SubmissionStore,
   ModerationJobStore,
   SecurityStore,
-  PublicInteractionStore,
+  TextSubmissionStore,
+  PublicContentStore,
   AdminStore,
   CleanupStore {
   constructor(
@@ -249,29 +244,7 @@ export class CloudBasePostgresStore implements
       p_operation_id: input.operationId,
       p_endpoint_kind: input.endpointKind
     });
-    throwPublicNotFound(result);
-    if (result.error?.code === 'P1001') {
-      throw new ApiError('IDEMPOTENCY_CONFLICT', 409, result.error.message);
-    }
-    const row = requireRecord(requireData(result, '设置点赞失败'), '点赞结果');
-    if (row.rate_limited === true) {
-      const retryAfterSeconds = requireNonnegativeInteger(
-        row.retry_after_seconds,
-        'retry_after_seconds'
-      );
-      if (retryAfterSeconds < 1) {
-        throw new ApiError('DATABASE_ERROR', 500, 'retry_after_seconds字段必须为正数');
-      }
-      throw new ApiError(
-        'RATE_LIMITED',
-        429,
-        '请求超过固定窗口限制',
-        retryAfterSeconds
-      );
-    }
-    if (row.not_found === true) {
-      throw new ApiError('NOT_FOUND', 404, '公开投稿不存在');
-    }
+    const row = requirePublicInteractionRow(result, '设置点赞失败', '点赞结果');
     return {
       liked: requireBoolean(row.liked, 'liked'),
       likeCount: requireNonnegativeInteger(row.like_count, 'like_count')
@@ -287,29 +260,7 @@ export class CloudBasePostgresStore implements
       p_fingerprint_hash: input.fingerprintHash,
       p_operation_id: input.operationId
     });
-    throwPublicNotFound(result);
-    if (result.error?.code === 'P1001') {
-      throw new ApiError('IDEMPOTENCY_CONFLICT', 409, result.error.message);
-    }
-    const row = requireRecord(requireData(result, '记录下载失败'), '下载结果');
-    if (row.rate_limited === true) {
-      const retryAfterSeconds = requireNonnegativeInteger(
-        row.retry_after_seconds,
-        'retry_after_seconds'
-      );
-      if (retryAfterSeconds < 1) {
-        throw new ApiError('DATABASE_ERROR', 500, 'retry_after_seconds字段必须为正数');
-      }
-      throw new ApiError(
-        'RATE_LIMITED',
-        429,
-        '请求超过固定窗口限制',
-        retryAfterSeconds
-      );
-    }
-    if (row.not_found === true) {
-      throw new ApiError('NOT_FOUND', 404, '公开投稿不存在');
-    }
+    const row = requirePublicInteractionRow(result, '记录下载失败', '下载结果');
     return {
       downloadCount: requireNonnegativeInteger(
         row.download_count,
@@ -463,25 +414,6 @@ export class CloudBasePostgresStore implements
       .map(mapSubmission);
   }
 
-  async recordModerationResult(result: ModerationRecord): Promise<void> {
-    await requireSuccess(
-      this.database.from('moderation_results').insert({
-        submission_id: result.submissionId,
-        kind: result.kind,
-        provider: result.provider,
-        rule_version: result.ruleVersion,
-        suggestion: result.suggestion,
-        label: result.label,
-        score: result.score,
-        evidence: result.evidence,
-        requested_at: result.requestedAt,
-        completed_at: result.completedAt,
-        error_message: result.errorMessage
-      }),
-      '保存审核结果失败'
-    );
-  }
-
   async applyModerationDecision(
     input: ApplyModerationDecisionInput
   ): Promise<boolean> {
@@ -612,22 +544,6 @@ export class CloudBasePostgresStore implements
         '管理员审计记录'
       ).map(mapAdminAuditLog)
     };
-  }
-
-  async listPurgeCandidates(now: string, limit: number): Promise<SubmissionRow[]> {
-    requireLimit(limit);
-    const result = await this.database
-      .from('submissions')
-      .select('*')
-      .lte('purge_after', now)
-      .not('status', 'eq', 'purged')
-      .order('purge_after', { ascending: true })
-      .order('id', { ascending: true })
-      .limit(limit);
-    return requireRows(
-      requireData(result, '查询清理候选失败'),
-      '清理候选'
-    ).map(mapSubmission);
   }
 
   async claimCleanupJobs(
@@ -1001,13 +917,6 @@ function mapAsset(value: unknown): SubmissionAsset {
   };
 }
 
-async function requireSuccess(
-  operation: PromiseLike<RdbResult>,
-  context: string
-): Promise<void> {
-  requireData(await operation, context);
-}
-
 function requireData(result: RdbResult, context: string): unknown {
   if (result.error) {
     console.error('[cloudbase-rdb]', {
@@ -1154,6 +1063,38 @@ function throwPublicNotFound(result: RdbResult): void {
   if (result.error?.code === 'P0002') {
     throw new ApiError('NOT_FOUND', 404);
   }
+}
+
+/** 点赞与下载共享互动 RPC 错误协议，动作结果字段仍分别解析。 */
+function requirePublicInteractionRow(
+  result: RdbResult,
+  errorContext: string,
+  resultContext: string
+): Record<string, unknown> {
+  throwPublicNotFound(result);
+  if (result.error?.code === 'P1001') {
+    throw new ApiError('IDEMPOTENCY_CONFLICT', 409, result.error.message);
+  }
+  const row = requireRecord(requireData(result, errorContext), resultContext);
+  if (row.rate_limited === true) {
+    const retryAfterSeconds = requireNonnegativeInteger(
+      row.retry_after_seconds,
+      'retry_after_seconds'
+    );
+    if (retryAfterSeconds < 1) {
+      throw new ApiError('DATABASE_ERROR', 500, 'retry_after_seconds字段必须为正数');
+    }
+    throw new ApiError(
+      'RATE_LIMITED',
+      429,
+      '请求超过固定窗口限制',
+      retryAfterSeconds
+    );
+  }
+  if (row.not_found === true) {
+    throw new ApiError('NOT_FOUND', 404, '公开投稿不存在');
+  }
+  return row;
 }
 
 function asRpcError(value: unknown): {

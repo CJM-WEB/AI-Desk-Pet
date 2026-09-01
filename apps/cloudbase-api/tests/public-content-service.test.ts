@@ -33,7 +33,7 @@ function publishedCommunity(id: string) {
 
 function createFixture(status: string | null): {
   store: {
-    findById: ReturnType<typeof vi.fn>;
+    findPublicCommunity: ReturnType<typeof vi.fn>;
     recordPublicDownload: ReturnType<typeof vi.fn>;
   };
   storage: {
@@ -42,53 +42,23 @@ function createFixture(status: string | null): {
   service: PublicContentService;
 } {
   const store = {
-    findById: vi.fn(async (id: string) => status === null ? null : ({
-      id,
-      status,
-      kind: 'shared_package',
-      title: '已发布共享包',
-      body: '完整共享包说明',
-      publicationBasis: status === 'published' ? 'admin_override' : null,
-      assets: [{
-        role: 'cover',
-        storageKey: `submissions/${id}/cover.webp`,
-        fileName: 'cover.webp',
-        declaredBytes: 512,
-        actualBytes: 512,
-        contentType: 'image/webp'
-      }, {
-        role: 'package',
-        storageKey: `submissions/${id}/package.zip`,
-        fileName: 'pet.zip',
-        declaredBytes: 1024,
-        actualBytes: 1024,
-        contentType: 'application/zip'
-      }, {
-        role: 'derived',
-        storageKey: `submissions/${id}/derived/private-preview.webp`,
-        fileName: 'private-preview.webp',
-        declaredBytes: 128,
-        actualBytes: 128,
-        contentType: 'image/webp'
-      }, {
-        role: 'derived',
-        storageKey: `submissions/${id}/derived/private-metadata.json`,
-        fileName: 'private-metadata.json',
-        declaredBytes: 64,
-        actualBytes: 64,
-        contentType: 'application/json'
-      }]
-    })),
+    findPublicCommunity: vi.fn(async (id: string) => (
+      status !== 'published'
+        ? null
+        : {
+            ...publishedCommunity(id),
+            title: '已发布共享包',
+            body: '完整共享包说明',
+            publicationBasis: 'admin_override' as const
+          }
+    )),
     recordPublicDownload: vi.fn(async () => ({ downloadCount: 1 }))
   };
   const storage = {
-    createSignedUploadUrl: vi.fn(),
-    info: vi.fn(),
     createSignedUrl: vi.fn(async () => ({
       url: 'https://storage.example/download',
       expiresAt: '2026-07-31T00:05:00.000Z'
-    })),
-    delete: vi.fn()
+    }))
   };
   return {
     store,
@@ -142,10 +112,14 @@ describe('公开内容服务', () => {
 
   it('已发布记录缺少固定包资产时仍拒绝下载', async () => {
     const store = {
-      findById: vi.fn(async () => ({
+      findPublicCommunity: vi.fn(async () => ({
         id: 'published-id',
-        status: 'published',
-        kind: 'shared_package',
+        title: '缺少资产',
+        body: '损坏发布记录',
+        likeCount: 0,
+        downloadCount: 0,
+        publishedAt: '2026-08-31T06:00:00.000Z',
+        publicationBasis: 'standard',
         assets: []
       })),
       recordPublicDownload: vi.fn(async () => ({ downloadCount: 1 }))
@@ -167,19 +141,19 @@ describe('公开内容服务', () => {
 
   it('已发布记录缺少封面时下载失败关闭且不签名', async () => {
     const { service, store, storage } = createFixture('published');
-    store.findById.mockResolvedValueOnce({
+    store.findPublicCommunity.mockResolvedValueOnce({
         id: 'published-id',
-        status: 'published',
-        kind: 'shared_package',
         title: '缺少封面',
         body: '损坏发布记录',
         publicationBasis: 'standard',
+        likeCount: 0,
+        downloadCount: 0,
+        publishedAt: '2026-08-31T06:00:00.000Z',
         assets: [{
           role: 'package',
           storageKey: 'submissions/published-id/package.zip',
           fileName: 'pet.zip',
-          declaredBytes: 1024,
-          actualBytes: 1024,
+          sizeBytes: 1024,
           contentType: 'application/zip'
         }]
       });

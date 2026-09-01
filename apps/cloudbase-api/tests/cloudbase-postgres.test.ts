@@ -7,7 +7,6 @@ import {
   CloudBasePostgresRpcClient,
   CloudBasePostgresStore
 } from '../src/adapters/cloudbase-postgres.js';
-import { SubmissionService } from '../src/services/submission-service.js';
 import type {
   CloudBaseRdbClient
 } from '../src/adapters/cloudbase-postgres.js';
@@ -568,41 +567,19 @@ class MemoryRdb {
   }
 }
 
-type Filter =
-  | { operator: 'eq' | 'lte' | 'not-eq'; column: string; value: unknown };
+type Filter = { column: string; value: unknown };
 
 /** 支持链式调用和 await，行为与仓储使用的 SDK 子集一致。 */
 class MemoryQuery implements PromiseLike<QueryResult> {
-  private operation: 'select' | 'insert' | 'update' | 'upsert' = 'select';
-  private values: Record<string, unknown> | Array<Record<string, unknown>> | null = null;
   private selectedColumns = '*';
   private readonly filters: Filter[] = [];
   private readonly orderings: Array<{ column: string; ascending: boolean }> = [];
-  private maximum: number | null = null;
-  private singleMode: 'none' | 'single' | 'maybeSingle' = 'none';
+  private maybeSingleMode = false;
 
   constructor(
     private readonly database: MemoryRdb,
     private readonly table: string
   ) {}
-
-  insert(values: Record<string, unknown> | Array<Record<string, unknown>>): this {
-    this.operation = 'insert';
-    this.values = values;
-    return this;
-  }
-
-  update(values: Record<string, unknown>): this {
-    this.operation = 'update';
-    this.values = values;
-    return this;
-  }
-
-  upsert(values: Record<string, unknown>): this {
-    this.operation = 'upsert';
-    this.values = values;
-    return this;
-  }
 
   select(columns = '*'): this {
     this.selectedColumns = columns;
@@ -610,18 +587,7 @@ class MemoryQuery implements PromiseLike<QueryResult> {
   }
 
   eq(column: string, value: unknown): this {
-    this.filters.push({ operator: 'eq', column, value });
-    return this;
-  }
-
-  lte(column: string, value: unknown): this {
-    this.filters.push({ operator: 'lte', column, value });
-    return this;
-  }
-
-  not(column: string, operator: string, value: unknown): this {
-    if (operator !== 'eq') throw new Error(`不支持的 not 运算符：${operator}`);
-    this.filters.push({ operator: 'not-eq', column, value });
+    this.filters.push({ column, value });
     return this;
   }
 
@@ -630,18 +596,8 @@ class MemoryQuery implements PromiseLike<QueryResult> {
     return this;
   }
 
-  limit(maximum: number): this {
-    this.maximum = maximum;
-    return this;
-  }
-
-  single(): this {
-    this.singleMode = 'single';
-    return this;
-  }
-
   maybeSingle(): this {
-    this.singleMode = 'maybeSingle';
+    this.maybeSingleMode = true;
     return this;
   }
 
@@ -653,28 +609,11 @@ class MemoryQuery implements PromiseLike<QueryResult> {
   }
 
   private async execute(): Promise<QueryResult> {
-    if (this.table === 'moderation_results' && this.operation === 'insert') {
-      const values = Array.isArray(this.values) ? this.values : [this.values ?? {}];
-      this.database.moderationResults.push(...structuredClone(values));
-      return { data: null, error: null };
-    }
-
     if (this.table === 'assets') {
-      if (this.operation === 'insert') {
-        const values = Array.isArray(this.values) ? this.values : [this.values ?? {}];
-        this.database.assets.push(...values.map((value) => ({
-          ...structuredClone(value),
-          actual_size: null
-        })) as unknown as MemoryAsset[]);
-        return { data: null, error: null };
-      }
-
       const rows = this.database.assets.filter((row) =>
         this.filters.every((filter) => {
           const value = row[filter.column as keyof MemoryAsset];
-          if (filter.operator === 'eq') return value === filter.value;
-          if (filter.operator === 'not-eq') return value !== filter.value;
-          return String(value) <= String(filter.value);
+          return value === filter.value;
         })
       );
       return {
@@ -694,32 +633,6 @@ class MemoryQuery implements PromiseLike<QueryResult> {
       return { data: null, error: { message: `未知数据表：${this.table}` } };
     }
 
-    if (this.operation === 'insert') {
-      const value = Array.isArray(this.values) ? this.values[0] : this.values;
-      if (!value) return { data: null, error: { message: '缺少插入数据' } };
-      const row = makeSubmission({
-        id: value.id as string,
-        status_token_hash: value.status_token_hash as string,
-        kind: value.kind as string,
-        title: value.title as string,
-        body: value.body as string
-      });
-      this.database.submissions.push(row);
-    } else if (this.operation === 'update') {
-      for (const row of this.filteredRows()) {
-        Object.assign(row, this.values);
-      }
-    } else if (this.operation === 'upsert') {
-      const value = this.values as Record<string, unknown>;
-      const existing = this.database.submissions.find((row) => row.id === value.id);
-      if (existing) Object.assign(existing, value);
-      else if (typeof value.id === 'string') {
-        this.database.submissions.push(makeSubmission({ id: value.id }));
-      } else {
-        return { data: null, error: { message: '缺少投稿 ID' } };
-      }
-    }
-
     const rows = this.filteredRows();
     for (const ordering of [...this.orderings].reverse()) {
       rows.sort((left, right) => {
@@ -729,15 +642,9 @@ class MemoryQuery implements PromiseLike<QueryResult> {
       });
     }
 
-    const sliced = rows.slice(0, this.maximum ?? undefined);
-    const selected = sliced.map((row) => this.pickColumns(row));
+    const selected = rows.map((row) => this.pickColumns(row));
 
-    if (this.singleMode === 'single') {
-      return selected.length === 1
-        ? { data: selected[0], error: null }
-        : { data: null, error: { code: 'PGRST116', message: '应返回一行' } };
-    }
-    if (this.singleMode === 'maybeSingle') {
+    if (this.maybeSingleMode) {
       return selected.length <= 1
         ? { data: selected[0] ?? null, error: null }
         : { data: null, error: { code: 'PGRST116', message: '返回多行' } };
@@ -749,9 +656,7 @@ class MemoryQuery implements PromiseLike<QueryResult> {
     return this.database.submissions.filter((row) =>
       this.filters.every((filter) => {
         const value = row[filter.column as keyof MemorySubmission];
-        if (filter.operator === 'eq') return value === filter.value;
-        if (filter.operator === 'not-eq') return value !== filter.value;
-        return String(value) <= String(filter.value);
+        return value === filter.value;
       })
     );
   }
@@ -1742,69 +1647,6 @@ describe('CloudBase PostgreSQL 仓储', () => {
     errorLog.mockRestore();
   });
 
-  it('未完成上传的投稿到期后进入清理候选', async () => {
-    const { store } = createStore();
-    await store.createSubmission(newSubmission('abandoned-upload'));
-
-    await expect(
-      store.listPurgeCandidates('2026-08-03T00:00:00.000Z', 10)
-    ).resolves.toEqual([
-      expect.objectContaining({
-        id: 'abandoned-upload',
-        status: 'uploading',
-        purgeAfter: '2026-08-03T00:00:00.000Z'
-      })
-    ]);
-  });
-
-  it('上传签名失败的隐藏投稿仍可按期限清理', async () => {
-    const { store } = createStore();
-    const service = new SubmissionService(
-      store,
-      {
-        async createSignedUploadUrl(): Promise<never> {
-          throw Object.assign(new Error('签名失败'), { code: 'STORAGE_ERROR' });
-        },
-        async info(): Promise<never> {
-          throw new Error('本测试不会读取对象信息');
-        },
-        async createSignedUrl(): Promise<never> {
-          throw new Error('本测试不会签发下载地址');
-        },
-        async delete(): Promise<void> {}
-      },
-      { sharedPackageSubmissionsEnabled: true },
-      () => 'failed-signature'
-    );
-
-    await expect(service.prepare({
-      kind: 'shared_package',
-      title: '待清理投稿',
-      body: '签名失败后保持隐藏。',
-      packageFile: {
-        fileName: 'pet.zip',
-        sizeBytes: 1024,
-        contentType: 'application/zip'
-      },
-      coverFile: {
-        fileName: 'cover.webp',
-        sizeBytes: 512,
-        contentType: 'image/webp'
-      }
-    }, { ip: '203.0.113.8' })).rejects.toMatchObject({
-      code: 'STORAGE_ERROR'
-    });
-    await expect(
-      store.listPurgeCandidates('2026-08-03T00:00:00.000Z', 10)
-    ).resolves.toEqual([
-      expect.objectContaining({
-        id: 'failed-signature',
-        status: 'uploading',
-        purgeAfter: '2026-08-03T00:00:00.000Z'
-      })
-    ]);
-  });
-
   it('审核任务领取跳过有效租约并写入新租约', async () => {
     const database = new MemoryRdb();
     database.submissions.push(
@@ -1868,32 +1710,6 @@ describe('CloudBase PostgreSQL 仓储', () => {
       }
     });
     expect(tableDatabase.submissions).toEqual([]);
-  });
-
-  it('审核结果写入独立结果表', async () => {
-    const { database, store } = createStore();
-
-    await store.recordModerationResult({
-      submissionId: 'submission-1',
-      kind: 'text',
-      provider: 'tencent',
-      ruleVersion: '2026-07',
-      suggestion: 'Review',
-      label: 'possible-risk',
-      score: 0.7,
-      evidence: { rule: 'r-1' },
-      requestedAt: '2026-07-31T00:00:00.000Z',
-      completedAt: '2026-07-31T00:00:01.000Z',
-      errorMessage: null
-    });
-
-    expect(database.moderationResults).toEqual([
-      expect.objectContaining({
-        submission_id: 'submission-1',
-        rule_version: '2026-07',
-        suggestion: 'Review'
-      })
-    ]);
   });
 
   it('管理员动作对重复幂等键返回原结果且只更新一次', async () => {
@@ -2445,31 +2261,4 @@ describe('CloudBase PostgreSQL 仓储', () => {
     }
   });
 
-  it('清理候选只返回到期且尚未清理的投稿', async () => {
-    const database = new MemoryRdb();
-    database.submissions.push(
-      makeSubmission({
-        id: 'due',
-        status: 'admin_rejected',
-        purge_after: '2026-07-31T00:00:00.000Z'
-      }),
-      makeSubmission({
-        id: 'future',
-        status: 'admin_rejected',
-        purge_after: '2026-08-01T00:00:00.000Z'
-      }),
-      makeSubmission({
-        id: 'purged',
-        status: 'purged',
-        purge_after: '2026-07-30T00:00:00.000Z'
-      })
-    );
-    const { store } = createStore(database);
-
-    await expect(
-      store.listPurgeCandidates('2026-07-31T00:00:00.000Z', 10)
-    ).resolves.toEqual([
-      expect.objectContaining({ id: 'due', status: 'admin_rejected' })
-    ]);
-  });
 });

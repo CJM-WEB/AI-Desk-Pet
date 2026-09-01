@@ -4,13 +4,11 @@ import { ApiError } from '../errors.js';
 import type {
   ObjectStorage,
   PublicAsset,
+  PublicContentStore,
   PublishedCommunityRecord,
-  PublicInteractionStore,
   PublicListQuery,
   PublicLikeResult,
-  SignedDownload,
-  SubmissionAsset,
-  SubmissionStore
+  SignedDownload
 } from '../ports.js';
 
 const signedDownloadLifetimeSeconds = 300;
@@ -46,11 +44,11 @@ export interface PublicFeedbackItem {
   createdAt: string;
 }
 
-/** 公开内容读取始终先检查数据库发布状态，再签发私有对象地址。 */
+/** 公开内容只消费已发布投影，并在返回对象地址前完成结构检查。 */
 export class PublicContentService {
   constructor(
-    private readonly store: SubmissionStore & PublicInteractionStore,
-    private readonly storage: ObjectStorage
+    private readonly store: PublicContentStore,
+    private readonly storage: Pick<ObjectStorage, 'createSignedUrl'>
   ) {}
 
   async listCommunity(input: PublicListQuery): Promise<{
@@ -134,16 +132,14 @@ export class PublicContentService {
     fingerprint: string,
     operationId: string
   ): Promise<PublicDownload> {
-    const submission = await this.store.findById(id);
+    const submission = await this.store.findPublicCommunity(id);
     if (
       !submission
-      || submission.status !== 'published'
-      || submission.kind !== 'shared_package'
       || (
         submission.publicationBasis !== 'standard'
         && submission.publicationBasis !== 'admin_override'
       )
-      || !hasValidPublicSubmissionShape(submission, submission.kind)
+      || !hasValidPublicSubmissionShape(submission, 'shared_package')
     ) {
       throw notFound();
     }
@@ -204,15 +200,13 @@ export class PublicContentService {
   }
 }
 
-type PublicShapeAsset = PublicAsset | SubmissionAsset;
-
 /** 读侧只在这一处复现发布结构；列表过滤、详情与下载共同复用。 */
 function hasValidPublicSubmissionShape(
   record: {
     id: string;
     title?: string | null;
     body?: string | null;
-    assets?: readonly PublicShapeAsset[];
+    assets?: readonly PublicAsset[];
   },
   kind: unknown
 ): boolean {
@@ -243,8 +237,8 @@ function hasValidPublicSubmissionShape(
     && publicAssetSize(packageAsset) > 0;
 }
 
-function publicAssetSize(asset: PublicShapeAsset): number {
-  return 'sizeBytes' in asset ? asset.sizeBytes : asset.actualBytes ?? 0;
+function publicAssetSize(asset: PublicAsset): number {
+  return asset.sizeBytes;
 }
 
 function notFound(): ApiError {
