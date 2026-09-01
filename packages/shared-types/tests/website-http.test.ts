@@ -1,6 +1,5 @@
 import { describe, expect, it } from 'vitest';
 import { z } from 'zod';
-import * as websiteHttp from '../src/website-http';
 
 import {
   adminActionRequestSchema,
@@ -9,11 +8,14 @@ import {
   adminDetailResponseSchema,
   adminQueueRequestSchema,
   adminQueueResponseSchema,
+  adminSiteMetricsResponseSchema,
   errorEnvelopeSchema,
   feedbackSubmissionRequestSchema,
   feedbackSubmissionResponseSchema,
   finalizeSubmissionRequestSchema,
   finalizeSubmissionResponseSchema,
+  officialDownloadClickRequestSchema,
+  officialDownloadClickResponseSchema,
   prepareSubmissionRequestSchema,
   prepareSubmissionResponseSchema,
   publicCommunityItemSchema,
@@ -129,22 +131,18 @@ describe('投稿 endpoint 契约', () => {
 
 describe('公开 endpoint 契约', () => {
   it('官方 Windows 安装包点击只接受空请求且不公开累计值', () => {
-    const schemas = websiteHttp as typeof websiteHttp & {
-      officialDownloadClickRequestSchema: z.ZodType<{}>;
-      officialDownloadClickResponseSchema: z.ZodType<{}>;
-      adminSiteMetricsResponseSchema: z.ZodType<{ clickCount: number }>;
-    };
-
-    expect(schemas.officialDownloadClickRequestSchema.parse({})).toEqual({});
-    expect(schemas.officialDownloadClickRequestSchema.safeParse({ count: 1 }).success)
+    expect(officialDownloadClickRequestSchema.parse({})).toEqual({});
+    expect(officialDownloadClickRequestSchema.safeParse({ count: 1 }).success)
       .toBe(false);
-    expect(schemas.officialDownloadClickResponseSchema.parse({})).toEqual({});
-    expect(schemas.officialDownloadClickResponseSchema.safeParse({ clickCount: 1 }).success)
+    expect(officialDownloadClickResponseSchema.parse({})).toEqual({});
+    expect(officialDownloadClickResponseSchema.safeParse({ clickCount: 1 }).success)
       .toBe(false);
-    expect(schemas.adminSiteMetricsResponseSchema.parse({ clickCount: 12 }))
+    expect(adminSiteMetricsResponseSchema.parse({ clickCount: 12 }))
       .toEqual({ clickCount: 12 });
-    expect(schemas.adminSiteMetricsResponseSchema.safeParse({ clickCount: -1 }).success)
-      .toBe(false);
+    for (const invalid of [-1, 1.5, Number.NaN, Number.MAX_SAFE_INTEGER + 1]) {
+      expect(adminSiteMetricsResponseSchema.safeParse({ clickCount: invalid }).success)
+        .toBe(false);
+    }
   });
 
   const community = {

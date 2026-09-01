@@ -836,6 +836,34 @@ describe('CloudBase PostgreSQL 安全与公开互动存储', () => {
     });
   });
 
+  it.each([
+    { click_count: -1 },
+    { click_count: 1.5 },
+    { click_count: Number.NaN },
+    { click_count: Number.MAX_SAFE_INTEGER + 1 },
+    {}
+  ])('官方安装包指标拒绝畸形或超范围累计值：%o', async data => {
+    const store = new CloudBasePostgresStore({ from: vi.fn() } as never, {
+      rpc: vi.fn(async () => ({ data, error: null }))
+    });
+
+    await expect(store.getOfficialWindowsDownloadClickCount())
+      .rejects.toMatchObject({ code: 'DATABASE_ERROR', statusCode: 500 });
+  });
+
+  it('官方安装包点击把数据库限流错误映射为稳定 429', async () => {
+    const store = new CloudBasePostgresStore({ from: vi.fn() } as never, {
+      rpc: vi.fn(async () => ({
+        data: null,
+        error: { code: 'P1004', message: 'rate limited' }
+      }))
+    });
+
+    await expect(store.recordOfficialWindowsDownloadClick({
+      fingerprintHash: 'f'.repeat(64)
+    })).rejects.toMatchObject({ code: 'RATE_LIMITED', statusCode: 429 });
+  });
+
   it('最终 schema 测试行不声明或生成已删除的 worker 租约字段', () => {
     expectTypeOf<MemorySubmission>().not.toHaveProperty('moderation_lease_until');
     expect(makeSubmission({ id: 'current-schema-row' }))

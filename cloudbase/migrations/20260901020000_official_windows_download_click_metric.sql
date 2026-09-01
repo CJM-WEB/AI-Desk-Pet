@@ -2,7 +2,7 @@ BEGIN;
 
 -- 官方安装包只保存聚合点击量，设备哈希仅用于同事务限流，不进入指标表。
 CREATE TABLE official_windows_download_click_metric (
-  metric_key text PRIMARY KEY,
+  singleton boolean PRIMARY KEY DEFAULT true CHECK (singleton),
   click_count bigint NOT NULL DEFAULT 0 CHECK (click_count >= 0)
 );
 
@@ -36,9 +36,9 @@ BEGIN
   END IF;
 
   INSERT INTO official_windows_download_click_metric AS metric (
-    metric_key, click_count
-  ) VALUES ('official_windows_download_clicks', 1)
-  ON CONFLICT (metric_key) DO UPDATE
+    singleton, click_count
+  ) VALUES (true, 1)
+  ON CONFLICT (singleton) DO UPDATE
   SET click_count = metric.click_count + 1;
 END;
 $$;
@@ -61,7 +61,7 @@ BEGIN
 
   SELECT click_count INTO v_click_count
   FROM official_windows_download_click_metric
-  WHERE metric_key = 'official_windows_download_clicks';
+  WHERE singleton;
   RETURN jsonb_build_object('click_count', COALESCE(v_click_count, 0));
 END;
 $$;

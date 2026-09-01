@@ -4,6 +4,7 @@ import {
   CloudBasePostgresStore,
   type CloudBaseRdbQuery
 } from '../src/adapters/cloudbase-postgres.js';
+import { AdminService } from '../src/services/admin-service.js';
 import { PublicContentService } from '../src/services/public-content-service.js';
 import { SubmissionService } from '../src/services/submission-service.js';
 import { TextSubmissionService } from '../src/services/text-submission-service.js';
@@ -82,6 +83,8 @@ describe('CloudBase API 端口', () => {
     expectTypeOf<ConstructorParameters<typeof PublicContentService>[0]>()
       .toEqualTypeOf<PublicContentStore>();
     expectTypeOf<ConstructorParameters<typeof PublicContentService>[1]>()
+      .toEqualTypeOf<Pick<ObjectStorage, 'createSignedUrl'>>();
+    expectTypeOf<ConstructorParameters<typeof AdminService>[1]>()
       .toEqualTypeOf<Pick<ObjectStorage, 'createSignedUrl'>>();
   });
 
