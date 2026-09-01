@@ -215,6 +215,8 @@ export async function runCloudBaseMigrationBehaviorGate({
 /** 首会话持有指标行锁后才启动第二会话，证明真实并发递增不会丢失。 */
 async function runConcurrentOfficialDownloadMetricGate(psql, connection) {
   const barrierLock = 8_601_001;
+  const sessions = [];
+  try {
   const barrier = runInteractiveUntilMarker(
     psql,
     [...connection, '-f', '-'],
@@ -225,6 +227,7 @@ SELECT pg_advisory_xact_lock(${barrierLock});
 `,
     'official-download-metric-barrier-held'
   );
+  sessions.push(barrier);
   await barrier.marker;
   const first = runUntilMarker(
     psql,
@@ -240,13 +243,17 @@ COMMIT;
 `,
     'official-download-metric-lock-acquired'
   );
+  sessions.push(first);
   await first.marker;
-  const second = run(psql, [...connection, '-f', '-'], String.raw`
+  const second = runUntilMarker(psql, [...connection, '-f', '-'], String.raw`
 SET ROLE service_role;
 SET application_name = 'ai-pet-official-download-metric-second';
 SELECT set_config('request.jwt.claims', '{"role":"service_role"}', false);
+\echo official-download-metric-second-dispatched
 SELECT record_official_windows_download_click(repeat('d', 64));
-`);
+`, 'official-download-metric-second-dispatched');
+  sessions.push(second);
+  second.marker.catch(() => undefined);
   await run(psql, [...connection, '-f', '-'], String.raw`
 DO $official_download_metric_wait_gate$
 DECLARE
@@ -283,6 +290,21 @@ BEGIN
 END
 $concurrent_official_download_metric_gate$;
 `);
+  } finally {
+    await cleanupConcurrentSessions(sessions);
+  }
+}
+
+/** 无论观察或标记在哪一步失败，都取消所有会话并吞并回收其 completion。 */
+export async function cleanupConcurrentSessions(sessions) {
+  for (const session of sessions) {
+    try {
+      session.cancel();
+    } catch {
+      // 清理仍须继续回收其余会话。
+    }
+  }
+  await Promise.allSettled(sessions.map(session => session.completion));
 }
 
 async function availablePort() {
@@ -459,6 +481,7 @@ $concurrent_download_gate$;
 function runUntilMarker(executable, arguments_, input, markerText) {
   let resolveMarker;
   let rejectMarker;
+  let cancel = () => undefined;
   const marker = new Promise((resolvePromise, rejectPromise) => {
     resolveMarker = resolvePromise;
     rejectMarker = rejectPromise;
@@ -471,6 +494,7 @@ function runUntilMarker(executable, arguments_, input, markerText) {
     const stdout = [];
     const stderr = [];
     let markerSeen = false;
+    let closed = false;
     child.stdout.on('data', chunk => {
       const bytes = Buffer.from(chunk);
       stdout.push(bytes);
@@ -485,6 +509,7 @@ function runUntilMarker(executable, arguments_, input, markerText) {
       rejectPromise(error);
     });
     child.once('close', code => {
+      closed = true;
       const output = Buffer.concat(stdout).toString('utf8');
       const errorOutput = Buffer.concat(stderr).toString('utf8');
       if (code === 0) {
@@ -498,9 +523,15 @@ function runUntilMarker(executable, arguments_, input, markerText) {
       rejectMarker(error);
       rejectPromise(error);
     });
+    cancel = () => {
+      if (closed) return;
+      closed = true;
+      child.stdin.end();
+      child.kill();
+    };
     child.stdin.end(input);
   });
-  return { marker, completion };
+  return { marker, completion, cancel: () => cancel() };
 }
 
 /** 保持 SQL 会话输入流，供并发门在观察到锁等待后确定性地释放事务屏障。 */
@@ -508,6 +539,7 @@ function runInteractiveUntilMarker(executable, arguments_, input, markerText) {
   let resolveMarker;
   let rejectMarker;
   let release;
+  let cancel = () => undefined;
   const marker = new Promise((resolvePromise, rejectPromise) => {
     resolveMarker = resolvePromise;
     rejectMarker = rejectPromise;
@@ -520,6 +552,7 @@ function runInteractiveUntilMarker(executable, arguments_, input, markerText) {
     const stdout = [];
     const stderr = [];
     let markerSeen = false;
+    let closed = false;
     child.stdout.on('data', chunk => {
       const bytes = Buffer.from(chunk);
       stdout.push(bytes);
@@ -534,6 +567,7 @@ function runInteractiveUntilMarker(executable, arguments_, input, markerText) {
       rejectPromise(error);
     });
     child.once('close', code => {
+      closed = true;
       const output = Buffer.concat(stdout).toString('utf8');
       const errorOutput = Buffer.concat(stderr).toString('utf8');
       if (code === 0) {
@@ -548,12 +582,20 @@ function runInteractiveUntilMarker(executable, arguments_, input, markerText) {
       rejectPromise(error);
     });
     release = () => {
+      if (closed) return;
+      closed = true;
       child.stdin.write('COMMIT;\n');
       child.stdin.end();
     };
+    cancel = () => {
+      if (closed) return;
+      closed = true;
+      child.stdin.end();
+      child.kill();
+    };
     child.stdin.write(input);
   });
-  return { marker, completion, release: () => release() };
+  return { marker, completion, release: () => release(), cancel: () => cancel() };
 }
 
 const bootstrapSql = String.raw`

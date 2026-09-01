@@ -7,6 +7,7 @@ import {
   parseSupportedPostgresVersion,
   runCloudBaseMigrationBehaviorGate
 } from './test-cloudbase-migrations.mjs';
+import * as migrationGate from './test-cloudbase-migrations.mjs';
 
 test('迁移行为门要求显式本地 PostgreSQL 运行时且拒绝未知参数', () => {
   assert.throws(
@@ -57,6 +58,21 @@ test('官方安装包并发门以实际 PostgreSQL 锁等待作为同步证据',
   assert.match(gate, /pg_stat_activity/u);
   assert.match(gate, /wait_event_type\s*=\s*'Lock'/u);
   assert.doesNotMatch(gate, /setTimeout\([^,]+,\s*100\)/u);
+});
+
+test('并发会话清理幂等取消并回收所有成功和失败 completion', async () => {
+  const cancelled = [];
+  const cleanup = migrationGate.cleanupConcurrentSessions;
+  const rejected = Promise.reject(new Error('second'));
+  rejected.catch(() => undefined);
+  const sessions = [
+    { cancel: () => cancelled.push('first'), completion: Promise.resolve('first') },
+    { cancel: () => cancelled.push('second'), completion: rejected }
+  ];
+
+  await assert.doesNotReject(() => cleanup(sessions));
+  await assert.doesNotReject(() => cleanup(sessions));
+  assert.deepEqual(cancelled, ['first', 'second', 'first', 'second']);
 });
 
 test('真实临时 PostgreSQL 顺序执行全部迁移并验证事务行为', {
