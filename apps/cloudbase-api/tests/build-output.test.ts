@@ -16,7 +16,7 @@ describe('CloudBase 函数构建产物', () => {
       expect(require(entry).main, `${name} 应导出 main`).toBeTypeOf('function');
       expect(existsSync(`${entry}.map`), `${name} 不应包含源码映射`).toBe(false);
     }
-  });
+  }, 15_000);
 
   it('两个部署入口均内嵌 V3 Node 动态加载的运行时依赖', () => {
     for (const name of ['api', 'cleanup']) {
@@ -62,5 +62,5 @@ describe('CloudBase 函数构建产物', () => {
         else process.env[key] = value;
       }
     }
-  }, 15_000);
+  });
 });

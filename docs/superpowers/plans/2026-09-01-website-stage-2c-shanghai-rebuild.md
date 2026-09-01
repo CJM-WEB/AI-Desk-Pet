@@ -612,12 +612,12 @@ Run:
 
 ```powershell
 pnpm.cmd build:cloudbase
-pnpm.cmd exec cloudbase -e $stage2cEnvId -r ap-shanghai fn deploy ai-pet-api --httpFn --json
+pnpm.cmd exec cloudbase -e $stage2cEnvId -r ap-shanghai fn deploy ai-pet-api --json
 pnpm.cmd exec cloudbase -e $stage2cEnvId -r ap-shanghai fn deploy ai-pet-moderation-worker --json
 pnpm.cmd exec cloudbase -e $stage2cEnvId -r ap-shanghai fn deploy ai-pet-cleanup --json
 ```
 
-不得使用 `--force`。`ai-pet-api` 只通过 `--httpFn` 声明为 HTTP 函数，不同时创建猜测性的 `--path`；另两个 worker 保持 Event 类型。分别核对 Node.js 20.19、入口和超时与 `cloudbaserc.json` 一致；免费版内存以控制台固定默认 256 MB 为事实来源，配置未声明 `memorySize` 时不得声称它来自仓库。
+不得使用 `--force`。`ai-pet-api` 保持 Event 类型并由网关以 `SCF` 上游暴露；另两个 worker 保持 Event 类型。分别核对 Node.js 20.19、入口和超时与 `cloudbaserc.json` 一致；免费版内存以控制台固定默认 256 MB 为事实来源，配置未声明 `memorySize` 时不得声称它来自仓库。
 
 - [ ] **Step 9.3：只写入各 loader 实际读取的最小环境变量**
 
@@ -677,7 +677,7 @@ CLI 会明确提示该入口已废弃；它只用于解决当前 workspace build
 
 - [ ] **Step 10.2：配置唯一网关路由与最小 CORS**
 
-从新环境 HTTP 网关页面读取平台分配的测试域名，保存为 `$stage2cGatewayDomain` 并验证它属于当前环境；不得填正式域名。路由只指向 HTTP 类型的 `ai-pet-api`：管理员前缀开启网关认证，公开前缀保持匿名，由应用层继续区分具体端点；两者均启用路径透传和安全域名。
+从新环境 HTTP 网关页面读取平台分配的测试域名，保存为 `$stage2cGatewayDomain` 并验证它属于当前环境；不得填正式域名。路由只指向 Event 类型的 `ai-pet-api`：管理员前缀开启网关认证，公开前缀保持匿名，由应用层继续区分具体端点；两者均启用路径透传和安全域名。
 
 ```powershell
 $stage2cGatewayDomain = Read-Host '请输入当前上海开发环境的 HTTP 网关测试域名（不含协议）'
