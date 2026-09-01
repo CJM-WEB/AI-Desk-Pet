@@ -1,5 +1,5 @@
 const defaultLoadManager = () => import('@cloudbase/manager-node');
-const fixedRegion = 'ap-singapore';
+const fixedRegion = 'ap-shanghai';
 
 /**
  * 创建 manager-node 的最小远端适配器。
@@ -28,7 +28,7 @@ export async function createCloudBaseUserMigrationAdapter(options) {
 
   assertSafeEnvironment();
   if (Object.hasOwn(options, 'region')) {
-    throw new Error('CloudBase 用户迁移地域固定为 ap-singapore');
+    throw new Error('CloudBase 用户迁移地域固定为 ap-shanghai');
   }
   if (![envId, secretId, secretKey].every(value =>
     typeof value === 'string' && value.trim().length > 0)

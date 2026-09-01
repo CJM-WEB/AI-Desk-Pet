@@ -43,8 +43,7 @@ describe('CloudBase 浏览器客户端', () => {
     expect(init).toHaveBeenCalledTimes(1);
     expect(init).toHaveBeenCalledWith({
       env: 'ai-pet-dev',
-      region: 'ap-singapore',
-      intl: true,
+      region: 'ap-shanghai',
       accessKey: 'publishable-test-key',
       timeout: 15_000
     });

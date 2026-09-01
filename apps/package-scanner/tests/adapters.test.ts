@@ -42,8 +42,15 @@ describe('外部扫描适配器超时', () => {
         secretKey: 'secret-key',
         token: 'session-token'
       },
+      region: 'ap-shanghai',
       profile: { httpProfile: { reqTimeout: 15 } }
     });
+
+    expect(() => createTencentImsClient({
+      TENCENT_CLOUD_REGION: 'ap-singapore',
+      TENCENTCLOUD_SECRETID: 'secret-id',
+      TENCENTCLOUD_SECRETKEY: 'secret-key'
+    }, TestClient as never)).toThrow('TENCENT_CLOUD_REGION 必须为 ap-shanghai');
   });
 
   it('ClamAV 超时后强制终止子进程并返回稳定错误', async () => {

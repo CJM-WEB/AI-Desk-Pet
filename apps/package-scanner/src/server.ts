@@ -619,7 +619,7 @@ export function createTencentImsClient(
       secretKey,
       ...(token ? { token } : {})
     },
-    region: requiredEnvironmentFrom(env, 'TENCENT_CLOUD_REGION'),
+    region: requiredShanghaiRegion(env, 'TENCENT_CLOUD_REGION'),
     profile: {
       httpProfile: {
         reqTimeout: DEFAULT_IMS_TIMEOUT_MS / 1_000
@@ -634,6 +634,15 @@ function requiredEnvironmentFrom(
 ): string {
   const value = env[name]?.trim();
   if (!value) throw new Error(`缺少必需环境变量：${name}`);
+  return value;
+}
+
+/** Scanner 仅连接上海 IMS，避免部署配置漂移到不受支持的地域。 */
+function requiredShanghaiRegion(env: NodeJS.ProcessEnv, name: string): 'ap-shanghai' {
+  const value = requiredEnvironmentFrom(env, name);
+  if (value !== 'ap-shanghai') {
+    throw new Error(`${name} 必须为 ap-shanghai`);
+  }
   return value;
 }
 

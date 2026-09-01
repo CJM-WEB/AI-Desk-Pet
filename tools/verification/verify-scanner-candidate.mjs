@@ -130,7 +130,7 @@ export function verifyScannerCandidate(runDocker = docker, waitForNextPoll = wai
       '--env', 'SCANNER_DOWNLOAD_SIGNATURE_PARAMETERS=signature',
       '--env', 'TENCENTCLOUD_SECRETID=candidate-local-secret-id',
       '--env', 'TENCENTCLOUD_SECRETKEY=candidate-local-secret-key',
-      '--env', 'TENCENT_CLOUD_REGION=ap-singapore',
+      '--env', 'TENCENT_CLOUD_REGION=ap-shanghai',
       imageId,
     ], '按默认命令启动 Scanner 候选容器').trim();
     if (!containerId) throw new Error('Scanner 候选容器 ID 为空');

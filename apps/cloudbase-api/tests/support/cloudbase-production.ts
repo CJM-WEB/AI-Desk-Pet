@@ -24,7 +24,7 @@ export function stubModerationWorkerConfig(): void {
     CLOUDBASE_API_KEY: 'service-role-key',
     TENCENTCLOUD_SECRETID: 'secret-id',
     TENCENTCLOUD_SECRETKEY: 'secret-key',
-    MODERATION_REGION: 'ap-singapore',
+    MODERATION_REGION: 'ap-shanghai',
     TMS_BIZ_TYPE: 'text-moderation',
     IMS_BIZ_TYPE: 'image-moderation',
     SCANNER_URL: 'https://scanner.example.com',

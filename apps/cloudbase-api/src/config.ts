@@ -1,7 +1,7 @@
 /** 三个函数共享的 CloudBase 运行时最小配置。 */
 export interface CloudBaseRuntimeConfig {
   envId: string;
-  cloudbaseRegion: 'ap-singapore';
+  cloudbaseRegion: 'ap-shanghai';
   cloudbaseSdkTimeoutMs: 15000;
   privateBucketId: string;
 }
@@ -18,7 +18,7 @@ export interface ModerationWorkerConfig extends CloudBaseRuntimeConfig {
   tencentCloudSecretId: string;
   tencentCloudSecretKey: string;
   tencentCloudSessionToken?: string;
-  moderationRegion: string;
+  moderationRegion: 'ap-shanghai';
   tmsBizType: string;
   imsBizType: string;
   scannerUrl: string;
@@ -36,9 +36,9 @@ function readRequired(env: NodeJS.ProcessEnv, name: string): string {
 }
 
 function loadRuntimeConfig(env: NodeJS.ProcessEnv): CloudBaseRuntimeConfig {
-  const cloudbaseRegion = env.CLOUDBASE_REGION?.trim() || 'ap-singapore';
-  if (cloudbaseRegion !== 'ap-singapore') {
-    throw new Error('CLOUDBASE_REGION 必须为 ap-singapore');
+  const cloudbaseRegion = env.CLOUDBASE_REGION?.trim() || 'ap-shanghai';
+  if (cloudbaseRegion !== 'ap-shanghai') {
+    throw new Error('CLOUDBASE_REGION 必须为 ap-shanghai');
   }
   return {
     envId: readRequired(env, 'CLOUDBASE_ENV_ID'),
@@ -91,6 +91,10 @@ export function loadModerationWorkerConfig(
   const moderationSessionToken = usesModerationAlias
     ? env.MODERATION_SESSION_TOKEN?.trim()
     : env.TENCENTCLOUD_SESSIONTOKEN?.trim();
+  const moderationRegion = readRequired(env, 'MODERATION_REGION');
+  if (moderationRegion !== 'ap-shanghai') {
+    throw new Error('MODERATION_REGION 必须为 ap-shanghai');
+  }
   return {
     ...loadRuntimeConfig(env),
     cloudbaseApiKey: readRequired(env, 'CLOUDBASE_API_KEY'),
@@ -107,7 +111,7 @@ export function loadModerationWorkerConfig(
     ...(moderationSessionToken
       ? { tencentCloudSessionToken: moderationSessionToken }
       : {}),
-    moderationRegion: readRequired(env, 'MODERATION_REGION'),
+    moderationRegion,
     tmsBizType: readRequired(env, 'TMS_BIZ_TYPE'),
     imsBizType: readRequired(env, 'IMS_BIZ_TYPE'),
     scannerUrl: normalizeHttpsUrl(

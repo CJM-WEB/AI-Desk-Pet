@@ -17,7 +17,7 @@ describe('CloudBase 函数专属配置', () => {
       ABUSE_HMAC_SECRET: 'abuse-secret'
     })).toEqual({
       envId: 'env-test',
-      cloudbaseRegion: 'ap-singapore',
+      cloudbaseRegion: 'ap-shanghai',
       cloudbaseSdkTimeoutMs: 15_000,
       cloudbaseApiKey: 'service-role-key',
       privateBucketId: 'ai-pet-private',
@@ -41,7 +41,7 @@ describe('CloudBase 函数专属配置', () => {
       SCANNER_HMAC_SECRET: 'scanner-secret'
     })).toEqual({
       envId: 'env-test',
-      cloudbaseRegion: 'ap-singapore',
+      cloudbaseRegion: 'ap-shanghai',
       cloudbaseSdkTimeoutMs: 15_000,
       cloudbaseApiKey: 'service-role-key',
       privateBucketId: 'ai-pet-private',
@@ -60,7 +60,7 @@ describe('CloudBase 函数专属配置', () => {
     expect(configModule.loadCleanupConfig).toBeTypeOf('function');
     expect(configModule.loadCleanupConfig(baseEnv)).toEqual({
       envId: 'env-test',
-      cloudbaseRegion: 'ap-singapore',
+      cloudbaseRegion: 'ap-shanghai',
       cloudbaseSdkTimeoutMs: 15_000,
       cloudbaseApiKey: 'service-role-key',
       privateBucketId: 'ai-pet-private'
@@ -107,11 +107,24 @@ describe('CloudBase 函数专属配置', () => {
     expect(config.tencentCloudSessionToken).toBeUndefined();
   });
 
-  it('所有 loader 都拒绝与已购买环境不一致的地域', () => {
+  it('所有 loader 都拒绝新加坡地域', () => {
     expect(() => configModule.loadCleanupConfig({
       ...baseEnv,
-      CLOUDBASE_REGION: 'ap-shanghai'
-    })).toThrow('CLOUDBASE_REGION 必须为 ap-singapore');
+      CLOUDBASE_REGION: 'ap-singapore'
+    })).toThrow('CLOUDBASE_REGION 必须为 ap-shanghai');
+  });
+
+  it('审核工作器拒绝新加坡地域', () => {
+    expect(() => configModule.loadModerationWorkerConfig({
+      ...baseEnv,
+      TENCENTCLOUD_SECRETID: 'secret-id',
+      TENCENTCLOUD_SECRETKEY: 'secret-key',
+      MODERATION_REGION: 'ap-singapore',
+      TMS_BIZ_TYPE: 'ai-pet-text',
+      IMS_BIZ_TYPE: 'ai-pet-image',
+      SCANNER_URL: 'https://scanner.example.com',
+      SCANNER_HMAC_SECRET: 'scanner-secret'
+    })).toThrow('MODERATION_REGION 必须为 ap-shanghai');
   });
 
   it('Scanner 地址必须使用 HTTPS', () => {

@@ -30,8 +30,7 @@ export interface CloudBaseBrowserClient {
 interface CloudBaseBrowserSdk {
   init(options: {
     env: string;
-    region: 'ap-singapore';
-    intl: true;
+    region: 'ap-shanghai';
     accessKey: string;
     timeout: 15_000;
   }): CloudBaseBrowserClient;
@@ -62,8 +61,7 @@ export function getCloudBaseClient(): CloudBaseBrowserClient {
 
   browserClient = installedSdk.init({
     env,
-    region: 'ap-singapore',
-    intl: true,
+    region: 'ap-shanghai',
     accessKey,
     timeout: 15_000
   });

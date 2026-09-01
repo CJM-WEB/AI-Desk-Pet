@@ -31,7 +31,7 @@ test('用显式配置构造独立 manager 实例并代理数据库 API', async (
   await adapter.describeTask('task-1');
 
   assert.deepEqual(calls, [
-    ['constructor', { envId: 'development-env', secretId: 'secret-id', secretKey: 'secret-key', token: 'temporary-token', region: 'ap-singapore' }],
+    ['constructor', { envId: 'development-env', secretId: 'secret-id', secretKey: 'secret-key', token: 'temporary-token', region: 'ap-shanghai' }],
     ['preview', { EnvId: 'development-env', Migrations: migrations }],
     ['push', { EnvId: 'development-env', Migrations: migrations }],
     ['describe', { EnvId: 'development-env', TaskId: 'task-1' }]
@@ -59,7 +59,7 @@ test('兼容 CommonJS namespace 且不传未提供的可选配置', async () => 
     envId: 'development-env',
     secretId: 'secret-id',
     secretKey: 'secret-key',
-    region: 'ap-singapore'
+    region: 'ap-shanghai'
   });
 });
 
@@ -112,7 +112,7 @@ test('必填配置与可选 token 均拒绝纯空白且不加载 SDK', async () 
   assert.equal(loads, 0);
 });
 
-test('拒绝 region override 且固定使用 ap-singapore', async () => {
+test('拒绝 region override 且固定使用 ap-shanghai', async () => {
   let loads = 0;
   await assert.rejects(
     createCloudBaseUserMigrationAdapter({
@@ -123,12 +123,12 @@ test('拒绝 region override 且固定使用 ap-singapore', async () => {
       region: 'ap-guangzhou',
       loadManager: async () => { loads += 1; return class {}; }
     }),
-    /地域固定为 ap-singapore/u
+    /地域固定为 ap-shanghai/u
   );
   assert.equal(loads, 0);
 });
 
-test('TCB_REGION 会覆盖显式地域时仅允许精确 ap-singapore', async () => {
+test('TCB_REGION 会覆盖显式地域时仅允许精确 ap-shanghai', async () => {
   const original = process.env.TCB_REGION;
   let loads = 0;
   try {
@@ -149,7 +149,7 @@ test('TCB_REGION 会覆盖显式地域时仅允许精确 ap-singapore', async ()
     );
     assert.equal(loads, 0);
 
-    process.env.TCB_REGION = 'ap-singapore';
+    process.env.TCB_REGION = 'ap-shanghai';
     await createCloudBaseUserMigrationAdapter({
       environmentClass: 'development',
       envId: 'development-env',

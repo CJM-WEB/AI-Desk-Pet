@@ -25,7 +25,7 @@
    ```
 
    阶段 2C 完成前，任何 CloudBase 环境都不得从仓库执行 migration，也不得通过控制台复制 SQL 绕过冻结。已提交数据库变更只能通过新的前向 migration 修复，历史 migration 不得改写。
-5. 解冻后的环境仍须保留独立的开发与生产环境，分别记录 `CLOUDBASE_ENV_ID`；数据库、Bucket、函数、扫描容器、域名、告警与所有密钥不得混用。服务端 CloudBase 固定使用 `ap-singapore`；`CLOUDBASE_REGION` 只能留空或设为 `ap-singapore`。
+5. 解冻后的环境仍须保留独立的开发与生产环境，分别记录 `CLOUDBASE_ENV_ID`；数据库、Bucket、函数、扫描容器、域名、告警与所有密钥不得混用。服务端 CloudBase 固定使用 `ap-shanghai`；`CLOUDBASE_REGION` 只能留空或设为 `ap-shanghai`。
 
 ## 2. PostgreSQL 与私有存储
 
@@ -63,7 +63,7 @@
 
 ## 6. 服务端环境变量清单
 
-三个云函数只配置各自 loader 实际读取的最小变量，不向无关函数复制 Secret。共同运行时变量为 `CLOUDBASE_ENV_ID`、`PRIVATE_BUCKET_ID`，以及可省略且只允许为 `ap-singapore` 的 `CLOUDBASE_REGION`。
+三个云函数只配置各自 loader 实际读取的最小变量，不向无关函数复制 Secret。共同运行时变量为 `CLOUDBASE_ENV_ID`、`PRIVATE_BUCKET_ID`，以及可省略且只允许为 `ap-shanghai` 的 `CLOUDBASE_REGION`。
 
 `ai-pet-api`：
 

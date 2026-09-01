@@ -74,7 +74,7 @@ test('候选镜像按默认启动命令运行并以 Docker health 判定健康',
     '--env', 'SCANNER_DOWNLOAD_SIGNATURE_PARAMETERS=signature',
     '--env', 'TENCENTCLOUD_SECRETID=candidate-local-secret-id',
     '--env', 'TENCENTCLOUD_SECRETKEY=candidate-local-secret-key',
-    '--env', 'TENCENT_CLOUD_REGION=ap-singapore',
+    '--env', 'TENCENT_CLOUD_REGION=ap-shanghai',
     validReport.imageId,
   ]);
   const healthCommands = commands.filter(command => command.args[0] === 'container');

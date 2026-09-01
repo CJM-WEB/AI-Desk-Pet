@@ -19,7 +19,7 @@ export interface CloudBaseServerRuntime {
 export interface CloudBaseServerSdk {
   init(options: {
     env: string;
-    region: 'ap-singapore';
+    region: 'ap-shanghai';
     timeout: number;
     context: CloudBaseFunctionContext;
   }): {

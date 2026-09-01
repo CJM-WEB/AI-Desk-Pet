@@ -11,7 +11,7 @@ import type { CloudBaseStorageBucket } from '../src/adapters/cloudbase-storage.j
 
 const runtimeConfig = {
   envId: 'env-test',
-  cloudbaseRegion: 'ap-singapore' as const,
+  cloudbaseRegion: 'ap-shanghai' as const,
   cloudbaseSdkTimeoutMs: 15_000 as const,
   privateBucketId: 'ai-pet-private'
 };
@@ -52,7 +52,7 @@ describe('CloudBase V3 Node 运行时工厂', () => {
     expect(init).toHaveBeenCalledOnce();
     expect(init).toHaveBeenCalledWith({
       env: 'env-test',
-      region: 'ap-singapore',
+      region: 'ap-shanghai',
       timeout: 15_000,
       context: functionContext
     });
