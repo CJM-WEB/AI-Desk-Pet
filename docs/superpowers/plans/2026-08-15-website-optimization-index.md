@@ -8,7 +8,7 @@
 
 **Tech Stack:** pnpm workspace、TypeScript 5、Vitest 3、Playwright 1.61、Zod 3、Next.js 15、CloudBase JS SDK 3.6.8、PostgreSQL、CloudBase Run。
 
-> 2026-09-01 当前裁决：阶段 2A、2B 与阶段 3 的既有本地裁决保持 PASS；阶段四八项本地治理实现与完整 `verify:web-chain` 均已通过，阶段四本地治理验收完成。阶段 2C 的 Task 1、Task 2 与适用的 Task 4 已完成本地收窄和验证，远端前置门为 `blocked`；普通非投稿网站功能开发资格保持恢复，投稿开启、远端 migration、阶段 5 正式生产重部署与上线继续冻结。真实状态见 `docs/operations/website-stage-2c-shanghai-acceptance.md`。
+> 2026-09-01 当前入口：阶段 2A、2B、阶段 3 与阶段四本地治理的既有本地裁决保持通过。阶段 2C 的现行规格与计划为 `2026-09-01-website-stage-2c-zero-cost-manual-review-design.md` 和 `2026-09-01-website-stage-2c-zero-cost-manual-review.md`：云上只保留 PostgreSQL、私有存储、API、cleanup、身份、网关与静态托管；新投稿直入人工队列。已执行本地验证，`remote: unverified`；投稿开启、远端 migration、阶段 5 正式生产重部署与上线继续冻结。真实状态见 `docs/operations/website-stage-2c-shanghai-acceptance.md`。
 
 ## Global Constraints
 

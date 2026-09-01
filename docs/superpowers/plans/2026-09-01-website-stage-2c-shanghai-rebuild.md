@@ -1,5 +1,7 @@
 # 网站阶段 2C 上海免费环境重建实施计划
 
+> **历史替代声明（禁止执行旧自动审核任务）：** 本计划中关于 CloudBase Run Scanner、腾讯 TMS/IMS、`ai-pet-moderation-worker`、Scanner Secret、触发器与相关 smoke 的任务已被 [`2026-09-01-website-stage-2c-zero-cost-manual-review.md`](2026-09-01-website-stage-2c-zero-cost-manual-review.md) 替代。保留全文只为追溯既有裁决，任何旧命令都不得执行；现行部署仅允许 PostgreSQL、私有 Bucket、API、cleanup、身份、网关与静态托管。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** 在不产生额外费用、不触碰桌宠业务代码、不进入正式生产的前提下，把网站阶段 2C 的唯一开发目标迁移到上海 CloudBase PostgreSQL 免费环境，并用本地测试和真实云端证据决定阶段 2C 是 `pass` 还是 `blocked`。

@@ -1,5 +1,7 @@
 # 网站阶段 2C 上海免费环境重建设计
 
+> **历史替代声明（禁止执行旧自动审核部署）：** 本规格中关于 CloudBase Run Scanner、腾讯 TMS/IMS、`ai-pet-moderation-worker`、Scanner Secret 与相关 smoke 的内容已被 [`2026-09-01-website-stage-2c-zero-cost-manual-review-design.md`](2026-09-01-website-stage-2c-zero-cost-manual-review-design.md) 替代。下文仅保留为历史设计上下文，不得据此部署、配置或恢复这些已退役能力；现行运维以 `docs/operations/cloudbase-deployment.md` 和 `docs/operations/content-moderation.md` 为准。
+
 > 日期：2026-09-01
 > 分支：`WebsiteExtension`
 > 状态：已于 2026-09-01 获用户确认
