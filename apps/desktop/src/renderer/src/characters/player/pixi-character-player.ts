@@ -548,16 +548,17 @@ class BrowserPixiCharacterScene implements PixiCharacterScene {
     const sprite = new this.pixi.AnimatedSprite(frames, false);
     sprite.loop = options.loop;
     sprite.animationSpeed = options.speed;
-    sprite.roundPixels = true;
+    sprite.anchor.set(
+      action.anchors.ground.x,
+      action.anchors.ground.y
+    );
     this.sprite = sprite;
-    sprite.onFrameChange = () => {
-      this.applyFrameAnchor();
-      this.notifyFrameListeners();
-    };
+    sprite.onFrameChange = () => this.notifyFrameListeners();
     if (!options.loop) {
       sprite.onComplete = () => this.notifyActionCompleteListeners();
     }
     this.application.stage.addChild(sprite);
+    this.applyLayout();
     const frameIndex = clamp(
       options.frameIndex ?? 0,
       0,
@@ -580,8 +581,6 @@ class BrowserPixiCharacterScene implements PixiCharacterScene {
         });
       }
     }
-    this.applyFrameAnchor();
-    this.applyLayout();
     this.application.render();
   }
 
@@ -690,14 +689,6 @@ class BrowserPixiCharacterScene implements PixiCharacterScene {
       fit.scale
     );
     this.sprite.position.set(fit.x, fit.y);
-  }
-
-  /** 帧锚点只改变纹理相对固定动作落点的偏移，动作级布局点始终保持不动。 */
-  private applyFrameAnchor(): void {
-    if (!this.sprite || !this.action) return;
-    const ground = this.action.frames[this.sprite.currentFrame]?.anchors?.ground
-      ?? this.action.anchors.ground;
-    this.sprite.anchor.set(ground.x, ground.y);
   }
 
   private releaseAnimation(): void {

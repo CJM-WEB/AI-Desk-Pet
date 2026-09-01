@@ -1457,7 +1457,6 @@ describe('角色播放器组件', () => {
   test('RAF 在快照之间持续推进视觉残差并在卸载时清理', async () => {
     const callbacks: FrameRequestCallback[] = [];
     const cancel = vi.fn();
-    vi.stubGlobal('devicePixelRatio', 1.5);
     vi.stubGlobal('requestAnimationFrame', vi.fn(callback => {
       callbacks.push(callback);
       return callbacks.length;
@@ -1531,7 +1530,7 @@ describe('角色播放器组件', () => {
         direction: 'right', moving: true
       }
     }));
-    act(() => callbacks.shift()?.(51));
+    act(() => callbacks.shift()?.(50));
     expect(rendered.container.querySelector<HTMLElement>('.character-player-host')?.style.transform)
       .toBe('translate(-8px, 0px)');
     expect(onDesktopAnchors).toHaveBeenLastCalledWith({

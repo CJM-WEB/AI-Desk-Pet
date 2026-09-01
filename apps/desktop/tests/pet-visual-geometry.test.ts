@@ -445,47 +445,6 @@ describe('Main 私有桌宠视觉几何权威', () => {
     });
   });
 
-  test('逐帧脚点变化时 Main 可见边界保守覆盖每帧的真实位移', () => {
-    const anchoredManifest = structuredClone(manifest());
-    const presentation = anchoredManifest.skins[0]!.presentations[0]!;
-    presentation.frames = [
-      { ...presentation.frames[0]!, anchors: { ground: { x: 0.5, y: 0.9 } } },
-      { ...presentation.frames[0]!, anchors: { ground: { x: 0.25, y: 0.9 } } }
-    ];
-    const authority = new ProductionPetVisualGeometryAuthority('pet-a');
-
-    const right = authority.updateShape({
-      manifest: anchoredManifest,
-      skinId: 'default-skin',
-      actionId: 'idle-action',
-      actionRevision: 3,
-      resourceRevision: REVISION_A,
-      direction: 'right',
-      scale: 1,
-      viewportSizeDip: { width: 100, height: 100 }
-    });
-    expect(right).toEqual({ ok: true, revision: 1 });
-    expect(authority.getShapeLayout(1)?.visualBoundsFromFootDip).toEqual({
-      x: -30, y: -80, width: 85, height: 80
-    });
-
-    authority.discardPendingShape();
-    const left = authority.updateShape({
-      manifest: anchoredManifest,
-      skinId: 'default-skin',
-      actionId: 'idle-action',
-      actionRevision: 4,
-      resourceRevision: REVISION_A,
-      direction: 'left',
-      scale: 1,
-      viewportSizeDip: { width: 100, height: 100 }
-    });
-    expect(left).toEqual({ ok: true, revision: 2 });
-    const leftBounds = authority.getShapeLayout(2)?.visualBoundsFromFootDip;
-    expect(leftBounds).toMatchObject({ y: -80, width: 85, height: 80 });
-    expect(leftBounds?.x).toBeCloseTo(-55);
-  });
-
   test('纯联合 seam 按共同脚底锚点合并多输入，生产更新仍拒绝伪造可见集合', () => {
     const union = unionVisiblePresentationBounds([
       { x: -30, y: -80, width: 60, height: 80 },
