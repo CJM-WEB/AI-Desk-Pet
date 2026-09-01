@@ -213,11 +213,19 @@ export async function runCloudBaseMigrationBehaviorGate({
 }
 
 /** 首会话持有指标行锁后才启动第二会话，证明真实并发递增不会丢失。 */
-async function runConcurrentOfficialDownloadMetricGate(psql, connection) {
+export async function runConcurrentOfficialDownloadMetricGate(
+  psql,
+  connection,
+  {
+    runCommand = run,
+    startSession = runUntilMarker,
+    startInteractiveSession = runInteractiveUntilMarker
+  } = {}
+) {
   const barrierLock = 8_601_001;
   const sessions = [];
   try {
-  const barrier = runInteractiveUntilMarker(
+  const barrier = registerConcurrentSession(sessions, startInteractiveSession(
     psql,
     [...connection, '-f', '-'],
     String.raw`
@@ -226,10 +234,9 @@ SELECT pg_advisory_xact_lock(${barrierLock});
 \echo official-download-metric-barrier-held
 `,
     'official-download-metric-barrier-held'
-  );
-  sessions.push(barrier);
+  ));
   await barrier.marker;
-  const first = runUntilMarker(
+  const first = registerConcurrentSession(sessions, startSession(
     psql,
     [...connection, '-f', '-'],
     String.raw`
@@ -242,19 +249,21 @@ SELECT pg_advisory_xact_lock(${barrierLock});
 COMMIT;
 `,
     'official-download-metric-lock-acquired'
-  );
-  sessions.push(first);
+  ));
   await first.marker;
-  const second = runUntilMarker(psql, [...connection, '-f', '-'], String.raw`
+  const second = registerConcurrentSession(sessions, startSession(
+    psql,
+    [...connection, '-f', '-'],
+    String.raw`
 SET ROLE service_role;
 SET application_name = 'ai-pet-official-download-metric-second';
 SELECT set_config('request.jwt.claims', '{"role":"service_role"}', false);
 \echo official-download-metric-second-dispatched
 SELECT record_official_windows_download_click(repeat('d', 64));
-`, 'official-download-metric-second-dispatched');
-  sessions.push(second);
-  second.marker.catch(() => undefined);
-  await run(psql, [...connection, '-f', '-'], String.raw`
+`,
+    'official-download-metric-second-dispatched'
+  ));
+  await runCommand(psql, [...connection, '-f', '-'], String.raw`
 DO $official_download_metric_wait_gate$
 DECLARE
   v_deadline timestamptz := clock_timestamp() + interval '5 seconds';
@@ -279,8 +288,8 @@ $official_download_metric_wait_gate$;
 `);
   barrier.release();
   await barrier.completion;
-  await Promise.all([first.completion, second]);
-  await run(psql, [...connection, '-f', '-'], String.raw`
+  await Promise.all([first.completion, second.completion]);
+  await runCommand(psql, [...connection, '-f', '-'], String.raw`
 DO $concurrent_official_download_metric_gate$
 BEGIN
   IF (SELECT click_count FROM official_windows_download_click_metric
@@ -293,6 +302,14 @@ $concurrent_official_download_metric_gate$;
   } finally {
     await cleanupConcurrentSessions(sessions);
   }
+}
+
+/** 注册后立即标记拒绝已被观察，同时保留原 Promise 供成功路径和清理读取。 */
+function registerConcurrentSession(sessions, session) {
+  session.marker.catch(() => undefined);
+  session.completion.catch(() => undefined);
+  sessions.push(session);
+  return session;
 }
 
 /** 无论观察或标记在哪一步失败，都取消所有会话并吞并回收其 completion。 */
@@ -491,10 +508,10 @@ function runUntilMarker(executable, arguments_, input, markerText) {
       windowsHide: true,
       stdio: ['pipe', 'pipe', 'pipe']
     });
+    const lifecycle = createSessionLifecycle(child);
     const stdout = [];
     const stderr = [];
     let markerSeen = false;
-    let closed = false;
     child.stdout.on('data', chunk => {
       const bytes = Buffer.from(chunk);
       stdout.push(bytes);
@@ -509,7 +526,7 @@ function runUntilMarker(executable, arguments_, input, markerText) {
       rejectPromise(error);
     });
     child.once('close', code => {
-      closed = true;
+      lifecycle.markSettled();
       const output = Buffer.concat(stdout).toString('utf8');
       const errorOutput = Buffer.concat(stderr).toString('utf8');
       if (code === 0) {
@@ -523,14 +540,11 @@ function runUntilMarker(executable, arguments_, input, markerText) {
       rejectMarker(error);
       rejectPromise(error);
     });
-    cancel = () => {
-      if (closed) return;
-      closed = true;
-      child.stdin.end();
-      child.kill();
-    };
+    cancel = lifecycle.cancel;
     child.stdin.end(input);
   });
+  marker.catch(() => undefined);
+  completion.catch(() => undefined);
   return { marker, completion, cancel: () => cancel() };
 }
 
@@ -549,10 +563,10 @@ function runInteractiveUntilMarker(executable, arguments_, input, markerText) {
       windowsHide: true,
       stdio: ['pipe', 'pipe', 'pipe']
     });
+    const lifecycle = createSessionLifecycle(child);
     const stdout = [];
     const stderr = [];
     let markerSeen = false;
-    let closed = false;
     child.stdout.on('data', chunk => {
       const bytes = Buffer.from(chunk);
       stdout.push(bytes);
@@ -567,7 +581,7 @@ function runInteractiveUntilMarker(executable, arguments_, input, markerText) {
       rejectPromise(error);
     });
     child.once('close', code => {
-      closed = true;
+      lifecycle.markSettled();
       const output = Buffer.concat(stdout).toString('utf8');
       const errorOutput = Buffer.concat(stderr).toString('utf8');
       if (code === 0) {
@@ -581,21 +595,40 @@ function runInteractiveUntilMarker(executable, arguments_, input, markerText) {
       rejectMarker(error);
       rejectPromise(error);
     });
-    release = () => {
-      if (closed) return;
-      closed = true;
-      child.stdin.write('COMMIT;\n');
-      child.stdin.end();
-    };
-    cancel = () => {
-      if (closed) return;
-      closed = true;
-      child.stdin.end();
-      child.kill();
-    };
+    release = lifecycle.release;
+    cancel = lifecycle.cancel;
     child.stdin.write(input);
   });
+  marker.catch(() => undefined);
+  completion.catch(() => undefined);
   return { marker, completion, release: () => release(), cancel: () => cancel() };
+}
+
+/** 子进程结束、释放与取消共享独立状态，写入失败不会屏蔽后续终止。 */
+export function createSessionLifecycle(child) {
+  let settled = false;
+  let cancelled = false;
+  let released = false;
+  return {
+    markSettled: () => {
+      settled = true;
+    },
+    cancel: () => {
+      if (settled || cancelled) return;
+      cancelled = true;
+      try {
+        child.stdin.end();
+      } finally {
+        child.kill();
+      }
+    },
+    release: () => {
+      if (settled || released) return;
+      child.stdin.write('COMMIT;\n');
+      released = true;
+      child.stdin.end();
+    }
+  };
 }
 
 const bootstrapSql = String.raw`
