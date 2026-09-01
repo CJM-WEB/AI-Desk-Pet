@@ -2,7 +2,7 @@
 
 适用规格：`docs/superpowers/specs/2026-09-01-pet-startup-motion-regression-design.md`
 
-状态：已实施并通过自动化门禁，真实显示器观感待用户人工确认。
+状态：启动与固定尺寸任务已实施；闪烁代码调整按用户后续决定撤回。
 
 ## 任务 1：启动空状态与损坏状态分流
 
@@ -18,12 +18,12 @@
 - GREEN：共享固定窗口尺寸，拖拽永远提交固定宽高，删除舞台解锁旧路径。
 - 完成标准：多轮拖拽与几何刷新均不能改变窗口和舞台尺寸。
 
-## 任务 3：逐帧锚点与物理像素对齐
+## 任务 3：撤回闪烁代码调整
 
 - 文件：`apps/desktop/src/renderer/src/characters/player/pixi-character-player.ts`、`apps/desktop/src/renderer/src/characters/player/CharacterPlayer.tsx`、`apps/desktop/src/main/characters/pet-visual-geometry.ts`
-- RED：帧切换时仍使用动作级锚点；`1.5 DPR` 下 CSS 位移落在非物理像素边界。
-- GREEN：逐帧 ground 回退到动作 ground，Main 保守联合每帧偏移，精灵与 CSS 剩余位移分别取整到适用像素网格。
-- 完成标准：锚点切换不改变动作级世界落点，CSS 位移乘 DPR 后为整数。
+- RED：新增回归期望动作级 ground、未取整 Pixi 和原始小数 CSS 位移，使当前闪烁修正实现失败。
+- GREEN：删除逐帧 ground、逐帧 Main 边界联合、`roundPixels` 和 DPR 位移量化，恢复上一版本正式播放路径。
+- 完成标准：只撤回闪烁相关代码；舞台尺寸锁、固定窗口尺寸、启动恢复和 Run 角色数据保持不变。
 
 ## 任务 4：修正当前紫色角色移动表现
 
