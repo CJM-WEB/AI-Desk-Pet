@@ -28,6 +28,7 @@ import type {
   ModerationRecord,
   NewSubmission,
   NewTextSubmission,
+  PublicDownloadInput,
   PublicDownloadResult,
   PublicInteractionStore,
   PublicLikeInput,
@@ -278,13 +279,37 @@ export class CloudBasePostgresStore implements
   }
 
   async recordPublicDownload(
-    submissionId: string
+    input: PublicDownloadInput
   ): Promise<PublicDownloadResult> {
+    requireHash(input.fingerprintHash);
     const result = await this.rpcClient.rpc('record_public_download', {
-      p_submission_id: submissionId
+      p_submission_id: input.submissionId,
+      p_fingerprint_hash: input.fingerprintHash,
+      p_operation_id: input.operationId
     });
     throwPublicNotFound(result);
+    if (result.error?.code === 'P1001') {
+      throw new ApiError('IDEMPOTENCY_CONFLICT', 409, result.error.message);
+    }
     const row = requireRecord(requireData(result, '记录下载失败'), '下载结果');
+    if (row.rate_limited === true) {
+      const retryAfterSeconds = requireNonnegativeInteger(
+        row.retry_after_seconds,
+        'retry_after_seconds'
+      );
+      if (retryAfterSeconds < 1) {
+        throw new ApiError('DATABASE_ERROR', 500, 'retry_after_seconds字段必须为正数');
+      }
+      throw new ApiError(
+        'RATE_LIMITED',
+        429,
+        '请求超过固定窗口限制',
+        retryAfterSeconds
+      );
+    }
+    if (row.not_found === true) {
+      throw new ApiError('NOT_FOUND', 404, '公开投稿不存在');
+    }
     return {
       downloadCount: requireNonnegativeInteger(
         row.download_count,

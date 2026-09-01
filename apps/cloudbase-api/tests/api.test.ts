@@ -27,6 +27,8 @@ const sourceIp = '203.0.113.8';
 const fingerprintSecret = '仅用于测试的指纹配置值';
 const likeOperationId = '00000000-0000-4000-8000-000000000101';
 const likeRequest = { liked: true, operationId: likeOperationId };
+const downloadOperationId = '00000000-0000-4000-8000-000000000102';
+const downloadRequest = { operationId: downloadOperationId };
 const validPrepareRequest = {
   kind: 'shared_package' as const,
   title: '名称',
@@ -596,7 +598,7 @@ describe('公开 HTTP API', () => {
     expect(dependencies.admin.getDetail).not.toHaveBeenCalled();
   });
 
-  it('点赞由原子 Store 限流，下载仍由 API 按设备与资源 ID 限流', async () => {
+  it('公开互动统一由原子 Store 限流并接收设备哈希与 operationId', async () => {
     const dependencies = createDependencies();
     const main = createApi(dependencies);
 
@@ -605,22 +607,23 @@ describe('公开 HTTP API', () => {
       context
     );
     const downloadResponse = await main(
-      event('POST', '/api/v1/community/community-1/download', {}),
+      event('POST', '/api/v1/community/community-1/download', downloadRequest),
       context
     );
 
     const deviceHash = createHmac('sha256', fingerprintSecret)
       .update(`${sourceIp}\ntest-agent`)
       .digest('hex');
-    expect(dependencies.abuseControl.consume.mock.calls).toContainEqual([
-      'download:community-1',
-      deviceHash
-    ]);
+    expect(dependencies.abuseControl.consume).not.toHaveBeenCalled();
     expect(dependencies.publicContent.setCommunityLike)
       .toHaveBeenCalledWith('community-1', deviceHash, true, likeOperationId);
     expect(dependencies.publicContent.setFeedbackLike).not.toHaveBeenCalled();
     expect(dependencies.publicContent.getDownload)
-      .toHaveBeenCalledWith('community-1');
+      .toHaveBeenCalledWith(
+        'community-1',
+        deviceHash,
+        downloadOperationId
+      );
     expect(JSON.parse(downloadResponse.body).data).toEqual({
       url: 'https://storage.example/download',
       expiresAt: '2026-07-31T00:05:00.000Z',
@@ -673,6 +676,28 @@ describe('公开 HTTP API', () => {
     expect(dependencies.publicContent.setCommunityLike).toHaveBeenCalledTimes(2);
   });
 
+  it('下载同 operation 重放不被 API 层已耗尽配额抢先拒绝', async () => {
+    const dependencies = createDependencies();
+    dependencies.abuseControl.consume.mockRejectedValue(
+      new ApiError('RATE_LIMITED', 429, '配额已耗尽', 18)
+    );
+
+    const main = createApi(dependencies);
+    const first = await main(
+      event('POST', '/api/v1/community/community-1/download', downloadRequest),
+      context
+    );
+    const replay = await main(
+      event('POST', '/api/v1/community/community-1/download', downloadRequest),
+      context
+    );
+
+    expect(first.statusCode).toBe(200);
+    expect(replay.statusCode).toBe(200);
+    expect(dependencies.abuseControl.consume).not.toHaveBeenCalled();
+    expect(dependencies.publicContent.getDownload).toHaveBeenCalledTimes(2);
+  });
+
   it.each([
     {},
     { liked: true },
@@ -687,6 +712,22 @@ describe('公开 HTTP API', () => {
 
     expect(response.statusCode).toBe(400);
     expect(dependencies.publicContent.setCommunityLike).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    {},
+    { operationId: 'not-a-uuid' },
+    { operationId: downloadOperationId, extra: true }
+  ])('下载拒绝空对象、非 UUID 与未知字段：%o', async body => {
+    const dependencies = createDependencies();
+    const response = await createApi(dependencies)(
+      event('POST', '/api/v1/community/community-1/download', body),
+      context
+    );
+
+    expect(response.statusCode).toBe(400);
+    expect(dependencies.abuseControl.consume).not.toHaveBeenCalled();
+    expect(dependencies.publicContent.getDownload).not.toHaveBeenCalled();
   });
 
   it('429 响应在稳定错误信封中包含重试秒数', async () => {

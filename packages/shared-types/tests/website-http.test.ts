@@ -179,6 +179,18 @@ describe('公开 endpoint 契约', () => {
     }).operationId).toBe('00000000-0000-4000-8000-00000000abcd');
   });
 
+  it('下载请求只接受规范化的 UUID 操作号', () => {
+    const operationId = '00000000-0000-4000-8000-00000000ABCE';
+    expect(publicDownloadRequestSchema.parse({ operationId })).toEqual({
+      operationId: operationId.toLowerCase()
+    });
+    for (const invalid of [
+      {},
+      { operationId: 'not-a-uuid' },
+      { operationId, privateDeviceHash: 'x' }
+    ]) expect(publicDownloadRequestSchema.safeParse(invalid).success).toBe(false);
+  });
+
   it('公开与管理员路径、query 和空 body 请求拒绝额外字段', () => {
     expect(publicListRequestSchema.parse({ limit: 8, cursor: 'v1.abc' }).cursor)
       .toBe('v1.abc');

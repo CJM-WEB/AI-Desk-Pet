@@ -123,7 +123,9 @@ export const publicLikeRequestSchema = z.object({
   liked: z.boolean(),
   operationId: z.string().uuid().transform(value => value.toLowerCase())
 }).strict();
-export const publicDownloadRequestSchema = emptyRequestSchema;
+export const publicDownloadRequestSchema = z.object({
+  operationId: z.string().uuid().transform(value => value.toLowerCase())
+}).strict();
 
 const signedUrlSchema = z.object({
   url: z.string().url(),

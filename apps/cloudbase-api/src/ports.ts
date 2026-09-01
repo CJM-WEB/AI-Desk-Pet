@@ -172,6 +172,12 @@ export interface PublicDownloadResult {
   downloadCount: number;
 }
 
+export interface PublicDownloadInput {
+  submissionId: string;
+  fingerprintHash: string;
+  operationId: string;
+}
+
 /** 公开读取层使用的资产元数据，不包含审核或私有凭据。 */
 export interface PublicAsset {
   role: 'cover' | 'package';
@@ -419,7 +425,7 @@ export interface PublicInteractionStore {
     input: PublicListQuery
   ): Promise<PublishedFeedbackPage>;
   setPublicLike(input: PublicLikeInput): Promise<PublicLikeResult>;
-  recordPublicDownload(submissionId: string): Promise<PublicDownloadResult>;
+  recordPublicDownload(input: PublicDownloadInput): Promise<PublicDownloadResult>;
 }
 
 /** 私有对象存储边界。 */

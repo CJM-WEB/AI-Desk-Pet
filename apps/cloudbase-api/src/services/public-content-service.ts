@@ -113,7 +113,8 @@ export class PublicContentService {
 
   async getDownload(
     id: string,
-    _fingerprint?: string
+    fingerprint: string,
+    operationId: string
   ): Promise<PublicDownload> {
     const submission = await this.store.findById(id);
     if (
@@ -136,11 +137,15 @@ export class PublicContentService {
     ) {
       throw notFound();
     }
-    await this.store.recordPublicDownload(id);
     const signed = await this.storage.createSignedUrl(
       packages[0]!.storageKey,
       signedDownloadLifetimeSeconds
     );
+    await this.store.recordPublicDownload({
+      submissionId: id,
+      fingerprintHash: fingerprint,
+      operationId
+    });
     return {
       ...signed,
       publicationBasis: submission.publicationBasis

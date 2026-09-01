@@ -270,6 +270,13 @@ describe('云端共享仓库', () => {
       url: 'https://storage.example/package', expiresAt: '2026-08-01T00:00:00.000Z',
       fileName: 'pet.zip', publicationBasis: 'admin_override'
     });
+    const downloadOptions = vi.mocked(api.request).mock.calls[3]?.[2];
+    expect(downloadOptions).toMatchObject({ method: 'POST' });
+    expect(JSON.parse(String(downloadOptions?.body))).toEqual({
+      operationId: expect.stringMatching(
+        /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u
+      )
+    });
   });
 
   it('点赞失败重试复用同一 desired state 与 operationId', async () => {
@@ -299,6 +306,43 @@ describe('云端共享仓库', () => {
       operationId: expect.any(String)
     });
     expect(retryBody).toEqual(firstBody);
+  });
+
+  it('下载失败重试复用 operationId，成功后才为下一次签发换新操作号', async () => {
+    const item = {
+      id: 'pet-download-retry', name: '宠物', description: '描述',
+      cover: { url: 'https://storage.example/cover', expiresAt: '2026-08-01T00:00:00.000Z' },
+      packageFileName: 'pet.zip', packageSizeBytes: 7, likeCount: 0, downloadCount: 0,
+      publishedAt: '2026-08-01T00:00:00.000Z', publicationBasis: 'standard'
+    };
+    const signed = {
+      url: 'https://storage.example/package',
+      expiresAt: '2026-08-01T00:05:00.000Z',
+      publicationBasis: 'standard'
+    };
+    const request = vi.fn()
+      .mockResolvedValueOnce(item)
+      .mockRejectedValueOnce(new Error('NETWORK_FAILED'))
+      .mockResolvedValueOnce(signed)
+      .mockResolvedValueOnce(signed);
+    const repository = new CloudSharedPetRepository({ request } as unknown as ApiClient);
+    await repository.getById(item.id);
+
+    await expect(repository.getDownload(item.id)).rejects.toThrow('NETWORK_FAILED');
+    await expect(repository.getDownload(item.id)).resolves.toMatchObject({
+      url: signed.url,
+      publicationBasis: 'standard'
+    });
+    await expect(repository.getDownload(item.id)).resolves.toMatchObject({
+      url: signed.url,
+      publicationBasis: 'standard'
+    });
+
+    const failedBody = JSON.parse(String(request.mock.calls[1]?.[2]?.body));
+    const retryBody = JSON.parse(String(request.mock.calls[2]?.[2]?.body));
+    const nextBody = JSON.parse(String(request.mock.calls[3]?.[2]?.body));
+    expect(retryBody).toEqual(failedBody);
+    expect(nextBody.operationId).not.toBe(retryBody.operationId);
   });
 
   it.each([undefined, 'unsafe'])('公开列表对非法发布依据失败关闭：%s', async publicationBasis => {

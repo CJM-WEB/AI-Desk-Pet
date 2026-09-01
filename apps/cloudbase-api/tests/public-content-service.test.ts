@@ -3,6 +3,9 @@ import { describe, expect, it, vi } from 'vitest';
 import { PublicContentService } from '../src/services/public-content-service.js';
 import { ApiError } from '../src/errors.js';
 
+const downloadFingerprint = 'd'.repeat(64);
+const downloadOperationId = '00000000-0000-4000-8000-000000000010';
+
 function createFixture(status: string | null): {
   store: {
     recordPublicDownload: ReturnType<typeof vi.fn>;
@@ -50,7 +53,11 @@ describe('公开内容服务', () => {
     async status => {
       const { service, storage } = createFixture(status);
 
-      await expect(service.getDownload('pending-id', 'device-hash'))
+      await expect(service.getDownload(
+        'pending-id',
+        downloadFingerprint,
+        downloadOperationId
+      ))
         .rejects.toMatchObject({ code: 'NOT_FOUND' });
       expect(storage.createSignedUrl).not.toHaveBeenCalled();
     }
@@ -59,7 +66,11 @@ describe('公开内容服务', () => {
   it('只有已发布内容获得五分钟私有包下载链接', async () => {
     const { service, store, storage } = createFixture('published');
 
-    await expect(service.getDownload('published-id', 'device-hash'))
+    await expect(service.getDownload(
+      'published-id',
+      downloadFingerprint,
+      downloadOperationId
+    ))
       .resolves.toEqual({
         url: 'https://storage.example/download',
         expiresAt: '2026-07-31T00:05:00.000Z',
@@ -69,8 +80,13 @@ describe('公开内容服务', () => {
       'submissions/published-id/package.zip',
       300
     );
-    expect(store.recordPublicDownload.mock.invocationCallOrder[0])
-      .toBeLessThan(storage.createSignedUrl.mock.invocationCallOrder[0]!);
+    expect(storage.createSignedUrl.mock.invocationCallOrder[0])
+      .toBeLessThan(store.recordPublicDownload.mock.invocationCallOrder[0]!);
+    expect(store.recordPublicDownload).toHaveBeenCalledWith({
+      submissionId: 'published-id',
+      fingerprintHash: downloadFingerprint,
+      operationId: downloadOperationId
+    });
   });
 
   it('已发布记录缺少固定包资产时仍拒绝下载', async () => {
@@ -88,19 +104,83 @@ describe('公开内容服务', () => {
     };
     const service = new PublicContentService(store as never, storage as never);
 
-    await expect(service.getDownload('published-id', 'device-hash'))
+    await expect(service.getDownload(
+      'published-id',
+      downloadFingerprint,
+      downloadOperationId
+    ))
       .rejects.toMatchObject({ code: 'NOT_FOUND' });
     expect(storage.createSignedUrl).not.toHaveBeenCalled();
+    expect(store.recordPublicDownload).not.toHaveBeenCalled();
   });
 
-  it('签名服务失败时不返回替代公开路径', async () => {
-    const { service, storage } = createFixture('published');
+  it('签名失败时不记录成功签发，也不返回替代公开路径', async () => {
+    const { service, store, storage } = createFixture('published');
     storage.createSignedUrl.mockRejectedValueOnce(
       Object.assign(new Error('storage failed'), { code: 'STORAGE_ERROR' })
     );
 
-    await expect(service.getDownload('published-id', 'device-hash'))
+    await expect(service.getDownload(
+      'published-id',
+      downloadFingerprint,
+      downloadOperationId
+    ))
       .rejects.toMatchObject({ code: 'STORAGE_ERROR' });
+    expect(store.recordPublicDownload).not.toHaveBeenCalled();
+  });
+
+  it('签名成功但计数失败时拒绝整个请求且不会返回 URL', async () => {
+    const { service, store, storage } = createFixture('published');
+    store.recordPublicDownload.mockRejectedValueOnce(
+      Object.assign(new Error('database failed'), { code: 'DATABASE_ERROR' })
+    );
+
+    await expect(service.getDownload(
+      'published-id',
+      downloadFingerprint,
+      downloadOperationId
+    )).rejects.toMatchObject({ code: 'DATABASE_ERROR' });
+    expect(storage.createSignedUrl).toHaveBeenCalledOnce();
+    expect(store.recordPublicDownload).toHaveBeenCalledOnce();
+  });
+
+  it('同一 operation 重试会重新签名，但 Store 只形成一次增量事实', async () => {
+    const { service, store, storage } = createFixture('published');
+    const snapshots = new Map<string, { downloadCount: number }>();
+    let increments = 0;
+    store.recordPublicDownload.mockImplementation(async input => {
+      const existing = snapshots.get(input.operationId);
+      if (existing) return existing;
+      increments += 1;
+      const result = { downloadCount: increments };
+      snapshots.set(input.operationId, result);
+      return result;
+    });
+    storage.createSignedUrl
+      .mockResolvedValueOnce({
+        url: 'https://storage.example/download?signature=first',
+        expiresAt: '2026-07-31T00:05:00.000Z'
+      })
+      .mockResolvedValueOnce({
+        url: 'https://storage.example/download?signature=retry',
+        expiresAt: '2026-07-31T00:06:00.000Z'
+      });
+
+    const first = await service.getDownload(
+      'published-id',
+      downloadFingerprint,
+      downloadOperationId
+    );
+    const retry = await service.getDownload(
+      'published-id',
+      downloadFingerprint,
+      downloadOperationId
+    );
+
+    expect(first.url).not.toBe(retry.url);
+    expect(storage.createSignedUrl).toHaveBeenCalledTimes(2);
+    expect(store.recordPublicDownload).toHaveBeenCalledTimes(2);
+    expect(increments).toBe(1);
   });
 });
 

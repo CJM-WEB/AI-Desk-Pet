@@ -14,6 +14,9 @@ const publicLikeRequestSchema = z.object({
   liked: z.boolean(),
   operationId: z.string().uuid().transform(value => value.toLowerCase())
 }).strict();
+const publicDownloadRequestSchema = z.object({
+  operationId: z.string().uuid().transform(value => value.toLowerCase())
+}).strict();
 
 const ADMIN_TOKEN = 'e2e-admin-session';
 const CONTRACT_ADMIN_TOKEN = 'contract-admin-token';
@@ -291,11 +294,19 @@ export function createMemoryWebsiteApi({ runId }) {
 
       const downloadId = matchId(pathname, '/api/v1/community/', '/download');
       if (request.method === 'POST' && downloadId) {
-        await readJson(request);
+        const body = publicDownloadRequestSchema.safeParse(await readJson(request));
+        if (!body.success) return sendError(response, 400, 'INVALID_REQUEST');
         const record = requirePublished(downloadId, 'shared_package');
-        record.downloadCount += 1;
+        const url = `http://${request.headers.host}/__e2e/download/${record.id}`;
+        recordDownload({
+          record,
+          deviceHash: memoryDeviceHash(request),
+          request: body.data,
+          interactionOperations,
+          now: now()
+        });
         return sendData(response, 200, {
-          url: `http://${request.headers.host}/__e2e/download/${record.id}`,
+          url,
           expiresAt: plusMinutes(now(), 5),
           publicationBasis: record.publicationBasis
         });
@@ -940,6 +951,38 @@ function setLike({
     deviceHash,
     desiredLiked: request.liked,
     endpointKind,
+    result: structuredClone(result),
+    expiresAt: plusDays(now, 1)
+  });
+  return result;
+}
+
+/** 下载只在地址成功形成后记录一次签发事实；失败重试复用首次计数快照。 */
+function recordDownload({
+  record,
+  deviceHash,
+  request,
+  interactionOperations,
+  now
+}) {
+  const existing = interactionOperations.get(request.operationId);
+  if (existing && Date.parse(existing.expiresAt) <= Date.parse(now)) {
+    interactionOperations.delete(request.operationId);
+  } else if (existing) {
+    if (
+      existing.action !== 'download'
+      || existing.submissionId !== record.id
+      || existing.deviceHash !== deviceHash
+    ) throw new MemoryApiError('IDEMPOTENCY_CONFLICT', 409);
+    return structuredClone(existing.result);
+  }
+
+  record.downloadCount += 1;
+  const result = { downloadCount: record.downloadCount };
+  interactionOperations.set(request.operationId, {
+    action: 'download',
+    submissionId: record.id,
+    deviceHash,
     result: structuredClone(result),
     expiresAt: plusDays(now, 1)
   });

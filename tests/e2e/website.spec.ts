@@ -721,9 +721,14 @@ test('无有效证据共享包经两步管理员强制发布后在卡片、详�
   }));
   const download = await request.post(
     `/api/v1/community/${encodeURIComponent(receipt.submissionId)}/download`,
-    { data: {} }
+    { data: { operationId: 'a5e6612a-73ce-4ed9-8930-f8b4ddcb44d8' } }
   );
-  expect((await download.json()).data.publicationBasis).toBe('admin_override');
+  expect(download.ok()).toBe(true);
+  expect((await download.json()).data).toEqual(expect.objectContaining({
+    url: expect.any(String),
+    expiresAt: expect.any(String),
+    publicationBasis: 'admin_override'
+  }));
 
   await page.goto('/?seed=42');
   await enterChapter(page, 'community');

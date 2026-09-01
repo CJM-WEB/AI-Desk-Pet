@@ -1009,7 +1009,11 @@ describe('CloudBase PostgreSQL 安全与公开互动存储', () => {
       operationId: '00000000-0000-4000-8000-000000000201',
       endpointKind: 'community'
     })).resolves.toEqual({ liked: true, likeCount: 2 });
-    await expect(store.recordPublicDownload('community-1'))
+    await expect(store.recordPublicDownload({
+      submissionId: 'community-1',
+      fingerprintHash: 'e'.repeat(64),
+      operationId: '00000000-0000-4000-8000-000000000205'
+    }))
       .resolves.toEqual({ downloadCount: 4 });
     expect(rpc.rpc.mock.calls.map(([name]) => name)).toEqual([
       'create_text_submission',
@@ -1022,6 +1026,11 @@ describe('CloudBase PostgreSQL 安全与公开互动存储', () => {
       p_desired_liked: true,
       p_operation_id: '00000000-0000-4000-8000-000000000201',
       p_endpoint_kind: 'community'
+    });
+    expect(rpc.rpc).toHaveBeenNthCalledWith(3, 'record_public_download', {
+      p_submission_id: 'community-1',
+      p_fingerprint_hash: 'e'.repeat(64),
+      p_operation_id: '00000000-0000-4000-8000-000000000205'
     });
   });
 
@@ -1044,6 +1053,58 @@ describe('CloudBase PostgreSQL 安全与公开互动存储', () => {
       code: 'IDEMPOTENCY_CONFLICT',
       statusCode: 409
     });
+  });
+
+  it('下载把数据库幂等冲突映射为稳定 409', async () => {
+    const rpc = {
+      rpc: vi.fn(async () => ({
+        data: null,
+        error: { code: 'P1001', message: 'idempotency conflict' }
+      }))
+    };
+    const store = new CloudBasePostgresStore({ from: vi.fn() } as never, rpc);
+
+    await expect(store.recordPublicDownload({
+      submissionId: 'community-1',
+      fingerprintHash: 'e'.repeat(64),
+      operationId: '00000000-0000-4000-8000-000000000206'
+    })).rejects.toMatchObject({
+      code: 'IDEMPOTENCY_CONFLICT',
+      statusCode: 409
+    });
+  });
+
+  it('下载把原子 RPC 的首次写配额耗尽映射为稳定 429', async () => {
+    const rpc = {
+      rpc: vi.fn(async () => ({
+        data: { rate_limited: true, retry_after_seconds: 18 },
+        error: null
+      }))
+    };
+    const store = new CloudBasePostgresStore({ from: vi.fn() } as never, rpc);
+
+    await expect(store.recordPublicDownload({
+      submissionId: 'community-1',
+      fingerprintHash: 'e'.repeat(64),
+      operationId: '00000000-0000-4000-8000-000000000207'
+    })).rejects.toMatchObject({
+      code: 'RATE_LIMITED',
+      statusCode: 429,
+      retryAfterSeconds: 18
+    });
+  });
+
+  it('下载把已计入配额的首次状态失败映射为稳定 404', async () => {
+    const rpc = {
+      rpc: vi.fn(async () => ({ data: { not_found: true }, error: null }))
+    };
+    const store = new CloudBasePostgresStore({ from: vi.fn() } as never, rpc);
+
+    await expect(store.recordPublicDownload({
+      submissionId: 'pending-community',
+      fingerprintHash: 'e'.repeat(64),
+      operationId: '00000000-0000-4000-8000-000000000208'
+    })).rejects.toMatchObject({ code: 'NOT_FOUND', statusCode: 404 });
   });
 
   it('desired-state 点赞把原子 RPC 的首次写配额耗尽映射为稳定 429', async () => {

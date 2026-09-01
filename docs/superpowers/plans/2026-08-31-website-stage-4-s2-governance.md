@@ -445,6 +445,8 @@ git commit -m "fix(web): 使公开点赞可安全重放"
 - Modify: `apps/website/tests/cloud-shared-pet-repository.test.ts`
 - Modify: `tests/memory-website-api.mjs`
 - Modify: `tests/website-contract/website-api-contract.ts`
+- Modify: `tests/website-contract/production-driver.test.ts`
+- Modify: `tests/e2e/website.spec.ts`
 - Modify: `tools/test-cloudbase-migrations.mjs`
 - Modify: `tools/test-cloudbase-migrations.test.mjs`
 - Modify: `tools/cloudbase-migration-inventory.test.mjs`

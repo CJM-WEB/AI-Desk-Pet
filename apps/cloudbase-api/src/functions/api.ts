@@ -112,7 +112,11 @@ interface PublicContentApi {
     desiredLiked: boolean,
     operationId: string
   ): Promise<unknown>;
-  getDownload(id: string): Promise<PublicDownload>;
+  getDownload(
+    id: string,
+    fingerprint: string,
+    operationId: string
+  ): Promise<PublicDownload>;
 }
 
 interface AbuseControlApi {
@@ -361,12 +365,12 @@ async function dispatch(
       header(event.headers, 'user-agent'),
       dependencies.fingerprintSecret
     );
-    await dependencies.abuseControl.consume(
-      `download:${downloadId}`,
-      deviceHash
-    );
     return publicDownloadResponseSchema.parse(
-      await dependencies.publicContent.getDownload(downloadId)
+      await dependencies.publicContent.getDownload(
+        downloadId,
+        deviceHash,
+        body.data.operationId
+      )
     );
   }
 

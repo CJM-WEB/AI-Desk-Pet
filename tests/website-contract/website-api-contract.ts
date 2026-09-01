@@ -158,12 +158,26 @@ export function runWebsiteApiContract(
       }), publicCommunityItemSchema);
       expect(detail.publicationBasis).toBe('standard');
 
+      const downloadOperationId = '00000000-0000-4000-8000-000000000300';
+      const downloadRequest = { operationId: downloadOperationId };
       const download = success(await driver.request({
         method: 'POST',
         path: `/api/v1/community/${refs.publicCommunityId}/download`,
-        body: {},
+        body: downloadRequest,
       }), publicDownloadResponseSchema);
       expect(download.publicationBasis).toBe('standard');
+      const downloadReplay = success(await driver.request({
+        method: 'POST',
+        path: `/api/v1/community/${refs.publicCommunityId}/download`,
+        body: downloadRequest,
+      }), publicDownloadResponseSchema);
+      expect(downloadReplay.publicationBasis).toBe('standard');
+      const detailAfterDownloadReplay = success(await driver.request({
+        method: 'GET',
+        path: `/api/v1/community/${refs.publicCommunityId}`,
+      }), publicCommunityItemSchema);
+      expect(detailAfterDownloadReplay.downloadCount)
+        .toBe(detail.downloadCount + 1);
 
       const operationId = '00000000-0000-4000-8000-000000000301';
       const likeRequest = { liked: true, operationId };

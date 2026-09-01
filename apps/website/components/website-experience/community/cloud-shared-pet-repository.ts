@@ -5,6 +5,7 @@ import {
   prepareSubmissionResponseSchema,
   publicCommunityItemSchema,
   publicCommunityPageSchema,
+  publicDownloadRequestSchema,
   publicDownloadResponseSchema,
   publicLikeRequestSchema,
   publicLikeResponseSchema,
@@ -34,6 +35,7 @@ export class CloudSharedPetRepository implements SharedPetRepository {
   private readonly records = new Map<string, SharedPetPackageSummary>();
   private readonly pageCursors = new Map<number, string>();
   private readonly pendingLikes = new Map<string, PendingSharedPetLike>();
+  private readonly pendingDownloads = new Map<string, string>();
   private readonly likeQueues = new Map<string, Promise<void>>();
   private pageGeneration = 0;
 
@@ -199,11 +201,18 @@ export class CloudSharedPetRepository implements SharedPetRepository {
   async getDownload(id: string): Promise<SharedPetDownload> {
     const current = this.records.get(id) ?? await this.getById(id);
     if (!current) throw new Error('PACKAGE_NOT_FOUND');
+    const operationId = this.pendingDownloads.get(id)
+      ?? globalThis.crypto.randomUUID();
+    this.pendingDownloads.set(id, operationId);
+    const body = publicDownloadRequestSchema.parse({ operationId });
     const result = await this.api.request(
       `/community/${encodeURIComponent(id)}/download`,
       publicDownloadResponseSchema,
-      { method: 'POST', body: '{}' }
+      { method: 'POST', body: JSON.stringify(body) }
     );
+    if (this.pendingDownloads.get(id) === operationId) {
+      this.pendingDownloads.delete(id);
+    }
     return {
       url: result.url,
       expiresAt: result.expiresAt,

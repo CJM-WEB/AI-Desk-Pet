@@ -33,6 +33,10 @@ interface ContractRecord {
   publishedAt: string | null;
 }
 
+type ContractInteractionResult =
+  | { liked: boolean; likeCount: number }
+  | { downloadCount: number };
+
 type PublishedContractRecord = Omit<ContractRecord, 'status' | 'publicationBasis' | 'publishedAt'> & {
   status: 'published';
   publicationBasis: 'standard' | 'admin_override';
@@ -44,10 +48,11 @@ interface ProductionFixtureState {
   idempotency: Map<string, { payload: string; result: unknown }>;
   interactionOperations: Map<string, {
     payload: string;
-    result: { liked: boolean; likeCount: number };
+    result: ContractInteractionResult;
     expiresAtMs: number;
   }>;
   interactionVotes: Set<string>;
+  downloadCounts: Map<string, number>;
   nowMs: number;
 }
 
@@ -98,6 +103,7 @@ function createState(): ProductionFixtureState {
     idempotency: new Map(),
     interactionOperations: new Map(),
     interactionVotes: new Set(),
+    downloadCounts: new Map(),
     nowMs: Date.parse(CREATED_AT),
   };
 }
@@ -108,7 +114,7 @@ function isPublished(record: ContractRecord): record is PublishedContractRecord 
     && record.publishedAt !== null;
 }
 
-function publicCommunity(record: PublishedContractRecord) {
+function publicCommunity(record: PublishedContractRecord, downloadCount: number) {
   return {
     id: record.id,
     name: record.title,
@@ -120,7 +126,7 @@ function publicCommunity(record: PublishedContractRecord) {
     packageFileName: 'pet.zip',
     packageSizeBytes: 24,
     likeCount: 0,
-    downloadCount: 0,
+    downloadCount,
     publishedAt: record.publishedAt,
     publicationBasis: record.publicationBasis,
   };
@@ -253,12 +259,12 @@ function createDependencies(state: ProductionFixtureState): ApiDependencies {
         input,
         'community',
         record => record.publishedAt,
-        publicCommunity,
+        record => publicCommunity(record, state.downloadCounts.get(record.id) ?? 0),
       ),
       getCommunity: async id => {
         const record = state.records.get(id);
         if (!record || !isPublished(record)) throw new ApiError('NOT_FOUND', 404);
-        return publicCommunity(record);
+        return publicCommunity(record, state.downloadCounts.get(record.id) ?? 0);
       },
       listFeedback: async (kind, input) => contractPage([{
           id: FIXTURE_REFS.publicFeedbackId,
@@ -284,9 +290,10 @@ function createDependencies(state: ProductionFixtureState): ApiDependencies {
         setContractLike(
           state, id, fingerprint, desiredLiked, operationId, 'feedback'
         ),
-      getDownload: async id => {
+      getDownload: async (id, fingerprint, operationId) => {
         const record = state.records.get(id);
         if (!record || !isPublished(record)) throw new ApiError('NOT_FOUND', 404);
+        recordContractDownload(state, id, fingerprint, operationId);
         return {
           url: `https://storage.example/${id}/pet.zip`,
           expiresAt: '2026-07-31T00:05:00.000Z',
@@ -359,6 +366,7 @@ function setContractLike(
     state.interactionOperations.delete(canonicalOperationId);
   } else if (previous) {
     if (previous.payload !== payload) throw new ApiError('IDEMPOTENCY_CONFLICT', 409);
+    if (!('liked' in previous.result)) throw new ApiError('IDEMPOTENCY_CONFLICT', 409);
     return structuredClone(previous.result);
   }
   const voteKey = `${fingerprint}:${submissionId}`;
@@ -367,6 +375,37 @@ function setContractLike(
   const likeCount = [...state.interactionVotes]
     .filter(key => key.endsWith(`:${submissionId}`)).length;
   const result = { liked: desiredLiked, likeCount };
+  state.interactionOperations.set(canonicalOperationId, {
+    payload,
+    result: structuredClone(result),
+    expiresAtMs: state.nowMs + 24 * 60 * 60 * 1000,
+  });
+  return result;
+}
+
+/** 下载替身复用互动 operation 账本，回放首次计数且不重复增加成功签发次数。 */
+function recordContractDownload(
+  state: ProductionFixtureState,
+  submissionId: string,
+  fingerprint: string,
+  operationId: string,
+): { downloadCount: number } {
+  const canonicalOperationId = operationId.toLowerCase();
+  const payload = JSON.stringify({ action: 'download', submissionId, fingerprint });
+  const previous = state.interactionOperations.get(canonicalOperationId);
+  if (previous && previous.expiresAtMs <= state.nowMs) {
+    state.interactionOperations.delete(canonicalOperationId);
+  } else if (previous) {
+    if (previous.payload !== payload) throw new ApiError('IDEMPOTENCY_CONFLICT', 409);
+    if (!('downloadCount' in previous.result)) {
+      throw new ApiError('IDEMPOTENCY_CONFLICT', 409);
+    }
+    return structuredClone(previous.result);
+  }
+  const result = {
+    downloadCount: (state.downloadCounts.get(submissionId) ?? 0) + 1,
+  };
+  state.downloadCounts.set(submissionId, result.downloadCount);
   state.interactionOperations.set(canonicalOperationId, {
     payload,
     result: structuredClone(result),

@@ -140,7 +140,7 @@ export async function runCloudBaseMigrationBehaviorGate({
       postgresVersion: postgresVersion.version,
       postgresMajorVersion: postgresVersion.major,
       migrationsApplied: migrations.length,
-      behaviorsVerified: 69
+      behaviorsVerified: 80
     };
   } finally {
     if (started) {
@@ -1794,11 +1794,15 @@ BEGIN
   IF has_function_privilege(
       'anon', 'set_public_like(text,character,boolean,uuid,text)', 'EXECUTE')
     OR has_function_privilege(
+      'anon', 'record_public_download(text,character,uuid)', 'EXECUTE')
+    OR has_function_privilege(
       'authenticated',
       'purge_expired_public_interaction_operations(integer)',
       'EXECUTE')
     OR NOT has_function_privilege(
-      'service_role', 'set_public_like(text,character,boolean,uuid,text)', 'EXECUTE') THEN
+      'service_role', 'set_public_like(text,character,boolean,uuid,text)', 'EXECUTE')
+    OR NOT has_function_privilege(
+      'service_role', 'record_public_download(text,character,uuid)', 'EXECUTE') THEN
     RAISE EXCEPTION '行为门失败：互动 RPC 权限不符合 service_role 边界';
   END IF;
   IF to_regprocedure('toggle_public_like(text,character)') IS NOT NULL THEN
@@ -1806,6 +1810,9 @@ BEGIN
   END IF;
   IF to_regprocedure('set_public_like(text,character,boolean,uuid)') IS NOT NULL THEN
     RAISE EXCEPTION '行为门失败：旧四参数点赞 RPC 仍然存在';
+  END IF;
+  IF to_regprocedure('record_public_download(text)') IS NOT NULL THEN
+    RAISE EXCEPTION '行为门失败：旧单参数下载 RPC 仍然存在';
   END IF;
 
   PERFORM set_config('request.jwt.claims', '{"role":"anon"}', false);
@@ -1820,6 +1827,14 @@ BEGIN
   BEGIN
     PERFORM purge_expired_public_interaction_operations(1);
     RAISE EXCEPTION '行为门失败：账本清理未拒绝非 service_role claims';
+  EXCEPTION WHEN SQLSTATE '42501' THEN NULL;
+  END;
+  BEGIN
+    PERFORM record_public_download(
+      'missing', repeat('a', 64),
+      '00000000-0000-4000-8000-000000000501'::uuid
+    );
+    RAISE EXCEPTION '行为门失败：下载未拒绝非 service_role claims';
   EXCEPTION WHEN SQLSTATE '42501' THEN NULL;
   END;
 END
@@ -1846,10 +1861,52 @@ BEGIN
     ('gate-like-rate', 'feedback', '点赞限流', '点赞限流', 'published', md5('gate-like-rate') || md5('gate-like-rate'), now(), 'standard'),
     ('gate-like-unpublished', 'feedback', '未发布点赞', '未发布点赞', 'manual_review_pending', md5('gate-like-unpublished') || md5('gate-like-unpublished'), NULL, NULL),
     ('gate-like-wrong-kind', 'feedback', '错误入口点赞', '错误入口点赞', 'published', md5('gate-like-wrong-kind') || md5('gate-like-wrong-kind'), now(), 'standard'),
-    ('gate-like-community', 'shared_package', '社区点赞', '社区点赞', 'published', md5('gate-like-community') || md5('gate-like-community'), now(), 'standard');
+    ('gate-like-community', 'shared_package', '社区点赞', '社区点赞', 'published', md5('gate-like-community') || md5('gate-like-community'), now(), 'standard'),
+    ('gate-download-one', 'shared_package', '下载一', '下载一', 'published', md5('gate-download-one') || md5('gate-download-one'), now(), 'standard'),
+    ('gate-download-two', 'shared_package', '下载二', '下载二', 'published', md5('gate-download-two') || md5('gate-download-two'), now(), 'standard'),
+    ('gate-download-rate', 'shared_package', '下载限流', '下载限流', 'published', md5('gate-download-rate') || md5('gate-download-rate'), now(), 'standard');
   INSERT INTO public_engagement (submission_id)
   VALUES ('gate-like-one'), ('gate-like-devices'), ('gate-like-expiry'),
-    ('gate-like-rate'), ('gate-like-wrong-kind'), ('gate-like-community');
+    ('gate-like-rate'), ('gate-like-wrong-kind'), ('gate-like-community'),
+    ('gate-download-one'), ('gate-download-two'), ('gate-download-rate');
+
+  BEGIN
+    INSERT INTO public_interaction_operations (
+      operation_id, action, submission_id, fingerprint_hash, desired_liked,
+      result_snapshot, expires_at
+    ) VALUES (
+      '00000000-0000-4000-8000-000000000590'::uuid,
+      'download', 'gate-download-one', repeat('a', 64), NULL,
+      '[]'::jsonb, now() + interval '24 hours'
+    );
+    RAISE EXCEPTION '行为门失败：账本接受非 object 结果快照';
+  EXCEPTION WHEN SQLSTATE '23514' THEN NULL;
+  END;
+  BEGIN
+    INSERT INTO public_interaction_operations (
+      operation_id, action, submission_id, fingerprint_hash, desired_liked,
+      result_snapshot, expires_at
+    ) VALUES (
+      '00000000-0000-4000-8000-000000000591'::uuid,
+      'download', 'gate-download-one', repeat('a', 64), NULL,
+      jsonb_build_object('liked', true, 'like_count', 1),
+      now() + interval '24 hours'
+    );
+    RAISE EXCEPTION '行为门失败：下载账本接受点赞快照形状';
+  EXCEPTION WHEN SQLSTATE '23514' THEN NULL;
+  END;
+  BEGIN
+    INSERT INTO public_interaction_operations (
+      operation_id, action, submission_id, fingerprint_hash, desired_liked,
+      result_snapshot, expires_at
+    ) VALUES (
+      '00000000-0000-4000-8000-000000000592'::uuid,
+      'like', 'gate-download-one', repeat('a', 64), true,
+      jsonb_build_object('download_count', 1), now() + interval '24 hours'
+    );
+    RAISE EXCEPTION '行为门失败：点赞账本接受下载快照形状';
+  EXCEPTION WHEN SQLSTATE '23514' THEN NULL;
+  END;
 
   v_first := set_public_like(
     'gate-like-one', repeat('a', 64), true,
@@ -2036,6 +2093,96 @@ BEGIN
     OR (SELECT like_count FROM public_engagement
         WHERE submission_id = 'gate-like-community') <> 1 THEN
     RAISE EXCEPTION '行为门失败：跨 endpoint 冲突改写了首次点赞结果';
+  END IF;
+
+  v_first := record_public_download(
+    'gate-download-one', repeat('a', 64),
+    '00000000-0000-4000-8000-000000000501'::uuid
+  );
+  v_replay := record_public_download(
+    'gate-download-one', repeat('a', 64),
+    '00000000-0000-4000-8000-000000000501'::uuid
+  );
+  IF v_first IS DISTINCT FROM jsonb_build_object('download_count', 1)
+    OR v_replay IS DISTINCT FROM v_first
+    OR (SELECT download_count FROM public_engagement
+        WHERE submission_id = 'gate-download-one') <> 1 THEN
+    RAISE EXCEPTION '行为门失败：同 operation 下载重放重复计数';
+  END IF;
+
+  BEGIN
+    PERFORM record_public_download(
+      'gate-download-two', repeat('a', 64),
+      '00000000-0000-4000-8000-000000000501'::uuid
+    );
+    RAISE EXCEPTION '行为门失败：下载 operation 可跨投稿回放';
+  EXCEPTION WHEN SQLSTATE 'P1001' THEN NULL;
+  END;
+  BEGIN
+    PERFORM record_public_download(
+      'gate-download-one', repeat('b', 64),
+      '00000000-0000-4000-8000-000000000501'::uuid
+    );
+    RAISE EXCEPTION '行为门失败：下载 operation 可跨设备回放';
+  EXCEPTION WHEN SQLSTATE 'P1001' THEN NULL;
+  END;
+  BEGIN
+    PERFORM record_public_download(
+      'gate-like-community', repeat('6', 64),
+      '00000000-0000-4000-8006-000000000001'::uuid
+    );
+    RAISE EXCEPTION '行为门失败：点赞 operation 可从下载 endpoint 回放';
+  EXCEPTION WHEN SQLSTATE 'P1001' THEN NULL;
+  END;
+
+  v_replay := record_public_download(
+    'gate-download-one', repeat('a', 64),
+    '00000000-0000-4000-8000-000000000502'::uuid
+  );
+  IF v_replay IS DISTINCT FROM jsonb_build_object('download_count', 2)
+    OR (SELECT download_count FROM public_engagement
+        WHERE submission_id = 'gate-download-one') <> 2 THEN
+    RAISE EXCEPTION '行为门失败：不同下载 operation 未各增加一次';
+  END IF;
+
+  FOR v_index IN 1..10 LOOP
+    PERFORM record_public_download(
+      'gate-download-rate', repeat('5', 64),
+      ('00000000-0000-4000-8007-' || lpad(to_hex(v_index), 12, '0'))::uuid
+    );
+  END LOOP;
+  v_rate_limited := record_public_download(
+    'gate-download-rate', repeat('5', 64),
+    '00000000-0000-4000-8007-000000000011'::uuid
+  );
+  IF v_rate_limited ->> 'rate_limited' IS DISTINCT FROM 'true' THEN
+    RAISE EXCEPTION '行为门失败：新下载 operation 未受原子配额保护';
+  END IF;
+  v_replay := record_public_download(
+    'gate-download-rate', repeat('5', 64),
+    '00000000-0000-4000-8007-00000000000a'::uuid
+  );
+  IF v_replay IS DISTINCT FROM jsonb_build_object('download_count', 10)
+    OR (SELECT download_count FROM public_engagement
+        WHERE submission_id = 'gate-download-rate') <> 10 THEN
+    RAISE EXCEPTION '行为门失败：配额耗尽阻断下载首次结果回放或重复计数';
+  END IF;
+
+  FOR v_index IN 1..10 LOOP
+    v_not_found := record_public_download(
+      'gate-download-missing', repeat('4', 64),
+      ('00000000-0000-4000-8008-' || lpad(to_hex(v_index), 12, '0'))::uuid
+    );
+    IF v_not_found IS DISTINCT FROM jsonb_build_object('not_found', true) THEN
+      RAISE EXCEPTION '行为门失败：缺失投稿未返回统一私有下载 not-found 事实';
+    END IF;
+  END LOOP;
+  v_rate_limited := record_public_download(
+    'gate-download-missing', repeat('4', 64),
+    '00000000-0000-4000-8008-000000000011'::uuid
+  );
+  IF v_rate_limited ->> 'rate_limited' IS DISTINCT FROM 'true' THEN
+    RAISE EXCEPTION '行为门失败：缺失投稿未消费统一下载首次限流配额';
   END IF;
 
   IF EXISTS (
