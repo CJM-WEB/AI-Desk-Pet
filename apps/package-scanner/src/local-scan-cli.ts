@@ -1,19 +1,45 @@
 import { createHash } from 'node:crypto';
-import { createReadStream } from 'node:fs';
-import { resolve } from 'node:path';
+import { constants as fsConstants } from 'node:fs';
+import {
+  lstat,
+  mkdtemp,
+  open,
+  rm,
+  type FileHandle
+} from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { ClamAvCommandScanner } from './clamav-command-scanner.js';
 import {
   scanPackage,
+  MAX_ARCHIVE_BYTES,
   type ArchiveIdentity,
   type ClamAvScanner,
   type ImageContentModerator
 } from './scan-package.js';
 
+export const DEFAULT_SCAN_TIMEOUT_MS = 120_000;
+
+type SignalSource = {
+  once(event: 'SIGINT' | 'SIGTERM', listener: () => void): unknown;
+  removeListener(event: 'SIGINT' | 'SIGTERM', listener: () => void): unknown;
+};
+
 type LocalScanCliDependencies = {
   clamav?: ClamAvScanner;
+  closeSource?: (source: FileHandle) => Promise<void>;
+  scan?: typeof scanPackage;
+  scanTimeoutMs?: number;
+  signalSource?: SignalSource;
   writeStdout?: (value: string) => void;
   writeStderr?: (value: string) => void;
+};
+
+type ArchiveSnapshot = {
+  directory: string;
+  path: string;
+  archive: ArchiveIdentity;
 };
 
 const localImageModerator: ImageContentModerator = {
@@ -25,18 +51,127 @@ const localImageModerator: ImageContentModerator = {
   })
 };
 
-async function identifyArchive(archivePath: string): Promise<ArchiveIdentity> {
+function archiveError(): Error {
+  return new Error('CHARACTER_PACKAGE_ARCHIVE_SIZE_REJECTED');
+}
+
+function assertRegularArchive(
+  information: Awaited<ReturnType<typeof lstat>>,
+  maxArchiveBytes: number
+): void {
+  if (
+    !information.isFile()
+    || information.size <= 0
+    || information.size > maxArchiveBytes
+  ) {
+    throw archiveError();
+  }
+}
+
+/**
+ * 对已经打开的普通文件边复制边校验预算，确保摘要与后续扫描读取同一份不可变快照。
+ */
+export async function copyOpenedArchiveToSnapshot(input: {
+  source: FileHandle;
+  destination: FileHandle;
+  maxArchiveBytes?: number;
+  signal?: AbortSignal;
+}): Promise<ArchiveIdentity> {
+  const maxArchiveBytes = input.maxArchiveBytes ?? MAX_ARCHIVE_BYTES;
   const digest = createHash('sha256');
   let sizeBytes = 0;
-  for await (const chunk of createReadStream(archivePath)) {
-    const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-    sizeBytes += bytes.byteLength;
+  let readPosition = 0;
+  const buffer = Buffer.allocUnsafe(64 * 1024);
+
+  while (true) {
+    if (input.signal?.aborted) throw new Error('SCANNER_SCAN_TIMEOUT');
+    const { bytesRead } = await input.source.read(
+      buffer,
+      0,
+      buffer.byteLength,
+      readPosition
+    );
+    if (bytesRead === 0) break;
+    sizeBytes += bytesRead;
+    if (sizeBytes > maxArchiveBytes) throw archiveError();
+
+    const bytes = buffer.subarray(0, bytesRead);
+    let written = 0;
+    while (written < bytesRead) {
+      const result = await input.destination.write(
+        bytes,
+        written,
+        bytesRead - written,
+        readPosition + written
+      );
+      written += result.bytesWritten;
+    }
     digest.update(bytes);
+    readPosition += bytesRead;
   }
+  if (sizeBytes === 0) throw archiveError();
+  if (input.signal?.aborted) throw new Error('SCANNER_SCAN_TIMEOUT');
   return {
     sizeBytes,
     sha256: digest.digest('hex')
   };
+}
+
+async function createArchiveSnapshot(
+  archivePath: string,
+  signal?: AbortSignal,
+  closeSource = (source: FileHandle) => source.close()
+): Promise<ArchiveSnapshot> {
+  const pathInformation = await lstat(archivePath);
+  assertRegularArchive(pathInformation, MAX_ARCHIVE_BYTES);
+
+  const openFlags = fsConstants.O_RDONLY
+    | fsConstants.O_NONBLOCK
+    | fsConstants.O_NOFOLLOW;
+  const source = await open(archivePath, openFlags);
+  let directory: string | undefined;
+  try {
+    const openedInformation = await source.stat();
+    assertRegularArchive(openedInformation, MAX_ARCHIVE_BYTES);
+    if (
+      openedInformation.dev !== pathInformation.dev
+      || openedInformation.ino !== pathInformation.ino
+    ) {
+      throw archiveError();
+    }
+
+    directory = await mkdtemp(join(tmpdir(), 'package-scanner-cli-'));
+    const snapshotPath = join(directory, 'package.zip');
+    const destination = await open(snapshotPath, 'wx', 0o600);
+    try {
+      const archive = await copyOpenedArchiveToSnapshot({
+        source,
+        destination,
+        ...(signal ? { signal } : {})
+      });
+      return {
+        directory,
+        path: snapshotPath,
+        archive
+      };
+    } finally {
+      await destination.close();
+    }
+  } catch (error) {
+    if (directory) {
+      await rm(directory, { recursive: true, force: true });
+    }
+    throw error;
+  } finally {
+    try {
+      await closeSource(source);
+    } catch (error) {
+      if (directory) {
+        await rm(directory, { recursive: true, force: true });
+      }
+      throw error;
+    }
+  }
 }
 
 function publicErrorCode(error: unknown): string {
@@ -68,24 +203,76 @@ export async function runLocalScanCli(
     return 2;
   }
 
+  let snapshot: ArchiveSnapshot | undefined;
+  let result: Awaited<ReturnType<typeof scanPackage>> | undefined;
+  let failure: unknown;
+  const controller = new AbortController();
+  const signalSource = dependencies.signalSource ?? process;
+  const abortScan = () => {
+    if (!controller.signal.aborted) {
+      controller.abort(new Error('SCANNER_SCAN_TIMEOUT'));
+    }
+  };
+  signalSource.once('SIGINT', abortScan);
+  signalSource.once('SIGTERM', abortScan);
+  const timeout = setTimeout(
+    abortScan,
+    dependencies.scanTimeoutMs ?? DEFAULT_SCAN_TIMEOUT_MS
+  );
   try {
     const archivePath = resolve(args[0]);
-    const archive = await identifyArchive(archivePath);
-    const result = await scanPackage({
+    snapshot = await createArchiveSnapshot(
       archivePath,
-      archive,
-      clamav: dependencies.clamav ?? new ClamAvCommandScanner(),
-      imageModerator: localImageModerator
+      controller.signal,
+      dependencies.closeSource
+    );
+    let rejectAbortedScan: (() => void) | undefined;
+    const abortedScan = new Promise<never>((_resolve, reject) => {
+      rejectAbortedScan = () => reject(new Error('SCANNER_SCAN_TIMEOUT'));
+      controller.signal.addEventListener('abort', rejectAbortedScan, {
+        once: true
+      });
+      if (controller.signal.aborted) rejectAbortedScan();
     });
-    writeStdout(`${JSON.stringify(result)}\n`);
-    return 0;
+    try {
+      result = await Promise.race([
+        (dependencies.scan ?? scanPackage)({
+          archivePath: snapshot.path,
+          archive: snapshot.archive,
+          clamav: dependencies.clamav ?? new ClamAvCommandScanner(),
+          imageModerator: localImageModerator,
+          signal: controller.signal
+        }),
+        abortedScan
+      ]);
+    } finally {
+      if (rejectAbortedScan) {
+        controller.signal.removeEventListener('abort', rejectAbortedScan);
+      }
+    }
   } catch (error) {
+    failure = error;
+  } finally {
+    clearTimeout(timeout);
+    signalSource.removeListener('SIGINT', abortScan);
+    signalSource.removeListener('SIGTERM', abortScan);
+    if (snapshot) {
+      try {
+        await rm(snapshot.directory, { recursive: true, force: true });
+      } catch (error) {
+        failure ??= error;
+      }
+    }
+  }
+  if (failure || !result) {
     writeStderr(`${JSON.stringify({
       code: 'LOCAL_SCAN_FAILED',
-      detailCode: publicErrorCode(error)
+      detailCode: publicErrorCode(failure)
     })}\n`);
     return 1;
   }
+  writeStdout(`${JSON.stringify(result)}\n`);
+  return 0;
 }
 
 if (

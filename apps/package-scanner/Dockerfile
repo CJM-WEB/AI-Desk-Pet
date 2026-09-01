@@ -23,8 +23,11 @@ FROM node:22-bookworm-slim AS runtime
 
 RUN apt-get update \
   && apt-get install -y --no-install-recommends ca-certificates clamav dumb-init \
-  && freshclam \
   && rm -rf /var/lib/apt/lists/*
+
+ARG CLAMAV_DB_REFRESH_DATE
+RUN test -n "$CLAMAV_DB_REFRESH_DATE" \
+  && freshclam
 
 RUN groupadd --system scanner \
   && useradd --system --gid scanner --home-dir /nonexistent --shell /usr/sbin/nologin scanner \

@@ -15,6 +15,13 @@ describe('扫描容器安全配置', () => {
 
     expect(dockerfile.match(/^FROM node:22-bookworm-slim/gmu)).toHaveLength(2);
     expect(dockerfile).not.toContain('node:20');
+    expect(dockerfile).toContain('ARG CLAMAV_DB_REFRESH_DATE');
+    expect(dockerfile).toContain('test -n "$CLAMAV_DB_REFRESH_DATE"');
+    expect(dockerfile.match(/CLAMAV_DB_REFRESH_DATE/gu)).toHaveLength(2);
+    expect(dockerfile.match(/\bfreshclam\b/gu)).toHaveLength(1);
+    expect(dockerfile.indexOf('freshclam')).toBeGreaterThan(
+      dockerfile.indexOf('ARG CLAMAV_DB_REFRESH_DATE')
+    );
   });
 
   it('运行阶段使用非 root 用户、只提供本地 CLI 且不暴露服务端口', async () => {

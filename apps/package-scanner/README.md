@@ -11,7 +11,10 @@
 ## 构建与运行
 
 ```powershell
-docker build --file apps/package-scanner/Dockerfile --tag ai-pet-package-scanner:local .
+$clamavRefreshDate = (Get-Date).ToUniversalTime().ToString('yyyy-MM-dd')
+docker build --file apps/package-scanner/Dockerfile `
+  --build-arg "CLAMAV_DB_REFRESH_DATE=$clamavRefreshDate" `
+  --tag ai-pet-package-scanner:local .
 $archivePath = (Resolve-Path '.\package.zip').Path
 docker run --rm --network none --read-only `
   --tmpfs /tmp/scan:rw,noexec,nosuid,nodev,mode=1777 `
@@ -20,7 +23,9 @@ docker run --rm --network none --read-only `
 ```
 
 镜像默认以非 root 的 `scanner` 用户运行。输入 ZIP 只读挂载，容器根文件系统只读，
-临时目录仅使用 `/tmp/scan` 的内存文件系统。
+临时目录仅使用 `/tmp/scan` 的内存文件系统。CLI 会先把输入复制为私有快照，并只扫描该快照；
+整包扫描默认在 120 秒后取消。UTC 日期参数只让构建阶段的 `freshclam` 每日重新执行，运行阶段
+不需要网络；候选验证会拒绝缺失或超过 7 天的病毒库。
 
 退出码约定：
 

@@ -15,7 +15,7 @@ import {
 import sharp from 'sharp';
 import * as yauzl from 'yauzl';
 
-const MAX_ARCHIVE_BYTES = 100 * 1024 * 1024;
+export const MAX_ARCHIVE_BYTES = 100 * 1024 * 1024;
 const MAX_IMAGE_PIXELS = 16_777_216;
 const MAX_JSON_REVIEW_BYTES = 8 * 1024 * 1024;
 const MAX_IMAGE_SIGNAL_BYTES = 4 * 1024 * 1024;
