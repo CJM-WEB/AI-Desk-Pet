@@ -3,7 +3,8 @@
  */
 export function recordOfficialDownloadClick(): void {
   try {
-    void fetch('/api/v1/official-downloads/windows/click', {
+    const apiBaseUrl = process.env.NEXT_PUBLIC_API_BASE_URL ?? '/api/v1';
+    void fetch(`${apiBaseUrl}/official-downloads/windows/click`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: '{}',

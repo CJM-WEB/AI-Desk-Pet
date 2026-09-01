@@ -4,8 +4,22 @@ import { recordOfficialDownloadClick } from '../lib/official-download-metric-cli
 
 describe('官方安装包点击上报客户端', () => {
   afterEach(() => {
+    vi.unstubAllEnvs();
     vi.unstubAllGlobals();
     vi.restoreAllMocks();
+  });
+
+  it('使用配置的非同源 API 基地址发送旁路请求', () => {
+    const fetcher = vi.fn().mockResolvedValue(new Response(null, { status: 204 }));
+    vi.stubEnv('NEXT_PUBLIC_API_BASE_URL', 'https://api.example.test/api/v1');
+    vi.stubGlobal('fetch', fetcher);
+
+    recordOfficialDownloadClick();
+
+    expect(fetcher).toHaveBeenCalledWith(
+      'https://api.example.test/api/v1/official-downloads/windows/click',
+      expect.any(Object)
+    );
   });
 
   it('只发送一次严格空的旁路请求', () => {
