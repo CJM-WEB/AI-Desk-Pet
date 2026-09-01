@@ -6,6 +6,7 @@ import {
   type CloudBaseStorageBucket
 } from '../src/adapters/cloudbase-storage.js';
 import { hashStatusToken } from '../src/crypto/status-token.js';
+import type { SubmissionStore } from '../src/ports.js';
 import {
   SubmissionService,
   type PrepareSubmissionInput,
@@ -110,13 +111,13 @@ function createFixture(options: SubmissionServiceOptions): {
   storage: MemoryStorage;
   service: SubmissionService;
 } {
-  const store = new MemorySubmissionStore();
+  const store = new MemorySubmissionStore() satisfies SubmissionStore;
   const storage = new MemoryStorage();
   return {
     store,
     storage,
     service: new SubmissionService(
-      store as never,
+      store,
       storage,
       options,
       () => 'submission-1'

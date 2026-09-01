@@ -1303,6 +1303,10 @@ describe('CloudBase PostgreSQL 安全与公开互动存储', () => {
       publishedAt: '2026-08-31T00:00:00.000Z',
       publicationBasis: 'admin_override'
     });
+    expect(query.eq).toHaveBeenCalledTimes(3);
+    expect(query.eq).toHaveBeenNthCalledWith(1, 'id', 'community-detail');
+    expect(query.eq).toHaveBeenNthCalledWith(2, 'status', 'published');
+    expect(query.eq).toHaveBeenNthCalledWith(3, 'kind', 'shared_package');
     detail.assets.push({
       object_key: 'submissions/community-detail/private.bin',
       original_name: 'private.bin',

@@ -83,6 +83,8 @@ describe('审核 API 端口', () => {
       | 'setPublicLike'
       | 'recordPublicDownload'
     >();
+    expectTypeOf<ConstructorParameters<typeof SubmissionService>[0]>()
+      .toEqualTypeOf<SubmissionStore>();
     expectTypeOf<ConstructorParameters<typeof SubmissionService>[1]>()
       .toEqualTypeOf<Pick<ObjectStorage, 'createSignedUploadUrl' | 'info'>>();
     expectTypeOf<ConstructorParameters<typeof TextSubmissionService>[0]>()
@@ -101,7 +103,13 @@ describe('审核 API 端口', () => {
     >();
     expectTypeOf<Extract<
       keyof CloudBaseRdbQuery,
-      'update' | 'upsert' | 'single'
+      | 'insert'
+      | 'update'
+      | 'upsert'
+      | 'lte'
+      | 'not'
+      | 'limit'
+      | 'single'
     >>().toEqualTypeOf<never>();
   });
 });
