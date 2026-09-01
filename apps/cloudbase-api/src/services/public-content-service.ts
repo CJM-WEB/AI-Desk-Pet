@@ -231,14 +231,10 @@ function hasValidPublicSubmissionShape(
     [`submissions/${record.id}/cover.jpeg`, 'image/jpeg']
   ]);
   return coverMimeByKey.get(cover.storageKey) === cover.contentType
-    && publicAssetSize(cover) > 0
+    && cover.sizeBytes > 0
     && packageAsset.storageKey === `submissions/${record.id}/package.zip`
     && packageAsset.contentType === 'application/zip'
-    && publicAssetSize(packageAsset) > 0;
-}
-
-function publicAssetSize(asset: PublicAsset): number {
-  return asset.sizeBytes;
+    && packageAsset.sizeBytes > 0;
 }
 
 function notFound(): ApiError {
