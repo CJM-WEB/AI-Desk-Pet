@@ -107,9 +107,11 @@ describe('CloudBase 函数专属配置', () => {
     expect(config.tencentCloudSessionToken).toBeUndefined();
   });
 
-  it('所有 loader 都拒绝新加坡地域', () => {
-    expect(() => configModule.loadCleanupConfig({
+  it('API loader 拒绝新加坡地域', () => {
+    expect(() => configModule.loadApiConfig({
       ...baseEnv,
+      ADMIN_EMAIL: 'admin@example.com',
+      ABUSE_HMAC_SECRET: 'abuse-secret',
       CLOUDBASE_REGION: 'ap-singapore'
     })).toThrow('CLOUDBASE_REGION 必须为 ap-shanghai');
   });
