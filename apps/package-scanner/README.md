@@ -1,76 +1,42 @@
-# AI Pet 共享资源包隔离扫描服务
+# AI Pet 共享资源包本地扫描 CLI
 
-该服务只接收 CloudBase 后端签发的私有对象短期下载地址，并在
-`/tmp/scan` 下为每个请求创建独立目录。无论扫描成功或失败，请求目录都会被删除。
+该工具只在本地 Docker 容器内扫描一个角色 ZIP。它复用现有 ZIP 预算、路径、图片解码、
+角色结构与 ClamAV 检查，不监听端口，不读取 Secret 或腾讯云凭据，也不连接数据库、
+对象存储或远端审核服务。
 
-## 运行配置
+图片通过格式与实际解码检查后统一产生 `manual-review-required` 信号；成功结果始终包含
+`"manualReviewRequired": true`。该结果只表示本地自动检查已完成，不能作为隔离扫描服务、
+内容审核或公开发布的通过证据。
 
-必须设置以下环境变量：
+## 构建与运行
 
-- `SCANNER_INTERNAL_SECRET`：内部请求 HMAC 密钥。
-- `SCANNER_DOWNLOAD_HOSTS`：允许下载的对象存储主机名，多个主机用英文逗号分隔。
-- `SCANNER_DOWNLOAD_SIGNATURE_PARAMETERS`：下载 URL 必须携带的签名参数名，多个参数
-  用英文逗号分隔；参数名必须依据实际 CloudBase 短期签名 URL 配置，不能随意猜测。
-- `TENCENT_CLOUD_REGION`：腾讯云图片内容安全服务地域。
-- `TENCENT_IMS_BIZ_TYPE`：可选的图片审核业务策略编号。
-- `TENCENTCLOUD_SECRETID`：腾讯云服务端访问密钥 ID。
-- `TENCENTCLOUD_SECRETKEY`：腾讯云服务端访问密钥 Key。
-- `TENCENTCLOUD_SESSIONTOKEN`：使用临时凭据时必填的会话令牌；长期密钥可不填。
-- `PORT`：可选，默认 `8080`。
-
-内部请求使用 `x-internal-timestamp` 和 `x-internal-signature` 请求头。签名原文固定为
-`protocolVersion + "\n" + timestamp + "\n" + sha256(rawBody)`，算法为
-HMAC-SHA256。协议版本固定为 `2026-08-15`，规则版本固定为
-`character-package-2026-08-15`。
-
-扫描接口固定为 `POST /internal/scan`，请求体为：
-
-```json
-{
-  "protocolVersion": "2026-08-15",
-  "submissionId": "3d594650-3436-4ad0-a9a8-80ca4388824b",
-  "downloadUrl": "https://已配置的对象存储主机/私有对象?实际签名参数=值",
-  "expiresAt": "2026-08-15T02:05:00.000Z"
-}
+```powershell
+docker build --file apps/package-scanner/Dockerfile --tag ai-pet-package-scanner:local .
+$archivePath = (Resolve-Path '.\package.zip').Path
+docker run --rm --network none --read-only `
+  --tmpfs /tmp/scan:rw,noexec,nosuid,nodev,mode=1777 `
+  --mount "type=bind,source=$archivePath,target=/input/package.zip,readonly" `
+  ai-pet-package-scanner:local /input/package.zip
 ```
 
-`expiresAt` 是带时区的 ISO 8601 下载地址过期时间，必须晚于服务端当前时间且最多只允许未来
-五分钟。服务同时校验 HTTPS、默认 443 端口、主机白名单和配置的必需签名参数。
+镜像默认以非 root 的 `scanner` 用户运行。输入 ZIP 只读挂载，容器根文件系统只读，
+临时目录仅使用 `/tmp/scan` 的内存文件系统。
 
-## 部署约束
+退出码约定：
 
-CloudBase 云托管必须设置：
-
-- Node.js 22 容器；
-- 容器内存至少 1 GB；
-- 单实例请求并发数为 1；
-- 最小实例数为 0；
-- 扫描工作目录只使用 `/tmp/scan`；
-- 健康检查路径为 `/healthz`。
-
-服务进程也会拒绝同一实例上的并发扫描请求，并返回
-`503 SCANNER_BUSY`。部署平台仍须把单实例并发数设置为 1，避免请求在进入进程前堆积。
-单个请求具有 120 秒整包硬截止；超时返回 `503 SCANNER_SCAN_TIMEOUT`，取消当前
-ClamAV/图片审核等待并释放单任务并发锁。腾讯云 IMS 官方客户端请求超时为 15 秒。
-
-容器以非 root 的 `scanner` 用户运行。ClamAV 病毒库在镜像构建时通过
-`freshclam` 更新；若病毒库更新失败，镜像构建必须失败，不能发布缺少病毒库的镜像。
+- `0`：ZIP、预算、路径、图片解码、结构与 ClamAV 检查完成；图片仍需人工审核。
+- `1`：恶意包、非法结构、损坏内容或扫描依赖故障。
+- `2`：参数错误；CLI 必须且只能接收一个 ZIP 路径。
 
 ## 本地验证
 
 ```powershell
-pnpm --filter @myself/package-scanner test
-pnpm --filter @myself/package-scanner typecheck
-pnpm --filter @myself/package-scanner build
-pnpm verify:scanner-candidate
+pnpm.cmd --filter @myself/package-scanner test
+pnpm.cmd --filter @myself/package-scanner typecheck
+pnpm.cmd --filter @myself/package-scanner build
+pnpm.cmd verify:scanner-candidate
 ```
 
-最后一条命令要求本机 Docker runtime 可用。它构建固定标签的本地候选镜像，并在
-无网络容器内验证不可变 image ID、非 root UID、Node/ClamAV/病毒库版本、`/healthz`、
-EICAR 阻断和扫描超时 `HTTP 503`。命令只输出本地候选 JSON，不部署或修改云端环境；
-任一运行时门缺失时以非零退出码失败，不得用静态 Dockerfile 文本检查代替。
-若 Docker CLI 不在当前进程的 `PATH`，可用 `DOCKER_CLI_PATH` 指向已安装的可执行文件；
-Windows 标准 Docker Desktop 安装路径也会作为仅在 `PATH` 缺失时使用的回退。
-
-正式部署前还必须用真实 ClamAV 和腾讯云图片内容安全测试一次干净包、病毒命中、
-审核通过、审核拦截与服务超时场景。
+最后一条命令要求本机 Docker runtime 可用。它使用不可变 image ID，在 `--network none`、
+只读根文件系统、只读输入和非 root 条件下分别验证干净包成功、EICAR 阻断与非法包拒绝；
+任一门禁缺失都会以非零状态失败。命令只生成本地候选报告，不部署或修改云端环境。

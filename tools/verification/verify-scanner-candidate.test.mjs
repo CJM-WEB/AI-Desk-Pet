@@ -11,142 +11,140 @@ import {
 const validReport = {
   imageTag: 'ai-pet-package-scanner:stage2-candidate',
   imageId: `sha256:${'a'.repeat(64)}`,
+  mode: 'local-cli',
   nodeVersion: 'v22.22.0',
   clamavVersion: 'ClamAV 1.0.9',
   clamavDatabaseVersion: '27867',
   uid: 999,
-  health: 'pass',
+  clean: 'manual-review-required',
+  manualReviewRequired: true,
   eicar: 'blocked',
-  timeout: 'http-503',
+  invalid: 'rejected',
 };
 
-test('候选报告绑定不可变镜像身份和全部运行时安全门', () => {
-  assert.deepEqual(parseScannerCandidateReport(validReport), validReport);
-  assert.throws(
-    () => parseScannerCandidateReport({ ...validReport, imageId: 'latest' }),
-    /imageId/u,
-  );
-  assert.throws(
-    () => parseScannerCandidateReport({ ...validReport, uid: 0 }),
-    /uid/u,
-  );
-  assert.throws(
-    () => parseScannerCandidateReport({ ...validReport, timeout: 'pass' }),
-    /timeout/u,
-  );
-});
+function dockerResult(stdout = '', status = 0, stderr = '') {
+  return { status, stdout, stderr };
+}
 
-test('候选镜像按默认启动命令运行并以 Docker health 判定健康', () => {
-  const commands = [];
-  let inspectCount = 0;
-  const runDocker = (args, purpose) => {
+function successfulDocker(commands, overrides = {}) {
+  return (args, purpose) => {
     commands.push({ args, purpose });
-    if (args[0] === 'version' || args[0] === 'build') return '';
-    if (args[0] === 'image') return validReport.imageId;
-    if (args[0] === 'container') {
-      inspectCount += 1;
-      return inspectCount === 1 ? 'running starting' : 'running healthy';
-    }
-    if (args[0] === 'rm') return '';
-    if (args[0] === 'run') {
-      if (args.includes('--detach')) return 'candidate-container-id';
-      return JSON.stringify({
+    if (args[0] === 'version' || args[0] === 'build') return dockerResult();
+    if (args[0] === 'image') return dockerResult(validReport.imageId);
+    if (purpose.includes('运行时身份')) {
+      return dockerResult(JSON.stringify({
         nodeVersion: validReport.nodeVersion,
         clamavVersion: validReport.clamavVersion,
         clamavDatabaseVersion: validReport.clamavDatabaseVersion,
-        uid: validReport.uid,
-        eicar: validReport.eicar,
-        timeout: validReport.timeout,
-      });
+        uid: overrides.uid ?? validReport.uid,
+      }));
+    }
+    if (purpose.includes('干净包')) {
+      return overrides.clean ?? dockerResult(JSON.stringify({
+        code: 'CHARACTER_PACKAGE_LOCAL_SCAN_COMPLETED',
+        manualReviewRequired: true,
+      }));
+    }
+    if (purpose.includes('EICAR')) {
+      return overrides.eicar ?? dockerResult(
+        '',
+        1,
+        '{"detailCode":"CHARACTER_PACKAGE_MALWARE_DETECTED"}',
+      );
+    }
+    if (purpose.includes('非法包')) {
+      return overrides.invalid ?? dockerResult(
+        '',
+        1,
+        '{"detailCode":"CHARACTER_PACKAGE_FILE_TYPE_REJECTED"}',
+      );
     }
     throw new Error(`未预期命令：${purpose}`);
   };
-
-  assert.deepEqual(verifyScannerCandidate(runDocker, () => undefined), validReport);
-  const candidateCommand = commands.find(command => (
-    command.args[0] === 'run' && command.args.includes('--detach')
-  ));
-  assert.ok(candidateCommand);
-  assert.deepEqual(candidateCommand.args, [
-    'run', '--detach', '--network', 'none',
-    '--env', 'SCANNER_INTERNAL_SECRET=scanner-candidate-local-secret',
-    '--env', 'SCANNER_DOWNLOAD_HOSTS=candidate.invalid',
-    '--env', 'SCANNER_DOWNLOAD_SIGNATURE_PARAMETERS=signature',
-    '--env', 'TENCENTCLOUD_SECRETID=candidate-local-secret-id',
-    '--env', 'TENCENTCLOUD_SECRETKEY=candidate-local-secret-key',
-    '--env', 'TENCENT_CLOUD_REGION=ap-shanghai',
-    validReport.imageId,
-  ]);
-  const healthCommands = commands.filter(command => command.args[0] === 'container');
-  assert.deepEqual(healthCommands.map(command => command.args.at(-1)), [
-    'candidate-container-id',
-    'candidate-container-id',
-  ]);
-  const cleanupCommand = commands.find(command => command.args[0] === 'rm');
-  assert.deepEqual(cleanupCommand?.args, [
-    'rm', '--force', 'candidate-container-id',
-  ]);
-
-  const probeCommand = commands.find(command => (
-    command.args[0] === 'run' && command.args.includes('--rm')
-  ));
-  assert.ok(probeCommand);
-  assert.equal(probeCommand.args.at(-3), validReport.imageId);
-  assert.equal(probeCommand.args.at(-3) === validReport.imageTag, false);
-});
-
-for (const [name, inspectedState, expectedError] of [
-  ['health=unhealthy', 'running unhealthy', /unhealthy/u],
-  ['容器已退出', 'exited missing', /已停止/u],
-  ['inspect 失败', new Error('inspect failure'), /inspect failure/u],
-]) {
-  test(`${name} 时失败关闭并清理容器`, () => {
-  const commands = [];
-  const runDocker = (args) => {
-    commands.push(args);
-    if (args[0] === 'version' || args[0] === 'build') return '';
-    if (args[0] === 'image') return validReport.imageId;
-    if (args[0] === 'run') return 'candidate-container-id';
-    if (args[0] === 'container') {
-      if (inspectedState instanceof Error) throw inspectedState;
-      return inspectedState;
-    }
-    if (args[0] === 'rm') return '';
-    throw new Error(`未预期命令：${args.join(' ')}`);
-  };
-
-  assert.throws(
-    () => verifyScannerCandidate(runDocker, () => undefined),
-    expectedError,
-  );
-  assert.deepEqual(commands.at(-1), [
-    'rm', '--force', 'candidate-container-id',
-  ]);
-  assert.equal(commands.some(args => args.includes('/candidate/probe.mjs')), false);
-  });
 }
 
-test('候选镜像 health 一直 starting 时超时失败并清理容器', () => {
-  const commands = [];
-  const runDocker = (args) => {
-    commands.push(args);
-    if (args[0] === 'version' || args[0] === 'build') return '';
-    if (args[0] === 'image') return validReport.imageId;
-    if (args[0] === 'run') return 'candidate-container-id';
-    if (args[0] === 'container') return 'running starting';
-    if (args[0] === 'rm') return '';
-    throw new Error(`未预期命令：${args.join(' ')}`);
-  };
-
+test('候选报告只接受本地 CLI 的人工审核与失败关闭证据', () => {
+  assert.deepEqual(parseScannerCandidateReport(validReport), validReport);
   assert.throws(
-    () => verifyScannerCandidate(runDocker, () => undefined),
-    /健康检查超时/u,
+    () => parseScannerCandidateReport({ ...validReport, mode: 'isolated-scanner' }),
+    /mode/u,
   );
-  assert.deepEqual(commands.at(-1), [
-    'rm', '--force', 'candidate-container-id',
-  ]);
-  assert.equal(commands.filter(args => args[0] === 'container').length > 1, true);
+  assert.throws(
+    () => parseScannerCandidateReport({ ...validReport, manualReviewRequired: false }),
+    /manualReviewRequired/u,
+  );
+  assert.throws(
+    () => parseScannerCandidateReport({ ...validReport, health: 'pass' }),
+    /keys/u,
+  );
 });
+
+test('候选镜像以无网络、只读输入、非 root 的本地 CLI 验证三类包', () => {
+  const commands = [];
+  const report = verifyScannerCandidate(successfulDocker(commands));
+
+  assert.deepEqual(report, validReport);
+  const packageRuns = commands.filter(command => (
+    command.args[0] === 'run'
+    && command.args.includes('/input/package.zip')
+  ));
+  assert.equal(packageRuns.length, 3);
+  for (const command of packageRuns) {
+    assert.ok(command.args.includes('--network'));
+    assert.ok(command.args.includes('none'));
+    assert.ok(command.args.includes('--read-only'));
+    assert.ok(command.args.some(argument => argument.includes('readonly')));
+    assert.ok(command.args.includes('/tmp/scan:rw,noexec,nosuid,nodev,mode=1777'));
+    assert.equal(command.args.some(argument => argument === '--env'), false);
+    assert.equal(command.args.includes(validReport.imageId), true);
+    assert.equal(command.args.includes(validReport.imageTag), false);
+  }
+  const identityRun = commands.find(command => command.purpose.includes('运行时身份'));
+  assert.ok(identityRun?.args.includes('--network'));
+  assert.ok(identityRun?.args.includes('none'));
+  assert.ok(identityRun?.args.includes('--read-only'));
+  assert.equal(identityRun?.args.includes('--env'), false);
+});
+
+for (const [name, overrides, expectedError] of [
+  [
+    '干净包非零退出',
+    { clean: dockerResult('', 1, 'scan failed') },
+    /干净包失败（exit 1）/u,
+  ],
+  [
+    'EICAR 零退出',
+    { eicar: dockerResult('{"manualReviewRequired":true}', 0) },
+    /EICAR 包失败（exit 0）/u,
+  ],
+  [
+    '非法包零退出',
+    { invalid: dockerResult('{"manualReviewRequired":true}', 0) },
+    /非法包失败（exit 0）/u,
+  ],
+  [
+    'EICAR 仅一般性失败',
+    { eicar: dockerResult('', 1, '{"detailCode":"LOCAL_SCAN_FAILED"}') },
+    /缺少病毒命中证据/u,
+  ],
+  [
+    '非法包仅一般性失败',
+    { invalid: dockerResult('', 1, '{"detailCode":"LOCAL_SCAN_FAILED"}') },
+    /缺少结构拒绝证据/u,
+  ],
+  [
+    'root 身份',
+    { uid: 0 },
+    /uid/u,
+  ],
+]) {
+  test(`${name} 时不得生成候选报告`, () => {
+    assert.throws(
+      () => verifyScannerCandidate(successfulDocker([], overrides)),
+      expectedError,
+    );
+  });
+}
 
 test('缺少 Docker runtime 时明确失败且不生成候选报告', () => {
   const scriptPath = fileURLToPath(
@@ -163,5 +161,5 @@ test('缺少 Docker runtime 时明确失败且不生成候选报告', () => {
 
   assert.notEqual(result.status, 0);
   assert.match(result.stderr, /Docker runtime 不可用/u);
-  assert.doesNotMatch(result.stdout, /"health":"pass"/u);
+  assert.doesNotMatch(result.stdout, /"mode":"local-cli"/u);
 });

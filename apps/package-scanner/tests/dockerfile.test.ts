@@ -17,12 +17,16 @@ describe('扫描容器安全配置', () => {
     expect(dockerfile).not.toContain('node:20');
   });
 
-  it('运行阶段使用非 root 用户和唯一扫描工作区', async () => {
+  it('运行阶段使用非 root 用户、只提供本地 CLI 且不暴露服务端口', async () => {
     const dockerfile = await readFile(dockerfilePath, 'utf8');
 
     expect(dockerfile).toContain('WORKDIR /tmp/scan');
     expect(dockerfile).toContain('USER scanner:scanner');
-    expect(dockerfile).toContain('http://127.0.0.1:8080/healthz');
+    expect(dockerfile).toContain('/app/dist/local-scan-cli.js');
+    expect(dockerfile).not.toMatch(/^EXPOSE\s/gmu);
+    expect(dockerfile).not.toMatch(/^HEALTHCHECK\s/gmu);
+    expect(dockerfile).not.toContain('SCANNER_INTERNAL_SECRET');
+    expect(dockerfile).not.toContain('TENCENTCLOUD_');
   });
 
   it('Docker 构建上下文排除仓库、依赖、产物和临时缓存', async () => {

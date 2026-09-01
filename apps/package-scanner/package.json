@@ -3,19 +3,16 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "start": "node dist/server.js",
+    "scan": "node dist/local-scan-cli.js",
     "build": "tsc --noEmit -p tsconfig.build.json && vite build --config vite.build.config.ts --configLoader runner",
     "test": "vitest run --config vitest.config.ts --configLoader runner",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@myself/shared-types": "workspace:*",
     "@myself/character-assets": "workspace:*",
     "@myself/character-runtime": "workspace:*",
     "sharp": "0.34.5",
-    "tencentcloud-sdk-nodejs": "4.1.281",
-    "yauzl": "3.4.0",
-    "zod": "3.25.76"
+    "yauzl": "3.4.0"
   },
   "devDependencies": {
     "@types/yauzl": "2.10.3",

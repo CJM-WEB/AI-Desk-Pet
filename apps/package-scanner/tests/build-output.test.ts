@@ -16,7 +16,7 @@ afterEach(async () => {
 });
 
 describe('扫描器发布构建', () => {
-  it('生成面向 Node 22 且可由 Node 加载的服务入口', async () => {
+  it('生成面向 Node 22 且可由 Node 加载的本地 CLI 入口', async () => {
     // 复现容器内 /app/dist 与 /app/node_modules 同根的生产依赖解析布局。
     const outputDirectory = await mkdtemp(join(packageRoot, '.scanner-build-'));
     outputDirectories.push(outputDirectory);
@@ -29,10 +29,9 @@ describe('扫描器发布构建', () => {
       },
     }));
 
-    await expect(import(pathToFileURL(join(outputDirectory, 'server.js')).href))
+    await expect(import(pathToFileURL(join(outputDirectory, 'local-scan-cli.js')).href))
       .resolves.toMatchObject({
-        createScannerServer: expect.any(Function),
-        ClamAvCommandScanner: expect.any(Function),
+        runLocalScanCli: expect.any(Function)
       });
   });
 });

@@ -6,7 +6,6 @@ export default defineConfig({
     noExternal: [
       '@myself/character-assets',
       '@myself/character-runtime',
-      '@myself/shared-types',
       'yauzl',
       'zod'
     ]
@@ -15,14 +14,11 @@ export default defineConfig({
     target: 'node22',
     outDir: 'dist',
     emptyOutDir: true,
-    ssr: resolve(import.meta.dirname, 'src/server.ts'),
+    ssr: resolve(import.meta.dirname, 'src/local-scan-cli.ts'),
     rollupOptions: {
-      external: [
-        'sharp',
-        'tencentcloud-sdk-nodejs'
-      ],
+      external: ['sharp'],
       output: {
-        entryFileNames: 'server.js'
+        entryFileNames: 'local-scan-cli.js'
       }
     }
   }

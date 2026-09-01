@@ -72,7 +72,8 @@ export type PackageFileSummary =
     };
 
 export type PackageScanResult = {
-  code: 'CHARACTER_PACKAGE_SCAN_PASSED';
+  code: 'CHARACTER_PACKAGE_LOCAL_SCAN_COMPLETED';
+  manualReviewRequired: true;
   archive: {
     sizeBytes: number;
     sha256: string;
@@ -478,7 +479,8 @@ export async function scanPackage(
     });
 
     const result: PackageScanResult = {
-      code: 'CHARACTER_PACKAGE_SCAN_PASSED',
+      code: 'CHARACTER_PACKAGE_LOCAL_SCAN_COMPLETED',
+      manualReviewRequired: true,
       archive: input.archive,
       summary: {
         fileCount: validation.fileCount,

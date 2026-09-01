@@ -1,6 +1,12 @@
 import { spawnSync } from 'node:child_process';
-import { existsSync } from 'node:fs';
-import { resolve } from 'node:path';
+import {
+  existsSync,
+  mkdtempSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const imageTag = 'ai-pet-package-scanner:stage2-candidate';
@@ -9,19 +15,21 @@ const probePath = fileURLToPath(
   new URL('./scanner-candidate-probe.mjs', import.meta.url),
 );
 const windowsDockerCli = 'C:\\Program Files\\Docker\\Docker\\resources\\bin\\docker.exe';
-const healthPollAttempts = 60;
-const healthPollIntervalMs = 2_000;
+const cleanPackageBase64 = 'UEsDBBQAAAgIAD2UIV1NFA8hQgAAAD8AAAAQAAAAZHJhZnQvZHJhZnQuanNvbqtWKkstKs7Mz1OyMtRRykxRslIqSS0u0S1ILVHSUcpLzE1VslJ6trX7xfqpzxb2PF23QElHqbgksSS1WMkqOrYWAFBLAwQUAAAICAA9lCFd/Iu1fzQBAADPAQAAFgAAAGNvbXBpbGVkL21hbmlmZXN0Lmpzb251ULtOwzAU/ZczmygOjZt4Y0RCjCyog5PcJBZpHNkOpao6MsHKxgA/ABMLA3/Tis9ALq2EQOhO9+qcex4rXJN12vSQnEFXkPDk/NFAHgy9mhMktm93n68P2+f7zcsTGHw7zote6e7EOfKngaOrjsBQmvmgO7IXh5/gURzFYLDkzGhLcpCXK6jfxFp3dP4tFi7R0DdgcK1KUgGJyTEvqRI5FypRCVc8FXScTWOuakrToqimdZblIq+Loi5TUU1rivO8mkzrRKQTEQwUS09n1De+hRTZesbgvPJ7P/qHlSvdh600Nmyq9Nr0f1H7ZjYft9vH9xBgcJA8YeiMGSC9HYlhQbpp/a5Z1ZetsQ5yhcaaMUiscAMZRynDEpKv1wy1VfP/GgrYHTJmWOgqxOAM7UFhPdvNF1BLAwQUAAAICAA9lCFdsoo8lbEAAADtAAAAEwAAAHNvdXJjZS9jYXRhbG9nLmpzb241isFqwzAUBP9lzwqxHOtZ0h8USk+5lR6epCfbEDvGUgsm5N9LTTOHgR32gR/ZynRf4LVCHHnjWGV7S/CoUupplQqFcv/eohT4zwe4FKnHQf9zOtT9yb7mCyikqaw33j94FnhM6SZQmKdZrvt6lJkHOa/LAIWwV3mXZagjPFmFMnJrCB7dRUdJ5DRxy61mbUgutm80ZzEmhNRnax25HEKOhlKfpXEudX1uyXTU4Pn1/AVQSwMEFAAACAgAPZQhXTMzCnFEAAAARAAAABEAAABjb21waWxlZC9pZGxlLnBuZ+sM8HPn5ZLiYmBg4PX0cAliYGBgBGEOFgYGhq0yPEwMDAzcni6OIRW3klN+8DMwsjIyqks8TmNgYGDwdPVzWeeU0AQAUEsDBBQAAAgIAD2UIV0zMwpxRAAAAEQAAAAvAAAAc291cmNlLzExMTExMTExLTExMTEtNDExMS04MTExLTExMTExMTExMTExMS5wbmfrDPBz5+WS4mJgYOD19HAJYmBgYARhDhYGBoatMjxMDAwM3J4ujiEVt5JTfvAzMLIyMqpLPE5jYGBg8HT1c1nnlNAEAFBLAQI/AxQAAAgIAD2UIV1NFA8hQgAAAD8AAAAQAAkAAAAAAAAAAAC0gQAAAABkcmFmdC9kcmFmdC5qc29uVVQFAAMXqpZqUEsBAj8DFAAACAgAPZQhXfyLtX80AQAAzwEAABYACQAAAAAAAAAAALSBcAAAAGNvbXBpbGVkL21hbmlmZXN0Lmpzb25VVAUAAxeqlmpQSwECPwMUAAAICAA9lCFdsoo8lbEAAADtAAAAEwAJAAAAAAAAAAAAtIHYAQAAc291cmNlL2NhdGFsb2cuanNvblVUBQADF6qWalBLAQI/AxQAAAgIAD2UIV0zMwpxRAAAAEQAAAARAAkAAAAAAAAAAAC0gboCAABjb21waWxlZC9pZGxlLnBuZ1VUBQADF6qWalBLAQI/AxQAAAgIAD2UIV0zMwpxRAAAAEQAAAAvAAkAAAAAAAAAAAC0gS0DAABzb3VyY2UvMTExMTExMTEtMTExMS00MTExLTgxMTEtMTExMTExMTExMTExLnBuZ1VUBQADF6qWalBLBQYAAAAABQAFAIwBAAC+AwAAAAA=';
+const eicarPackageBase64 = 'UEsDBBQAAAgIAEyUIV08z1FoRgAAAEQAAAAQAAAAZHJhZnQvZHJhZnQuanNvbosw9VcMUHVwDIg2iQmIijA10QiI0zR3dtY0r1Vx9XR2DNINDnH0c3EMctF19AvxDPMMCg3WDXENDtF18/RxVVTx0PbQAgBQSwMEFAAACAgATJQhXfyLtX80AQAAzwEAABYAAABjb21waWxlZC9tYW5pZmVzdC5qc29udVC7TsMwFP2XM5soDo2beGNEQowsqIOT3CQWaRzZDqWqOjLBysYAPwATCwN/04rPQC6thEDoTvfqnHseK1yTddr0kJxBV5Dw5PzRQB4MvZoTJLZvd5+vD9vn+83LExh8O86LXunuxDnyp4Gjq47AUJr5oDuyF4ef4FEcxWCw5MxoS3KQlyuo38Rad3T+LRYu0dA3YHCtSlIBickxL6kSORcqUQlXPBV0nE1jrmpK06KopnWW5SKvi6IuU1FNa4rzvJpM60SkExEMFEtPZ9Q3voUU2XrG4Lzyez/6h5Ur3YetNDZsqvTa9H9R+2Y2H7fbx/cQYHCQPGHojBkgvR2JYUG6af2uWdWXrbEOcoXGmjFIrHADGUcpwxKSr9cMtVXz/xoK2B0yZljoKsTgDO1BYT3bzRdQSwMEFAAACAgATJQhXbKKPJWxAAAA7QAAABMAAABzb3VyY2UvY2F0YWxvZy5qc29uNYrBasMwFAT/Zc8KsRzrWdIfFEpPuZUenqQn2xA7xlILJuTfS00zh4Ed9oEf2cp0X+C1Qhx541hle0vwqFLqaZUKhXL/3qIU+M8HuBSpx0H/czrU/cm+5gsopKmsN94/eBZ4TOkmUJinWa77epSZBzmvywCFsFd5l2WoIzxZhTJyawge3UVHSeQ0ccutZm1ILrZvNGcxJoTUZ2sduRxCjoZSn6VxLnV9bsl01OD59fwFUEsDBBQAAAgIAEyUIV0zMwpxRAAAAEQAAAARAAAAY29tcGlsZWQvaWRsZS5wbmfrDPBz5+WS4mJgYOD19HAJYmBgYARhDhYGBoatMjxMDAwM3J4ujiEVt5JTfvAzMLIyMqpLPE5jYGBg8HT1c1nnlNAEAFBLAwQUAAAICABMlCFdMzMKcUQAAABEAAAALwAAAHNvdXJjZS8xMTExMTExMS0xMTExLTQxMTEtODExMS0xMTExMTExMTExMTEucG5n6wzwc+flkuJiYGDg9fRwCWJgYGAEYQ4WBgaGrTI8TAwMDNyeLo4hFbeSU37wMzCyMjKqSzxOY2BgYPB09XNZ55TQBABQSwECPwMUAAAICABMlCFdPM9RaEYAAABEAAAAEAAJAAAAAAAAAAAAtIEAAAAAZHJhZnQvZHJhZnQuanNvblVUBQADMaqWalBLAQI/AxQAAAgIAEyUIV38i7V/NAEAAM8BAAAWAAkAAAAAAAAAAAC0gXQAAABjb21waWxlZC9tYW5pZmVzdC5qc29uVVQFAAMxqpZqUEsBAj8DFAAACAgATJQhXbKKPJWxAAAA7QAAABMACQAAAAAAAAAAALSB3AEAAHNvdXJjZS9jYXRhbG9nLmpzb25VVAUAAzGqlmpQSwECPwMUAAAICABMlCFdMzMKcUQAAABEAAAAEQAJAAAAAAAAAAAAtIG+AgAAY29tcGlsZWQvaWRsZS5wbmdVVAUAAzGqlmpQSwECPwMUAAAICABMlCFdMzMKcUQAAABEAAAALwAJAAAAAAAAAAAAtIExAwAAc291cmNlLzExMTExMTExLTExMTEtNDExMS04MTExLTExMTExMTExMTExMS5wbmdVVAUAAzGqlmpQSwUGAAAAAAUABQCMAQAAwgMAAAAA';
+const invalidPackageBase64 = 'UEsDBBQAAAgIAE+UIV3Wy7K4CgAAAAgAAAAGAAAAcnVuLmpzS8xJLSrRMNQEAFBLAQI/AxQAAAgIAE+UIV3Wy7K4CgAAAAgAAAAGAAkAAAAAAAAAAAC0gQAAAABydW4uanNVVAUAAzaqlmpQSwUGAAAAAAEAAQA9AAAALgAAAAAA';
 
 function fail(field) {
   throw new Error(`Scanner 候选报告字段无效：${field}`);
 }
 
-/** 严格校验真实容器探针输出，缺失任何门禁均不得生成候选报告。 */
+/** 本地报告只能证明 CLI 容器门禁，不得伪装成隔离扫描服务通过证据。 */
 export function parseScannerCandidateReport(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) fail('report');
   const allowedKeys = [
-    'imageTag', 'imageId', 'nodeVersion', 'clamavVersion',
-    'clamavDatabaseVersion', 'uid', 'health', 'eicar', 'timeout',
+    'imageTag', 'imageId', 'mode', 'nodeVersion', 'clamavVersion',
+    'clamavDatabaseVersion', 'uid', 'clean', 'manualReviewRequired',
+    'eicar', 'invalid',
   ];
   if (
     Object.keys(value).length !== allowedKeys.length
@@ -29,13 +37,15 @@ export function parseScannerCandidateReport(value) {
   ) fail('keys');
   if (value.imageTag !== imageTag) fail('imageTag');
   if (!/^sha256:[a-f0-9]{64}$/u.test(value.imageId)) fail('imageId');
+  if (value.mode !== 'local-cli') fail('mode');
   if (!/^v22\./u.test(value.nodeVersion)) fail('nodeVersion');
   if (typeof value.clamavVersion !== 'string' || value.clamavVersion.length === 0) fail('clamavVersion');
   if (!/^\d+$/u.test(value.clamavDatabaseVersion)) fail('clamavDatabaseVersion');
   if (!Number.isSafeInteger(value.uid) || value.uid <= 0) fail('uid');
-  if (value.health !== 'pass') fail('health');
+  if (value.clean !== 'manual-review-required') fail('clean');
+  if (value.manualReviewRequired !== true) fail('manualReviewRequired');
   if (value.eicar !== 'blocked') fail('eicar');
-  if (value.timeout !== 'http-503') fail('timeout');
+  if (value.invalid !== 'rejected') fail('invalid');
   return value;
 }
 
@@ -49,7 +59,7 @@ function spawnDocker(command, args, timeout) {
   });
 }
 
-function docker(args, purpose, timeout = 15 * 60 * 1_000) {
+function docker(args, _purpose, timeout = 15 * 60 * 1_000) {
   const configuredCommand = process.env.DOCKER_CLI_PATH?.trim();
   let result = spawnDocker(configuredCommand || 'docker', args, timeout);
   if (
@@ -64,105 +74,131 @@ function docker(args, purpose, timeout = 15 * 60 * 1_000) {
     throw new Error('Docker runtime 不可用：找不到 docker 命令');
   }
   if (result.error) {
-    throw new Error(`${purpose}失败：${result.error.message}`);
+    throw new Error(`Docker 命令失败：${result.error.message}`);
   }
-  if (result.status !== 0) {
+  return {
+    status: result.status,
+    stdout: result.stdout ?? '',
+    stderr: result.stderr ?? '',
+  };
+}
+
+function runChecked(runDocker, args, purpose, expectedStatus = 0) {
+  const result = runDocker(args, purpose);
+  if (!result || typeof result !== 'object') {
+    throw new Error(`${purpose}失败：Docker 执行器返回无效结果`);
+  }
+  if (result.status !== expectedStatus) {
     const detail = (result.stderr || result.stdout || '').trim().slice(-4_000);
-    throw new Error(`${purpose}失败（exit ${result.status}）：${detail}`);
+    throw new Error(`${purpose}失败（exit ${String(result.status)}）：${detail}`);
   }
-  return result.stdout.trim();
+  return {
+    stdout: String(result.stdout ?? '').trim(),
+    stderr: String(result.stderr ?? '').trim(),
+  };
 }
 
-function wait(milliseconds) {
-  Atomics.wait(
-    new Int32Array(new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT)),
-    0,
-    0,
-    milliseconds,
-  );
+function packageRunArgs(imageId, archivePath) {
+  const mount = `type=bind,source=${resolve(archivePath)},target=/input/package.zip,readonly`;
+  return [
+    'run', '--rm', '--network', 'none', '--read-only',
+    '--tmpfs', '/tmp/scan:rw,noexec,nosuid,nodev,mode=1777',
+    '--mount', mount,
+    imageId, '/input/package.zip',
+  ];
 }
 
-/** Docker HEALTHCHECK 是默认服务器能否启动的事实来源，探针不得替代此门。 */
-function waitForCandidateHealth(runDocker, containerId, waitForNextPoll) {
-  for (let attempt = 0; attempt < healthPollAttempts; attempt += 1) {
-    const state = runDocker([
-      'container', 'inspect', '--format',
-      '{{.State.Status}} {{if .State.Health}}{{.State.Health.Status}}{{else}}missing{{end}}',
-      containerId,
-    ], '读取 Scanner 候选容器健康状态', 30_000);
-    const [runtimeStatus, healthStatus] = state.trim().split(/\s+/u);
-    if (runtimeStatus !== 'running') {
-      throw new Error(`Scanner 候选容器已停止：${runtimeStatus || 'unknown'}`);
-    }
-    if (healthStatus === 'healthy') return;
-    if (healthStatus === 'unhealthy') {
-      throw new Error('Scanner 候选容器 health=unhealthy');
-    }
-    if (healthStatus !== 'starting') {
-      throw new Error(`Scanner 候选容器健康状态无效：${healthStatus || 'missing'}`);
-    }
-    if (attempt + 1 < healthPollAttempts) waitForNextPoll(healthPollIntervalMs);
-  }
-  throw new Error('Scanner 候选容器健康检查超时');
-}
-
-/** 构建并运行本地不可变 Scanner 候选；不连接或修改任何云端环境。 */
-export function verifyScannerCandidate(runDocker = docker, waitForNextPoll = wait) {
-  runDocker(
+/** 构建并运行本地 CLI 候选；不连接、读取或修改任何云端环境。 */
+export function verifyScannerCandidate(runDocker = docker) {
+  runChecked(
+    runDocker,
     ['version', '--format', '{{.Server.Version}}'],
     '检查 Docker runtime',
-    30_000,
   );
-  runDocker([
+  runChecked(runDocker, [
     'build', '--file', 'apps/package-scanner/Dockerfile',
     '--tag', imageTag, '.',
   ], '构建 Scanner 候选镜像');
-  const imageId = runDocker(
+  const imageId = runChecked(
+    runDocker,
     ['image', 'inspect', '--format', '{{.Id}}', imageTag],
     '读取 Scanner 候选镜像身份',
-  );
-  let containerId;
-  try {
-    containerId = runDocker([
-      'run', '--detach', '--network', 'none',
-      '--env', 'SCANNER_INTERNAL_SECRET=scanner-candidate-local-secret',
-      '--env', 'SCANNER_DOWNLOAD_HOSTS=candidate.invalid',
-      '--env', 'SCANNER_DOWNLOAD_SIGNATURE_PARAMETERS=signature',
-      '--env', 'TENCENTCLOUD_SECRETID=candidate-local-secret-id',
-      '--env', 'TENCENTCLOUD_SECRETKEY=candidate-local-secret-key',
-      '--env', 'TENCENT_CLOUD_REGION=ap-shanghai',
-      imageId,
-    ], '按默认命令启动 Scanner 候选容器').trim();
-    if (!containerId) throw new Error('Scanner 候选容器 ID 为空');
-    waitForCandidateHealth(runDocker, containerId, waitForNextPoll);
-  } finally {
-    if (containerId) {
-      runDocker(
-        ['rm', '--force', containerId],
-        '清理 Scanner 候选容器',
-        30_000,
-      );
-    }
-  }
-  const mount = `${resolve(probePath)}:/candidate/probe.mjs:ro`;
-  const probeOutput = runDocker([
-    'run', '--rm', '--network', 'none',
-    '--volume', mount,
-    imageId,
-    'node', '/candidate/probe.mjs',
-  ], '运行 Scanner 候选安全探针');
+  ).stdout;
+
+  const probeMount = `type=bind,source=${resolve(probePath)},target=/candidate/probe.mjs,readonly`;
+  const probeOutput = runChecked(runDocker, [
+    'run', '--rm', '--network', 'none', '--read-only',
+    '--mount', probeMount,
+    '--entrypoint', 'node',
+    imageId, '/candidate/probe.mjs',
+  ], '读取 Scanner 候选运行时身份').stdout;
   let probe;
   try {
     probe = JSON.parse(probeOutput);
   } catch (error) {
-    throw new Error('Scanner 候选探针未返回单一 JSON 报告', { cause: error });
+    throw new Error('Scanner 候选身份探针未返回单一 JSON', { cause: error });
   }
-  return parseScannerCandidateReport({
-    imageTag,
-    imageId,
-    ...probe,
-    health: 'pass',
-  });
+
+  const fixtureRoot = mkdtempSync(join(tmpdir(), 'scanner-candidate-'));
+  try {
+    const cleanPath = join(fixtureRoot, 'clean.zip');
+    const eicarPath = join(fixtureRoot, 'eicar.zip');
+    const invalidPath = join(fixtureRoot, 'invalid.zip');
+    writeFileSync(cleanPath, Buffer.from(cleanPackageBase64, 'base64'));
+    writeFileSync(eicarPath, Buffer.from(eicarPackageBase64, 'base64'));
+    writeFileSync(invalidPath, Buffer.from(invalidPackageBase64, 'base64'));
+
+    const cleanOutput = runChecked(
+      runDocker,
+      packageRunArgs(imageId, cleanPath),
+      '运行 Scanner 候选干净包',
+    ).stdout;
+    let cleanResult;
+    try {
+      cleanResult = JSON.parse(cleanOutput);
+    } catch (error) {
+      throw new Error('Scanner 候选干净包未返回单一 JSON', { cause: error });
+    }
+    if (
+      cleanResult.code !== 'CHARACTER_PACKAGE_LOCAL_SCAN_COMPLETED'
+      || cleanResult.manualReviewRequired !== true
+    ) {
+      throw new Error('Scanner 候选干净包缺少人工审核标记');
+    }
+
+    const eicarResult = runChecked(
+      runDocker,
+      packageRunArgs(imageId, eicarPath),
+      '运行 Scanner 候选 EICAR 包',
+      1,
+    );
+    if (!eicarResult.stderr.includes('CHARACTER_PACKAGE_MALWARE_DETECTED')) {
+      throw new Error('Scanner 候选 EICAR 包缺少病毒命中证据');
+    }
+
+    const invalidResult = runChecked(
+      runDocker,
+      packageRunArgs(imageId, invalidPath),
+      '运行 Scanner 候选非法包',
+      1,
+    );
+    if (!invalidResult.stderr.includes('CHARACTER_PACKAGE_FILE_TYPE_REJECTED')) {
+      throw new Error('Scanner 候选非法包缺少结构拒绝证据');
+    }
+
+    return parseScannerCandidateReport({
+      imageTag,
+      imageId,
+      mode: 'local-cli',
+      ...probe,
+      clean: 'manual-review-required',
+      manualReviewRequired: true,
+      eicar: 'blocked',
+      invalid: 'rejected',
+    });
+  } finally {
+    rmSync(fixtureRoot, { recursive: true, force: true });
+  }
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

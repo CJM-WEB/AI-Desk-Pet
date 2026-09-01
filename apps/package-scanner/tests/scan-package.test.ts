@@ -489,7 +489,8 @@ describe('ZIP 隔离扫描', () => {
     });
 
     expect(result).toMatchObject({
-      code: 'CHARACTER_PACKAGE_SCAN_PASSED',
+      code: 'CHARACTER_PACKAGE_LOCAL_SCAN_COMPLETED',
+      manualReviewRequired: true,
       archive: {
         sizeBytes: archiveBytes.byteLength,
         sha256: createHash('sha256').update(archiveBytes).digest('hex')

@@ -22,7 +22,7 @@ RUN pnpm --filter @myself/package-scanner build \
 FROM node:22-bookworm-slim AS runtime
 
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends ca-certificates clamav curl dumb-init \
+  && apt-get install -y --no-install-recommends ca-certificates clamav dumb-init \
   && freshclam \
   && rm -rf /var/lib/apt/lists/*
 
@@ -35,14 +35,8 @@ COPY --from=builder --chown=root:root /deploy /app
 COPY --from=builder --chown=root:root /workspace/apps/package-scanner/dist /app/dist
 
 ENV NODE_ENV=production
-ENV PORT=8080
 ENV TMPDIR=/tmp/scan
 WORKDIR /tmp/scan
 USER scanner:scanner
 
-EXPOSE 8080
-HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
-  CMD curl --fail --silent http://127.0.0.1:8080/healthz >/dev/null || exit 1
-
-ENTRYPOINT ["dumb-init", "--"]
-CMD ["node", "/app/dist/server.js"]
+ENTRYPOINT ["dumb-init", "--", "node", "/app/dist/local-scan-cli.js"]
