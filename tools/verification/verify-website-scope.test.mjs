@@ -239,6 +239,37 @@ test('阶段二受控迁移只放行纯编排器、适配器与测试', () => {
   });
 });
 
+test('阶段 2C 零费用人工审核只放行规格、计划与精确实现路径', () => {
+  const approvedPaths = [
+    'docs/superpowers/specs/2026-09-01-website-stage-2c-zero-cost-manual-review-design.md',
+    'docs/superpowers/plans/2026-09-01-website-stage-2c-zero-cost-manual-review.md',
+    'cloudbase/migrations/20260901000000_zero_cost_manual_review.sql',
+    'cloudbase/migrations/20260901010000_remove_moderation_worker.sql',
+    'apps/package-scanner/src/local-scan-cli.ts',
+    'apps/package-scanner/src/clamav-command-scanner.ts',
+    'apps/package-scanner/tests/local-scan-cli.test.ts',
+    'apps/package-scanner/tests/clamav-command-scanner.test.ts',
+    'docs/operations/website-stage-2c-shanghai-acceptance.md',
+  ];
+  const unapprovedPaths = [
+    'docs/superpowers/specs/2026-09-01-website-stage-2c-zero-cost-manual-review-design.txt',
+    'cloudbase/migrations/20260901020000_unapproved.sql',
+    'apps/package-scanner/src/local-scan-http-server.ts',
+    'apps/package-scanner/tests/local-scan-http-server.test.ts',
+    'docs/operations/website-stage-2c-shanghai-acceptance.txt',
+    'apps/desktop/src/main/index.ts',
+  ];
+
+  assert.deepEqual(classifyChangedPaths([
+    ...approvedPaths,
+    ...unapprovedPaths,
+  ]), {
+    allowed: approvedPaths,
+    forbidden: ['apps/desktop/src/main/index.ts'],
+    outside: unapprovedPaths.slice(0, -1),
+  });
+});
+
 test('阶段 2C 最终范围只放行仍有效的本地文件与精确历史计划', () => {
   const approvedStagePaths = [
     'apps/package-scanner/tests/adapters.test.ts',
