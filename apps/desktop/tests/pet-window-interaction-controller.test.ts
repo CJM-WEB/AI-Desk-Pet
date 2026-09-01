@@ -39,6 +39,38 @@ test('Main 交互控制器按系统光标差值原子移动固定尺寸并在 en
   expect(onDragEnded).toHaveBeenCalledOnce();
 });
 
+test('后续拖拽即使系统返回漂移宽高也继续使用创建时固定尺寸', () => {
+  const setBounds = vi.fn();
+  let bounds = { x: 100, y: 80, width: 180, height: 220 };
+  let cursor = { x: 300, y: 200 };
+  const controller = new PetWindowInteractionController({
+    window: {
+      setIgnoreMouseEvents: vi.fn(),
+      getBounds: () => bounds,
+      setBounds,
+      isDestroyed: () => false
+    },
+    getCursorScreenPoint: () => cursor
+  });
+
+  controller.beginDrag();
+  cursor = { x: 310, y: 210 };
+  controller.updateDrag();
+  controller.endDrag();
+  bounds = { x: 110, y: 90, width: 270, height: 330 };
+  cursor = { x: 400, y: 300 };
+  controller.beginDrag();
+  cursor = { x: 420, y: 330 };
+  controller.updateDrag();
+
+  expect(setBounds).toHaveBeenLastCalledWith({
+    x: 130,
+    y: 120,
+    width: 180,
+    height: 220
+  });
+});
+
 test('拖拽开始回调部分成功后抛错仍补偿 owner 并恢复安全穿透', () => {
   let owner = false;
   const setIgnoreMouseEvents = vi.fn();

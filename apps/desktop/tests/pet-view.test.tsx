@@ -271,7 +271,7 @@ describe('桌宠像素交互接线', () => {
     expect(result.getByRole('alert').textContent).not.toContain('已切换');
   });
 
-  test('启动 fallback 先到时不被较晚的播放器状态清除', async () => {
+  test('启动 fallback 在健康角色强制重载成功后清除', async () => {
     let resolveRecovery!: (value: {
       fallbackErrorCode: 'CHARACTER_RESOURCE_NOT_FOUND';
       issues: [];
@@ -288,7 +288,7 @@ describe('桌宠像素交互接线', () => {
       playerDouble.reportRuntimeError?.('CHARACTER_RUNTIME_UNAVAILABLE');
       playerDouble.reportRuntimeError?.(null);
     });
-    expect(result.getByRole('alert').textContent).toContain('当前角色资源缺失');
+    expect(result.queryByRole('alert')).toBeNull();
   });
 
   test('服务端渲染阶段不构造控制器或发送穿透 IPC', () => {

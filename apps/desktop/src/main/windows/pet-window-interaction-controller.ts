@@ -3,6 +3,7 @@ import type {
   PetInteractionProbe
 } from '../../shared/pet-window-interaction';
 import type { Rectangle } from 'electron';
+import { PET_WINDOW_SIZE } from './window-manager';
 
 type PetInteractionWindow = {
   setIgnoreMouseEvents(ignore: boolean, options?: { forward: boolean }): void;
@@ -25,7 +26,7 @@ export class PetWindowInteractionController {
   private readonly probeCounts = { mouseMoveHitCount: 0 };
   private drag: Readonly<{
     cursor: Readonly<{ x: number; y: number }>;
-    bounds: Rectangle;
+    origin: Readonly<{ x: number; y: number }>;
   }> | null = null;
 
   constructor(private readonly options: PetWindowInteractionControllerOptions) {
@@ -45,9 +46,10 @@ export class PetWindowInteractionController {
     if (this.disposed || this.drag || !this.windowAvailable()) return;
     let startCallbackEntered = false;
     try {
+      const bounds = this.options.window.getBounds();
       this.drag = {
         cursor: this.options.getCursorScreenPoint(),
-        bounds: this.options.window.getBounds()
+        origin: { x: bounds.x, y: bounds.y }
       };
       this.lastKnownPassthrough = false;
       this.applyPassthrough(false);
@@ -72,10 +74,10 @@ export class PetWindowInteractionController {
     try {
       const cursor = this.options.getCursorScreenPoint();
       this.options.window.setBounds({
-        x: drag.bounds.x + cursor.x - drag.cursor.x,
-        y: drag.bounds.y + cursor.y - drag.cursor.y,
-        width: drag.bounds.width,
-        height: drag.bounds.height
+        x: drag.origin.x + cursor.x - drag.cursor.x,
+        y: drag.origin.y + cursor.y - drag.cursor.y,
+        width: PET_WINDOW_SIZE.width,
+        height: PET_WINDOW_SIZE.height
       });
     } catch {
       try { this.endDrag(); } finally { this.restoreSafePassthrough(); }

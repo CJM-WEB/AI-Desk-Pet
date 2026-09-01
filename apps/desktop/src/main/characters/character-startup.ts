@@ -13,8 +13,13 @@ export type CharacterStartupInput = Readonly<{
   packageRecoveryReport: CharacterPackageRecoveryReport;
 }>;
 
+export type ActiveRuntimeValidation =
+  | Readonly<{ kind: 'ready'; activeCharacterId: string }>
+  | Readonly<{ kind: 'missing' }>
+  | Readonly<{ kind: 'unavailable' }>;
+
 export interface CharacterStartupDependencies {
-  validateActiveRuntime(): Promise<{ activeCharacterId: string } | null>;
+  validateActiveRuntime(): Promise<ActiveRuntimeValidation>;
   ensureOfficialDefaultCharacter(): Promise<{ activeCharacterId: string }>;
   loadFinalIndex(): Promise<unknown>;
   getTransactionRecoveryReport(): CharacterTransactionRecoveryReport;
@@ -44,14 +49,22 @@ export async function prepareCharacterStartup(
     : null;
   let fallbackPrepared = false;
   let fallbackPreparationFailed = false;
+  let shouldPrepareDefault = fallbackErrorCode !== null;
   try {
     const active = await dependencies.validateActiveRuntime();
-    if (active) activeCharacterId = active.activeCharacterId;
-    else fallbackErrorCode ??= 'CHARACTER_RUNTIME_UNAVAILABLE';
+    if (active.kind === 'ready') {
+      activeCharacterId = active.activeCharacterId;
+    } else {
+      shouldPrepareDefault = true;
+      if (active.kind === 'unavailable') {
+        fallbackErrorCode ??= 'CHARACTER_RUNTIME_UNAVAILABLE';
+      }
+    }
   } catch (error) {
     fallbackErrorCode ??= publicFallbackCode(error);
+    shouldPrepareDefault = true;
   }
-  if (fallbackErrorCode !== null) {
+  if (shouldPrepareDefault) {
     try {
       activeCharacterId = (await dependencies.ensureOfficialDefaultCharacter()).activeCharacterId;
       fallbackPrepared = true;

@@ -426,10 +426,14 @@ async function createApplicationWindows(
     packageRecoveryReport
   }, {
     validateActiveRuntime: async () => {
+      const summaries = await characterActions.listCharacters();
+      if (!summaries.some(character => character.active)) {
+        return { kind: 'missing' } as const;
+      }
       const snapshot = await characterActions.getCharacterRuntimeSnapshot();
       return snapshot
-        ? { activeCharacterId: snapshot.activeCharacterId }
-        : null;
+        ? { kind: 'ready', activeCharacterId: snapshot.activeCharacterId } as const
+        : { kind: 'unavailable' } as const;
     },
     ensureOfficialDefaultCharacter: async () => {
       try {

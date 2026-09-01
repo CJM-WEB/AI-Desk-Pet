@@ -54,7 +54,8 @@ describe('Main 通用生命周期', () => {
 
   test('生产组合在窗口加载后后台启动本地 Runtime，并把 factory、路由和退出清理接入 Main', async () => {
     const source = await readFile(new URL('../src/main/index.ts', import.meta.url), 'utf8');
-    const windowsReady = source.indexOf('await Promise.all([\n    loadRenderer(pet');
+    const normalizedSource = source.replaceAll('\r\n', '\n');
+    const windowsReady = normalizedSource.indexOf('await Promise.all([\n    loadRenderer(pet');
     const backgroundStart = source.indexOf('void localModelService.start()');
     const startupCleanup = source.indexOf('startupCleanup.add(() => localModelService.close())');
 

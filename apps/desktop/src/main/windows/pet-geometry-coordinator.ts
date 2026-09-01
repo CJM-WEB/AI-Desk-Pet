@@ -14,7 +14,10 @@ import type {
   StoredPetPlacement
 } from '../storage/settings-store';
 import { migrateLegacyPetPosition, restorePetPlacement } from './pet-position';
-import { clampIntegerWindowPositionToVisualWorkArea } from './window-manager';
+import {
+  clampIntegerWindowPositionToVisualWorkArea,
+  PET_WINDOW_SIZE
+} from './window-manager';
 
 const DEFAULT_SCALE_TICK = 10;
 
@@ -81,16 +84,7 @@ export class PetGeometryCoordinator {
   /** actual 可在容差内成为持久 target，但后续 viewport 仍从本轮理想脚底反算，避免量化累积。 */
   private readyRestoreIdealFoot: Readonly<{ x: number; y: number }> | null = null;
   private moveTimer: ReturnType<typeof setTimeout> | null = null;
-  /** 运行期只提交位置，Renderer viewport 和角色换绑不得改写启动尺寸。 */
-  private readonly fixedWindowSize: Readonly<{ width: number; height: number }>;
-
-  constructor(private readonly options: CoordinatorOptions) {
-    const bounds = options.window.getBounds();
-    this.fixedWindowSize = Object.freeze({
-      width: bounds.width,
-      height: bounds.height
-    });
-  }
+  constructor(private readonly options: CoordinatorOptions) {}
 
   commitViewport(input: PetViewportCommitInput): Promise<void> {
     const viewport = structuredClone(input.viewportInWindowDip);
@@ -267,7 +261,7 @@ export class PetGeometryCoordinator {
     let candidateBounds = {
       x: candidatePosition.x,
       y: candidatePosition.y,
-      ...this.fixedWindowSize
+      ...PET_WINDOW_SIZE
     };
     const candidateFoot = adoptCurrentWindow
       ? { x: candidateBounds.x + footOffset.x, y: candidateBounds.y + footOffset.y }
@@ -520,7 +514,7 @@ export class PetGeometryCoordinator {
     if (!shape.ok) throw new Error(shape.code);
     const layout = this.options.authority.getShapeLayout(shape.revision);
     if (!layout) throw new Error('PET_GEOMETRY_SHAPE_MISSING');
-    const windowSize = this.fixedWindowSize;
+    const windowSize = PET_WINDOW_SIZE;
     const footOffset = {
       x: viewport.x + layout.footOffsetInViewportDip.x,
       y: viewport.y + layout.footOffsetInViewportDip.y
@@ -824,7 +818,7 @@ export class PetGeometryCoordinator {
       this.options.window.setBounds({
         x: bounds.x,
         y: bounds.y,
-        ...this.fixedWindowSize
+        ...PET_WINDOW_SIZE
       });
     } catch (error) {
       cancelExpectation?.();

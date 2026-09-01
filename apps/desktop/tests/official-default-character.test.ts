@@ -123,7 +123,7 @@ describe('官方默认角色安装', () => {
       indexRecovered: true,
       packageRecoveryReport: { issues: [] }
     }, {
-      validateActiveRuntime: async () => null,
+      validateActiveRuntime: async () => ({ kind: 'missing' }),
       ensureOfficialDefaultCharacter: async () => ({
         activeCharacterId: 'builtin-default'
       }),

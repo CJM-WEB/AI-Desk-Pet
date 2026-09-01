@@ -538,6 +538,7 @@ describe('共享 Pixi 角色动作场景', () => {
     class TestAnimatedSprite {
       currentFrame = 0;
       loop = false;
+      roundPixels = false;
       anchor = { set: vi.fn() };
       scale = { set: vi.fn() };
       position = { set: vi.fn() };
@@ -610,7 +611,14 @@ describe('共享 Pixi 角色动作场景', () => {
       );
 
       await scene.loadAssets(new Map([['atlas', 'blob:atlas']]));
-      scene.showAction(action, {
+      const anchoredAction: DraftActionClip = {
+        ...action,
+        frames: [
+          { ...action.frames[0]!, anchors: { ground: { x: 0.5, y: 1 } } },
+          { ...action.frames[1]!, anchors: { ground: { x: 0.25, y: 0.75 } } }
+        ]
+      };
+      scene.showAction(anchoredAction, {
         direction: 'right',
         motionMode: 'animated',
         speed: 1,
@@ -620,19 +628,23 @@ describe('共享 Pixi 角色动作场景', () => {
       const unsubscribe = scene.subscribeFrame(notify);
 
       expect(scene.getCurrentFrame()).toEqual({
-        action,
+        action: anchoredAction,
         frameIndex: 0,
         bounds: { x: 3, y: 4, width: 32, height: 32 }
       });
+      expect(latestSprites[0]!.position.set).toHaveBeenCalledTimes(1);
       latestSprites[0]!.advanceTo(1);
       expect(scene.getCurrentFrame()).toEqual({
-        action,
+        action: anchoredAction,
         frameIndex: 1,
         bounds: { x: 9, y: 10, width: 40, height: 24 }
       });
+      expect(latestSprites[0]!.anchor.set).toHaveBeenLastCalledWith(0.25, 0.75);
+      expect(latestSprites[0]!.position.set).toHaveBeenCalledTimes(1);
+      expect(latestSprites[0]!.roundPixels).toBe(true);
       expect(notify).toHaveBeenCalledTimes(1);
 
-      scene.showAction(action, {
+      scene.showAction(anchoredAction, {
         direction: 'left',
         motionMode: 'static',
         frameIndex: 1,
@@ -640,6 +652,7 @@ describe('共享 Pixi 角色动作场景', () => {
         loop: false
       });
       expect(latestSprites).toHaveLength(2);
+      expect(latestSprites[1]!.anchor.set).toHaveBeenLastCalledWith(0.25, 0.75);
       expect(latestSprites[0]!.onFrameChange).toBeUndefined();
       expect(applications[0]!.ticker.start).toHaveBeenCalledOnce();
       latestSprites[0]!.advanceTo(0);

@@ -275,7 +275,6 @@ function realAuthorityFixture(options: {
   let viewport: Viewport = options.initialViewport
     ? { ...options.initialViewport }
     : { x: 20, y: 10, width: 158, height: 193 };
-  const fixedWindowSize = { width: bounds.width, height: bounds.height };
   let setBoundsCall = 0;
   const authority = new PetVisualGeometryAuthority('pet-a');
   const savePetPlacement = options.savePetPlacement ?? vi.fn().mockResolvedValue(undefined);
@@ -287,7 +286,7 @@ function realAuthorityFixture(options: {
   const rollbackPreparedPlacement = vi.spyOn(authority, 'rollbackPreparedPlacement');
   let coordinator!: PetGeometryCoordinator;
   const setBounds = vi.fn((candidate: Viewport) => {
-    const next = { x: candidate.x, y: candidate.y, ...fixedWindowSize };
+    const next = { ...candidate };
     const previous = viewport;
     const previousBounds = bounds;
     setBoundsCall += 1;
@@ -296,7 +295,7 @@ function realAuthorityFixture(options: {
     const actualBounds = options.actualBounds
       ? options.actualBounds(next, previousBounds, setBoundsCall)
       : next;
-    bounds = { x: actualBounds.x, y: actualBounds.y, ...fixedWindowSize };
+    bounds = { ...actualBounds };
     const actualOverride = options.actualViewport?.(next, previous, setBoundsCall);
     const actual = actualOverride === undefined ? previous : actualOverride;
     if (!actual) return;
@@ -369,6 +368,21 @@ function realAuthorityFixture(options: {
 }
 
 describe('G4 viewport settle 补充状态机', () => {
+  test('构造时即使读到 DPI 漂移尺寸，几何事务仍只提交固定桌宠尺寸', async () => {
+    const value = realAuthorityFixture({
+      initialBounds: { x: 300, y: 200, width: 270, height: 330 }
+    });
+
+    await value.coordinator.commitViewport({
+      viewportInWindowDip: { x: 20, y: 10, width: 158, height: 193 }
+    });
+
+    expect(value.setBounds).toHaveBeenCalled();
+    expect(value.setBounds.mock.calls.every(([bounds]) => (
+      bounds.width === 180 && bounds.height === 220
+    ))).toBe(true);
+  });
+
   test('Renderer viewport 与角色换绑只调整位置，运行期保持启动窗口尺寸', async () => {
     let binding: CharacterGeometryBinding = {
       generation: 1, manifest: realManifest(), skinId: 'default-skin',
@@ -579,9 +593,7 @@ describe('G4 viewport settle 补充状态机', () => {
         kind: 'pending-legacy' as const,
         windowPosition: { x: 1569.921875, y: 803.359375 }
       }),
-      actualBounds: candidate => candidate.width === 181
-        ? actualBounds
-        : candidate,
+      actualBounds: () => actualBounds,
       actualViewport: () => ({ x: 20, y: 10, width: 158, height: 194 })
     });
 
@@ -591,7 +603,7 @@ describe('G4 viewport settle 补充状态机', () => {
 
     expect(value.preparePlacement).toHaveBeenCalledTimes(2);
     expect(value.preparePlacement.mock.calls[0]?.[0]).toMatchObject({
-      windowBoundsDip: { width: 181, height: 221 }
+      windowBoundsDip: { width: 180, height: 220 }
     });
     expect(value.rollbackPreparedPlacement).toHaveBeenCalledOnce();
     expect(value.commitPreparedPlacement).toHaveBeenCalledOnce();

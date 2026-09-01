@@ -258,6 +258,38 @@ function fitPresentation(
   };
 }
 
+/**
+ * 正式几何保存动作级 Alpha 联合范围；逐帧脚点只在播放时改变纹理偏移。
+ * 这里以动作级联合范围为保守输入，覆盖每个帧脚点可能产生的位移，保证 Main 的贴边裁决不漏帧。
+ */
+function visibleBoundsForFrameAnchors(
+  presentation: CharacterManifestV2['skins'][number]['presentations'][number],
+  visibleGeometry: VisibleGeometry,
+  direction: 'left' | 'right',
+  fit: Readonly<{ width: number; height: number }>
+): Rectangle {
+  const actionGround = presentation.anchors.ground;
+  const maximumWidth = Math.max(...presentation.frames.map(frame => frame.width));
+  const maximumHeight = Math.max(...presentation.frames.map(frame => frame.height));
+  const scaleX = fit.width / maximumWidth;
+  const scaleY = fit.height / maximumHeight;
+  const base = {
+    x: (visibleGeometry.visualBounds.x - visibleGeometry.groundAnchor.x) * fit.width,
+    y: (visibleGeometry.visualBounds.y - visibleGeometry.groundAnchor.y) * fit.height,
+    width: visibleGeometry.visualBounds.width * fit.width,
+    height: visibleGeometry.visualBounds.height * fit.height
+  };
+  const directionSign = direction === 'right' ? 1 : -1;
+  return unionVisiblePresentationBounds(presentation.frames.map(frame => {
+    const frameGround = frame.anchors?.ground ?? actionGround;
+    return {
+      ...base,
+      x: base.x + directionSign * (actionGround.x - frameGround.x) * frame.width * scaleX,
+      y: base.y + (actionGround.y - frameGround.y) * frame.height * scaleY
+    };
+  }));
+}
+
 /** 仅供 Main 布局事务预演；不进入 IPC，也不包含任何全局坐标。 */
 export type PetShapeLayout = Readonly<{
   revision: number;
@@ -408,17 +440,20 @@ export class PetVisualGeometryAuthority {
       { x: 0, y: 0, ...viewportSize.data },
       ground
     );
-    const relativeBounds = unionVisiblePresentationBounds([{
-      x: (visibleGeometry.visualBounds.x - ground.x) * fit.width,
-      y: (visibleGeometry.visualBounds.y - ground.y) * fit.height,
-      width: visibleGeometry.visualBounds.width * fit.width,
-      height: visibleGeometry.visualBounds.height * fit.height
-    }]);
+    const relativeBounds = visibleBoundsForFrameAnchors(
+      presentation,
+      visibleGeometry,
+      direction.data,
+      fit
+    );
     const nextShapeKey = JSON.stringify([
       manifest.id, skinId.data, actionId.data, expectedRevision, direction.data,
       presentation.geometry.visualBounds, presentation.geometry.groundAnchor,
-      Math.max(...presentation.frames.map(frame => frame.width)),
-      Math.max(...presentation.frames.map(frame => frame.height)),
+      presentation.frames.map(frame => [
+        frame.width,
+        frame.height,
+        frame.anchors?.ground ?? presentation.anchors.ground
+      ]),
       scale.data, viewportSize.data.width, viewportSize.data.height
     ]);
     const matchingState = this.pending?.shapeKey === nextShapeKey

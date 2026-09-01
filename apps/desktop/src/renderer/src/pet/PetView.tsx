@@ -117,6 +117,10 @@ export function PetView({
   });
   const [startupFallbackError, setStartupFallbackError] = useState<string | null>(null);
   const [playerRuntimeError, setPlayerRuntimeError] = useState<string | null>(null);
+  const handlePlayerRuntimeError = useCallback((errorCode: string | null): void => {
+    setPlayerRuntimeError(errorCode);
+    if (errorCode === null) setStartupFallbackError(null);
+  }, []);
   const runtimeError = startupFallbackError ?? playerRuntimeError;
   const runtimeErrorText = startupFallbackError
     ? characterRecoveryMessage(startupFallbackError).text
@@ -252,7 +256,7 @@ export function PetView({
           onHitTestPortChange={handleHitTestPortChange}
           onDesktopAnchors={setDesktopAnchors}
           onMotionChange={handleMotionChange}
-          onRuntimeError={setPlayerRuntimeError}
+          onRuntimeError={handlePlayerRuntimeError}
           fallback={(
             <PetCharacter
               state={fallbackState}

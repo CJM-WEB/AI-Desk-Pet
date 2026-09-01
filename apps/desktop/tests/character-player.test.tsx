@@ -124,6 +124,71 @@ test('运动视觉 transform 不改写 viewport 的窗口局部布局位置', ()
   host.remove();
 });
 
+test('Main 几何刷新不能解除已经提交的舞台尺寸锁', async () => {
+  let renderGeometry: (() => void) | undefined;
+  const commitPetViewport = vi.fn(async () => undefined);
+  const currentManifest = manifest('character-a');
+  const api = {
+    getCharacterRuntimeSnapshot: vi.fn(async () => ({
+      activeCharacterId: currentManifest.id,
+      manifest: currentManifest
+    })),
+    subscribeCharacterEvents: vi.fn(() => vi.fn()),
+    commitPetViewport,
+    onPetGeometryRender: vi.fn((listener: () => void) => {
+      renderGeometry = listener;
+      return vi.fn();
+    })
+  } as unknown as MyselfApi;
+  const player = {
+    load: vi.fn().mockResolvedValue(undefined),
+    play: vi.fn(),
+    setDirection: vi.fn(),
+    getAnchor: vi.fn().mockReturnValue(null),
+    ...characterPlayerHitRegionFixture(),
+    resize: vi.fn(),
+    destroy: vi.fn()
+  };
+  const rendered = render(
+    <CharacterPlayer
+      stateId="idle"
+      motionMode="static"
+      api={api}
+      createPlayer={vi.fn(async () => player)}
+      loadBundle={vi.fn(async () => bundle('character-a'))}
+    />
+  );
+
+  await waitFor(() => expect(player.play).toHaveBeenCalled());
+  const stage = rendered.container.querySelector<HTMLElement>('.character-player-stage')!;
+  stage.style.width = '180px';
+  stage.style.height = '220px';
+  vi.spyOn(stage, 'getBoundingClientRect').mockImplementation(() => {
+    const locked = stage.style.width === '180px' && stage.style.height === '220px';
+    const width = locked ? 180 : 270;
+    const height = locked ? 220 : 330;
+    return {
+      x: 0,
+      y: 0,
+      left: 0,
+      top: 0,
+      right: width,
+      bottom: height,
+      width,
+      height,
+      toJSON: () => ({})
+    };
+  });
+
+  act(() => renderGeometry?.());
+
+  expect(stage.style.width).toBe('180px');
+  expect(stage.style.height).toBe('220px');
+  expect(commitPetViewport).toHaveBeenLastCalledWith({
+    viewportInWindowDip: { x: 0, y: 0, width: 180, height: 220 }
+  });
+});
+
 /** 统一补齐播放器端口新增的命中区域能力，避免测试夹具偏离真实接口。 */
 function characterPlayerHitRegionFixture() {
   return {
@@ -1392,6 +1457,7 @@ describe('角色播放器组件', () => {
   test('RAF 在快照之间持续推进视觉残差并在卸载时清理', async () => {
     const callbacks: FrameRequestCallback[] = [];
     const cancel = vi.fn();
+    vi.stubGlobal('devicePixelRatio', 1.5);
     vi.stubGlobal('requestAnimationFrame', vi.fn(callback => {
       callbacks.push(callback);
       return callbacks.length;
@@ -1465,7 +1531,7 @@ describe('角色播放器组件', () => {
         direction: 'right', moving: true
       }
     }));
-    act(() => callbacks.shift()?.(50));
+    act(() => callbacks.shift()?.(51));
     expect(rendered.container.querySelector<HTMLElement>('.character-player-host')?.style.transform)
       .toBe('translate(-8px, 0px)');
     expect(onDesktopAnchors).toHaveBeenLastCalledWith({

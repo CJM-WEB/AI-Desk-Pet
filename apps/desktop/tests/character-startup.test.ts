@@ -22,7 +22,7 @@ function recordingDependencies(
   return {
     validateActiveRuntime: async () => {
       order.push('runtime');
-      return { activeCharacterId: 'active-pet' };
+      return { kind: 'ready', activeCharacterId: 'active-pet' };
     },
     ensureOfficialDefaultCharacter: async () => {
       order.push('default');
@@ -53,7 +53,7 @@ describe('角色启动恢复', () => {
     const result = await prepareCharacterStartup(EMPTY_INPUT, recordingDependencies(order, {
       validateActiveRuntime: async () => {
         order.push('runtime');
-        return { activeCharacterId: 'demo' };
+        return { kind: 'ready', activeCharacterId: 'demo' };
       }
     }));
 
@@ -114,12 +114,36 @@ describe('角色启动恢复', () => {
     const result = await prepareCharacterStartup(startupInput([], true), recordingDependencies(order, {
       validateActiveRuntime: async () => {
         order.push('runtime');
-        return { activeCharacterId: 'demo' };
+        return { kind: 'ready', activeCharacterId: 'demo' };
       }
     }));
 
     expect(order).toEqual(['runtime', 'default', 'final-index', 'b1-report']);
     expect(result.recoverySnapshot.fallbackErrorCode).toBe('CHARACTER_INDEX_UNAVAILABLE');
+  });
+
+  test('首次没有活动角色时准备默认角色但不发布运行版本损坏提示', async () => {
+    const ensureDefault = vi.fn(async () => ({ activeCharacterId: 'builtin-default' }));
+    const result = await start({
+      validateActiveRuntime: async () => ({ kind: 'missing' }),
+      ensureOfficialDefaultCharacter: ensureDefault
+    });
+
+    expect(result.activeCharacterId).toBe('builtin-default');
+    expect(result.recoverySnapshot.fallbackErrorCode).toBeNull();
+    expect(ensureDefault).toHaveBeenCalledOnce();
+  });
+
+  test('活动角色存在但运行版本不可用时准备默认角色并发布准确提示', async () => {
+    const ensureDefault = vi.fn(async () => ({ activeCharacterId: 'builtin-default' }));
+    const result = await start({
+      validateActiveRuntime: async () => ({ kind: 'unavailable' }),
+      ensureOfficialDefaultCharacter: ensureDefault
+    });
+
+    expect(result.activeCharacterId).toBe('builtin-default');
+    expect(result.recoverySnapshot.fallbackErrorCode).toBe('CHARACTER_RUNTIME_UNAVAILABLE');
+    expect(ensureDefault).toHaveBeenCalledOnce();
   });
 
   test('白名单外异常不对 Renderer 回显', async () => {

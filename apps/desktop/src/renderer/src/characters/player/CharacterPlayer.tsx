@@ -152,14 +152,10 @@ export function CharacterPlayer({
     random
   };
 
-  const commitActiveViewport = (refreshFromMain = false): void => {
+  const commitActiveViewport = (): void => {
     const player = activePlayerRef.current;
     const stage = activeStageRef.current;
     if (!player || !stage || typeof api.commitPetViewport !== 'function') return;
-    if (refreshFromMain) {
-      stage.style.removeProperty('width');
-      stage.style.removeProperty('height');
-    }
     const viewportInWindowDip = roundedWindowLocalRectangle(stage);
     if (!viewportInWindowDip) return;
     // 拖拽期间 Windows 可能让客户区产生 1 DIP 抖动；舞台锁定权威提交尺寸，避免 Canvas 被 100% 拉伸。
@@ -199,7 +195,7 @@ export function CharacterPlayer({
     observer?.observe(host);
     const handleWindowResize = (): void => commitActiveViewport();
     window.addEventListener('resize', handleWindowResize);
-    const unsubscribe = api.onPetGeometryRender?.(() => commitActiveViewport(true));
+    const unsubscribe = api.onPetGeometryRender?.(() => commitActiveViewport());
     return () => {
       observer?.disconnect();
       window.removeEventListener('resize', handleWindowResize);
@@ -536,8 +532,14 @@ export function CharacterPlayer({
         if (!snapshot || !visual || !player || !host) return;
         player.setDirection(visual.direction);
         const frameBounds = player.getFrameBounds?.();
-        const residualX = visual.position.x - snapshot.position.x;
-        const residualY = visual.position.y - snapshot.position.y;
+        const residualX = snapToPhysicalPixel(
+          visual.position.x - snapshot.position.x,
+          window.devicePixelRatio
+        );
+        const residualY = snapToPhysicalPixel(
+          visual.position.y - snapshot.position.y,
+          window.devicePixelRatio
+        );
         host.style.transform = `translate(${residualX}px, ${residualY}px)`;
         const hostBounds = host.getBoundingClientRect();
         const frame = {
@@ -742,6 +744,14 @@ export function roundedWindowLocalRectangle(element: HTMLElement): {
   } catch {
     return null;
   }
+}
+
+/** 将 CSS 位移量化到真实显示器像素，避免透明像素画在半个物理像素上。 */
+export function snapToPhysicalPixel(value: number, devicePixelRatio: number): number {
+  const ratio = Number.isFinite(devicePixelRatio) && devicePixelRatio > 0
+    ? devicePixelRatio
+    : 1;
+  return Math.round(value * ratio) / ratio;
 }
 
 /** offset 布局链不包含运动表现 transform，与窗口客户区坐标保持同一语义。 */

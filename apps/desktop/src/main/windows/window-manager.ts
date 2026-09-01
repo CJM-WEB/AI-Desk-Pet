@@ -5,11 +5,12 @@ import type {
   WebPreferences
 } from 'electron';
 
-const PET_WIDTH = 180;
-const PET_HEIGHT = 220;
-
 export type Point = { x: number; y: number };
 export type WindowSize = { width: number; height: number };
+export const PET_WINDOW_SIZE: Readonly<WindowSize> = Object.freeze({
+  width: 180,
+  height: 220
+});
 export type VisualAnchorConstraintInput = Readonly<{
   anchorDip: Point;
   visualBoundsFromAnchorDip: Rectangle;
@@ -40,12 +41,12 @@ export function petWindowOptions(
   options: { enableE2eProbe?: boolean } = {}
 ): BrowserWindowConstructorOptions {
   return {
-    width: PET_WIDTH,
-    height: PET_HEIGHT,
-    minWidth: PET_WIDTH,
-    maxWidth: PET_WIDTH,
-    minHeight: PET_HEIGHT,
-    maxHeight: PET_HEIGHT,
+    width: PET_WINDOW_SIZE.width,
+    height: PET_WINDOW_SIZE.height,
+    minWidth: PET_WINDOW_SIZE.width,
+    maxWidth: PET_WINDOW_SIZE.width,
+    minHeight: PET_WINDOW_SIZE.height,
+    maxHeight: PET_WINDOW_SIZE.height,
     transparent: true,
     frame: false,
     alwaysOnTop: false,
