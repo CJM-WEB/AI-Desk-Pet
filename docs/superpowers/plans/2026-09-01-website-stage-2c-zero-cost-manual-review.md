@@ -411,11 +411,11 @@ Expected: 全部通过；没有桌宠路径、Secret、临时归档、CloudBase 
 
 - Modify: `docs/operations/website-stage-2c-zero-cost-manual-review-acceptance.md`
 
-- [ ] **Step 8.1：不可逆删除行动门**
+- [x] **Step 8.1：不可逆删除行动门**
 
 只读核对环境 `ai-pet-scanner-dev-d8cqh04af371e` 的地域、套餐和资源清单，展示删除预览并取得行动时第二次明确确认。没有确认不得销毁。
 
-- [ ] **Step 8.2：零费用创建门**
+- [x] **Step 8.2：零费用创建门**
 
 创建页必须明确显示上海、PostgreSQL、免费体验、应付 0 元、按量付费关闭、自动续费关闭；任一条件不满足立即停止。
 
