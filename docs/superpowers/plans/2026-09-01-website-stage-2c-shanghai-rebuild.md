@@ -10,6 +10,8 @@
 
 **适用规格:** `docs/superpowers/specs/2026-09-01-website-stage-2c-shanghai-rebuild-design.md`
 
+> **2026-09-01 执行结果：** Task 1、Task 2 与适用的 Task 4 已完成；Task 3、Task 5–10 按零费用阻断裁剪，未执行远端操作；Task 11 已完成最终本地门禁与文档收敛。阶段 2C 最终状态为 `blocked`，不代表上海 PG 环境已创建、远端已部署或生产已上线。独立证据见 `docs/operations/website-stage-2c-shanghai-acceptance.md`。
+
 ## 全局约束
 
 - 允许修改的业务路径仅为 `apps/website/**`、`apps/cloudbase-api/**`、`apps/package-scanner/**`、`cloudbase/**`、相关网站工具、配置和文档。

@@ -4,7 +4,7 @@
 
 > 2026-09-01 状态：阶段四八项本地治理代码与完整 `verify:web-chain` 均已通过，阶段四本地治理验收完成。CloudBase 开发环境、远端 migration、cleanup 调度、真实网关、私有对象存储、函数/Scanner/Hosting 部署、发布和正式上线均未执行；线上仍是旧测试版，本分支未上线且共享包投稿继续关闭。生产 Router 继续等待阶段 2C 真实网关证据，不属于阶段四完成范围。详见 [网站阶段四本地治理真实状态记录](website-optimization-acceptance.md)。
 >
-> 2026-09-01 阶段 2C 零费用门禁结果：远端部分为 `blocked`。当前旧上海免费体验环境 `ai-pet-scanner-dev`（`ai-pet-scanner-dev-d8cqh04af371e`）仍是传统/MySQL 模式，不是所需 PostgreSQL 环境；控制台虽显示免费云函数 15 分钟、3 GB 上限，未阻断 30/900/300 秒目标超时，但该页面不证明函数已部署。官方 [CloudBase Run 使用限制](https://docs.cloudbase.net/run/limitation) 说明 Run CPU、内存需开启超限按量服务才会计量计费，关闭后服务停止；官方 CLI 文档与控制台编辑页均未观察到可保存“单实例并发 1”的设置。不得删除旧环境、创建新环境或付费资源；只继续本地 Task 2、适用的 Task 4 和 Task 11，跳过 Task 3、Task 5–10。本轮未执行任何腾讯云写操作。
+> 2026-09-01 阶段 2C 最终状态为 `blocked`：Task 1、Task 2 与适用的 Task 4 已完成本地工作；Task 3、Task 5–10 因零费用门禁裁剪，未执行远端操作。当前旧上海免费体验环境 `ai-pet-scanner-dev`（`ai-pet-scanner-dev-d8cqh04af371e`）仍是传统/MySQL 模式，不是所需 PostgreSQL 环境；控制台显示免费云函数 15 分钟、3 GB 上限，未阻断 30/900/300 秒目标超时，但不证明函数已部署。官方 [CloudBase Run 使用限制](https://docs.cloudbase.net/run/limitation) 说明 Run CPU、内存需开启超限按量服务才会计量计费，关闭后服务停止；官方 CLI 文档与控制台编辑页均未观察到可保存“单实例并发 1”的设置。不得删除旧环境、创建新环境或付费资源。本轮未执行腾讯云写操作；完整事实与恢复条件见[网站阶段 2C 上海阻断验收记录](website-stage-2c-shanghai-acceptance.md)。
 
 当前仓库本地代码已包含版本化 keyset cursor、互动幂等账本、下载成功签发计数、发布结构不变量、坏公开记录隔离、有界 RPC JSON、单一 Release Manifest 契约和收窄后的 CloudBase 能力端口。临时 PostgreSQL 17.11 已顺序执行 13 个前向 migration 并通过 103 项行为验证；这些事实只证明本地实现，不证明任何远端资源已迁移、配置或运行。
 
