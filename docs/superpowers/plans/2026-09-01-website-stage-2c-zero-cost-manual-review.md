@@ -242,25 +242,37 @@ git commit -m "refactor(web): 扫描器收缩为本地容器工具"
 **Files:**
 
 - Create: `cloudbase/migrations/20260901010000_remove_moderation_worker.sql`
+- Modify: `packages/shared-types/src/website-http.ts`
+- Modify: `packages/shared-types/tests/website-http.test.ts`
 - Modify: `apps/cloudbase-api/src/adapters/cloudbase-postgres.ts`
 - Modify: `apps/cloudbase-api/src/ports.ts`
+- Modify: `apps/cloudbase-api/tests/api.test.ts`
 - Modify: `apps/cloudbase-api/tests/cloudbase-postgres.test.ts`
+- Modify: `apps/website/components/website-experience/community/indexed-db-shared-pet-repository.ts`
+- Modify: `apps/website/tests/admin-api-client.test.ts`
+- Modify: `apps/website/tests/admin-app.test.tsx`
+- Modify: `apps/website/tests/cloud-feedback-repository.test.ts`
+- Modify: `apps/website/tests/cloud-shared-pet-repository.test.ts`
+- Modify: `apps/website/tests/indexed-db-shared-pet-repository.test.ts`
+- Modify: `apps/website/tests/shared-pet-chapter.test.tsx`
+- Modify: `apps/website/tests/support-chapter.test.tsx`
 - Modify: `tools/test-cloudbase-migrations.mjs`
 - Modify: `tools/test-cloudbase-migrations.test.mjs`
 - Modify: `tests/memory-website-api.mjs`
 - Modify: `tests/e2e/website.spec.ts`
 - Modify: `tests/website-contract/memory-driver.test.ts`
 - Modify: `tests/website-contract/production-driver.test.ts`
+- Modify: `tests/website-contract/website-api-contract.ts`
 
-- [ ] **Step 5.1：RED**
+- [x] **Step 5.1：RED**
 
 增加真实 PostgreSQL 断言：最新 schema 不再暴露三个 worker RPC、五个 worker 运行态列和专用索引，但 `moderation_results`、风险字段、管理员审计、强制发布和发布结构触发器仍存在。把 Memory/production contract 与 E2E 改为“投稿直入人工 → 反馈批准 / 共享包强制发布”，并删除只服务后到 worker、租约和自动重试的断言。
 
-- [ ] **Step 5.2：GREEN 与减法**
+- [x] **Step 5.2：GREEN 与减法**
 
 新增第二条前向 migration 删除 worker RPC、列和索引；从 Adapter/端口移除最后的 worker 字段与方法。删除 Memory API 的 `/__e2e/moderation/*` 入口和仅服务旧自动审核的数据操作。不得删除历史 `moderation_results` 或风险披露。
 
-- [ ] **Step 5.3：验证并提交**
+- [x] **Step 5.3：验证并提交**
 
 ```powershell
 pnpm.cmd --filter @myself/cloudbase-api test

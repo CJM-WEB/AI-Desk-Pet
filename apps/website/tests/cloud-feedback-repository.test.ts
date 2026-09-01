@@ -150,7 +150,7 @@ describe('云端反馈仓库', () => {
   it('未审核反馈提交成功后不进入公开快照', async () => {
     const api = createApi({
       submissionId: 'submission-1', statusToken: 'a'.repeat(43),
-      statusPath: '/submission-status/', status: 'system_reviewing'
+      statusPath: '/submission-status/', status: 'manual_review_pending'
     });
     const repository = new CloudFeedbackRepository(api);
     const before = repository.list('feedback');
@@ -159,7 +159,7 @@ describe('云端反馈仓库', () => {
       kind: 'feedback', authorName: '匿名用户', content: '等待系统审核的反馈内容。'
     });
 
-    expect(receipt.status).toBe('system_reviewing');
+    expect(receipt.status).toBe('manual_review_pending');
     expect(repository.list('feedback')).toEqual(before);
     expect(vi.mocked(api.request)).toHaveBeenCalledWith('/feedback', expect.anything(), expect.objectContaining({
       method: 'POST',

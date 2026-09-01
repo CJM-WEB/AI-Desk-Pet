@@ -48,11 +48,6 @@ export interface SubmissionRow {
   kind?: string;
   title?: string | null;
   body?: string | null;
-  moderationLeaseUntil?: string | null;
-  moderationAttempts?: number;
-  moderationNextRetryAt?: string | null;
-  moderationLastError?: string | null;
-  moderationAlertedAt?: string | null;
   purgeAfter?: string | null;
   preQuarantineStatus?: SubmissionStatus | null;
   cleanupStartedAt?: string | null;

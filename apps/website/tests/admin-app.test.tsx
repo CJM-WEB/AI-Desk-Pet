@@ -26,7 +26,6 @@ function detail(overrides: Partial<AdminSubmissionDetail> = {}): AdminSubmission
     statusVersion: 3,
     title: '改进建议',
     body: '希望增加桌宠快捷动作。',
-    moderationLeaseUntil: null,
     purgeAfter: null,
     preQuarantineStatus: null,
     publishedAt: null,

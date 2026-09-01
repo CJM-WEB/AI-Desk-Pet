@@ -855,7 +855,6 @@ describe('CloudBase PostgreSQL 安全与公开互动存储', () => {
             kind: 'feedback',
             title: '匿名用户',
             body: '建议正文',
-            moderation_lease_until: null,
             purge_after: null,
             published_at: null,
             publication_basis: null,
@@ -875,16 +874,26 @@ describe('CloudBase PostgreSQL 安全与公开互动存储', () => {
     };
     const store = new CloudBasePostgresStore({ from: vi.fn() } as never, rpc);
 
-    await expect(store.createTextSubmission({
+    const created = await store.createTextSubmission({
       id: 'feedback-1',
       kind: 'feedback',
       title: '匿名用户',
       body: '建议正文',
       statusTokenHash: 'c'.repeat(64)
-    })).resolves.toMatchObject({
+    });
+    expect(created).toMatchObject({
       id: 'feedback-1',
       status: 'manual_review_pending'
     });
+    for (const field of [
+      'moderationLeaseUntil',
+      'moderationAttempts',
+      'moderationNextRetryAt',
+      'moderationLastError',
+      'moderationAlertedAt'
+    ]) {
+      expect(created).not.toHaveProperty(field);
+    }
     await expect(store.setPublicLike({
       submissionId: 'community-1',
       fingerprintHash: 'd'.repeat(64),

@@ -99,7 +99,7 @@ export function runWebsiteApiContract(
         adminToken: 'contract-admin-token',
         uploadedSubmissionId: 'contract-uploaded',
         uploadedStatusToken: 'c'.repeat(43),
-        adminSubmissionId: 'contract-uploaded',
+        adminSubmissionId: 'contract-historical-reviewing',
         adminSubmissionVersion: 1,
         overrideSubmissionId: 'contract-override',
         overrideSubmissionVersion: 2,
@@ -137,14 +137,14 @@ export function runWebsiteApiContract(
         path: `/api/v1/submissions/${refs.uploadedSubmissionId}/finalize`,
         body: {},
       }), finalizeSubmissionResponseSchema);
-      expect(finalized).toEqual({ status: 'system_reviewing' });
+      expect(finalized).toEqual({ status: 'manual_review_pending' });
 
       const feedback = success(await driver.request({
         method: 'POST',
         path: '/api/v1/feedback',
         body: { kind: 'feedback', authorName: '合同用户', content: '合同反馈' },
       }), feedbackSubmissionResponseSchema);
-      expect(feedback.status).toBe('system_reviewing');
+      expect(feedback.status).toBe('manual_review_pending');
 
       const status = success(await driver.request({
         method: 'POST',
@@ -153,7 +153,7 @@ export function runWebsiteApiContract(
       }), submissionStatusResponseSchema);
       expect(status).toMatchObject({
         submissionId: refs.uploadedSubmissionId,
-        status: 'system_reviewing',
+        status: 'manual_review_pending',
       });
     });
 
@@ -562,6 +562,28 @@ export function runWebsiteApiContract(
 
     it('强制发布要求精确风险确认并公开 admin_override', async () => {
       const path = `/api/v1/admin/submissions/${refs.overrideSubmissionId}/actions`;
+      failure(await driver.request({
+        method: 'POST', path,
+        headers: { 'x-ai-pet-admin-token': refs.adminToken },
+        body: {
+          action: 'approve',
+          version: refs.overrideSubmissionVersion,
+          idempotencyKey: 'contract-no-evidence-approve-001',
+          reason: '无技术证据不得普通批准',
+        },
+      }), 409, 'TECHNICAL_SCAN_REQUIRED');
+      const unchanged = success(await driver.request({
+        method: 'GET',
+        path: `/api/v1/admin/submissions/${refs.overrideSubmissionId}`,
+        headers: { 'x-ai-pet-admin-token': refs.adminToken },
+      }), adminDetailResponseSchema);
+      expect(unchanged).toMatchObject({
+        status: 'manual_review_pending',
+        statusVersion: refs.overrideSubmissionVersion,
+        publicationBasis: null,
+        auditLogs: [],
+      });
+
       const base = {
         action: 'force_publish',
         version: refs.overrideSubmissionVersion,

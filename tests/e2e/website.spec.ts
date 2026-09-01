@@ -47,7 +47,7 @@ interface E2eReceipt {
   submissionId: string;
   statusToken: string;
   statusPath: '/submission-status/';
-  status: 'uploading' | 'system_reviewing';
+  status: 'uploading' | 'manual_review_pending';
 }
 
 async function submitFeedbackViaApi(
@@ -64,23 +64,18 @@ async function submitFeedbackViaApi(
   });
   expect(response.ok()).toBe(true);
   const receipt = (await response.json()).data as E2eReceipt;
-  expect(receipt.status).toBe('system_reviewing');
+  expect(receipt.status).toBe('manual_review_pending');
   const hiddenStatus = await request.post('/api/v1/submission-status', {
     data: { statusToken: receipt.statusToken }
   });
-  expect((await hiddenStatus.json()).data.status).toBe('system_reviewing');
-  const moderated = await request.post(
-    `/__e2e/moderation/${encodeURIComponent(receipt.submissionId)}`
-  );
-  expect(moderated.ok()).toBe(true);
+  expect((await hiddenStatus.json()).data.status).toBe('manual_review_pending');
   return receipt;
 }
 
 async function submitSharedPackageViaApi(
   request: APIRequestContext,
   title: string,
-  packageFileName = 'safe-pet.zip',
-  runModeration = true
+  packageFileName = 'safe-pet.zip'
 ): Promise<E2eReceipt> {
   const preparedResponse = await request.post('/api/v1/submissions/prepare', {
     data: {
@@ -108,26 +103,20 @@ async function submitSharedPackageViaApi(
     { data: {} }
   );
   expect(finalized.ok()).toBe(true);
-  expect((await finalized.json()).data).toEqual({ status: 'system_reviewing' });
+  expect((await finalized.json()).data).toEqual({ status: 'manual_review_pending' });
   const repeatedFinalize = await request.post(
     `/api/v1/submissions/${encodeURIComponent(prepared.submissionId)}/finalize`,
     { data: {} }
   );
   expect(repeatedFinalize.ok()).toBe(true);
-  expect((await repeatedFinalize.json()).data).toEqual({ status: 'system_reviewing' });
-  const reviewing = (await adminItems(request, 'system_reviewing'))
+  expect((await repeatedFinalize.json()).data).toEqual({ status: 'manual_review_pending' });
+  const pending = (await adminItems(request, 'manual_review_pending'))
     .find(item => item.id === prepared.submissionId);
-  expect(reviewing?.statusVersion).toBe(1);
+  expect(pending?.statusVersion).toBe(1);
   const hiddenStatus = await request.post('/api/v1/submission-status', {
     data: { statusToken: prepared.statusToken }
   });
-  expect((await hiddenStatus.json()).data.status).toBe('system_reviewing');
-  if (runModeration) {
-    const moderated = await request.post(
-      `/__e2e/moderation/${encodeURIComponent(prepared.submissionId)}`
-    );
-    expect(moderated.ok()).toBe(true);
-  }
+  expect((await hiddenStatus.json()).data.status).toBe('manual_review_pending');
   return prepared as E2eReceipt;
 }
 
@@ -141,18 +130,6 @@ async function adminItems(
   );
   expect(response.ok()).toBe(true);
   return (await response.json()).data.items;
-}
-
-async function adminDetail(
-  request: APIRequestContext,
-  submissionId: string
-): Promise<Record<string, unknown>> {
-  const response = await request.get(
-    `/api/v1/admin/submissions/${encodeURIComponent(submissionId)}`,
-    { headers: { 'x-ai-pet-admin-token': E2E_ADMIN_TOKEN } }
-  );
-  expect(response.ok(), await response.text()).toBe(true);
-  return (await response.json()).data;
 }
 
 async function applyAdminAction(
@@ -577,56 +554,24 @@ test('法律页面公开披露匿名投稿边界并提供站内投诉入口', as
   }
 });
 
-test('安全共享包经系统与管理员审核后才在真实网页公开', async ({ page, request }) => {
-  const title = 'E2E 安全共享包';
-  const receipt = await submitSharedPackageViaApi(request, title);
-  const hidden = await request.get('/api/v1/community?limit=100');
-  expect((await hidden.json()).data.items).not.toContainEqual(
-    expect.objectContaining({ id: receipt.submissionId })
-  );
-
-  const pending = (await adminItems(request, 'manual_review_pending'))
-    .find(item => item.id === receipt.submissionId);
-  expect(pending).toBeTruthy();
-  await applyAdminAction(request, pending!, 'approve', 'E2E 安全审核通过');
-
-  const published = await request.get('/api/v1/community?limit=100');
-  expect((await published.json()).data.items).toContainEqual(
-    expect.objectContaining({ id: receipt.submissionId, name: title })
-  );
-
-  await page.emulateMedia({ reducedMotion: 'reduce' });
-  await page.goto('/?seed=42');
-  await enterChapter(page, 'community');
-  await expect(page.getByText(title, { exact: true })).toBeVisible();
-
-  const invalidFinalize = await request.post(
-    `/api/v1/submissions/${encodeURIComponent(receipt.submissionId)}/finalize`,
-    { data: {} }
-  );
-  expect(invalidFinalize.status()).toBe(404);
-  expect((await invalidFinalize.json()).error.code).toBe('NOT_FOUND');
-});
-
-test('无有效证据共享包经两步管理员强制发布后在卡片、详情和下载入口披露风险', async ({ page, request }) => {
+test('新共享包直入人工队列并经两步强制发布后在卡片、详情和下载入口披露风险', async ({ page, request }) => {
   const title = 'E2E 管理员人工放行共享包';
   const receipt = await submitSharedPackageViaApi(
     request,
     title,
-    'technical-fail.zip',
-    false
+    'manual-review.zip'
   );
-  const reviewing = (await adminItems(request, 'system_reviewing'))
-    .find(item => item.id === receipt.submissionId)!;
-  const claimedVersion = Number(reviewing.statusVersion);
-  const claim = await request.post(
-    `/__e2e/moderation/${encodeURIComponent(receipt.submissionId)}/claim?claimedVersion=${claimedVersion}`
-  );
-  expect(claim.ok(), await claim.text()).toBe(true);
-  await applyAdminAction(request, reviewing, 'move_to_manual', '转交管理员复核');
-
   const pending = (await adminItems(request, 'manual_review_pending'))
     .find(item => item.id === receipt.submissionId)!;
+  for (const field of [
+    'moderationLeaseUntil',
+    'moderationAttempts',
+    'moderationNextRetryAt',
+    'moderationLastError',
+    'moderationAlertedAt'
+  ]) {
+    expect(pending).not.toHaveProperty(field);
+  }
   const actionUrl = `/api/v1/admin/submissions/${encodeURIComponent(receipt.submissionId)}/actions`;
   const ordinaryApprove = await request.post(actionUrl, {
     headers: { 'x-ai-pet-admin-token': E2E_ADMIN_TOKEN },
@@ -675,32 +620,6 @@ test('无有效证据共享包经两步管理员强制发布后在卡片、详�
     replayed: false
   });
 
-  const lateResult = await request.post(
-    `/__e2e/moderation/${encodeURIComponent(receipt.submissionId)}?claimedVersion=${claimedVersion}`
-  );
-  expect(lateResult.ok(), await lateResult.text()).toBe(true);
-  const afterLate = (await adminItems(request, 'published'))
-    .find(item => item.id === receipt.submissionId)!;
-  expect(afterLate).toMatchObject({
-    statusVersion: Number(pending.statusVersion) + 1,
-    publicationBasis: 'admin_override',
-    riskSummary: {
-      blocked: true,
-      signalCount: 1,
-      blockedLabels: ['technical_failure']
-    }
-  });
-  const lateDetail = await adminDetail(request, receipt.submissionId);
-  const lateResultCount = (lateDetail.moderationResults as unknown[]).length;
-  const duplicateLate = await request.post(
-    `/__e2e/moderation/${encodeURIComponent(receipt.submissionId)}?claimedVersion=${claimedVersion}`
-  );
-  expect(duplicateLate.status()).toBe(409);
-  expect((await duplicateLate.json()).error.code).toBe('MODERATION_JOB_STALE');
-  const afterDuplicate = await adminDetail(request, receipt.submissionId);
-  expect((afterDuplicate.moderationResults as unknown[]).length).toBe(lateResultCount);
-  expect(afterDuplicate.riskSummary).toEqual(lateDetail.riskSummary);
-
   const replay = await request.post(actionUrl, {
     headers: { 'x-ai-pet-admin-token': E2E_ADMIN_TOKEN },
     data: overrideRequest
@@ -743,97 +662,21 @@ test('无有效证据共享包经两步管理员强制发布后在卡片、详�
     .toContainText('管理员人工放行，未通过系统安全验证');
   await expect(dialog.getByRole('note', { name: '下载风险提示' }))
     .toContainText('管理员人工放行，未通过系统安全验证');
-});
 
-test('Memory 后到扫描与生产风险事实同构且保留强制发布前自动拒绝原因', async ({ request }) => {
-  for (const scanCase of [
-    {
-      title: 'E2E 后到危险事实同构',
-      fileName: 'technical-fail-late-shape.zip',
-      riskSummary: {
-        blocked: true,
-        signalCount: 1,
-        blockedLabels: ['technical_failure']
-      }
-    },
-    {
-      title: 'E2E 后到安全事实同构',
-      fileName: 'safe-late-shape.zip',
-      riskSummary: { blocked: false, signalCount: 1, blockedLabels: [] }
-    }
-  ] as const) {
-    const receipt = await submitSharedPackageViaApi(
-      request,
-      scanCase.title,
-      scanCase.fileName,
-      false
-    );
-    const reviewing = (await adminItems(request, 'system_reviewing'))
-      .find(item => item.id === receipt.submissionId)!;
-    const claimedVersion = Number(reviewing.statusVersion);
-    const claim = await request.post(
-      `/__e2e/moderation/${encodeURIComponent(receipt.submissionId)}/claim?claimedVersion=${claimedVersion}`
-    );
-    expect(claim.ok(), await claim.text()).toBe(true);
-    await applyAdminAction(request, reviewing, 'move_to_manual', '转交管理员复核');
-    const pending = (await adminItems(request, 'manual_review_pending'))
-      .find(item => item.id === receipt.submissionId)!;
-    await applyAdminAction(request, pending, 'force_publish', '管理员承担扫描风险');
-    const beforeLate = await adminDetail(request, receipt.submissionId);
-
-    const late = await request.post(
-      `/__e2e/moderation/${encodeURIComponent(receipt.submissionId)}?claimedVersion=${claimedVersion}`
-    );
-    expect(late.ok(), await late.text()).toBe(true);
-    const afterLate = await adminDetail(request, receipt.submissionId);
-    expect(afterLate.riskSummary).toEqual(scanCase.riskSummary);
-    expect(afterLate.autoRejectionReason).toBe(beforeLate.autoRejectionReason);
-    expect(Object.keys(afterLate.riskSummary as object).sort()).toEqual([
-      'blocked',
-      'blockedLabels',
-      'signalCount'
-    ]);
-  }
-});
-
-test('Memory 过期后到租约失败关闭且不修改发布与审核事实', async ({ request }) => {
-  const receipt = await submitSharedPackageViaApi(
-    request,
-    'E2E 过期后到租约',
-    'technical-fail-expired-lease.zip',
-    false
+  const invalidFinalize = await request.post(
+    `/api/v1/submissions/${encodeURIComponent(receipt.submissionId)}/finalize`,
+    { data: {} }
   );
-  const reviewing = (await adminItems(request, 'system_reviewing'))
-    .find(item => item.id === receipt.submissionId)!;
-  const claimedVersion = Number(reviewing.statusVersion);
-  const claim = await request.post(
-    `/__e2e/moderation/${encodeURIComponent(receipt.submissionId)}/claim?claimedVersion=${claimedVersion}&leaseMinutes=-1`
-  );
-  expect(claim.ok(), await claim.text()).toBe(true);
-  await applyAdminAction(request, reviewing, 'move_to_manual', '转交管理员复核');
-  const pending = (await adminItems(request, 'manual_review_pending'))
-    .find(item => item.id === receipt.submissionId)!;
-  await applyAdminAction(request, pending, 'force_publish', '管理员承担扫描风险');
-  const beforeLate = await adminDetail(request, receipt.submissionId);
-
-  const late = await request.post(
-    `/__e2e/moderation/${encodeURIComponent(receipt.submissionId)}?claimedVersion=${claimedVersion}`
-  );
-  expect(late.status()).toBe(409);
-  expect((await late.json()).error.code).toBe('MODERATION_JOB_STALE');
-  expect(await adminDetail(request, receipt.submissionId)).toEqual(beforeLate);
+  expect(invalidFinalize.status()).toBe(404);
+  expect((await invalidFinalize.json()).error.code).toBe('NOT_FOUND');
 });
 
 test('真实管理员页面忽略长按重复 Enter，非重复二次确认与双击各只发送一次', async ({ page, request }) => {
   const firstReceipt = await submitSharedPackageViaApi(
     request,
     'E2E 键盘强制发布',
-    'technical-fail-keyboard.zip',
-    false
+    'manual-keyboard.zip'
   );
-  const firstReviewing = (await adminItems(request, 'system_reviewing'))
-    .find(item => item.id === firstReceipt.submissionId)!;
-  await applyAdminAction(request, firstReviewing, 'move_to_manual', '进入键盘复核');
   let actionRequests = 0;
   page.on('request', browserRequest => {
     if (
@@ -864,12 +707,8 @@ test('真实管理员页面忽略长按重复 Enter，非重复二次确认与�
   const secondReceipt = await submitSharedPackageViaApi(
     request,
     'E2E 双击强制发布',
-    'technical-fail-double.zip',
-    false
+    'manual-double.zip'
   );
-  const secondReviewing = (await adminItems(request, 'system_reviewing'))
-    .find(item => item.id === secondReceipt.submissionId)!;
-  await applyAdminAction(request, secondReviewing, 'move_to_manual', '进入双击复核');
   let doubleClickRequests = 0;
   page.on('request', browserRequest => {
     if (
@@ -1009,12 +848,8 @@ test('反馈恢复已发布状态保留 standard，强制发布快照逐字段�
   const shared = await submitSharedPackageViaApi(
     request,
     'E2E 精确快照共享包',
-    'technical-fail-snapshot.zip',
-    false
+    'manual-snapshot.zip'
   );
-  const reviewing = (await adminItems(request, 'system_reviewing'))
-    .find(item => item.id === shared.submissionId)!;
-  await applyAdminAction(request, reviewing, 'move_to_manual', '转人工');
   const pending = (await adminItems(request, 'manual_review_pending'))
     .find(item => item.id === shared.submissionId)!;
   const response = await request.post(

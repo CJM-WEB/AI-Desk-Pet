@@ -24,7 +24,7 @@ const CONTRACT_REFS = Object.freeze({
   adminToken: CONTRACT_ADMIN_TOKEN,
   uploadedSubmissionId: 'contract-uploaded',
   uploadedStatusToken: 'c'.repeat(43),
-  adminSubmissionId: 'contract-uploaded',
+  adminSubmissionId: 'contract-historical-reviewing',
   adminSubmissionVersion: 1,
   overrideSubmissionId: 'contract-override',
   overrideSubmissionVersion: 2,
@@ -82,47 +82,6 @@ export function createMemoryWebsiteApi({ runId }) {
     if (request.method === 'POST' && pathname === '/__e2e/reset') {
       return sendData(response, 200, { reset: true, fixtures: reset() });
     }
-    const moderationClaimId = matchId(pathname, '/__e2e/moderation/', '/claim');
-    if (request.method === 'POST' && moderationClaimId) {
-      const record = requireSubmission(moderationClaimId);
-      const claimedVersion = Number(searchParams.get('claimedVersion'));
-      if (
-        record.status !== 'system_reviewing'
-        || !Number.isInteger(claimedVersion)
-        || claimedVersion !== record.statusVersion
-      ) return sendError(response, 409, 'MODERATION_JOB_STALE');
-      const rawLeaseMinutes = searchParams.get('leaseMinutes');
-      const leaseMinutes = rawLeaseMinutes === null ? 10 : Number(rawLeaseMinutes);
-      if (!Number.isFinite(leaseMinutes)) {
-        return sendError(response, 400, 'INVALID_REQUEST');
-      }
-      record.moderationLeaseUntil = plusMinutes(now(), leaseMinutes);
-      return sendData(response, 200, { claimedVersion });
-    }
-    const moderationId = matchId(pathname, '/__e2e/moderation/', '');
-    if (request.method === 'POST' && moderationId) {
-      const record = requireSubmission(moderationId);
-      const rawClaimedVersion = searchParams.get('claimedVersion');
-      const claimedVersion = Number(rawClaimedVersion);
-      const lateResult = record.kind === 'shared_package'
-        && record.status === 'published'
-        && record.publicationBasis === 'admin_override'
-        && rawClaimedVersion !== null
-        && Number.isInteger(claimedVersion)
-        && record.statusVersion === claimedVersion + 2
-        && record.moderationLeaseUntil !== null
-        && Date.parse(record.moderationLeaseUntil) > Date.parse(now());
-      if (record.status !== 'system_reviewing' && !lateResult) {
-        return sendError(response, 409, 'MODERATION_JOB_STALE');
-      }
-      completeModeration(
-        record,
-        now(),
-        uploads.get(`${record.id}:package`),
-        lateResult
-      );
-      return sendData(response, 200, { status: record.status });
-    }
     if (pathname.startsWith('/__e2e/upload/')) {
       return handleUpload(request, response, pathname);
     }
@@ -171,7 +130,6 @@ export function createMemoryWebsiteApi({ runId }) {
           ],
           moderationResults: [],
           auditLogs: [],
-          moderationLeaseUntil: null,
           purgeAfter: null,
           preQuarantineStatus: null,
           publishedAt: null,
@@ -244,7 +202,6 @@ export function createMemoryWebsiteApi({ runId }) {
           assets: [],
           moderationResults: [],
           auditLogs: [],
-          moderationLeaseUntil: null,
           purgeAfter: null,
           preQuarantineStatus: null,
           publishedAt: null,
@@ -475,7 +432,6 @@ function seedContractFixtures(submissions, tokenIndex, uploads) {
     ].map(asset => ({ ...asset, actualBytes: asset.role === 'cover' ? 12 : 24 })),
     moderationResults: [],
     auditLogs: [],
-    moderationLeaseUntil: null,
     purgeAfter: null,
     preQuarantineStatus: null,
     publishedAt: status === 'published' ? createdAt : null,
@@ -491,6 +447,13 @@ function seedContractFixtures(submissions, tokenIndex, uploads) {
   const uploaded = sharedRecord(
     CONTRACT_REFS.uploadedSubmissionId,
     '待审核合同投稿',
+    'manual_review_pending',
+    CONTRACT_REFS.adminSubmissionVersion,
+    null
+  );
+  const historicalReviewing = sharedRecord(
+    CONTRACT_REFS.adminSubmissionId,
+    '历史系统审核投稿',
     'system_reviewing',
     CONTRACT_REFS.adminSubmissionVersion,
     null
@@ -606,6 +569,7 @@ function seedContractFixtures(submissions, tokenIndex, uploads) {
   };
   for (const record of [
     uploaded,
+    historicalReviewing,
     community,
     equivalentOffsetCommunity,
     microsecondOlderCommunity,
@@ -628,73 +592,6 @@ function seedContractFixtures(submissions, tokenIndex, uploads) {
     sizeBytes: 24,
     sha256: createHash('sha256').update('contract-package').digest('hex')
   });
-}
-
-function completeModeration(record, completedAt, archive, lateResult = false) {
-  if (record.kind !== 'shared_package') {
-    const blocked = record.body.includes('自动驳回');
-    record.status = blocked ? 'auto_rejected' : 'manual_review_pending';
-    record.statusVersion += 1;
-    record.updatedAt = completedAt;
-    record.riskSummary = {
-      summary: blocked ? '系统规则自动驳回' : '系统审核完成',
-      labels: blocked ? ['blocked'] : []
-    };
-    record.autoRejectionReason = blocked ? '测试夹具命中自动驳回规则' : null;
-    record.purgeAfter = blocked ? plusDays(completedAt, 3) : null;
-    record.moderationResults = [{
-      kind: 'text_moderation',
-      provider: 'e2e-fixture',
-      suggestion: blocked ? 'Block' : 'Pass',
-      label: blocked ? 'blocked' : 'safe',
-      score: blocked ? 1 : 0,
-      evidence: { fixture: blocked ? 'auto_reject' : 'safe' },
-      createdAt: completedAt
-    }];
-    return;
-  }
-  const packageAsset = record.assets.find(asset => asset.role === 'package');
-  const marker = `${record.title} ${record.body} ${packageAsset?.fileName ?? ''}`.toLowerCase();
-  const technicalPass = !marker.includes('technical-fail')
-    && !marker.includes('扫描失败');
-  const blocked = marker.includes('auto-reject')
-    || marker.includes('自动驳回')
-    || !technicalPass;
-  if (lateResult) {
-    const technicalResult = packageScan(
-      record,
-      packageAsset,
-      archive,
-      technicalPass,
-      completedAt
-    );
-    record.updatedAt = completedAt;
-    record.riskSummary = {
-      blocked: technicalResult.suggestion === 'Block',
-      signalCount: 1,
-      blockedLabels: technicalResult.suggestion === 'Block'
-        ? [technicalResult.label]
-        : []
-    };
-    record.moderationResults.push(technicalResult);
-    record.moderationLeaseUntil = null;
-    return;
-  }
-  record.status = blocked ? 'auto_rejected' : 'manual_review_pending';
-  record.statusVersion += 1;
-  record.updatedAt = completedAt;
-  record.riskSummary = {
-    summary: blocked ? '系统规则自动驳回' : '系统审核完成',
-    labels: blocked ? ['blocked'] : ['reviewed']
-  };
-  record.autoRejectionReason = blocked ? '测试夹具命中自动驳回规则' : null;
-  record.moderationResults = [packageScan(
-    record,
-    packageAsset,
-    archive,
-    technicalPass,
-    completedAt
-  )];
 }
 
 class MemoryApiError extends Error {
@@ -754,30 +651,6 @@ function uploadTarget(origin, id, role) {
     path: `${id}/${role}`,
     url: `${origin}/__e2e/upload/${id}/${role}`,
     expiresAt: plusMinutes(new Date().toISOString(), 5)
-  };
-}
-
-function packageScan(record, packageAsset, archive, technicalPass, completedAt) {
-  return {
-    kind: 'package_scan',
-    provider: 'isolated-scanner',
-    suggestion: technicalPass ? 'Pass' : 'Block',
-    label: technicalPass ? 'safe' : 'technical_failure',
-    score: technicalPass ? 0 : 1,
-    evidence: technicalPass ? {
-      submissionId: record.id,
-      packageStorageKey: packageAsset.storageKey,
-      packageSizeBytes: packageAsset.actualBytes,
-      archiveSizeBytes: archive.sizeBytes,
-      archiveSha256: archive.sha256,
-      protocolVersion: '2026-08-15',
-      ruleVersion: 'character-package-2026-08-15',
-      scanCode: 'CHARACTER_PACKAGE_SCAN_PASSED',
-      completedAt,
-      expiresAt: plusDays(completedAt, 1),
-      submissionStatusVersion: record.statusVersion
-    } : { scanCode: 'CHARACTER_PACKAGE_SCAN_FAILED' },
-    createdAt: completedAt
   };
 }
 
@@ -975,7 +848,6 @@ function adminBase(record) {
     kind: record.kind,
     title: record.title,
     body: record.body,
-    moderationLeaseUntil: record.moderationLeaseUntil,
     purgeAfter: record.purgeAfter,
     preQuarantineStatus: record.preQuarantineStatus,
     publishedAt: record.publishedAt,
@@ -989,7 +861,7 @@ function adminSummary(record) {
   return { ...adminBase(record), riskSummary: record.riskSummary, autoRejectionReason: record.autoRejectionReason };
 }
 
-/** 管理员动作只快照稳定裁决事实，避免把正文、租约或风险证据固化进幂等结果。 */
+/** 管理员动作只快照稳定裁决事实，避免把正文或风险证据固化进幂等结果。 */
 function adminActionSnapshot(record) {
   return {
     id: record.id,

@@ -243,6 +243,39 @@ describe('管理员 endpoint 契约', () => {
   });
 
   it('队列、详情与动作响应都是 strict', () => {
+    const adminSummary = {
+      id: 'submission-1',
+      status: 'manual_review_pending',
+      statusVersion: 1,
+      kind: 'feedback',
+      title: '匿名用户',
+      body: '等待人工审核',
+      purgeAfter: null,
+      preQuarantineStatus: null,
+      publishedAt: null,
+      publicationBasis: null,
+      createdAt: '2026-07-31T00:00:00.000Z',
+      updatedAt: '2026-07-31T00:00:00.000Z',
+      riskSummary: {},
+      autoRejectionReason: null
+    };
+
+    expect(adminQueueResponseSchema.safeParse({
+      items: [adminSummary],
+      nextCursor: null
+    }).success).toBe(true);
+    for (const [field, value] of [
+      ['moderationLeaseUntil', null],
+      ['moderationAttempts', 0],
+      ['moderationNextRetryAt', null],
+      ['moderationLastError', null],
+      ['moderationAlertedAt', null]
+    ] as const) {
+      expect(adminQueueResponseSchema.safeParse({
+        items: [{ ...adminSummary, [field]: value }],
+        nextCursor: null
+      }).success, field).toBe(false);
+    }
     expect(adminQueueResponseSchema.parse({ items: [], nextCursor: 'v1.next' }))
       .toEqual({ items: [], nextCursor: 'v1.next' });
     expect(adminQueueResponseSchema.safeParse({ items: [], nextCursor: 20 }).success)

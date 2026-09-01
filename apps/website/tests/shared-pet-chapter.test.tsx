@@ -128,7 +128,7 @@ function createRepository(itemCount: number) {
       submissionId: 'submission-test',
       statusToken: 'a'.repeat(43),
       statusPath: '/submission-status/',
-      status: 'system_reviewing'
+      status: 'manual_review_pending'
     };
   });
   const getById = vi.fn(async (id: string) => (
@@ -544,7 +544,7 @@ describe('共享仓库章节', () => {
     expect(await screen.findByLabelText('上传进度')).toHaveProperty('value', 42);
     await act(async () => complete({
       submissionId: 'submission-test', statusToken: 'a'.repeat(43),
-      statusPath: '/submission-status/', status: 'system_reviewing'
+      statusPath: '/submission-status/', status: 'manual_review_pending'
     }));
   });
 

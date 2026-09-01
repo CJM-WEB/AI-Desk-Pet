@@ -56,6 +56,12 @@ afterEach(async () => {
 });
 
 describe('IndexedDB 共享仓库', () => {
+  it('本地回退投稿直接进入人工审核队列', async () => {
+    const receipt = await createRepository().submit(validInput());
+
+    expect(receipt.status).toBe('manual_review_pending');
+  });
+
   it('在升级事务中创建元数据和文件对象仓库，并在同一读写事务保存投稿', async () => {
     const repository = createRepository();
     const transaction = vi.spyOn(IDBDatabase.prototype, 'transaction');

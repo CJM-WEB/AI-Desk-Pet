@@ -547,34 +547,6 @@ function mapSubmission(value: unknown): SubmissionRow {
     kind: requireString(row.kind, 'kind'),
     title: optionalString(row.title, 'title'),
     body: optionalString(row.body, 'body'),
-    moderationLeaseUntil: optionalString(
-      row.moderation_lease_until,
-      'moderation_lease_until'
-    ),
-    ...('moderation_attempts' in row ? {
-      moderationAttempts: requireNonnegativeInteger(
-        row.moderation_attempts,
-        'moderation_attempts'
-      )
-    } : {}),
-    ...('moderation_next_retry_at' in row ? {
-      moderationNextRetryAt: optionalString(
-        row.moderation_next_retry_at,
-        'moderation_next_retry_at'
-      )
-    } : {}),
-    ...('moderation_last_error' in row ? {
-      moderationLastError: optionalString(
-        row.moderation_last_error,
-        'moderation_last_error'
-      )
-    } : {}),
-    ...('moderation_alerted_at' in row ? {
-      moderationAlertedAt: optionalString(
-        row.moderation_alerted_at,
-        'moderation_alerted_at'
-      )
-    } : {}),
     purgeAfter: optionalString(row.purge_after, 'purge_after'),
     preQuarantineStatus: row.pre_quarantine_status === null
       || row.pre_quarantine_status === undefined

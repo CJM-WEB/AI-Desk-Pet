@@ -84,7 +84,7 @@ describe('云端共享仓库', () => {
   });
 
   it('投稿按准备、双文件直传和完成确认的顺序执行，并规范 ZIP MIME', async () => {
-    const api = createApi(prepared, { status: 'system_reviewing' });
+    const api = createApi(prepared, { status: 'manual_review_pending' });
     const upload = vi.fn(async (_url, _file, _type, progress) => progress(_file.size)) as SignedUpload;
     const repository = new CloudSharedPetRepository(api, upload);
 
@@ -100,11 +100,11 @@ describe('云端共享仓库', () => {
     expect(api.request).toHaveBeenNthCalledWith(2, '/submissions/submission-1/finalize', expect.anything(), {
       method: 'POST', body: '{}'
     });
-    expect(receipt.status).toBe('system_reviewing');
+    expect(receipt.status).toBe('manual_review_pending');
   });
 
-  it('完成确认若伪造为直接人工审核则失败关闭', async () => {
-    const api = createApi(prepared, { status: 'manual_review_pending' });
+  it('完成确认若伪造为旧系统审核则失败关闭', async () => {
+    const api = createApi(prepared, { status: 'system_reviewing' });
     const upload = vi.fn(async () => undefined) as SignedUpload;
 
     await expect(
@@ -113,7 +113,7 @@ describe('云端共享仓库', () => {
   });
 
   it.each(['', 'application/x-zip-compressed'])('空或别名 ZIP MIME 仍以 application/zip 上传：%s', async zipType => {
-    const api = createApi(prepared, { status: 'system_reviewing' });
+    const api = createApi(prepared, { status: 'manual_review_pending' });
     const upload = vi.fn(async () => undefined) as SignedUpload;
     await new CloudSharedPetRepository(api, upload).submit(createInput(zipType));
     expect(JSON.parse(vi.mocked(api.request).mock.calls[0]![2]!.body as string).packageFile.contentType)
@@ -122,7 +122,7 @@ describe('云端共享仓库', () => {
   });
 
   it('聚合两个文件的真实已上传字节进度', async () => {
-    const api = createApi(prepared, { status: 'system_reviewing' });
+    const api = createApi(prepared, { status: 'manual_review_pending' });
     const upload = vi.fn(async (_url, file, _type, progress) => {
       progress(Math.floor(file.size / 2));
       progress(file.size);
@@ -373,7 +373,7 @@ describe('云端共享仓库', () => {
   });
 
   it('封面上传失败时只请求 prepare 且不上传 ZIP', async () => {
-    const api = createApi(prepared, { status: 'system_reviewing' });
+    const api = createApi(prepared, { status: 'manual_review_pending' });
     const upload = vi.fn(async () => { throw new Error('cover'); }) as SignedUpload;
     await expect(new CloudSharedPetRepository(api, upload).submit(createInput())).rejects.toThrow('cover');
     expect(upload).toHaveBeenCalledTimes(1);
@@ -381,7 +381,7 @@ describe('云端共享仓库', () => {
   });
 
   it('ZIP 上传失败时不调用 finalize', async () => {
-    const api = createApi(prepared, { status: 'system_reviewing' });
+    const api = createApi(prepared, { status: 'manual_review_pending' });
     let calls = 0;
     const upload = vi.fn(async () => {
       calls += 1;

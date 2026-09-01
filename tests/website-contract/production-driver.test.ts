@@ -16,7 +16,7 @@ const FIXTURE_REFS: ContractFixtureRefs = Object.freeze({
   adminToken: ADMIN_TOKEN,
   uploadedSubmissionId: 'contract-uploaded',
   uploadedStatusToken: 'c'.repeat(43),
-  adminSubmissionId: 'contract-uploaded',
+  adminSubmissionId: 'contract-historical-reviewing',
   adminSubmissionVersion: 1,
   overrideSubmissionId: 'contract-override',
   overrideSubmissionVersion: 2,
@@ -121,12 +121,20 @@ function sharedContractRecord(
 function createState(): ProductionFixtureState {
   const uploaded = sharedContractRecord(
     FIXTURE_REFS.uploadedSubmissionId,
-    'system_reviewing',
+    'manual_review_pending',
     FIXTURE_REFS.adminSubmissionVersion,
     null,
     null,
   );
   uploaded.title = '待审核合同投稿';
+  const historicalReviewing = sharedContractRecord(
+    FIXTURE_REFS.adminSubmissionId,
+    'system_reviewing',
+    FIXTURE_REFS.adminSubmissionVersion,
+    null,
+    null,
+  );
+  historicalReviewing.title = '历史系统审核投稿';
   const override = sharedContractRecord(
     FIXTURE_REFS.overrideSubmissionId,
     'manual_review_pending',
@@ -212,6 +220,7 @@ function createState(): ProductionFixtureState {
   return {
     records: new Map([
       [uploaded.id, uploaded],
+      [historicalReviewing.id, historicalReviewing],
       [override.id, override],
       [community.id, community],
       [equivalentOffset.id, equivalentOffset],
@@ -289,7 +298,6 @@ function adminSummary(record: ContractRecord) {
     kind: record.kind,
     title: record.title,
     body: record.body,
-    moderationLeaseUntil: null,
     purgeAfter: null,
     preQuarantineStatus: null,
     publishedAt: record.publishedAt,
@@ -363,7 +371,7 @@ function createDependencies(state: ProductionFixtureState): ApiDependencies {
         if (submissionId !== FIXTURE_REFS.uploadedSubmissionId) {
           throw new ApiError('NOT_FOUND', 404);
         }
-        return { status: 'system_reviewing' };
+        return { status: 'manual_review_pending' };
       },
       getStatus: async token => {
         if (token !== FIXTURE_REFS.uploadedStatusToken) {
@@ -371,7 +379,7 @@ function createDependencies(state: ProductionFixtureState): ApiDependencies {
         }
         return {
           submissionId: FIXTURE_REFS.uploadedSubmissionId,
-          status: 'system_reviewing',
+          status: 'manual_review_pending',
           publicReason: null,
           createdAt: CREATED_AT,
           updatedAt: UPDATED_AT,
@@ -383,7 +391,7 @@ function createDependencies(state: ProductionFixtureState): ApiDependencies {
         submissionId: 'contract-new-feedback',
         statusToken: 'f'.repeat(43),
         statusPath: '/submission-status/',
-        status: 'system_reviewing',
+        status: 'manual_review_pending',
       }),
     },
     publicContent: {
@@ -491,6 +499,10 @@ function createDependencies(state: ProductionFixtureState): ApiDependencies {
           (action.action === 'approve' || action.action === 'force_publish')
           && !hasValidContractPublicationShape(record)
         ) throw new ApiError('INVALID_ADMIN_ACTION', 409);
+        // Production 合同夹具没有技术通过证据，共享包普通批准必须与真实服务同样失败关闭。
+        if (action.action === 'approve' && record.kind === 'shared_package') {
+          throw new ApiError('TECHNICAL_SCAN_REQUIRED', 409);
+        }
         const beforeStatus = record.status;
         if (action.action === 'move_to_manual' && record.status === 'system_reviewing') {
           record.status = 'manual_review_pending';

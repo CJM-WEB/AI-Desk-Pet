@@ -251,7 +251,7 @@ export class IndexedDbSharedPetRepository implements SharedPetRepository {
       submissionId: created.id,
       statusToken: 'local-test-status-token-000000000000000000000',
       statusPath: '/submission-status/',
-      status: 'system_reviewing'
+      status: 'manual_review_pending'
     };
   }
 

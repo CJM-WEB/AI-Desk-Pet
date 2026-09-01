@@ -144,7 +144,6 @@ function createDependencies() {
         kind: 'shared_package',
         title: '桌宠资源',
         body: '资源说明',
-        moderationLeaseUntil: null,
         purgeAfter: null,
         preQuarantineStatus: null,
         publishedAt: null,

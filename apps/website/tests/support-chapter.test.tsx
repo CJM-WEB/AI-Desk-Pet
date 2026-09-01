@@ -32,7 +32,7 @@ function createRepository() {
     submissionId: 'submission-1',
     statusToken: 'a'.repeat(43),
     statusPath: '/submission-status/',
-    status: 'system_reviewing'
+    status: 'manual_review_pending'
   };
   return {
     list: vi.fn((kind: FeedbackKind) => entries.filter((entry) => entry.kind === kind)),
