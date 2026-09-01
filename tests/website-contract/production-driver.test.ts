@@ -143,6 +143,21 @@ function createState(): ProductionFixtureState {
     '2026-07-31T00:00:00.000002Z',
   );
   community.title = '公开合同资源';
+  community.assets.push({
+    role: 'derived',
+    storageKey: `submissions/${community.id}/derived/contract-private-derived.webp`,
+    fileName: 'contract-private-derived.webp',
+    declaredBytes: 8,
+    actualBytes: 8,
+    contentType: 'image/webp',
+  }, {
+    role: 'derived',
+    storageKey: `submissions/${community.id}/derived/contract-private-derived.json`,
+    fileName: 'contract-private-derived.json',
+    declaredBytes: 9,
+    actualBytes: 9,
+    contentType: 'application/json',
+  });
   const equivalentOffset = sharedContractRecord(
     'contract-b', 'published', 1, 'standard',
     '2026-07-31T08:00:00.000002+08:00',

@@ -240,6 +240,8 @@ export function runWebsiteApiContract(
       expect(feedback.items).toContainEqual(expect.objectContaining({
         id: refs.publicFeedbackId,
       }));
+      expect(JSON.stringify({ list, detail, download }))
+        .not.toContain('contract-private-derived');
     });
 
     it('点赞 operation UUID 大小写等价且在精确 24 小时后失效', async () => {

@@ -506,6 +506,7 @@ git commit -m "fix(web): 统一下载成功计数语义"
 - Modify: `apps/cloudbase-api/tests/public-content-service.test.ts`
 - Modify: `tests/memory-website-api.mjs`
 - Modify: `tests/website-contract/website-api-contract.ts`
+- Modify: `tests/website-contract/production-driver.test.ts`（Memory/Production 双驱动合同的直接消费者）
 - Modify: `tools/test-cloudbase-migrations.mjs`
 - Modify: `tools/test-cloudbase-migrations.test.mjs`
 - Modify: `tools/cloudbase-migration-inventory.test.mjs`

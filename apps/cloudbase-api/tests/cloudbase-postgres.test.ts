@@ -1329,7 +1329,7 @@ describe('CloudBase PostgreSQL 安全与公开互动存储', () => {
       });
   });
 
-  it('公开社区详情只披露发布依据枚举而不泄漏管理员与扫描字段', async () => {
+  it('公开社区详情忽略多个 derived 且未知角色仍失败关闭', async () => {
     const detail = {
       id: 'community-detail',
       title: '人工放行资源',
@@ -1337,11 +1337,29 @@ describe('CloudBase PostgreSQL 安全与公开互动存储', () => {
       published_at: '2026-08-31T00:00:00.000Z',
       publication_basis: 'admin_override',
       assets: [{
+        object_key: 'submissions/community-detail/cover.webp',
+        original_name: 'cover.webp',
+        actual_size: 512,
+        mime_type: 'image/webp',
+        role: 'cover'
+      }, {
         object_key: 'submissions/community-detail/package.zip',
         original_name: 'pet.zip',
         actual_size: 1024,
         mime_type: 'application/zip',
         role: 'package'
+      }, {
+        object_key: 'submissions/community-detail/derived/private-preview.webp',
+        original_name: 'private-preview.webp',
+        actual_size: 256,
+        mime_type: 'image/webp',
+        role: 'derived'
+      }, {
+        object_key: 'submissions/community-detail/derived/private-metadata.json',
+        original_name: 'private-metadata.json',
+        actual_size: 64,
+        mime_type: 'application/json',
+        role: 'derived'
       }],
       public_engagement: { like_count: 0, download_count: 0 },
       admin_id: '不得公开',
@@ -1363,6 +1381,12 @@ describe('CloudBase PostgreSQL 安全与公开互动存储', () => {
       title: '人工放行资源',
       body: '公开说明',
       assets: [{
+        role: 'cover',
+        storageKey: 'submissions/community-detail/cover.webp',
+        fileName: 'cover.webp',
+        sizeBytes: 512,
+        contentType: 'image/webp'
+      }, {
         role: 'package',
         storageKey: 'submissions/community-detail/package.zip',
         fileName: 'pet.zip',
@@ -1374,6 +1398,15 @@ describe('CloudBase PostgreSQL 安全与公开互动存储', () => {
       publishedAt: '2026-08-31T00:00:00.000Z',
       publicationBasis: 'admin_override'
     });
+    detail.assets.push({
+      object_key: 'submissions/community-detail/private.bin',
+      original_name: 'private.bin',
+      actual_size: 32,
+      mime_type: 'application/octet-stream',
+      role: 'unknown'
+    });
+    await expect(store.findPublicCommunity('community-detail'))
+      .rejects.toMatchObject({ code: 'DATABASE_ERROR' });
   });
 });
 

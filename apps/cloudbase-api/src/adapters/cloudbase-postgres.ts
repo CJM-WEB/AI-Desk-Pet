@@ -887,20 +887,22 @@ function mapPublishedCommunity(value: unknown): PublishedCommunityRecord {
     row.public_engagement,
     '公开互动'
   );
-  const assets = requireRows(row.assets, '公开资产').map(value => {
+  const assets = requireRows(row.assets, '公开资产').flatMap(value => {
     const asset = requireRecord(value, '公开资产');
     const role = requireString(asset.role, 'role');
+    // 详情查询会读回合法派生资产，公开 DTO 只保留封面与包。
+    if (role === 'derived') return [];
     if (role !== 'cover' && role !== 'package') {
       throw new ApiError('DATABASE_ERROR', 500, '公开资产角色错误');
     }
     const publicRole: 'cover' | 'package' = role;
-    return {
+    return [{
       role: publicRole,
       storageKey: requireString(asset.object_key, 'object_key'),
       fileName: requireString(asset.original_name, 'original_name'),
       sizeBytes: requireNonnegativeInteger(asset.actual_size, 'actual_size'),
       contentType: requireString(asset.mime_type, 'mime_type')
-    };
+    }];
   });
   return {
     id: requireString(row.id, 'id'),

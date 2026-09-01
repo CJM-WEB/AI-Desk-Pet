@@ -503,6 +503,24 @@ function seedContractFixtures(submissions, tokenIndex, uploads) {
     'standard'
   );
   community.publishedAt = '2026-07-31T00:00:00.000002Z';
+  community.assets.push(
+    {
+      ...assetFrom(
+        { fileName: 'contract-private-derived.webp', sizeBytes: 8, contentType: 'image/webp' },
+        'derived',
+        `submissions/${community.id}/derived/contract-private-derived.webp`
+      ),
+      actualBytes: 8
+    },
+    {
+      ...assetFrom(
+        { fileName: 'contract-private-derived.json', sizeBytes: 9, contentType: 'application/json' },
+        'derived',
+        `submissions/${community.id}/derived/contract-private-derived.json`
+      ),
+      actualBytes: 9
+    }
+  );
   const equivalentOffsetCommunity = {
     ...sharedRecord(
       'contract-b',

@@ -63,6 +63,20 @@ function createFixture(status: string | null): {
         declaredBytes: 1024,
         actualBytes: 1024,
         contentType: 'application/zip'
+      }, {
+        role: 'derived',
+        storageKey: `submissions/${id}/derived/private-preview.webp`,
+        fileName: 'private-preview.webp',
+        declaredBytes: 128,
+        actualBytes: 128,
+        contentType: 'image/webp'
+      }, {
+        role: 'derived',
+        storageKey: `submissions/${id}/derived/private-metadata.json`,
+        fileName: 'private-metadata.json',
+        declaredBytes: 64,
+        actualBytes: 64,
+        contentType: 'application/json'
       }]
     })),
     recordPublicDownload: vi.fn(async () => ({ downloadCount: 1 }))
@@ -116,6 +130,7 @@ describe('公开内容服务', () => {
       'submissions/published-id/package.zip',
       300
     );
+    expect(storage.createSignedUrl).toHaveBeenCalledOnce();
     expect(storage.createSignedUrl.mock.invocationCallOrder[0])
       .toBeLessThan(store.recordPublicDownload.mock.invocationCallOrder[0]!);
     expect(store.recordPublicDownload).toHaveBeenCalledWith({
