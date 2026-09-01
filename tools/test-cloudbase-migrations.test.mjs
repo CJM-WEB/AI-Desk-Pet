@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { access } from 'node:fs/promises';
+import { access, readFile } from 'node:fs/promises';
 import { test } from 'node:test';
 
 import {
@@ -42,6 +42,21 @@ test('迁移行为门接受 PostgreSQL 17 的补丁版本并拒绝其他主版�
     () => parseSupportedPostgresVersion('postgres (PostgreSQL) 16.8'),
     /仅支持 PostgreSQL 17/u
   );
+});
+
+test('官方安装包并发门以实际 PostgreSQL 锁等待作为同步证据', async () => {
+  const source = await readFile(
+    new URL('./test-cloudbase-migrations.mjs', import.meta.url),
+    'utf8'
+  );
+  const start = source.indexOf('async function runConcurrentOfficialDownloadMetricGate');
+  const end = source.indexOf('async function availablePort', start);
+  const gate = source.slice(start, end);
+
+  assert.match(gate, /application_name/u);
+  assert.match(gate, /pg_stat_activity/u);
+  assert.match(gate, /wait_event_type\s*=\s*'Lock'/u);
+  assert.doesNotMatch(gate, /setTimeout\([^,]+,\s*100\)/u);
 });
 
 test('真实临时 PostgreSQL 顺序执行全部迁移并验证事务行为', {

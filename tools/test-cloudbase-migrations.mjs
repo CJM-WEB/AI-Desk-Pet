@@ -214,6 +214,18 @@ export async function runCloudBaseMigrationBehaviorGate({
 
 /** 首会话持有指标行锁后才启动第二会话，证明真实并发递增不会丢失。 */
 async function runConcurrentOfficialDownloadMetricGate(psql, connection) {
+  const barrierLock = 8_601_001;
+  const barrier = runInteractiveUntilMarker(
+    psql,
+    [...connection, '-f', '-'],
+    String.raw`
+BEGIN;
+SELECT pg_advisory_xact_lock(${barrierLock});
+\echo official-download-metric-barrier-held
+`,
+    'official-download-metric-barrier-held'
+  );
+  await barrier.marker;
   const first = runUntilMarker(
     psql,
     [...connection, '-f', '-'],
@@ -223,7 +235,7 @@ SET ROLE service_role;
 SELECT set_config('request.jwt.claims', '{"role":"service_role"}', true);
 SELECT record_official_windows_download_click(repeat('c', 64));
 \echo official-download-metric-lock-acquired
-SELECT pg_sleep(0.35);
+SELECT pg_advisory_xact_lock(${barrierLock});
 COMMIT;
 `,
     'official-download-metric-lock-acquired'
@@ -231,16 +243,35 @@ COMMIT;
   await first.marker;
   const second = run(psql, [...connection, '-f', '-'], String.raw`
 SET ROLE service_role;
+SET application_name = 'ai-pet-official-download-metric-second';
 SELECT set_config('request.jwt.claims', '{"role":"service_role"}', false);
 SELECT record_official_windows_download_click(repeat('d', 64));
 `);
-  const earlyResult = await Promise.race([
-    second.then(() => 'completed'),
-    new Promise(resolvePromise => setTimeout(() => resolvePromise('blocked'), 100))
-  ]);
-  if (earlyResult !== 'blocked') {
-    throw new Error('行为门失败：并发官方安装包点击未等待首事务行锁');
-  }
+  await run(psql, [...connection, '-f', '-'], String.raw`
+DO $official_download_metric_wait_gate$
+DECLARE
+  v_deadline timestamptz := clock_timestamp() + interval '5 seconds';
+BEGIN
+  LOOP
+    IF EXISTS (
+      SELECT 1 FROM pg_stat_activity
+      WHERE application_name = 'ai-pet-official-download-metric-second'
+        AND state = 'active'
+        AND wait_event_type = 'Lock'
+        AND query LIKE '%record_official_windows_download_click%'
+    ) THEN
+      EXIT;
+    END IF;
+    IF clock_timestamp() >= v_deadline THEN
+      RAISE EXCEPTION '行为门失败：第二会话未在官方安装包指标行锁上等待';
+    END IF;
+    PERFORM pg_sleep(0.01);
+  END LOOP;
+END
+$official_download_metric_wait_gate$;
+`);
+  barrier.release();
+  await barrier.completion;
   await Promise.all([first.completion, second]);
   await run(psql, [...connection, '-f', '-'], String.raw`
 DO $concurrent_official_download_metric_gate$
@@ -470,6 +501,59 @@ function runUntilMarker(executable, arguments_, input, markerText) {
     child.stdin.end(input);
   });
   return { marker, completion };
+}
+
+/** 保持 SQL 会话输入流，供并发门在观察到锁等待后确定性地释放事务屏障。 */
+function runInteractiveUntilMarker(executable, arguments_, input, markerText) {
+  let resolveMarker;
+  let rejectMarker;
+  let release;
+  const marker = new Promise((resolvePromise, rejectPromise) => {
+    resolveMarker = resolvePromise;
+    rejectMarker = rejectPromise;
+  });
+  const completion = new Promise((resolvePromise, rejectPromise) => {
+    const child = spawn(executable, arguments_, {
+      windowsHide: true,
+      stdio: ['pipe', 'pipe', 'pipe']
+    });
+    const stdout = [];
+    const stderr = [];
+    let markerSeen = false;
+    child.stdout.on('data', chunk => {
+      const bytes = Buffer.from(chunk);
+      stdout.push(bytes);
+      if (!markerSeen && Buffer.concat(stdout).toString('utf8').includes(markerText)) {
+        markerSeen = true;
+        resolveMarker();
+      }
+    });
+    child.stderr.on('data', chunk => stderr.push(Buffer.from(chunk)));
+    child.once('error', error => {
+      rejectMarker(error);
+      rejectPromise(error);
+    });
+    child.once('close', code => {
+      const output = Buffer.concat(stdout).toString('utf8');
+      const errorOutput = Buffer.concat(stderr).toString('utf8');
+      if (code === 0) {
+        if (!markerSeen) rejectMarker(new Error('PostgreSQL 并发标记未出现'));
+        resolvePromise(output);
+        return;
+      }
+      const error = new Error(
+        `本地 PostgreSQL 命令失败（${code}）：${errorOutput || output}`
+      );
+      rejectMarker(error);
+      rejectPromise(error);
+    });
+    release = () => {
+      child.stdin.write('COMMIT;\n');
+      child.stdin.end();
+    };
+    child.stdin.write(input);
+  });
+  return { marker, completion, release: () => release() };
 }
 
 const bootstrapSql = String.raw`
@@ -2385,6 +2469,7 @@ BEGIN
   IF NOT EXISTS (
     SELECT 1 FROM pg_class
     WHERE oid = 'official_windows_download_click_metric'::regclass
+      AND relrowsecurity
       AND relforcerowsecurity
   ) THEN
     RAISE EXCEPTION '行为门失败：官方安装包指标表未强制 RLS';
