@@ -85,11 +85,13 @@ export function WebsiteExperience({
       controller.progress,
       reducedMotion
     );
-    const visual = chapter.id === 'download'
+    const visual = chapter.id === 'home' && !reducedMotion && controller.progress <= 4
+      ? { ...derived, opacity: 1, scale: 1, blurPx: 0, contrast: 1, visible: true }
+      : chapter.id === 'download'
           && controller.progress > 1
           && controller.progress <= 2
-      ? { ...derived, opacity: 1, scale: 1, blurPx: 0, contrast: 1, visible: true }
-      : derived;
+        ? { ...derived, opacity: 1, scale: 1, blurPx: 0, contrast: 1, visible: true }
+        : derived;
     return { chapter, visual };
   });
 

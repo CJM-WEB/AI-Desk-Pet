@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { gsap } from 'gsap';
 import { I18nProvider, useI18n } from '../components/i18n/I18nProvider';
 import { WebsiteExperience } from '../components/website-experience/WebsiteExperience';
+import * as websiteController from '../components/website-experience/use-website-controller';
 
 function createMediaQueryList(matches: boolean): MediaQueryList {
   return {
@@ -333,6 +334,58 @@ describe('官网章节降级模式', () => {
 
   });
 
+  it.each([2, 3, 4])('正常动效进度为 %s 时首页宿主保持可见', (progress) => {
+    vi.stubGlobal('matchMedia', vi.fn(() => createMediaQueryList(false)));
+    vi.spyOn(websiteController, 'useWebsiteController').mockReturnValue({
+      phase: 'interactive',
+      progress,
+      settledIndex: progress,
+      isChapterTransitioning: false,
+      isPaused: false,
+      prefersReducedMotion: false,
+      initializationFailed: false,
+      goToAdjacent: vi.fn()
+    });
+    const webGlMethods = new Map<string, ReturnType<typeof vi.fn>>();
+    const getWebGlMethod = (name: string) => {
+      let method = webGlMethods.get(name);
+      if (!method) {
+        method = vi.fn(() => {
+          if (/^create(?:Buffer|Program|Shader|Texture)$/.test(name)) return {};
+          if (name === 'getUniformLocation') return {};
+          if (/^get(?:Program|Shader)Parameter$/.test(name)) return true;
+          if (name === 'getAttribLocation') return 0;
+          if (/^get(?:Program|Shader)InfoLog$/.test(name)) return '';
+          return undefined;
+        });
+        webGlMethods.set(name, method);
+      }
+      return method;
+    };
+    const webGl = new Proxy({}, {
+      get: (_target, property) => {
+        const name = String(property);
+        return name === name.toUpperCase() ? 1 : getWebGlMethod(name);
+      }
+    });
+    vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockImplementation((type) => (
+      type === 'webgl'
+        ? webGl as WebGLRenderingContext
+        : {
+          clearRect: vi.fn(),
+          createLinearGradient: () => ({ addColorStop: vi.fn() }),
+          fillText: vi.fn(),
+          measureText: () => ({ width: 48 }),
+          setTransform: vi.fn()
+        } as unknown as CanvasRenderingContext2D
+    ));
+
+    render(<WebsiteExperience />);
+
+    expect(document.querySelector<HTMLElement>('[data-chapter-id="home"]')?.dataset.visible)
+      .toBe('true');
+  });
+
   it('减少动态效果使用静态品牌且浏览全部业务章节时不创建 WebGL', async () => {
     vi.stubGlobal('matchMedia', vi.fn(() => createMediaQueryList(true)));
     const getContext = vi.mocked(HTMLCanvasElement.prototype.getContext);
@@ -351,6 +404,8 @@ describe('官网章节降级模式', () => {
     expect(liquidHome.querySelector('span')?.textContent).toBe('AI PET');
     expect(liquidHome.querySelector('span')?.parentElement?.getAttribute('aria-hidden'))
       .toBe('false');
+    expect(document.querySelector<HTMLElement>('[data-chapter-id="home"]')?.dataset.visible)
+      .toBe('true');
     expect(getContext.mock.calls.some(([type]) => type === 'webgl')).toBe(false);
     expect(tickerAdd).not.toHaveBeenCalled();
 

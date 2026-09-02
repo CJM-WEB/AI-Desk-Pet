@@ -83,8 +83,14 @@ afterEach(() => {
 });
 
 describe('磁吸 Logo 舞台', () => {
-  it('介绍交接结束后立即释放首页液态玻璃', () => {
-    render(<HomeExperience exitProgress={1.08} isPaused={false} reducedMotion />);
+  it.each([0, 1, 2, 3, 4])('进度 %s 时保留五章节液态玻璃', (exitProgress) => {
+    render(<HomeExperience exitProgress={exitProgress} isPaused={false} reducedMotion={false} />);
+
+    expect(screen.getByTestId('home-experience').dataset.liquidHomeActive).toBe('true');
+  });
+
+  it('离开支持章节后释放液态玻璃', () => {
+    render(<HomeExperience exitProgress={4.08} isPaused={false} reducedMotion={false} />);
 
     expect(screen.getByTestId('home-experience').dataset.liquidHomeActive).toBe('false');
   });
