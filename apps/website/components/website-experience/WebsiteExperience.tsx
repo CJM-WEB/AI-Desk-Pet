@@ -155,6 +155,7 @@ export function WebsiteExperience({
               <HomeExperience
                 exitProgress={homeExitProgress}
                 isPaused={controller.isPaused}
+                onInitializationError={handleInitializationError}
                 reducedMotion={reducedMotion}
               />
             ) : null}

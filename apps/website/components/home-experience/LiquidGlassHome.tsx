@@ -1,7 +1,7 @@
 'use client';
 
 import { gsap } from 'gsap';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useI18n } from '../i18n/I18nProvider';
 import { createAboutFeatures } from '../website-experience/about/about-content';
 import { createDownloadContent } from '../website-experience/download/download-content';
@@ -19,6 +19,7 @@ export const LIQUID_GLASS_SUPPORT_SELECTION_EVENT = 'ai-pet-support-selection';
 interface LiquidGlassHomeProps {
   active: boolean;
   isPaused: boolean;
+  onInitializationError?: (() => void) | undefined;
   reducedMotion: boolean;
   transitionProgress?: number;
 }
@@ -35,12 +36,30 @@ export interface LiquidGlassInteractionDetail {
   offsets: readonly [number, number, number, number, number, number];
 }
 
+interface CommunityVisualSnapshot {
+  count: number;
+  currentPage: string;
+  totalPages: string;
+}
+
+interface SupportVisualSnapshot {
+  feedbackIndex: number;
+  paymentIndex: number;
+}
+
+interface LiquidGlassRuntimeSink {
+  updateCommunity: (snapshot: CommunityVisualSnapshot) => void;
+  updateInteraction: (snapshot: LiquidGlassInteractionDetail) => void;
+  updateSupport: (snapshot: SupportVisualSnapshot) => void;
+}
+
 /**
  * 负责首页、介绍、下载、共享仓库与支持五章的共享液态玻璃渲染，并保留章节 DOM 的语义与回退职责。
  */
 export function LiquidGlassHome({
   active,
   isPaused,
+  onInitializationError,
   reducedMotion,
   transitionProgress = 0
 }: LiquidGlassHomeProps) {
@@ -68,13 +87,91 @@ export function LiquidGlassHome({
     };
   }, [t]);
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const pausedRef = useRef(isPaused);
   const transitionRef = useRef(transitionProgress);
+  const initializationErrorReportedRef = useRef(false);
+  const onInitializationErrorRef = useRef(onInitializationError);
+  const interactionSnapshotRef = useRef<LiquidGlassInteractionDetail>({
+    hovered: -1,
+    dragging: false,
+    offsets: [0, 0, 0, 0, 0, 0]
+  });
+  const communitySnapshotRef = useRef<CommunityVisualSnapshot>({
+    count: 0,
+    currentPage: '1',
+    totalPages: '0'
+  });
+  const supportSnapshotRef = useRef<SupportVisualSnapshot>({
+    feedbackIndex: 0,
+    paymentIndex: 0
+  });
+  const runtimeSinkRef = useRef<LiquidGlassRuntimeSink | null>(null);
   const [initializationFailed, setInitializationFailed] = useState(false);
 
+  onInitializationErrorRef.current = onInitializationError;
+
+  const reportInitializationError = useCallback(() => {
+    if (initializationErrorReportedRef.current) return;
+
+    initializationErrorReportedRef.current = true;
+    setInitializationFailed(true);
+    onInitializationErrorRef.current?.();
+  }, []);
+
+  // 业务章节在 GPU 暂停期间仍可能更新；常驻监听只保存最小视觉快照。
   useEffect(() => {
-    pausedRef.current = isPaused;
-  }, [isPaused]);
+    const handleCommunityCardCount = (event: Event) => {
+      const detail = (event as CustomEvent<{
+        count?: number;
+        currentPage?: number;
+        totalPages?: number | string;
+      }>).detail;
+      const snapshot = {
+        count: Math.min(8, Math.max(0, detail?.count ?? 0)),
+        currentPage: String(detail?.currentPage ?? 1),
+        totalPages: String(detail?.totalPages ?? 0)
+      };
+      communitySnapshotRef.current = snapshot;
+      runtimeSinkRef.current?.updateCommunity(snapshot);
+    };
+    const handleGlassInteraction = (event: Event) => {
+      const detail = (event as CustomEvent<LiquidGlassInteractionDetail>).detail;
+      if (!detail) return;
+
+      const snapshot: LiquidGlassInteractionDetail = {
+        hovered: detail.hovered,
+        dragging: detail.dragging,
+        offsets: [...detail.offsets]
+      };
+      interactionSnapshotRef.current = snapshot;
+      runtimeSinkRef.current?.updateInteraction(snapshot);
+    };
+    const handleSupportSelection = (event: Event) => {
+      const detail = (event as CustomEvent<{
+        feedbackIndex?: number;
+        paymentIndex?: number;
+      }>).detail;
+      if (!detail) return;
+
+      const snapshot = {
+        feedbackIndex: Math.min(2, Math.max(0, detail.feedbackIndex ?? 0)),
+        paymentIndex: Math.min(2, Math.max(0, detail.paymentIndex ?? 0))
+      };
+      supportSnapshotRef.current = snapshot;
+      runtimeSinkRef.current?.updateSupport(snapshot);
+    };
+
+    window.addEventListener(LIQUID_GLASS_COMMUNITY_CARDS_EVENT, handleCommunityCardCount);
+    window.addEventListener(LIQUID_GLASS_INTERACTION_EVENT, handleGlassInteraction);
+    window.addEventListener(LIQUID_GLASS_SUPPORT_SELECTION_EVENT, handleSupportSelection);
+    return () => {
+      window.removeEventListener(
+        LIQUID_GLASS_COMMUNITY_CARDS_EVENT,
+        handleCommunityCardCount
+      );
+      window.removeEventListener(LIQUID_GLASS_INTERACTION_EVENT, handleGlassInteraction);
+      window.removeEventListener(LIQUID_GLASS_SUPPORT_SELECTION_EVENT, handleSupportSelection);
+    };
+  }, []);
 
   useEffect(() => {
     transitionRef.current = transitionProgress;
@@ -89,21 +186,27 @@ export function LiquidGlassHome({
     } catch {
       // 控制器统一报告媒体 API 失败；叶子组件保持既有初始化流程。
     }
-    if (!active || systemReducedMotion) {
+    if (!active || isPaused || systemReducedMotion) {
       setInitializationFailed(false);
       return;
     }
 
     const canvas = canvasRef.current;
-    const gl = canvas?.getContext('webgl', {
-      alpha: true,
-      antialias: false,
-      depth: false,
-      desynchronized: true,
-      powerPreference: 'high-performance'
-    });
+    let gl: WebGLRenderingContext | null = null;
+    try {
+      gl = canvas?.getContext('webgl', {
+        alpha: true,
+        antialias: false,
+        depth: false,
+        desynchronized: true,
+        powerPreference: 'high-performance'
+      }) ?? null;
+    } catch {
+      reportInitializationError();
+      return;
+    }
     if (!canvas || !gl) {
-      setInitializationFailed(true);
+      reportInitializationError();
       return;
     }
 
@@ -118,9 +221,18 @@ export function LiquidGlassHome({
     const downloadTypingLength = Object.values(downloadGlassCopy)
       .reduce((total, text) => total + Array.from(text).length, 0);
     const pointer = { x: 0.5, y: 0.5 };
-    const glassInteraction = { hoverAmount: 0, hovered: -1, dragging: false };
-    const supportSelection = { feedback: 0, payment: 0 };
-    const blobOffsets = new Float32Array(6);
+    const interactionSnapshot = interactionSnapshotRef.current;
+    const supportSnapshot = supportSnapshotRef.current;
+    const glassInteraction = {
+      hoverAmount: interactionSnapshot.hovered >= 0 ? 1 : 0,
+      hovered: interactionSnapshot.hovered,
+      dragging: interactionSnapshot.dragging
+    };
+    const supportSelection = {
+      feedback: supportSnapshot.feedbackIndex,
+      payment: supportSnapshot.paymentIndex
+    };
+    const blobOffsets = new Float32Array(interactionSnapshot.offsets);
     const rippleData = new Float32Array(6 * 4);
     const createdTextures: WebGLTexture[] = [];
     const createdBuffers: WebGLBuffer[] = [];
@@ -161,6 +273,42 @@ export function LiquidGlassHome({
     let render = (_time: number) => {};
     let resize = () => {};
     let updateLogoTexture = (_width: number, _height: number) => {};
+    let tickerRegistered = false;
+    let runtimeSink: LiquidGlassRuntimeSink | null = null;
+    const listenerCleanups: Array<() => void> = [];
+    const teardown = () => {
+      if (disposed) return;
+
+      disposed = true;
+      if (tickerRegistered) {
+        gsap.ticker.remove(render);
+        tickerRegistered = false;
+      }
+      if (runtimeSinkRef.current === runtimeSink) {
+        runtimeSinkRef.current = null;
+      }
+      listenerCleanups.splice(0).reverse().forEach(cleanup => cleanup());
+      gsap.killTweensOf(pointer);
+      gsap.killTweensOf(glassInteraction);
+      gsap.killTweensOf(supportSelection);
+      createdTextures.splice(0).forEach(texture => gl.deleteTexture(texture));
+      createdBuffers.splice(0).forEach(buffer => gl.deleteBuffer(buffer));
+      createdShaders.splice(0).forEach(shader => gl.deleteShader(shader));
+      if (program) {
+        gl.deleteProgram(program);
+        program = null;
+      }
+    };
+
+    const listen = (
+      target: EventTarget,
+      type: string,
+      listener: EventListener,
+      options?: AddEventListenerOptions | boolean
+    ) => {
+      target.addEventListener(type, listener, options);
+      listenerCleanups.push(() => target.removeEventListener(type, listener));
+    };
 
     try {
       const vertexShader = compileShader(gl.VERTEX_SHADER, LIQUID_GLASS_VERTEX_SHADER);
@@ -257,9 +405,9 @@ export function LiquidGlassHome({
       const logoImage = new Image();
       let logoReady = false;
       let lastTextProgress = -1;
-      let communityCardCount = 0;
-      let communityCurrentPage = '1';
-      let communityTotalPages = '0';
+      let communityCardCount = communitySnapshotRef.current.count;
+      let communityCurrentPage = communitySnapshotRef.current.currentPage;
+      let communityTotalPages = communitySnapshotRef.current.totalPages;
 
       gl.activeTexture(gl.TEXTURE1);
       gl.bindTexture(gl.TEXTURE_2D, logoTexture);
@@ -952,29 +1100,22 @@ export function LiquidGlassHome({
         pointerY(y);
         addRipple(x, y, detail.strength);
       };
-      const handleCommunityCardCount = (event: Event) => {
-        const detail = (event as CustomEvent<{
-          count?: number;
-          currentPage?: number;
-          totalPages?: number | string;
-        }>).detail;
-        communityCardCount = Math.min(8, Math.max(0, detail?.count ?? 0));
-        communityCurrentPage = String(detail?.currentPage ?? 1);
-        communityTotalPages = String(detail?.totalPages ?? 0);
+      const updateCommunity = (snapshot: CommunityVisualSnapshot) => {
+        communityCardCount = snapshot.count;
+        communityCurrentPage = snapshot.currentPage;
+        communityTotalPages = snapshot.totalPages;
         lastTextProgress = -1;
       };
-      const handleGlassInteraction = (event: Event) => {
-        const detail = (event as CustomEvent<LiquidGlassInteractionDetail>).detail;
-        if (!detail) return;
-        glassInteraction.hovered = detail.hovered;
-        glassInteraction.dragging = detail.dragging;
+      const updateInteraction = (snapshot: LiquidGlassInteractionDetail) => {
+        glassInteraction.hovered = snapshot.hovered;
+        glassInteraction.dragging = snapshot.dragging;
         gsap.to(glassInteraction, {
-          hoverAmount: detail.hovered >= 0 ? 1 : 0,
-          duration: detail.hovered >= 0 ? 0.32 : 1.1,
+          hoverAmount: snapshot.hovered >= 0 ? 1 : 0,
+          duration: snapshot.hovered >= 0 ? 0.32 : 1.1,
           ease: 'power3.out',
           overwrite: 'auto'
         });
-        blobOffsets.set(detail.offsets);
+        blobOffsets.set(snapshot.offsets);
       };
       const nearestSelectionTarget = (current: number, target: number) => {
         const normalized = ((current % 3) + 3) % 3;
@@ -983,29 +1124,26 @@ export function LiquidGlassHome({
         if (delta < -1.5) delta += 3;
         return current + delta;
       };
-      const handleSupportSelection = (event: Event) => {
-        const detail = (event as CustomEvent<{
-          feedbackIndex?: number;
-          paymentIndex?: number;
-        }>).detail;
-        if (!detail) return;
+      const updateSupport = (snapshot: SupportVisualSnapshot) => {
         gsap.to(supportSelection, {
           feedback: nearestSelectionTarget(
             supportSelection.feedback,
-            Math.min(2, Math.max(0, detail.feedbackIndex ?? 0))
+            snapshot.feedbackIndex
           ),
           payment: nearestSelectionTarget(
             supportSelection.payment,
-            Math.min(2, Math.max(0, detail.paymentIndex ?? 0))
+            snapshot.paymentIndex
           ),
           duration: 0.52,
           ease: 'power3.inOut',
           overwrite: 'auto',
         });
       };
+      runtimeSink = { updateCommunity, updateInteraction, updateSupport };
+      runtimeSinkRef.current = runtimeSink;
 
       render = (time: number) => {
-        if (disposed || pausedRef.current) return;
+        if (disposed) return;
         currentTime = time;
         const rawTransition = transitionRef.current;
         const transition = Math.min(1, rawTransition);
@@ -1066,9 +1204,13 @@ export function LiquidGlassHome({
       };
       const handleVisibilityChange = () => {
         if (document.hidden) {
-          gsap.ticker.remove(render);
-        } else {
+          if (tickerRegistered) {
+            gsap.ticker.remove(render);
+            tickerRegistered = false;
+          }
+        } else if (!tickerRegistered) {
           gsap.ticker.add(render);
+          tickerRegistered = true;
         }
       };
       const handleLogoLoad = () => {
@@ -1079,57 +1221,36 @@ export function LiquidGlassHome({
       };
       const handleLogoError = () => {
         if (disposed) return;
-        setInitializationFailed(true);
+        teardown();
+        reportInitializationError();
       };
 
-      logoImage.addEventListener('load', handleLogoLoad);
-      logoImage.addEventListener('error', handleLogoError);
+      listen(logoImage, 'load', handleLogoLoad);
+      listen(logoImage, 'error', handleLogoError);
       logoImage.src = '/AP.png';
       resize();
       gsap.ticker.lagSmoothing(500, 33);
       gsap.ticker.add(render);
-      window.addEventListener('resize', resize, { passive: true });
-      window.addEventListener('pointermove', updatePointer, { passive: true });
-      window.addEventListener(LIQUID_GLASS_RIPPLE_EVENT, handleControlRipple);
-      window.addEventListener(LIQUID_GLASS_COMMUNITY_CARDS_EVENT, handleCommunityCardCount);
-      window.addEventListener(LIQUID_GLASS_INTERACTION_EVENT, handleGlassInteraction);
-      window.addEventListener(LIQUID_GLASS_SUPPORT_SELECTION_EVENT, handleSupportSelection);
-      canvas.addEventListener('pointerdown', handleCanvasPointerDown, { passive: true });
-      document.addEventListener('visibilitychange', handleVisibilityChange);
-
-      return () => {
-        disposed = true;
-        gsap.ticker.remove(render);
-        gsap.killTweensOf(pointer);
-        gsap.killTweensOf(glassInteraction);
-        gsap.killTweensOf(supportSelection);
-        window.removeEventListener('resize', resize);
-        window.removeEventListener('pointermove', updatePointer);
-        window.removeEventListener(LIQUID_GLASS_RIPPLE_EVENT, handleControlRipple);
-        window.removeEventListener(LIQUID_GLASS_COMMUNITY_CARDS_EVENT, handleCommunityCardCount);
-        window.removeEventListener(LIQUID_GLASS_INTERACTION_EVENT, handleGlassInteraction);
-        window.removeEventListener(LIQUID_GLASS_SUPPORT_SELECTION_EVENT, handleSupportSelection);
-        canvas.removeEventListener('pointerdown', handleCanvasPointerDown);
-        document.removeEventListener('visibilitychange', handleVisibilityChange);
-        logoImage.removeEventListener('load', handleLogoLoad);
-        logoImage.removeEventListener('error', handleLogoError);
-        createdTextures.forEach(texture => gl.deleteTexture(texture));
-        createdBuffers.forEach(buffer => gl.deleteBuffer(buffer));
-        createdShaders.forEach(shader => gl.deleteShader(shader));
-        if (program) gl.deleteProgram(program);
-      };
+      tickerRegistered = true;
+      listen(window, 'resize', resize as EventListener, { passive: true });
+      listen(window, 'pointermove', updatePointer as EventListener, { passive: true });
+      listen(window, LIQUID_GLASS_RIPPLE_EVENT, handleControlRipple);
+      listen(canvas, 'pointerdown', handleCanvasPointerDown as EventListener, { passive: true });
+      listen(document, 'visibilitychange', handleVisibilityChange);
     } catch {
-      disposed = true;
-      gsap.killTweensOf(pointer);
-      gsap.killTweensOf(glassInteraction);
-      gsap.killTweensOf(supportSelection);
-      createdTextures.forEach(texture => gl.deleteTexture(texture));
-      createdBuffers.forEach(buffer => gl.deleteBuffer(buffer));
-      createdShaders.forEach(shader => gl.deleteShader(shader));
-      if (program) gl.deleteProgram(program);
-      setInitializationFailed(true);
+      teardown();
+      reportInitializationError();
     }
-  }, [active, downloadGlassCopy, glassFeatures, reducedMotion]);
+
+    return teardown;
+  }, [
+    active,
+    downloadGlassCopy,
+    glassFeatures,
+    isPaused,
+    reducedMotion,
+    reportInitializationError
+  ]);
 
   return (
     <div

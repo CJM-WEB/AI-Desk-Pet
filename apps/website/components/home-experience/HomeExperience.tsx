@@ -6,6 +6,7 @@ import styles from './home-experience.module.css';
 export interface HomeExperienceProps {
   exitProgress: number;
   isPaused: boolean;
+  onInitializationError?: () => void;
   reducedMotion: boolean;
 }
 
@@ -15,6 +16,7 @@ export interface HomeExperienceProps {
 export function HomeExperience({
   exitProgress,
   isPaused,
+  onInitializationError,
   reducedMotion
 }: HomeExperienceProps) {
   // 前五个模块连续复用首页液态玻璃；离开合并支持模块后再释放上下文。
@@ -31,6 +33,7 @@ export function HomeExperience({
       <LiquidGlassHome
         active={active}
         isPaused={isPaused}
+        onInitializationError={onInitializationError}
         reducedMotion={reducedMotion}
         transitionProgress={Math.min(4, Math.max(0, exitProgress))}
       />

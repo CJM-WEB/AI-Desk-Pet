@@ -22,6 +22,32 @@ function createMediaQueryList(matches: boolean): MediaQueryList {
   };
 }
 
+function createWebGlContext(): WebGLRenderingContext {
+  const methods = new Map<string, ReturnType<typeof vi.fn>>();
+  const method = (name: string) => {
+    let implementation = methods.get(name);
+    if (!implementation) {
+      implementation = vi.fn(() => {
+        if (/^create(?:Buffer|Program|Shader|Texture)$/.test(name)) return {};
+        if (name === 'getUniformLocation') return {};
+        if (/^get(?:Program|Shader)Parameter$/.test(name)) return true;
+        if (name === 'getAttribLocation') return 0;
+        if (/^get(?:Program|Shader)InfoLog$/.test(name)) return '';
+        return undefined;
+      });
+      methods.set(name, implementation);
+    }
+    return implementation;
+  };
+
+  return new Proxy({}, {
+    get: (_target, property) => {
+      const name = String(property);
+      return name === name.toUpperCase() ? 1 : method(name);
+    }
+  }) as WebGLRenderingContext;
+}
+
 function createMutableMediaQueryList(initialMatches: boolean) {
   let matches = initialMatches;
   const listeners = new Set<(event: MediaQueryListEvent) => void>();
@@ -67,14 +93,39 @@ describe('官网章节降级模式', () => {
       observe() {}
       disconnect() {}
     });
-    vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue({
-      clearRect: vi.fn(),
-      setTransform: vi.fn()
-    } as unknown as CanvasRenderingContext2D);
+    vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockImplementation((type) => (
+      type === 'webgl'
+        ? createWebGlContext()
+        : {
+          clearRect: vi.fn(),
+          createLinearGradient: () => ({ addColorStop: vi.fn() }),
+          fillText: vi.fn(),
+          measureText: () => ({ width: 48 }),
+          setTransform: vi.fn()
+        } as unknown as CanvasRenderingContext2D
+    ));
+    vi.spyOn(gsap.ticker, 'add').mockImplementation(callback => callback);
+    vi.spyOn(gsap.ticker, 'remove').mockImplementation(() => {});
+    vi.spyOn(gsap, 'quickTo').mockImplementation((target, property) => {
+      const setter = vi.fn((value: number) => {
+        Reflect.set(target as object, property, value);
+        return {} as gsap.core.Tween;
+      });
+      return Object.assign(setter, { tween: {} as gsap.core.Tween }) as ReturnType<typeof gsap.quickTo>;
+    });
+    vi.spyOn(gsap, 'to').mockImplementation((target, vars) => {
+      if (target && typeof target === 'object') {
+        for (const [key, value] of Object.entries(vars)) {
+          if (typeof value === 'number') Reflect.set(target as object, key, value);
+        }
+      }
+      return {} as gsap.core.Tween;
+    });
   });
 
   afterEach(() => {
     cleanup();
+    gsap.ticker.sleep();
     vi.useRealTimers();
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
@@ -240,6 +291,45 @@ describe('官网章节降级模式', () => {
       .toBe('true');
     expect(screen.getByTestId('support-chapter').dataset.motionDisabled)
       .toBe('true');
+  });
+
+  it('WebGL 上下文不可用时父级进入静态回退并可逐章访问核心 DOM', async () => {
+    vi.stubGlobal('matchMedia', vi.fn(() => createMediaQueryList(false)));
+    vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockImplementation((type) => (
+      type === 'webgl'
+        ? null
+        : { clearRect: vi.fn(), setTransform: vi.fn() } as unknown as CanvasRenderingContext2D
+    ));
+    const onRuntimeError = vi.fn();
+
+    render(<WebsiteExperience onRuntimeError={onRuntimeError} />);
+
+    const experience = screen.getByTestId('website-experience');
+    await waitFor(() => expect(experience.dataset.staticFallback).toBe('active'));
+    expect(onRuntimeError).toHaveBeenCalledOnce();
+    const next = screen.getByRole('button', { name: '下一章节' });
+
+    fireEvent.click(next);
+    expect(document.querySelector('[data-chapter-id="about"]')?.getAttribute('aria-hidden'))
+      .toBe('false');
+    expect(screen.getByTestId('about-chapter')).toBeTruthy();
+
+    fireEvent.click(next);
+    expect(document.querySelector('[data-chapter-id="download"]')?.getAttribute('aria-hidden'))
+      .toBe('false');
+    expect(screen.getByTestId('download-chapter')).toBeTruthy();
+
+    fireEvent.click(next);
+    expect(document.querySelector('[data-chapter-id="community"]')?.getAttribute('aria-hidden'))
+      .toBe('false');
+    expect(screen.getByTestId('shared-pet-chapter')).toBeTruthy();
+
+    fireEvent.click(next);
+    expect(document.querySelector('[data-chapter-id="feedback"]')?.getAttribute('aria-hidden'))
+      .toBe('false');
+    expect(screen.getByTestId('support-chapter')).toBeTruthy();
+    expect(screen.getByText('微信')).toBeTruthy();
+    expect(screen.getByText('支付宝')).toBeTruthy();
   });
 
   it('监听器半注册失败会回滚已注册输入并阻止残留导航', async () => {
