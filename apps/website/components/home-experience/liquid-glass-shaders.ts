@@ -8,6 +8,13 @@ export const LIQUID_GLASS_VERTEX_SHADER = `
   }
 `;
 
+/** DOM 从顶部计量行位，WebGL 片元坐标从底部计量，这里统一完成 Y 轴反转。 */
+export function mapCommunityDomRowsToWebGl(
+  domRows: readonly [number, number]
+): readonly [number, number] {
+  return [1 - domRows[0], 1 - domRows[1]];
+}
+
 export const LIQUID_GLASS_FRAGMENT_SHADER = `
   precision mediump float;
 
@@ -25,6 +32,7 @@ export const LIQUID_GLASS_FRAGMENT_SHADER = `
   uniform float u_supportFeedbackActive;
   uniform float u_supportPaymentActive;
   uniform float u_communityCardCount;
+  uniform vec2 u_communityCardRows;
   uniform vec2 u_blobOffsets[3];
   uniform float u_hoveredBlob;
   uniform float u_hoverAmount;
@@ -236,7 +244,10 @@ export const LIQUID_GLASS_FRAGMENT_SHADER = `
         0.0,
         1.0
       );
-      vec2 center = u_resolution * vec2(0.14 + column * 0.24, mix(0.19, 0.81, row));
+      vec2 center = u_resolution * vec2(
+        0.14 + column * 0.24,
+        mix(u_communityCardRows.x, u_communityCardRows.y, row)
+      );
       center.x += (1.0 - entry) * u_resolution.x * 1.18;
       center.x -= u_supportTransition * u_resolution.x * 1.22;
       center.y += sin(u_time * 0.61 + order * 1.37) * minimumSide * 0.008 * u_motion * entry;

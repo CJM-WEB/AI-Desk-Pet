@@ -8,6 +8,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { LiquidGlassInteractionDetail } from '../components/home-experience/LiquidGlassHome';
 import { LiquidGlassHome } from '../components/home-experience/LiquidGlassHome';
 import { HomeExperience } from '../components/home-experience/HomeExperience';
+import { LIQUID_GLASS_FRAGMENT_SHADER } from '../components/home-experience/liquid-glass-shaders';
 import { MagneticAPMark } from '../components/home-experience/MagneticAPMark';
 
 function createCanvasContext(fillText = vi.fn()) {
@@ -403,6 +404,31 @@ describe('磁吸 Logo 舞台', () => {
     const rippleValues = Array.from(rippleCall?.[1] as Float32Array);
     expect(rippleValues.slice(0, 3)).toEqual([0.25, 0.75, 0]);
     expect(rippleValues[3]).toBeCloseTo(1.65, 5);
+  });
+
+  it('把 DOM 顶部起算的社区卡片行映射为 WebGL 底部起算坐标', () => {
+    const webGl = createWebGlContext();
+    vi.spyOn(HTMLCanvasElement.prototype, 'getContext')
+      .mockImplementation((type) => type === 'webgl' ? webGl.context : createCanvasContext());
+    let renderFrame: Parameters<typeof gsap.ticker.add>[0] | undefined;
+    vi.spyOn(gsap.ticker, 'add').mockImplementation((callback) => {
+      renderFrame = callback;
+      return callback;
+    });
+
+    render(<LiquidGlassHome active isPaused={false} reducedMotion={false} />);
+    renderFrame?.(1, 16, 1, 0.016);
+
+    const communityRowsCall = webGl.uniform2f.mock.calls.find(([location]) => (
+      (location as unknown as { name: string }).name === 'u_communityCardRows'
+    ));
+    expect(communityRowsCall?.slice(1)).toEqual([
+      expect.closeTo(0.81, 8),
+      expect.closeTo(0.19, 8)
+    ]);
+    expect(LIQUID_GLASS_FRAGMENT_SHADER).toMatch(
+      /mix\(u_communityCardRows\.x, u_communityCardRows\.y, row\)/
+    );
   });
 
   it('把四类章节视觉事件同步到同一帧的 WebGL uniform', () => {

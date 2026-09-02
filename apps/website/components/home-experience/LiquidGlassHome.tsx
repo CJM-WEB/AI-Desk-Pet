@@ -14,7 +14,8 @@ import { createAboutFeatures } from '../website-experience/about/about-content';
 import { createDownloadContent } from '../website-experience/download/download-content';
 import {
   LIQUID_GLASS_FRAGMENT_SHADER,
-  LIQUID_GLASS_VERTEX_SHADER
+  LIQUID_GLASS_VERTEX_SHADER,
+  mapCommunityDomRowsToWebGl
 } from './liquid-glass-shaders';
 import styles from './liquid-glass-home.module.css';
 
@@ -372,6 +373,7 @@ export function LiquidGlassHome({
         supportFeedbackActive: gl.getUniformLocation(program, 'u_supportFeedbackActive'),
         supportPaymentActive: gl.getUniformLocation(program, 'u_supportPaymentActive'),
         communityCardCount: gl.getUniformLocation(program, 'u_communityCardCount'),
+        communityCardRows: gl.getUniformLocation(program, 'u_communityCardRows'),
         blobOffsets: gl.getUniformLocation(program, 'u_blobOffsets[0]'),
         hoveredBlob: gl.getUniformLocation(program, 'u_hoveredBlob'),
         hoverAmount: gl.getUniformLocation(program, 'u_hoverAmount'),
@@ -386,6 +388,12 @@ export function LiquidGlassHome({
         communityTextTexture: gl.getUniformLocation(program, 'u_communityTextTexture'),
         supportTextTexture: gl.getUniformLocation(program, 'u_supportTextTexture')
       };
+      const communityCardRows = mapCommunityDomRowsToWebGl([0.19, 0.81]);
+      gl.uniform2f(
+        uniforms.communityCardRows,
+        communityCardRows[0],
+        communityCardRows[1]
+      );
 
       const logoCanvas = document.createElement('canvas');
       const logoContext = logoCanvas.getContext('2d');
