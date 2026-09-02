@@ -63,6 +63,10 @@ export const ALLOWED_WEBSITE_SCOPE_PATHS = Object.freeze([
   'docs/operations/cloudbase-deployment.md',
   'docs/operations/website-stage-2c-shanghai-acceptance.md',
   'docs/operations/website-stage-2c-zero-cost-manual-review-acceptance.md',
+  /** 最终视觉恢复只放行获批基线与 2026-09-02 当日证据目录。 */
+  'docs/operations/evidence/website-final-visual-restoration-2026-09-02/**',
+  'docs/superpowers/specs/2026-09-02-website-final-visual-restoration-design.md',
+  'docs/superpowers/plans/2026-09-02-website-final-visual-restoration.md',
   'docs/superpowers/specs/2026-09-01-website-official-download-counter-design.md',
   'docs/superpowers/specs/2026-08-01-cloudbase-js-sdk-v3-pg-compatibility-design.md',
   'docs/superpowers/specs/2026-09-01-website-stage-2c-shanghai-rebuild-design.md',

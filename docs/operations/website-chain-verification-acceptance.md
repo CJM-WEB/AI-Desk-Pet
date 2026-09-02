@@ -1,7 +1,7 @@
 # 网站业务链验证与人工验收记录
 
 > 日期：2026-08-20
-> 当前状态：网站自动化完整门通过；人工视觉验收待用户确认
+> 2026-08-20 当日状态：网站自动化完整门通过；人工视觉验收待用户确认
 > 适用范围：网站业务链，不包含桌面端与正式部署
 > 环境：Windows；Node.js `v24.18.0`；pnpm `11.9.0`
 
@@ -121,3 +121,31 @@
 `verify:web-chain:fast` 的第一次尝试在 scope 首错停止，因为两份新获批规格/计划尚未进入精确白名单；最小 TDD 修复 `aea8e03` 只增加两条精确路径及其测试，独立 scope exit 0 后才执行上表重跑。该失败没有通过通配符、timeout、retry 或放宽范围掩盖。
 
 人工视觉项目继续维持第 2 节的“待用户人工确认”。CloudBase PostgreSQL 实际防线待阶段 2 开发环境确认；事务型 migration runner、Scanner 协议/镜像/完整扫描证据、共享包投稿生产开启、正式部署与上线均不在本次范围，共享包投稿继续关闭。
+
+## 4. 2026-09-02 最终视觉恢复 Task 6
+
+> 当前状态：五章结构门与 mutation 敏感性通过；CloudBase、ownership、scope 门通过；网站完整门被单 worker 浏览器跨用例失去响应阻断
+> 环境：Windows PowerShell；Node.js `v24.18.0`；pnpm `11.9.0`
+
+### 4.1 正常动效五章结构门
+
+唯一新增 E2E `正常动效五章节液态视觉职责` 固定 `1440×900`、`zh-CN`、`no-preference` 和 `seed=42`，按 `home/about/download/community/feedback` 进入五章。每章检查活动章节、液态层持续活动、初始化未失败、Canvas 可见、缓冲区非零和 CSS 边界覆盖视口；同时检查介绍章三块玻璃、下载平台组与安装提示、社区上传入口、反馈与付款两组以及六个非零按钮边界。测试不包含 WebGL 像素快照、固定 sleep、额外 timeout、retry 或 worker 配置。
+
+恢复版定向构建成功；单项首次为 1/1、测试 8.0 秒、命令 9.6 秒。mutation 将 `HomeExperience.tsx` 的 `exitProgress < 4.08` 临时改为 `exitProgress < 1.08` 并重建静态导出后，单项在进入 About 后失败：液态层 `data-active` 期望 `true`、实际 `false`，1 项失败、测试 15.6 秒。恢复 `4.08` 后生产文件 `git diff` 为空，重新构建并复跑为 1/1、测试 7.7 秒、命令 9.2 秒；后续独立复验为 1/1、测试 5.9 秒、命令 7.3 秒；最终交付前新鲜复验为 1/1、测试 7.8 秒、命令 9.4 秒。
+
+### 4.2 完整门与范围守卫
+
+| 验证 | 实际结果 |
+| --- | --- |
+| `pnpm.cmd verify:website` 首轮 | typecheck、44 文件 403/403 单元测试及两次生产构建通过；E2E 15/20，五项在无条件 `getAttribute/evaluate` 处统一撞到 60 秒测试上限，Playwright 总耗时 6.5 分钟，命令 exit 1 |
+| 五项失败用例分组 | 3/5；第 1 项通过、第 2 项浏览器失去响应、worker 重启后第 3 项通过、第 4 项失去响应、worker 重启后第 5 项通过，总耗时 2.5 分钟 |
+| 两项最小分组 | 清理同机临时视觉服务与标签后仍为 1/2；第一项 6.0 秒通过，第二项在 `enterChapter` 首个 `getAttribute` 处 60 秒超时 |
+| 五项独立新进程复验 | 5/5：共享包 4.0 秒、付款滚筒 8.0 秒、付款码失败回退 6.9 秒、新增五章门 5.9 秒、390 宽度 3.1 秒 |
+| `pnpm.cmd verify:cloudbase` | exit 0；CloudBase 16 文件 280/280，Scanner 5 文件 67/67 |
+| scope policy TDD | RED 42/43：三条新批准路径均被分类为 `outside`；GREEN 43/43，且同名 `.txt`、相邻日期证据目录仍为 `outside`，`apps/desktop` 仍为 `forbidden` |
+| `pnpm.cmd verify:web-chain:scope` | 精确加入两份获批文档和 `docs/operations/evidence/website-final-visual-restoration-2026-09-02/**` 后 exit 0 |
+| `pnpm.cmd verify:web-chain:ownership` | exit 0 |
+
+诊断期间依次验证 `about:blank`、显式 `page.close()`、`WEBGL_lose_context + page.close()` 三种测试边界清理，均未消除两项分组的第二项失去响应；所有实验 hook 已撤回，没有进入最终差异。当前证据指向 Playwright 单 worker 复用 browser 进程时的跨用例浏览器/GPU 资源问题。由于 Task 6 禁止修改 timeout、retry、worker、runner 或生产业务断言，本轮不以放宽门禁掩盖，`verify:website` 保持失败状态。网站 typecheck、单元测试与生产构建通过，且 20 个 E2E 功能场景均有通过证据；其中受阻五项使用独立原生 Playwright 新进程取得 5/5。
+
+真实 Windows 浏览器中的动态 WebGL 像素观感仍属第 2 节人工验收，当前为“待用户人工确认”。

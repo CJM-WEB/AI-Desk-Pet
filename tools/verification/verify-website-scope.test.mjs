@@ -101,6 +101,29 @@ test('当前网站优化阶段只放行官网业务与精确获批文档', () =>
   });
 });
 
+test('最终视觉恢复只放行获批规格、计划与当日证据目录', () => {
+  const approvedPaths = [
+    'docs/superpowers/specs/2026-09-02-website-final-visual-restoration-design.md',
+    'docs/superpowers/plans/2026-09-02-website-final-visual-restoration.md',
+    'docs/operations/evidence/website-final-visual-restoration-2026-09-02/1440x900-home.png',
+  ];
+  const outsidePaths = [
+    'docs/superpowers/specs/2026-09-02-website-final-visual-restoration-design.txt',
+    'docs/superpowers/plans/2026-09-02-website-final-visual-restoration.txt',
+    'docs/operations/evidence/website-final-visual-restoration-2026-09-03/1440x900-home.png',
+  ];
+
+  assert.deepEqual(classifyChangedPaths([
+    ...approvedPaths,
+    ...outsidePaths,
+    'apps/desktop/src/main/index.ts',
+  ]), {
+    allowed: approvedPaths,
+    forbidden: ['apps/desktop/src/main/index.ts'],
+    outside: outsidePaths,
+  });
+});
+
 test('阶段四只放行精确的 S2 治理规格与计划', () => {
   const approvedStagePaths = [
     'docs/superpowers/specs/2026-08-15-website-s2-governance-design.md',

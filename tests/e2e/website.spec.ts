@@ -1274,6 +1274,100 @@ test('390 付款码弹层保持安全边距并完整显示真实图片', async (
   expect(runtimeErrors).toEqual([]);
 });
 
+test('正常动效五章节液态视觉职责', async ({ page }) => {
+  await page.emulateMedia({ reducedMotion: 'no-preference' });
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.addInitScript(() => localStorage.setItem('ai-pet-locale', 'zh-CN'));
+  await enterInteractive(page);
+
+  const liquidHome = page.locator(LIQUID_HOME);
+  const canvas = page.locator(`${LIQUID_HOME} canvas`);
+
+  for (const chapterId of CHAPTER_IDS) {
+    await enterChapter(page, chapterId);
+    await expect(page.locator(WEBSITE)).toHaveAttribute(
+      'data-active-chapter',
+      chapterId
+    );
+    await expect(liquidHome).toHaveAttribute('data-active', 'true');
+    await expect(liquidHome).toHaveAttribute(
+      'data-initialization-failed',
+      'false'
+    );
+    await expect(canvas).toBeVisible();
+
+    const canvasEvidence = await canvas.evaluate((element) => {
+      if (!(element instanceof HTMLCanvasElement)) {
+        throw new Error('液态玻璃画布节点类型错误');
+      }
+      const bounds = element.getBoundingClientRect();
+      return {
+        bufferHeight: element.height,
+        bufferWidth: element.width,
+        bottom: bounds.bottom,
+        left: bounds.left,
+        right: bounds.right,
+        top: bounds.top
+      };
+    });
+    expect(canvasEvidence.bufferWidth, `${chapterId} 画布缓冲区宽度`)
+      .toBeGreaterThan(0);
+    expect(canvasEvidence.bufferHeight, `${chapterId} 画布缓冲区高度`)
+      .toBeGreaterThan(0);
+    expect(canvasEvidence.left, `${chapterId} 画布左边界`).toBeLessThanOrEqual(0);
+    expect(canvasEvidence.top, `${chapterId} 画布上边界`).toBeLessThanOrEqual(0);
+    expect(canvasEvidence.right, `${chapterId} 画布右边界`)
+      .toBeGreaterThanOrEqual(1440);
+    expect(canvasEvidence.bottom, `${chapterId} 画布下边界`)
+      .toBeGreaterThanOrEqual(900);
+
+    if (chapterId === 'about') {
+      const glassPanels = page.locator('[data-glass-id]');
+      await expect(glassPanels).toHaveCount(3);
+      for (let index = 0; index < 3; index += 1) {
+        const panel = glassPanels.nth(index);
+        await expect(panel).toBeVisible();
+        await expectInsideViewport(page, panel);
+      }
+    } else if (chapterId === 'download') {
+      const platformGroup = page.getByRole('group', { name: '选择下载平台' });
+      const installNotice = page.getByRole('region', {
+        name: '安装前须知 · 常见问题'
+      });
+      for (const foreground of [platformGroup, installNotice]) {
+        await expect(foreground).toBeVisible();
+        await expectInsideViewport(page, foreground);
+      }
+    } else if (chapterId === 'community') {
+      const upload = page.getByRole('button', { name: '分享您的 AI Pet' });
+      await expect(upload).toBeVisible();
+      await expectInsideViewport(page, upload);
+    } else if (chapterId === 'feedback') {
+      const feedbackGroup = page.getByRole('group', { name: '选择反馈操作' });
+      const paymentGroup = page.getByRole('group', { name: '选择付款方式' });
+      const buttonGroups = [
+        feedbackGroup.getByRole('button'),
+        paymentGroup.getByRole('button')
+      ];
+
+      for (const group of [feedbackGroup, paymentGroup]) {
+        await expect(group).toBeVisible();
+        await expectInsideViewport(page, group);
+      }
+      for (const buttons of buttonGroups) {
+        await expect(buttons).toHaveCount(3);
+        for (let index = 0; index < 3; index += 1) {
+          const button = buttons.nth(index);
+          const bounds = await button.boundingBox();
+          expect(bounds).not.toBeNull();
+          expect(bounds!.width).toBeGreaterThan(0);
+          expect(bounds!.height).toBeGreaterThan(0);
+        }
+      }
+    }
+  }
+});
+
 test('390 离开再返回首页后液态画布缓冲区保持可用', async ({ page }) => {
   const runtimeErrors = collectRuntimeErrors(page);
   await page.emulateMedia({ reducedMotion: 'no-preference' });
