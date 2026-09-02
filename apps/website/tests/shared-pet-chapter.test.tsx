@@ -13,6 +13,7 @@ import {
 } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { SubmissionReceipt } from '@myself/shared-types';
+import { LIQUID_GLASS_COMMUNITY_CARDS_EVENT } from '../components/home-experience/LiquidGlassHome';
 import { I18nProvider } from '../components/i18n/I18nProvider';
 import { SharedPetChapter } from '../components/website-experience/community/SharedPetChapter';
 import {
@@ -221,6 +222,33 @@ afterEach(() => {
 });
 
 describe('共享仓库章节', () => {
+  it('发布当前可见卡片与分页的玻璃视觉快照', async () => {
+    const details: Array<{
+      count: number;
+      currentPage: number;
+      totalPages: number;
+    }> = [];
+    const capture = (event: Event) => {
+      details.push((event as CustomEvent<(typeof details)[number]>).detail);
+    };
+    const expectedVisibleCount = 8;
+    const expectedTotalPages = 2;
+    window.addEventListener(LIQUID_GLASS_COMMUNITY_CARDS_EVENT, capture);
+    try {
+      renderChapter(createRepository(9).repository);
+
+      await waitFor(() => {
+        expect(details.at(-1)).toEqual({
+          count: expectedVisibleCount,
+          currentPage: 1,
+          totalPages: expectedTotalPages
+        });
+      });
+    } finally {
+      window.removeEventListener(LIQUID_GLASS_COMMUNITY_CARDS_EVENT, capture);
+    }
+  });
+
   it('空仓库显示 0/0 并禁用分页', async () => {
     const { repository } = createRepository(0);
     renderChapter(repository);

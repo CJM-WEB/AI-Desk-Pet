@@ -20,7 +20,8 @@ const item: SharedPetPackageSummary = {
   downloadCount: 34,
   createdAt: '2026-07-30T00:00:00.000Z',
   updatedAt: '2026-07-30T00:00:00.000Z',
-  likedByCurrentUser: false
+  likedByCurrentUser: false,
+  publicationBasis: 'standard'
 };
 
 beforeEach(() => {
@@ -127,7 +128,7 @@ describe('共享包卡片', () => {
     const renderCard = (publicationBasis: 'standard' | 'admin_override') => render(
       <I18nProvider initialLocale="zh-CN">
         <SharedPetCard
-          item={{ ...item, publicationBasis } as SharedPetPackageSummary & { publicationBasis: typeof publicationBasis }}
+          item={{ ...item, publicationBasis }}
           onOpen={vi.fn()}
           onLike={vi.fn()}
           onDownload={vi.fn()}

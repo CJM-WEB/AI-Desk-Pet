@@ -12,6 +12,7 @@ import type {
   SetStateAction
 } from 'react';
 import type { SubmissionReceipt } from '@myself/shared-types';
+import { LIQUID_GLASS_COMMUNITY_CARDS_EVENT } from '../../home-experience/LiquidGlassHome';
 import { useI18n } from '../../i18n/I18nProvider';
 import type { ChapterRuntimeProps } from '../types';
 import {
@@ -544,6 +545,20 @@ export function SharedPetChapter({
   const totalPageLabel = visiblePage.totalKnown === false
     ? '?'
     : String(visiblePage.totalPages);
+
+  /** RAF 合并当前页视觉快照，卸载或翻页时不保留过期帧。 */
+  useEffect(() => {
+    const frame = window.requestAnimationFrame(() => {
+      window.dispatchEvent(new CustomEvent(LIQUID_GLASS_COMMUNITY_CARDS_EVENT, {
+        detail: {
+          count: visiblePage.items.length,
+          currentPage: visiblePage.page,
+          totalPages: visiblePage.totalPages
+        }
+      }));
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [visiblePage.items.length, visiblePage.page, visiblePage.totalPages]);
 
   const chapterStyle = {
     '--community-progress': communityProgress,
