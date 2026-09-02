@@ -786,6 +786,19 @@ describe('CloudBase PostgreSQL RPC 客户端', () => {
     );
   });
 
+  it('把 PostgREST void RPC 的 204 空响应视为成功', async () => {
+    const client = new CloudBasePostgresRpcClient(
+      'env-test',
+      'service-role-key',
+      undefined,
+      vi.fn(async () => new Response(null, { status: 204 }))
+    );
+
+    await expect(client.rpc('record_official_windows_download_click', {
+      p_fingerprint_hash: 'f'.repeat(64)
+    })).resolves.toEqual({ data: null, error: null });
+  });
+
   it('归一化 PostgREST RPC 错误而不抛出响应正文', async () => {
     const fetcher = vi.fn(async () => new Response(
       JSON.stringify({

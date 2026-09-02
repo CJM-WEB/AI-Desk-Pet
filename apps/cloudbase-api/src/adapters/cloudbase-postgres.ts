@@ -143,6 +143,9 @@ export class CloudBasePostgresRpcClient implements CloudBasePostgresRpc {
         body: JSON.stringify(params),
         signal: controller.signal
       });
+      if (response.status === 204) {
+        return { data: null, error: null };
+      }
       const payload = await readBoundedJsonResponse(response, {
         maxBytes: this.options.maxResponseBytes,
         signal: controller.signal
