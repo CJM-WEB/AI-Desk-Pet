@@ -1275,6 +1275,7 @@ test('390 付款码弹层保持安全边距并完整显示真实图片', async (
 });
 
 test('正常动效五章节液态视觉职责', async ({ page }) => {
+  const runtimeErrors = collectRuntimeErrors(page);
   await page.emulateMedia({ reducedMotion: 'no-preference' });
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.addInitScript(() => localStorage.setItem('ai-pet-locale', 'zh-CN'));
@@ -1366,6 +1367,8 @@ test('正常动效五章节液态视觉职责', async ({ page }) => {
       }
     }
   }
+
+  expect(runtimeErrors).toEqual([]);
 });
 
 test('390 离开再返回首页后液态画布缓冲区保持可用', async ({ page }) => {

@@ -129,9 +129,11 @@
 
 ### 4.1 正常动效五章结构门
 
-唯一新增 E2E `正常动效五章节液态视觉职责` 固定 `1440×900`、`zh-CN`、`no-preference` 和 `seed=42`，按 `home/about/download/community/feedback` 进入五章。每章检查活动章节、液态层持续活动、初始化未失败、Canvas 可见、缓冲区非零和 CSS 边界覆盖视口；同时检查介绍章三块玻璃、下载平台组与安装提示、社区上传入口、反馈与付款两组以及六个非零按钮边界。测试不包含 WebGL 像素快照、固定 sleep、额外 timeout、retry 或 worker 配置。
+唯一新增 E2E `正常动效五章节液态视觉职责` 固定 `1440×900`、`zh-CN`、`no-preference` 和 `seed=42`，按 `home/about/download/community/feedback` 进入五章。每章检查活动章节、液态层持续活动、初始化未失败、Canvas 可见、缓冲区非零和 CSS 边界覆盖视口；同时检查介绍章三块玻璃、下载平台组与安装提示、社区上传入口、反馈与付款两组以及六个非零按钮边界。测试在导航前注册控制台与 `pageerror` 收集器，五章结束时要求运行时错误数组为空；不包含 WebGL 像素快照、固定 sleep、额外 timeout、retry 或 worker 配置。
 
 恢复版定向构建成功；单项首次为 1/1、测试 8.0 秒、命令 9.6 秒。mutation 将 `HomeExperience.tsx` 的 `exitProgress < 4.08` 临时改为 `exitProgress < 1.08` 并重建静态导出后，单项在进入 About 后失败：液态层 `data-active` 期望 `true`、实际 `false`，1 项失败、测试 15.6 秒。恢复 `4.08` 后生产文件 `git diff` 为空，重新构建并复跑为 1/1、测试 7.7 秒、命令 9.2 秒；后续独立复验为 1/1、测试 5.9 秒、命令 7.3 秒；最终交付前新鲜复验为 1/1、测试 7.8 秒、命令 9.4 秒。
+
+审查补强先临时在导航前注入一条 `console.error`，新门于末尾精确收到 `["console.error: Task 6 runtime error sensitivity"]`，空数组断言 RED，1 项失败、测试 8.0 秒、命令 11.1 秒。移除临时注入后复跑为 1/1、测试 8.3 秒、命令 10.3 秒；临时错误文本未进入最终差异。
 
 ### 4.2 完整门与范围守卫
 
