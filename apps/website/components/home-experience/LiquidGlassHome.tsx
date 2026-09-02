@@ -1,7 +1,14 @@
 'use client';
 
 import { gsap } from 'gsap';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState
+} from 'react';
 import { useI18n } from '../i18n/I18nProvider';
 import { createAboutFeatures } from '../website-experience/about/about-content';
 import { createDownloadContent } from '../website-experience/download/download-content';
@@ -105,12 +112,22 @@ export function LiquidGlassHome({
     paymentIndex: 0
   });
   const runtimeSinkRef = useRef<LiquidGlassRuntimeSink | null>(null);
+  const mountedRef = useRef(false);
   const [initializationFailed, setInitializationFailed] = useState(false);
 
   onInitializationErrorRef.current = onInitializationError;
 
+  // layout cleanup 先于 WebGL passive cleanup，先关闭错误出口以屏蔽卸载窗口内的迟到素材事件。
+  useLayoutEffect(() => {
+    mountedRef.current = true;
+
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
+
   const reportInitializationError = useCallback(() => {
-    if (initializationErrorReportedRef.current) return;
+    if (!mountedRef.current || initializationErrorReportedRef.current) return;
 
     initializationErrorReportedRef.current = true;
     setInitializationFailed(true);
@@ -276,6 +293,7 @@ export function LiquidGlassHome({
     let tickerRegistered = false;
     let runtimeSink: LiquidGlassRuntimeSink | null = null;
     const listenerCleanups: Array<() => void> = [];
+    // teardown 同时处理部分初始化失败、异步素材失败和 React cleanup；幂等门闩确保重复调用不会二次释放同一资源。
     const teardown = () => {
       if (disposed) return;
 

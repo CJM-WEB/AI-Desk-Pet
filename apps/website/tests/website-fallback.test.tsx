@@ -312,24 +312,32 @@ describe('官网章节降级模式', () => {
     fireEvent.click(next);
     expect(document.querySelector('[data-chapter-id="about"]')?.getAttribute('aria-hidden'))
       .toBe('false');
-    expect(screen.getByTestId('about-chapter')).toBeTruthy();
+    expect(screen.getByLabelText('AI Pet 功能区域')).toBeTruthy();
+    expect(screen.getByRole('heading', { name: '文本编辑' })).toBeTruthy();
 
     fireEvent.click(next);
     expect(document.querySelector('[data-chapter-id="download"]')?.getAttribute('aria-hidden'))
       .toBe('false');
-    expect(screen.getByTestId('download-chapter')).toBeTruthy();
+    expect(screen.getByRole('group', { name: '选择下载平台' })).toBeTruthy();
+    expect((screen.getByRole('button', { name: '当前平台为 Windows' }) as HTMLButtonElement)
+      .disabled).toBe(false);
 
     fireEvent.click(next);
     expect(document.querySelector('[data-chapter-id="community"]')?.getAttribute('aria-hidden'))
       .toBe('false');
-    expect(screen.getByTestId('shared-pet-chapter')).toBeTruthy();
+    expect(screen.getByRole('heading', { name: 'AI Pet 共享仓库' })).toBeTruthy();
+    expect((screen.getByRole('button', { name: '分享您的 AI Pet' }) as HTMLButtonElement)
+      .disabled).toBe(false);
 
     fireEvent.click(next);
     expect(document.querySelector('[data-chapter-id="feedback"]')?.getAttribute('aria-hidden'))
       .toBe('false');
-    expect(screen.getByTestId('support-chapter')).toBeTruthy();
-    expect(screen.getByText('微信')).toBeTruthy();
-    expect(screen.getByText('支付宝')).toBeTruthy();
+    expect(screen.getByRole('group', { name: '选择反馈操作' })).toBeTruthy();
+    expect(screen.getByRole('group', { name: '选择付款方式' })).toBeTruthy();
+    expect((screen.getByRole('button', { name: '查看更新建议' }) as HTMLButtonElement)
+      .disabled).toBe(false);
+    expect((screen.getByRole('button', { name: '打开微信付款码' }) as HTMLButtonElement)
+      .disabled).toBe(false);
   });
 
   it('监听器半注册失败会回滚已注册输入并阻止残留导航', async () => {

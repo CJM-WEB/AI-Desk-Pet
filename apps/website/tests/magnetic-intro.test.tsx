@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { createElement } from 'react';
+import { createElement, useLayoutEffect } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { gsap } from 'gsap';
@@ -19,6 +19,27 @@ function createCanvasContext(fillText = vi.fn()) {
       return vi.fn();
     }
   }) as CanvasRenderingContext2D;
+}
+
+function mockQuickToAsImmediateWrite() {
+  vi.spyOn(gsap, 'quickTo').mockImplementation((target, property) => {
+    const setter = vi.fn((value: number) => {
+      Reflect.set(target as object, property, value);
+      return {} as gsap.core.Tween;
+    });
+    return Object.assign(setter, { tween: {} as gsap.core.Tween }) as ReturnType<typeof gsap.quickTo>;
+  });
+}
+
+function mockToAsImmediateWrite() {
+  vi.spyOn(gsap, 'to').mockImplementation((target, vars) => {
+    if (target && typeof target === 'object') {
+      for (const [key, value] of Object.entries(vars)) {
+        if (typeof value === 'number') Reflect.set(target as object, key, value);
+      }
+    }
+    return {} as gsap.core.Tween;
+  });
 }
 
 function createWebGlContext({ failTextureAt }: { failTextureAt?: number } = {}) {
@@ -116,6 +137,14 @@ class FailedLogoImage extends EventTarget {
 
   get src() { return this.source; }
   set src(value: string) { this.source = value; }
+}
+
+function DispatchLogoErrorDuringLayoutCleanup() {
+  useLayoutEffect(() => () => {
+    FailedLogoImage.latest?.dispatchEvent(new Event('error'));
+  }, []);
+
+  return null;
 }
 
 afterEach(() => {
@@ -248,6 +277,35 @@ describe('磁吸 Logo 舞台', () => {
     expect(webGl.deleteProgram).toHaveBeenCalledOnce();
   });
 
+  it('卸载进入 passive cleanup 前的迟到 Logo error 不再更新状态或上报', () => {
+    const webGl = createWebGlContext();
+    vi.stubGlobal('Image', FailedLogoImage);
+    vi.spyOn(HTMLCanvasElement.prototype, 'getContext')
+      .mockImplementation((type) => type === 'webgl' ? webGl.context : createCanvasContext());
+    vi.spyOn(gsap.ticker, 'add').mockImplementation(callback => callback);
+    const tickerRemove = vi.spyOn(gsap.ticker, 'remove').mockImplementation(() => {});
+    const onInitializationError = vi.fn();
+
+    const { unmount } = render(
+      <>
+        <LiquidGlassHome
+          active
+          isPaused={false}
+          reducedMotion={false}
+          onInitializationError={onInitializationError}
+        />
+        <DispatchLogoErrorDuringLayoutCleanup />
+      </>
+    );
+
+    expect(FailedLogoImage.latest?.src).toBe('/AP.png');
+    unmount();
+
+    expect(onInitializationError).not.toHaveBeenCalled();
+    expect(tickerRemove).toHaveBeenCalledOnce();
+    expect(webGl.deleteProgram).toHaveBeenCalledOnce();
+  });
+
   it('同步纹理初始化异常上报一次并释放已创建资源', async () => {
     const webGl = createWebGlContext({ failTextureAt: 4 });
     vi.spyOn(HTMLCanvasElement.prototype, 'getContext')
@@ -318,13 +376,7 @@ describe('磁吸 Logo 舞台', () => {
     const webGl = createWebGlContext();
     vi.spyOn(HTMLCanvasElement.prototype, 'getContext')
       .mockImplementation((type) => type === 'webgl' ? webGl.context : createCanvasContext());
-    vi.spyOn(gsap, 'quickTo').mockImplementation((target, property) => {
-      const setter = vi.fn((value: number) => {
-        Reflect.set(target as object, property, value);
-        return {} as gsap.core.Tween;
-      });
-      return Object.assign(setter, { tween: {} as gsap.core.Tween }) as ReturnType<typeof gsap.quickTo>;
-    });
+    mockQuickToAsImmediateWrite();
     let renderFrame: Parameters<typeof gsap.ticker.add>[0] | undefined;
     vi.spyOn(gsap.ticker, 'add').mockImplementation((callback) => {
       renderFrame = callback;
@@ -357,21 +409,8 @@ describe('磁吸 Logo 舞台', () => {
     const webGl = createWebGlContext();
     vi.spyOn(HTMLCanvasElement.prototype, 'getContext')
       .mockImplementation((type) => type === 'webgl' ? webGl.context : createCanvasContext());
-    vi.spyOn(gsap, 'quickTo').mockImplementation((target, property) => {
-      const setter = vi.fn((value: number) => {
-        Reflect.set(target as object, property, value);
-        return {} as gsap.core.Tween;
-      });
-      return Object.assign(setter, { tween: {} as gsap.core.Tween }) as ReturnType<typeof gsap.quickTo>;
-    });
-    vi.spyOn(gsap, 'to').mockImplementation((target, vars) => {
-      if (target && typeof target === 'object') {
-        for (const [key, value] of Object.entries(vars)) {
-          if (typeof value === 'number') Reflect.set(target as object, key, value);
-        }
-      }
-      return {} as gsap.core.Tween;
-    });
+    mockQuickToAsImmediateWrite();
+    mockToAsImmediateWrite();
     let renderFrame: Parameters<typeof gsap.ticker.add>[0] | undefined;
     vi.spyOn(gsap.ticker, 'add').mockImplementation((callback) => {
       renderFrame = callback;
@@ -425,21 +464,8 @@ describe('磁吸 Logo 舞台', () => {
       .mockImplementation((type) => (
         type === 'webgl' ? webGl.context : createCanvasContext(fillText)
       ));
-    vi.spyOn(gsap, 'quickTo').mockImplementation((target, property) => {
-      const setter = vi.fn((value: number) => {
-        Reflect.set(target as object, property, value);
-        return {} as gsap.core.Tween;
-      });
-      return Object.assign(setter, { tween: {} as gsap.core.Tween }) as ReturnType<typeof gsap.quickTo>;
-    });
-    vi.spyOn(gsap, 'to').mockImplementation((target, vars) => {
-      if (target && typeof target === 'object') {
-        for (const [key, value] of Object.entries(vars)) {
-          if (typeof value === 'number') Reflect.set(target as object, key, value);
-        }
-      }
-      return {} as gsap.core.Tween;
-    });
+    mockQuickToAsImmediateWrite();
+    mockToAsImmediateWrite();
     const renderFrames: Parameters<typeof gsap.ticker.add>[0][] = [];
     vi.spyOn(gsap.ticker, 'add').mockImplementation((callback) => {
       renderFrames.push(callback);
