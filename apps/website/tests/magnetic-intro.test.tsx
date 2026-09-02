@@ -406,7 +406,9 @@ describe('磁吸 Logo 舞台', () => {
     expect(rippleValues[3]).toBeCloseTo(1.65, 5);
   });
 
-  it('把 DOM 顶部起算的社区卡片行映射为 WebGL 底部起算坐标', () => {
+  it('把桌面 CSS 网格的社区卡片中心映射为 WebGL 坐标并跟随 resize', () => {
+    vi.stubGlobal('innerWidth', 1440);
+    vi.stubGlobal('innerHeight', 900);
     const webGl = createWebGlContext();
     vi.spyOn(HTMLCanvasElement.prototype, 'getContext')
       .mockImplementation((type) => type === 'webgl' ? webGl.context : createCanvasContext());
@@ -417,18 +419,86 @@ describe('磁吸 Logo 舞台', () => {
     });
 
     render(<LiquidGlassHome active isPaused={false} reducedMotion={false} />);
-    renderFrame?.(1, 16, 1, 0.016);
-
-    const communityRowsCall = webGl.uniform2f.mock.calls.find(([location]) => (
+    const communityColumnsCalls = () => webGl.uniform4fv.mock.calls.filter(([location]) => (
+      (location as unknown as { name: string }).name === 'u_communityCardColumns'
+    ));
+    const communityRowsCalls = () => webGl.uniform2f.mock.calls.filter(([location]) => (
       (location as unknown as { name: string }).name === 'u_communityCardRows'
     ));
-    expect(communityRowsCall?.slice(1)).toEqual([
-      expect.closeTo(0.81, 8),
-      expect.closeTo(0.19, 8)
+    const initialColumns = communityColumnsCalls().at(-1);
+    expect(initialColumns).toBeDefined();
+    expect(Array.from(initialColumns![1] as Float32Array)).toEqual([
+      expect.closeTo(0.13775, 6),
+      expect.closeTo(0.37925, 6),
+      expect.closeTo(0.62075, 6),
+      expect.closeTo(0.86225, 6)
+    ]);
+    expect(communityRowsCalls().at(-1)?.slice(1)).toEqual([
+      expect.closeTo(0.792, 6),
+      expect.closeTo(0.208, 6)
     ]);
     expect(LIQUID_GLASS_FRAGMENT_SHADER).toMatch(
       /mix\(u_communityCardRows\.x, u_communityCardRows\.y, row\)/
     );
+    expect(LIQUID_GLASS_FRAGMENT_SHADER).toMatch(
+      /communityCardColumnX\(column\)/
+    );
+
+    vi.stubGlobal('innerWidth', 2000);
+    vi.stubGlobal('innerHeight', 1000);
+    fireEvent(window, new Event('resize'));
+
+    const resizedColumns = communityColumnsCalls().at(-1);
+    expect(resizedColumns).toBeDefined();
+    expect(Array.from(resizedColumns![1] as Float32Array)).toEqual([
+      expect.closeTo(0.137375, 6),
+      expect.closeTo(0.379125, 6),
+      expect.closeTo(0.620875, 6),
+      expect.closeTo(0.862625, 6)
+    ]);
+    expect(communityRowsCalls().at(-1)?.slice(1)).toEqual([
+      expect.closeTo(0.79, 6),
+      expect.closeTo(0.21, 6)
+    ]);
+    expect(renderFrame).toBeDefined();
+  });
+
+  it('窄屏不绘制错位卡片玻璃且返回桌面后恢复最新卡片数', () => {
+    vi.stubGlobal('innerWidth', 1440);
+    vi.stubGlobal('innerHeight', 900);
+    const webGl = createWebGlContext();
+    vi.spyOn(HTMLCanvasElement.prototype, 'getContext')
+      .mockImplementation((type) => type === 'webgl' ? webGl.context : createCanvasContext());
+    let renderFrame: Parameters<typeof gsap.ticker.add>[0] | undefined;
+    vi.spyOn(gsap.ticker, 'add').mockImplementation((callback) => {
+      renderFrame = callback;
+      return callback;
+    });
+
+    render(<LiquidGlassHome active isPaused={false} reducedMotion={false} />);
+    window.dispatchEvent(new CustomEvent('ai-pet-community-card-count', {
+      detail: { count: 7, currentPage: 1, totalPages: 1 }
+    }));
+    renderFrame?.(1, 16, 1, 0.016);
+
+    vi.stubGlobal('innerWidth', 900);
+    fireEvent(window, new Event('resize'));
+    renderFrame?.(2, 16, 2, 0.016);
+    window.dispatchEvent(new CustomEvent('ai-pet-community-card-count', {
+      detail: { count: 5, currentPage: 1, totalPages: 1 }
+    }));
+    renderFrame?.(3, 16, 3, 0.016);
+
+    vi.stubGlobal('innerWidth', 1440);
+    fireEvent(window, new Event('resize'));
+    renderFrame?.(4, 16, 4, 0.016);
+
+    const communityCounts = webGl.uniform1f.mock.calls
+      .filter(([location]) => (
+        (location as unknown as { name: string }).name === 'u_communityCardCount'
+      ))
+      .map(([, value]) => value);
+    expect(communityCounts).toEqual([7, 0, 0, 5]);
   });
 
   it('把四类章节视觉事件同步到同一帧的 WebGL uniform', () => {

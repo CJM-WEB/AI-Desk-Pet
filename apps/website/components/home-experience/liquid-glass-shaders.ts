@@ -8,11 +8,42 @@ export const LIQUID_GLASS_VERTEX_SHADER = `
   }
 `;
 
-/** DOM 从顶部计量行位，WebGL 片元坐标从底部计量，这里统一完成 Y 轴反转。 */
-export function mapCommunityDomRowsToWebGl(
-  domRows: readonly [number, number]
-): readonly [number, number] {
-  return [1 - domRows[0], 1 - domRows[1]];
+export interface CommunityCardShaderLayout {
+  columns: readonly [number, number, number, number];
+  rows: readonly [number, number];
+}
+
+/** 精确镜像桌面端 CSS 四列两行网格，并把 DOM 顶部起算 Y 转为 WebGL 底部起算 Y。 */
+export function deriveCommunityCardShaderLayout(
+  viewportWidth: number,
+  viewportHeight: number
+): CommunityCardShaderLayout {
+  const width = Math.max(1, viewportWidth);
+  const height = Math.max(1, viewportHeight);
+  const clamp = (minimum: number, preferred: number, maximum: number) => (
+    Math.min(maximum, Math.max(minimum, preferred))
+  );
+  const padding = clamp(18, width * 0.024, 46);
+  const gap = clamp(10, width * 0.014, 26);
+  const focusRowHeight = clamp(120, height * 0.20, 210);
+  const columnWidth = Math.max(0, (width - padding * 2 - gap * 3) / 4);
+  const flexibleRowHeight = Math.max(
+    0,
+    (height - padding * 2 - gap * 2 - focusRowHeight) / 2
+  );
+  const columns = [0, 1, 2, 3].map((column) => (
+    (padding + columnWidth * (column + 0.5) + gap * column) / width
+  )) as [number, number, number, number];
+  const topRowFromDomTop = padding + flexibleRowHeight * 0.5;
+  const bottomRowFromDomTop = height - padding - flexibleRowHeight * 0.5;
+
+  return {
+    columns,
+    rows: [
+      1 - topRowFromDomTop / height,
+      1 - bottomRowFromDomTop / height
+    ]
+  };
 }
 
 export const LIQUID_GLASS_FRAGMENT_SHADER = `
@@ -32,6 +63,7 @@ export const LIQUID_GLASS_FRAGMENT_SHADER = `
   uniform float u_supportFeedbackActive;
   uniform float u_supportPaymentActive;
   uniform float u_communityCardCount;
+  uniform vec4 u_communityCardColumns;
   uniform vec2 u_communityCardRows;
   uniform vec2 u_blobOffsets[3];
   uniform float u_hoveredBlob;
@@ -229,6 +261,13 @@ export const LIQUID_GLASS_FRAGMENT_SHADER = `
     return mat2(cosine, -sine, sine, cosine) * point;
   }
 
+  float communityCardColumnX(float column) {
+    if (column < 0.5) return u_communityCardColumns.x;
+    if (column < 1.5) return u_communityCardColumns.y;
+    if (column < 2.5) return u_communityCardColumns.z;
+    return u_communityCardColumns.w;
+  }
+
   /* 资源卡片与 DOM 网格共享位置、错峰入场和轻微浮动。 */
   float communityCardsSdf(vec2 pixel) {
     float result = 100000.0;
@@ -245,7 +284,7 @@ export const LIQUID_GLASS_FRAGMENT_SHADER = `
         1.0
       );
       vec2 center = u_resolution * vec2(
-        0.14 + column * 0.24,
+        communityCardColumnX(column),
         mix(u_communityCardRows.x, u_communityCardRows.y, row)
       );
       center.x += (1.0 - entry) * u_resolution.x * 1.18;

@@ -13,9 +13,9 @@ import { useI18n } from '../i18n/I18nProvider';
 import { createAboutFeatures } from '../website-experience/about/about-content';
 import { createDownloadContent } from '../website-experience/download/download-content';
 import {
+  deriveCommunityCardShaderLayout,
   LIQUID_GLASS_FRAGMENT_SHADER,
-  LIQUID_GLASS_VERTEX_SHADER,
-  mapCommunityDomRowsToWebGl
+  LIQUID_GLASS_VERTEX_SHADER
 } from './liquid-glass-shaders';
 import styles from './liquid-glass-home.module.css';
 
@@ -373,6 +373,7 @@ export function LiquidGlassHome({
         supportFeedbackActive: gl.getUniformLocation(program, 'u_supportFeedbackActive'),
         supportPaymentActive: gl.getUniformLocation(program, 'u_supportPaymentActive'),
         communityCardCount: gl.getUniformLocation(program, 'u_communityCardCount'),
+        communityCardColumns: gl.getUniformLocation(program, 'u_communityCardColumns'),
         communityCardRows: gl.getUniformLocation(program, 'u_communityCardRows'),
         blobOffsets: gl.getUniformLocation(program, 'u_blobOffsets[0]'),
         hoveredBlob: gl.getUniformLocation(program, 'u_hoveredBlob'),
@@ -388,12 +389,6 @@ export function LiquidGlassHome({
         communityTextTexture: gl.getUniformLocation(program, 'u_communityTextTexture'),
         supportTextTexture: gl.getUniformLocation(program, 'u_supportTextTexture')
       };
-      const communityCardRows = mapCommunityDomRowsToWebGl([0.19, 0.81]);
-      gl.uniform2f(
-        uniforms.communityCardRows,
-        communityCardRows[0],
-        communityCardRows[1]
-      );
 
       const logoCanvas = document.createElement('canvas');
       const logoContext = logoCanvas.getContext('2d');
@@ -432,6 +427,7 @@ export function LiquidGlassHome({
       let logoReady = false;
       let lastTextProgress = -1;
       let communityCardCount = communitySnapshotRef.current.count;
+      let communityCardGlassEnabled = false;
       let communityCurrentPage = communitySnapshotRef.current.currentPage;
       let communityTotalPages = communitySnapshotRef.current.totalPages;
 
@@ -1047,6 +1043,8 @@ export function LiquidGlassHome({
       };
 
       resize = () => {
+        const cssViewportWidth = Math.max(window.innerWidth, 1);
+        const cssViewportHeight = Math.max(window.innerHeight, 1);
         const resolutionScale = window.innerWidth >= 2400
           ? 0.65
           : window.innerWidth >= 1600
@@ -1057,6 +1055,22 @@ export function LiquidGlassHome({
         const pixelRatio = Math.min(window.devicePixelRatio || 1, resolutionScale);
         const width = Math.round(window.innerWidth * pixelRatio);
         const height = Math.round(window.innerHeight * pixelRatio);
+        communityCardGlassEnabled = cssViewportWidth > 900;
+        if (communityCardGlassEnabled) {
+          const communityLayout = deriveCommunityCardShaderLayout(
+            cssViewportWidth,
+            cssViewportHeight
+          );
+          gl.uniform4fv(
+            uniforms.communityCardColumns,
+            new Float32Array(communityLayout.columns)
+          );
+          gl.uniform2f(
+            uniforms.communityCardRows,
+            communityLayout.rows[0],
+            communityLayout.rows[1]
+          );
+        }
 
         const sizeChanged = canvas.width !== width || canvas.height !== height;
         if (sizeChanged) {
@@ -1211,7 +1225,10 @@ export function LiquidGlassHome({
         gl.uniform1f(uniforms.supportTransition, supportTransition);
         gl.uniform1f(uniforms.supportFeedbackActive, supportSelection.feedback);
         gl.uniform1f(uniforms.supportPaymentActive, supportSelection.payment);
-        gl.uniform1f(uniforms.communityCardCount, communityCardCount);
+        gl.uniform1f(
+          uniforms.communityCardCount,
+          communityCardGlassEnabled ? communityCardCount : 0
+        );
         gl.uniform2fv(uniforms.blobOffsets, blobOffsets);
         gl.uniform1f(uniforms.hoveredBlob, glassInteraction.hovered);
         gl.uniform1f(uniforms.hoverAmount, glassInteraction.hoverAmount);
