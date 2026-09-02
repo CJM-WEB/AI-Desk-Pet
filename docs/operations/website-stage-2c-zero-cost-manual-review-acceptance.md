@@ -21,7 +21,7 @@
 | 网关 | 两条 `SCF` 路由：公开 `/api` 不启用网关认证；管理员 `/api/v1/admin` 启用网关认证。最长前缀使管理员路由优先。公开 `GET /api/v1/community?limit=1` 返回 200；未认证管理员请求返回 401 `MISSING_CREDENTIALS`。 |
 | 身份 | 邮箱 OTP 已启用，唯一管理员账号为 ACTIVE；真实 OTP 登录、双头管理员认证、详情读取和管理员指标读取均已通过。 |
 | 静态托管 | 网站以目标环境、Publishable Key 与网关 `/api/v1` 基址构建，67/67 个构建文件上传成功；当前静态托管对象总数为 73。未记录任何 Key 值。 |
-| 投稿与费用 | `SHARED_PACKAGE_SUBMISSIONS_ENABLED=false`。当前计费周期总资源点 3000、已使用 0.21；`packageDeduct=0`、`payAsYouGoDeduct=0`，未发生资源包外或按量扣费。 |
+| 投稿与费用 | `SHARED_PACKAGE_SUBMISSIONS_ENABLED=false`。最终复核时当前计费周期总资源点 3000、已使用 1.75；`packageDeduct=0`、`payAsYouGoDeduct=0`，未发生资源包外或按量扣费。 |
 | 日志与反馈链 | 已临时开通上海开发环境函数日志且未购买独立日志资源包。日志定位并闭环空 GET 正文与 void RPC 204 两个兼容问题；反馈真实执行批准发布、公开读取、点赞 `0→1`、撤赞 `1→0`、删除隔离和公开消失，审计记录保留批准与删除两次动作。CloudBase 系统日志会保存函数响应摘要，因此当前只允许测试数据且共享包投稿继续关闭；接入真实投稿或正式上线前必须关闭该日志或先完成独立脱敏方案。 |
 | cleanup | 真实函数直调返回 `claimed=0/purged=0/failed=0/expiredOperationsPurged=0`。规格未定义周期，未配置定时触发器，待另行裁决与验证。 |
 
