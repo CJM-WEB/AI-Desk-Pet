@@ -151,3 +151,49 @@
 诊断期间依次验证 `about:blank`、显式 `page.close()`、`WEBGL_lose_context + page.close()` 三种测试边界清理，均未消除两项分组的第二项失去响应；所有实验 hook 已撤回，没有进入最终差异。当前证据指向 Playwright 单 worker 复用 browser 进程时的跨用例浏览器/GPU 资源问题。由于 Task 6 禁止修改 timeout、retry、worker、runner 或生产业务断言，本轮不以放宽门禁掩盖，`verify:website` 保持失败状态。网站 typecheck、单元测试与生产构建通过，且 20 个 E2E 功能场景均有通过证据；其中受阻五项使用独立原生 Playwright 新进程取得 5/5。
 
 真实 Windows 浏览器中的动态 WebGL 像素观感仍属第 2 节人工验收，当前为“待用户人工确认”。
+
+## 5. 2026-09-02 最终视觉恢复 Task 7
+
+> 当前状态：五章最终视觉、源码／运行时数值门、两种减少动效视口和最终两轴复审通过；上海测试站尚未覆盖
+> 候选提交：`f765cb8e28dbb044b590bcfde42a967e162ad4de`
+> 历史视觉基线：`963df613e35f8cafc1a9ea076ab878f0bae782d6`
+
+### 5.1 真实浏览器视觉证据
+
+在候选提交上执行 `pnpm.cmd build:website:e2e`，静态导出 build marker 为 `e5deceda216bdfc9`。七个场景分别由七次独立的 headed Chromium `149.0.7827.55` 进程采集，避免复用已知会在单 worker 跨用例运行中失去响应的浏览器进程。正常动效固定 `1440×900`、`zh-CN`、DPR 1、缩放 100%、`no-preference` 和 `?seed=42`；减少动效固定 `390×844`、`568×320` 与 `reduce`。每次均等待字体、静态回退就绪、章节整数吸附和交互态，再等待两个动画帧；正常场景同时确认 WebGL drawing buffer 为 `1296×810` 且 context 未丢失。
+
+| 证据 | 实际观察与运行状态 | SHA-256 |
+| --- | --- | --- |
+| `home-1440x900-normal.png` | 首页大字、中心 AP 标志、液态光场与历史基线一致 | `e172f99254823f0dd495be3c2292ad374eb9bb0afd9e239b995fc9de176536c6` |
+| `about-1440x900-normal.png` | `AI / PET / YOUR / AGENT`、三块能力玻璃及两侧说明齐全；鼠标安全点不命中玻璃，`data-hovered=-1`，detached 标题无模糊 | `f92183d85c63541d788b91d5a72d7b7cf00f3a8d39d7a019cb51b437c89495a7` |
+| `download-1440x900-normal.png` | 平台选择、安装须知、版本信息与历史构图一致；当前 3D 设备模型已进入 `ready`，不回退到历史加载中状态 | `e1d68b2fcf0aa3a0cd2e34a7fd06d2a252b4b33cfd24d5662866d8326857d804` |
+| `community-1440x900-normal.png` | 液态标题、页码与卡片槽位恢复；本地 E2E memory API 返回 200、分页 idle、3 张合约夹具卡片可见，未把本地夹具表述为上海真实内容 | `dada8902a5e010894984d44731a1276dd95b9cea6287863ad906cd3b0e9c0a87` |
+| `feedback-1440x900-normal.png` | 两组三项景深按钮与历史基线一致，共 6 个按钮具有非零边界 | `22c4bbae95e6d135533fb47b9204337a9096bdfda899c24a5bb551b0ade3c687` |
+| `feedback-390x844-reduced.png` | 减少动效开启；反馈与付款两组共 6 个按钮仍可见，页面宽度无横向溢出 | `fa359c82ef7baa873dd8992f887559839ea523799560e2c170ef4c5dedcfad16` |
+| `website-568x320-reduced.png` | 减少动效开启；首页核心内容、章节状态和上下导航保持可用 | `186b0286bfaf21efc6f0a97f0c01e60836cd713135a5e1cd655293bd58efbc4e` |
+
+证据目录为 `docs/operations/evidence/website-final-visual-restoration-2026-09-02/`，`manifest.sha256` 保存七张图的同一组哈希。主智能体已逐张查看七张候选图，并逐对查看历史五章基线；恢复后的视觉骨架一致，Download 的已就绪模型和 Community 的本地合约卡片属于当前代码路径相对历史失败／加载状态的预期差异。上海真实内容留到 Task 8 线上复验。
+
+### 5.2 源码与运行时数值门
+
+对 `94785ee91b0ed88f7aa2b1023bb7a4cd662b86d3` donor 与候选执行源码数值对比。排除明确修复的 Community 网格 uniform／坐标表达式后，fragment shader 的 `630/630` 个数值字面量顺序完全一致，忽略空白后的 shader 文本也完全一致；生命周期阈值均为 `4.08`，资源规模均为 7 个纹理、2 个 shader、1 个 buffer、1 个 program 和 4 类视觉事件。没有仅凭截图接受其他未知数值漂移。
+
+Community 首轮真实测量发现 donor 的固定中心会让前三张 WebGL 玻璃比 DOM 基础中心统一高约 `16.20px`，欧氏误差占卡片较小边 `5.11%–5.18%`，因此该轮没有通过。最终实现改为在初始与 resize 时镜像桌面 CSS 网格公式：`padding=clamp(18px, 2.4vw, 46px)`、`gap=clamp(10px, 1.4vw, 26px)`、中央行 `clamp(120px, 20vh, 210px)`，再计算四列与上下弹性行中心并转换 DOM／WebGL Y 轴。
+
+在 `1440×900` 最终候选中，computed CSS 为 padding `34.56px`、gap `20.16px`、四列约 `327.60px`、上下行约 `305.28px`、中央行 `180px`；生产 helper 得到 columns `0.13775 / 0.37925 / 0.62075 / 0.86225`、WebGL rows `0.792 / 0.208`，与实际上传 uniform 六位小数一致。前三张卡的 DOM／WebGL 基础中心欧氏误差为 `0.006188 / 0.005796 / 0.005429 CSS px`，computed CSS 与 helper 的最大序列化差为 `0.0195px`，通过不超过 1 CSS px 的门。
+
+`900px` 正常动效边界另行实测：`reduced=false`、3 张 DOM 卡片保留、WebGL context 正常，卡片玻璃 count 为 0；永久单测还验证窄屏期间继续接收最新快照，返回桌面宽度后恢复最新 count。这样没有为可滚动 2／1 列 DOM 另造一套猜测式 shader 布局，也不会显示错位幽灵玻璃。
+
+### 5.3 生命周期复审与修复
+
+最终独立复审先发现四项有效问题：About 多玻璃回位共享布尔值会产生交叉竞争；WebGL／Shader／Logo 初始化失败没有驱动父级静态回退；暂停状态只停止 render 而没有释放 GPU 与监听器；视觉事件快照会在暂停或重建时丢失。修复后又补齐卸载提交到 passive cleanup 之间的迟到 Logo error 门闩，并将重复的 GSAP 测试替身收敛为文件内 helper。
+
+TDD 证据包括：About A/B 交错回位；WebGL null、同步纹理异常和异步 Logo 失败；精确释放 7 texture、1 buffer、2 shader、1 program；暂停释放、恢复时单次重建；暂停期间接收 About／Community／Support 最新快照且不回放 ripple；卸载窗口迟到 Logo error 在旧实现中使完整单测为 410/411，加入 layout mounted guard 后为 411/411。生命周期独立复审复跑定向 34/34、完整 website 411/411、typecheck 与 `git diff --check`，Critical、Important、Minor 均为零；后续数值门增加两项永久回归测试，最新完整 website 为 413/413。
+
+最终规格轴与质量轴分别重新读取 `bb5fd90..f765cb8`、本节文档与七张证据，独立复算 shader 数值、CSS／helper／uniform、截图哈希、移动断点和资源清理，并复跑 website 413/413、typecheck、scope、ownership 与 `git diff --check`。两轴均为 Critical、Important、Minor 零项，结论 Approved；Community 首轮审查发现的问题及两轮修复没有被旧的通过结论覆盖。
+
+### 5.4 已知非阻断项
+
+当前静态候选没有声明 favicon。headed Chromium 会附带请求 `/favicon.ico`；采集脚本只对该精确路径回复 204，其他请求、`console.error` 和 `pageerror` 继续作为阻断条件。这不表示 favicon 已修复；由于图标资产和品牌选择没有获批，本轮没有为了消除一条 404 而新增资源。
+
+Task 6 记录的单 browser 串行 E2E 失去响应仍未通过放宽 timeout、retry、worker 或 runner 掩盖。Task 7 的七个场景使用独立原生 Playwright 进程取得通过证据；本节不把 `pnpm.cmd verify:website` 的一次性非零状态改写为全绿，也不表示上海测试站已经覆盖。

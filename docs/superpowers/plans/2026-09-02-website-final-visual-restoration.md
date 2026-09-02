@@ -468,6 +468,8 @@ git commit -m "test(web): 阻断五章节液态视觉回归"
 - Community 显示液态标题、页码和当前内容；
 - Feedback 显示两组三项景深按钮，而不是只有两个标题。
 
+视觉查看后再执行数值门：对比 donor 与候选的 shader／生命周期关键常量；在 `1440×900` Community 页面读取前三张卡片的 `getBoundingClientRect()`、Canvas CSS 尺寸、drawing buffer 与 DPR，按生产 helper 上传的列／行归一化值换算 WebGL 基础中心，逐卡记录 `dx`、`dy` 和欧氏距离，要求基础中心误差不超过 1 CSS px。同步记录 CSS computed padding、gap、columns、rows 与 helper 结果；`900px` 及以下正常动效验证卡片玻璃计数为 0，DOM 卡片与业务继续可用。动态浮动只作为独立动效，不得用它掩盖基础网格错位。
+
 - [ ] **Step 7.3：执行两阶段独立审查**
 
 规格审查只核对 `2026-09-02-website-final-visual-restoration-design.md` 的目标／非目标／保护项；质量审查检查事件清理、GPU 释放、类型、重复逻辑、业务覆盖和桌宠零差异。任何 P0/P1/P2 问题修复后重跑对应 Task 门，P3 记录但不以无关重构扩大范围。

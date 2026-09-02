@@ -154,6 +154,7 @@ About、Download、Community、Support、LanguageMenu 继续拥有真实业务�
 - 替换现有错误契约：`exitProgress = 0 / 1 / 2 / 3 / 4` 时液态画布仍活动，到 `4.08` 才允许退出，不再保留“`1.08` 后释放”的旧断言；
 - 介绍、下载、社区和支持所需纹理、uniform 与状态投影确实进入 WebGL Adapter；
 - 支持页两个三项按钮组的活动索引和景深进入渲染链；
+- 共享仓库桌面卡片的 CSS 网格中心与 WebGL 归一化中心使用同一组可计算数值，基础中心误差不超过 1 CSS px；窗口尺寸变化时重新计算，`900px` 及以下的可滚动 2／1 列布局不绘制无法同位的卡片玻璃；
 - 减少动态效果和 WebGL 失败时不创建 GPU，DOM 操作仍可见；
 - 当前共享资源、审核、下载计数、i18n 和管理员行为测试保持通过。
 
@@ -171,7 +172,7 @@ About、Download、Community、Support、LanguageMenu 继续拥有真实业务�
 
 每章先等待控制器精确吸附到整数进度，再按页面自身加载状态等待；下载模型必须等待成功或明确错误，不以固定短等待冒充完成。
 
-WebGL 动态背景存在时间、GPU、ANGLE、字体光栅化和平台差异，因此不把正常动效整幅 WebGL 像素快照做成阻断性 `toHaveScreenshot`。自动化锁定职责和可见结构，人工截图与 `963df61` 逐章对照锁定最终观感；两者必须同时通过。五张正常动效和两张减少动态效果截图作为带元数据与 SHA-256 的人工视觉证据写入 `docs/operations/evidence/`，不只保存在被忽略的 Playwright 输出目录。
+WebGL 动态背景存在时间、GPU、ANGLE、字体光栅化和平台差异，因此不把正常动效整幅 WebGL 像素快照做成阻断性 `toHaveScreenshot`。自动化锁定职责和可见结构，人工截图与 `963df61` 逐章对照锁定最终观感；两者必须同时通过。视觉对照不能单独作为坐标正确证据：还要对比 donor 与候选的关键 shader／生命周期数值，并在真实浏览器中读取 DOM `getBoundingClientRect()`、Canvas CSS 尺寸、drawing buffer、DPR 和 WebGL 基础中心换算值；任何有意数值差异都要记录原因。五张正常动效和两张减少动态效果截图作为带元数据与 SHA-256 的人工视觉证据写入 `docs/operations/evidence/`，不只保存在被忽略的 Playwright 输出目录。
 
 ### 8.3 发布前强制检查
 
