@@ -29,9 +29,9 @@
 | 项目 | 实际结果 |
 | --- | --- |
 | PostgreSQL 行为门 | 本地 PostgreSQL 17.11，顺序执行 16 个 migration，85 项行为验证通过。 |
-| 自动化测试 | 共 986 项通过：门禁测试 108、共享契约 43、网站单测 383、CloudBase API 278、包扫描器 67、发行工具 4、migration 工具 42、网站合同 34、CloudBase 构建产物 3、CloudBase 构建工具 5、Playwright E2E 19。 |
+| 自动化测试 | 共 983 项通过：门禁测试 108、共享契约 43、网站单测 383、CloudBase API 核心 275、CloudBase 构建产物 3、包扫描器 67、发行工具 4、migration 工具 42、网站合同 34、CloudBase 构建工具 5、Playwright E2E 19。 |
 | 网站 | 383 项单测通过；生产构建通过；Playwright E2E 19/19 通过。 |
-| CloudBase API | 278 项单元测试通过；构建与 typecheck 通过；另有 3 项构建产物测试通过，产物只含 `api`、`cleanup`。 |
+| CloudBase API | 278 项通过（含构建产物 3 项）；构建与 typecheck 通过，产物只含 `api`、`cleanup`。 |
 | 包扫描器 | 67 项测试通过；typecheck 通过。 |
 | 依赖审查 | 263 个模块、687 条依赖；0 个错误，8 个已批准历史 warning。 |
 | 真实 Docker 候选 | imageId `sha256:a02f6a8a6cd2fbd3663a61d811c9eae4f7bc6a3b0fdb41f1b495fbaa60a45a9c`；Node `v22.23.2`、ClamAV `1.4.3`、UID `999`；ClamAV DB `28110`，更新时间 `2026-09-01T11:10:23.000Z`，裁决时年龄 0 天；无网络、全部 capability 移除、只读根文件系统、只读输入与 `mode=1777` tmpfs 条件下，干净包进入人工审核、EICAR 阻断、非法包拒绝。 |
@@ -42,6 +42,23 @@
 - Memory 与生产合同替身共用公开空响应和管理员累计值合同；公开社区、反馈与静态页面不返回 `officialDownloadCount` 或 `clickCount`。
 - 本地浏览器场景以 Memory API 连续登记两次点击，公开页不显示指标，认证管理员工作台才显示累计值；本次完整网站链与范围/所有权门均通过。
 - 上述是当时的本地合同结论；上海远端 migration、函数更新和网关配置已由本记录的本次远端证据更新。真实 OTP 管理员登录、管理员指标读取与完整业务 smoke 仍未验证，本节不将其写为通过。
+
+## 2026-09-02 本轮新鲜本地验证
+
+以下均为本地验证，不替代远端 smoke：
+
+```powershell
+pnpm.cmd verify:cloudbase
+pnpm.cmd verify:website
+pnpm.cmd verify:web-chain:scope
+pnpm.cmd verify:web-chain:ownership
+git diff --check
+git status --short
+```
+
+- `verify:cloudbase`：CloudBase API 278/278（含构建产物 3 项）、包扫描器 67/67 通过。
+- `verify:website`：网站 383/383、生产构建与 Playwright E2E 19/19 通过。
+- 范围门、测试所有权门与差异检查通过；提交后 `git status --short` 为空。
 
 Task 7 最终复验实际执行：
 

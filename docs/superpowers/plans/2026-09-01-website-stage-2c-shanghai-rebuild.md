@@ -14,6 +14,8 @@
 
 > **2026-09-01 执行结果：** Task 1、Task 2 与适用的 Task 4 已完成；Task 3、Task 5–10 按零费用阻断裁剪，未执行远端操作；Task 11 已完成最终本地门禁与文档收敛。阶段 2C 最终状态为 `blocked`，不代表上海 PG 环境已创建、远端已部署或生产已上线。独立证据见 `docs/operations/website-stage-2c-shanghai-acceptance.md`。
 
+> **历史快照（已被后续状态取代）：** 上述 2026-09-01 `blocked` 执行结果仅保留历史事实；2026-09-02 零费用方案已取代其状态。当前入口是 [`2026-09-01-website-stage-2c-zero-cost-manual-review.md`](2026-09-01-website-stage-2c-zero-cost-manual-review.md) 与 [`website-stage-2c-zero-cost-manual-review-acceptance.md`](../../operations/website-stage-2c-zero-cost-manual-review-acceptance.md)，远端状态为 `remote: in_progress`。
+
 ## 全局约束
 
 - 允许修改的业务路径仅为 `apps/website/**`、`apps/cloudbase-api/**`、`apps/package-scanner/**`、`cloudbase/**`、相关网站工具、配置和文档。
@@ -677,7 +679,7 @@ CLI 会明确提示该入口已废弃；它只用于解决当前 workspace build
 
 - [ ] **Step 10.2：配置唯一网关路由与最小 CORS**
 
-从新环境 HTTP 网关页面读取平台分配的测试域名，保存为 `$stage2cGatewayDomain` 并验证它属于当前环境；不得填正式域名。路由只指向 Event 类型的 `ai-pet-api`：管理员前缀开启网关认证，公开前缀保持匿名，由应用层继续区分具体端点；两者均启用路径透传和安全域名。
+从新环境 HTTP 网关页面读取平台分配的测试域名，保存为 `$stage2cGatewayDomain` 并验证它属于当前环境；不得填正式域名。路由只指向 Event 类型的 `ai-pet-api`：管理员前缀开启网关认证并启用路径透传，公开前缀保持匿名且不启用路径透传，由应用层继续区分具体端点；两者均启用安全域名。
 
 ```powershell
 $stage2cGatewayDomain = Read-Host '请输入当前上海开发环境的 HTTP 网关测试域名（不含协议）'
@@ -686,7 +688,7 @@ $stage2cRouteData = @{
   domain = $stage2cGatewayDomain
   routes = @(
     @{ path = '/api/v1/admin'; upstreamResourceType = 'SCF'; upstreamResourceName = 'ai-pet-api'; enable = $true; enableAuth = $true; enableSafeDomain = $true; enablePathTransmission = $true },
-    @{ path = '/api/v1'; upstreamResourceType = 'SCF'; upstreamResourceName = 'ai-pet-api'; enable = $true; enableAuth = $false; enableSafeDomain = $true; enablePathTransmission = $true }
+    @{ path = '/api'; upstreamResourceType = 'SCF'; upstreamResourceName = 'ai-pet-api'; enable = $true; enableAuth = $false; enableSafeDomain = $true; enablePathTransmission = $false }
   )
 } | ConvertTo-Json -Compress -Depth 6
 pnpm.cmd exec cloudbase -e $stage2cEnvId -r ap-shanghai routes add --data $stage2cRouteData --json

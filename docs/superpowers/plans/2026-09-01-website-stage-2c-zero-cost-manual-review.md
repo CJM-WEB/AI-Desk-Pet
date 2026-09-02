@@ -415,7 +415,9 @@ Expected: 全部通过；没有桌宠路径、Secret、临时归档、CloudBase 
 - Modify: `apps/website/lib/admin-api-client.ts`
 - Modify: `apps/website/tests/admin-api-client.test.ts`
 - Modify: `docs/superpowers/plans/2026-09-01-website-stage-2c-shanghai-rebuild.md`
+- Modify: `docs/superpowers/plans/2026-08-15-website-optimization-index.md`
 - Modify: `docs/operations/website-stage-2c-zero-cost-manual-review-acceptance.md`
+- Modify: `docs/operations/website-stage-2c-shanghai-acceptance.md`
 - Modify: `docs/operations/cloudbase-deployment.md`
 - Modify: `docs/operations/content-moderation.md`
 

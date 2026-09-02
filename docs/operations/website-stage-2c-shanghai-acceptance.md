@@ -1,5 +1,7 @@
 # 网站阶段 2C 上海阻断验收记录
 
+> **历史快照（已被后续状态取代）：** 本记录保存 2026-09-01 的 `blocked` 事实。2026-09-02 零费用方案已形成后续状态，当前入口为 [`website-stage-2c-zero-cost-manual-review-acceptance.md`](website-stage-2c-zero-cost-manual-review-acceptance.md)，远端状态为 `remote: in_progress`；真实 OTP 管理员登录与完整业务 smoke 仍未完成。
+
 ## 范围与结论
 
 - 日期：2026-09-01。
