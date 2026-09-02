@@ -5,6 +5,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { gsap } from 'gsap';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import type { LiquidGlassInteractionDetail } from '../components/home-experience/LiquidGlassHome';
 import { LiquidGlassHome } from '../components/home-experience/LiquidGlassHome';
 import { HomeExperience } from '../components/home-experience/HomeExperience';
 import { MagneticAPMark } from '../components/home-experience/MagneticAPMark';
@@ -22,7 +23,9 @@ function createCanvasContext() {
 function createWebGlContext() {
   const noop = vi.fn();
   const viewport = vi.fn();
+  const uniform1f = vi.fn();
   const uniform2f = vi.fn();
+  const uniform2fv = vi.fn();
   const uniform4fv = vi.fn();
   const getUniformLocation = vi.fn((_program: WebGLProgram, name: string) => (
     { name } as unknown as WebGLUniformLocation
@@ -42,7 +45,7 @@ function createWebGlContext() {
     'activeTexture', 'attachShader', 'bindBuffer', 'bindTexture', 'bufferData',
     'compileShader', 'deleteBuffer', 'deleteProgram', 'deleteShader', 'deleteTexture',
     'drawArrays', 'enableVertexAttribArray', 'linkProgram', 'pixelStorei', 'shaderSource',
-    'texImage2D', 'texParameteri', 'uniform1f', 'uniform1i', 'uniform2fv',
+    'texImage2D', 'texParameteri', 'uniform1i',
     'useProgram', 'vertexAttribPointer'
   ]);
   const context = new Proxy({}, {
@@ -50,7 +53,9 @@ function createWebGlContext() {
       const name = String(property);
       if (name === 'getUniformLocation') return getUniformLocation;
       if (name === 'viewport') return viewport;
+      if (name === 'uniform1f') return uniform1f;
       if (name === 'uniform2f') return uniform2f;
+      if (name === 'uniform2fv') return uniform2fv;
       if (name === 'uniform4fv') return uniform4fv;
       if (constants.has(name)) return 1;
       if (objectMethods.has(name)) return () => ({});
@@ -61,7 +66,7 @@ function createWebGlContext() {
       throw new Error(`测试 WebGL 替身未定义接口：${name}`);
     }
   }) as WebGLRenderingContext;
-  return { context, viewport, uniform2f, uniform4fv };
+  return { context, viewport, uniform1f, uniform2f, uniform2fv, uniform4fv };
 }
 
 class FailedLogoImage extends EventTarget {
@@ -162,5 +167,70 @@ describe('磁吸 Logo 舞台', () => {
     const rippleValues = Array.from(rippleCall?.[1] as Float32Array);
     expect(rippleValues.slice(0, 3)).toEqual([0.25, 0.75, 0]);
     expect(rippleValues[3]).toBeCloseTo(1.65, 5);
+  });
+
+  it('把四类章节视觉事件同步到同一帧的 WebGL uniform', () => {
+    const webGl = createWebGlContext();
+    vi.spyOn(HTMLCanvasElement.prototype, 'getContext')
+      .mockImplementation((type) => type === 'webgl' ? webGl.context : createCanvasContext());
+    vi.spyOn(gsap, 'quickTo').mockImplementation((target, property) => {
+      const setter = vi.fn((value: number) => {
+        Reflect.set(target as object, property, value);
+        return {} as gsap.core.Tween;
+      });
+      return Object.assign(setter, { tween: {} as gsap.core.Tween }) as ReturnType<typeof gsap.quickTo>;
+    });
+    vi.spyOn(gsap, 'to').mockImplementation((target, vars) => {
+      if (target && typeof target === 'object') {
+        for (const [key, value] of Object.entries(vars)) {
+          if (typeof value === 'number') Reflect.set(target as object, key, value);
+        }
+      }
+      return {} as gsap.core.Tween;
+    });
+    let renderFrame: Parameters<typeof gsap.ticker.add>[0] | undefined;
+    vi.spyOn(gsap.ticker, 'add').mockImplementation((callback) => {
+      renderFrame = callback;
+      return callback;
+    });
+
+    render(<LiquidGlassHome active isPaused={false} reducedMotion={false} />);
+
+    window.dispatchEvent(new CustomEvent('ai-pet-liquid-ripple', {
+      detail: { clientX: 256, clientY: 192, strength: 1.8 }
+    }));
+    window.dispatchEvent(new CustomEvent<LiquidGlassInteractionDetail>(
+      'ai-pet-liquid-interaction',
+      { detail: { hovered: 2, dragging: true, offsets: [4, 6, 0, 0, 0, 0] } }
+    ));
+    window.dispatchEvent(new CustomEvent('ai-pet-community-card-count', {
+      detail: { count: 7, currentPage: 2, totalPages: 3 }
+    }));
+    window.dispatchEvent(new CustomEvent('ai-pet-support-selection', {
+      detail: { feedbackIndex: 1, paymentIndex: 2 }
+    }));
+    expect(renderFrame).toBeDefined();
+    renderFrame?.(1, 16, 1, 0.016);
+
+    const uniform1fValue = (name: string) => webGl.uniform1f.mock.calls.find(
+      ([location]) => (location as unknown as { name: string }).name === name
+    )?.[1];
+    const rippleCall = webGl.uniform4fv.mock.calls.find(([location]) => (
+      (location as unknown as { name: string }).name === 'u_ripples[0]'
+    ));
+    expect(Array.from(rippleCall?.[1] as Float32Array).slice(0, 4)).toEqual([
+      0.25,
+      0.75,
+      0,
+      expect.closeTo(1.8, 5)
+    ]);
+    expect(uniform1fValue('u_hoveredBlob')).toBe(2);
+    const offsetsCall = webGl.uniform2fv.mock.calls.find(([location]) => (
+      (location as unknown as { name: string }).name === 'u_blobOffsets[0]'
+    ));
+    expect(Array.from(offsetsCall?.[1] as Float32Array)).toEqual([4, 6, 0, 0, 0, 0]);
+    expect(uniform1fValue('u_communityCardCount')).toBe(7);
+    expect(uniform1fValue('u_supportFeedbackActive')).toBe(1);
+    expect(uniform1fValue('u_supportPaymentActive')).toBe(-1);
   });
 });

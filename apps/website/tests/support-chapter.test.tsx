@@ -4,6 +4,7 @@ import type { SubmissionReceipt } from '@myself/shared-types';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { I18nProvider } from '../components/i18n/I18nProvider';
+import { LIQUID_GLASS_FRAGMENT_SHADER } from '../components/home-experience/liquid-glass-shaders';
 import { SupportChapter } from '../components/website-experience/support/SupportChapter';
 import type {
   FeedbackEntry,
@@ -122,6 +123,16 @@ describe('合并后的反馈与支持模块', () => {
       expect(group.querySelector('[data-depth-index="1"]')?.getAttribute('data-blur-px')).toBe('2.5');
       expect(group.querySelector('[data-depth-index="2"]')?.getAttribute('data-blur-px')).toBe('5');
     }
+  });
+
+  it('五章节着色器保留支持纹理、选中态和固定景深柔化', () => {
+    expect(LIQUID_GLASS_FRAGMENT_SHADER).toContain('u_supportTextTexture');
+    expect(LIQUID_GLASS_FRAGMENT_SHADER).toContain('u_supportFeedbackActive');
+    expect(LIQUID_GLASS_FRAGMENT_SHADER).toContain('u_supportPaymentActive');
+    expect(LIQUID_GLASS_FRAGMENT_SHADER).toContain('supportButtonBlurPx');
+    expect(LIQUID_GLASS_FRAGMENT_SHADER).toContain(
+      'return clamp(depth, 0.0, 2.0) * 2.5;'
+    );
   });
 
   it('Tab 顺序只保留两组容器和各自清晰层按钮', () => {

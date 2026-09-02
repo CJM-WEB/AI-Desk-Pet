@@ -3,6 +3,7 @@
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { gsap } from 'gsap';
+import { LIQUID_GLASS_FRAGMENT_SHADER } from '../components/home-experience/liquid-glass-shaders';
 import { AboutChapter } from '../components/website-experience/about/AboutChapter';
 
 vi.mock('gsap', () => ({
@@ -53,6 +54,10 @@ describe('AI Pet 液态玻璃介绍章节', () => {
       y: 0,
       ease: 'elastic.out(1, 0.42)'
     }));
+  });
+
+  it('五章节着色器保留共享仓库文字纹理接口', () => {
+    expect(LIQUID_GLASS_FRAGMENT_SHADER).toContain('u_communityTextTexture');
   });
 
   it('减少动态效果时关闭持续浮动', () => {
