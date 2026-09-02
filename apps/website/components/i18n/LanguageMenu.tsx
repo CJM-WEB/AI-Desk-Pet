@@ -116,10 +116,8 @@ export function LanguageMenu({ transitionProgress = 0 }: LanguageMenuProps) {
         className={styles.trigger}
         aria-haspopup="menu"
         aria-expanded={isOpen}
-        onClick={(event) => {
-          triggerRipple(event);
-          setIsOpen((open) => !open);
-        }}
+        onPointerDown={triggerRipple}
+        onClick={() => setIsOpen((open) => !open)}
       >
         <span>{t('language.button')}</span>
       </button>

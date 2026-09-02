@@ -71,10 +71,25 @@ describe('下载模块', () => {
     expect(LIQUID_GLASS_FRAGMENT_SHADER).toContain('u_downloadTextTexture');
   });
 
-  it('正常动效进入完成后按下安装提示区只发布一次玻璃水波', () => {
+  it('进入视觉死区内按下安装提示区不发布玻璃水波', () => {
     const ripple = vi.fn();
     window.addEventListener(LIQUID_GLASS_RIPPLE_EVENT, ripple);
-    render(<DownloadChapter interactive transitionProgress={2} />);
+    render(<DownloadChapter interactive transitionProgress={1.1} />);
+
+    fireEvent.pointerDown(screen.getByRole('region', { name: '安装前须知 · 常见问题' }), {
+      button: 0,
+      clientX: 120,
+      clientY: 240
+    });
+
+    expect(ripple).not.toHaveBeenCalled();
+    window.removeEventListener(LIQUID_GLASS_RIPPLE_EVENT, ripple);
+  });
+
+  it('越过视觉进入死区后按下安装提示区只发布一次玻璃水波', () => {
+    const ripple = vi.fn();
+    window.addEventListener(LIQUID_GLASS_RIPPLE_EVENT, ripple);
+    render(<DownloadChapter interactive transitionProgress={1.13} />);
 
     fireEvent.pointerDown(screen.getByRole('region', { name: '安装前须知 · 常见问题' }), {
       button: 0,

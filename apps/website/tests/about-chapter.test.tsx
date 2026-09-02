@@ -15,7 +15,10 @@ vi.mock('gsap', () => ({
   gsap: { killTweensOf: vi.fn(), set: vi.fn(), to: vi.fn() }
 }));
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  vi.clearAllMocks();
+});
 
 describe('AI Pet 液态玻璃介绍章节', () => {
   it('使用三块玻璃承载原有五项介绍内容', () => {
@@ -85,6 +88,81 @@ describe('AI Pet 液态玻璃介绍章节', () => {
     }));
     window.removeEventListener(LIQUID_GLASS_INTERACTION_EVENT, capture);
     window.removeEventListener(LIQUID_GLASS_RIPPLE_EVENT, ripple);
+  });
+
+  it('回位过程持续发布快照，完成和卸载时归零', () => {
+    const details: LiquidGlassInteractionDetail[] = [];
+    const capture = (event: Event) => {
+      details.push((event as CustomEvent<LiquidGlassInteractionDetail>).detail);
+    };
+    window.addEventListener(LIQUID_GLASS_INTERACTION_EVENT, capture);
+    const { unmount } = render(<AboutChapter interactive />);
+    const glass = document.querySelector<HTMLElement>('[data-glass-id="editor"]')!;
+    glass.setPointerCapture = vi.fn();
+
+    fireEvent.pointerDown(glass, { pointerId: 7, clientX: 100, clientY: 100 });
+    fireEvent.pointerMove(glass, { pointerId: 7, clientX: 146, clientY: 128 });
+    fireEvent.pointerUp(glass, { pointerId: 7, clientX: 146, clientY: 128 });
+
+    const [target, options] = vi.mocked(gsap.to).mock.calls[0]!;
+    const offset = target as { x: number; y: number };
+    const callbacks = options as { onUpdate?: () => void; onComplete?: () => void };
+    offset.x = 23;
+    offset.y = 14;
+    callbacks.onUpdate?.();
+    expect(details.at(-1)).toEqual({
+      hovered: 0,
+      dragging: true,
+      offsets: [23 / window.innerWidth, -14 / window.innerHeight, 0, 0, 0, 0]
+    });
+
+    offset.x = 0;
+    offset.y = 0;
+    callbacks.onComplete?.();
+    expect(details.at(-1)).toEqual({
+      hovered: 0,
+      dragging: false,
+      offsets: [0, 0, 0, 0, 0, 0]
+    });
+
+    unmount();
+    expect(details.at(-1)).toEqual({
+      hovered: -1,
+      dragging: false,
+      offsets: [0, 0, 0, 0, 0, 0]
+    });
+    window.removeEventListener(LIQUID_GLASS_INTERACTION_EVENT, capture);
+  });
+
+  it('重新拖拽时取消旧回位并发布新拖拽快照', () => {
+    const details: LiquidGlassInteractionDetail[] = [];
+    const capture = (event: Event) => {
+      details.push((event as CustomEvent<LiquidGlassInteractionDetail>).detail);
+    };
+    window.addEventListener(LIQUID_GLASS_INTERACTION_EVENT, capture);
+    render(<AboutChapter interactive />);
+    const glass = document.querySelector<HTMLElement>('[data-glass-id="editor"]')!;
+    glass.setPointerCapture = vi.fn();
+
+    fireEvent.pointerDown(glass, { pointerId: 7, clientX: 100, clientY: 100 });
+    fireEvent.pointerMove(glass, { pointerId: 7, clientX: 146, clientY: 128 });
+    fireEvent.pointerUp(glass, { pointerId: 7, clientX: 146, clientY: 128 });
+    const [target, options] = vi.mocked(gsap.to).mock.calls[0]!;
+    const offset = target as { x: number; y: number };
+    const callbacks = options as { onUpdate?: () => void };
+    offset.x = 20;
+    offset.y = 12;
+    callbacks.onUpdate?.();
+
+    fireEvent.pointerDown(glass, { pointerId: 8, clientX: 200, clientY: 200 });
+    expect(gsap.killTweensOf).toHaveBeenCalledWith(offset);
+    fireEvent.pointerMove(glass, { pointerId: 8, clientX: 210, clientY: 205 });
+    expect(details.at(-1)).toEqual({
+      hovered: 0,
+      dragging: true,
+      offsets: [30 / window.innerWidth, -17 / window.innerHeight, 0, 0, 0, 0]
+    });
+    window.removeEventListener(LIQUID_GLASS_INTERACTION_EVENT, capture);
   });
 
   it('五章节着色器保留共享仓库文字纹理接口', () => {

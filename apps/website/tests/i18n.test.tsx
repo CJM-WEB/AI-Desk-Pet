@@ -73,6 +73,8 @@ describe('官网国际化核心', () => {
     const trigger = screen.getByRole('button', { name: 'language' });
     window.addEventListener(LIQUID_GLASS_RIPPLE_EVENT, ripple);
     fireEvent.pointerDown(trigger, { clientX: 120, clientY: 24 });
+    expect(trigger.querySelectorAll('[class*="ripple"]')).toHaveLength(1);
+    expect(ripple).toHaveBeenCalledOnce();
     fireEvent.click(trigger, { clientX: 120, clientY: 24 });
     expect(trigger.querySelectorAll('[class*="ripple"]')).toHaveLength(1);
     expect(ripple).toHaveBeenCalledOnce();

@@ -94,11 +94,15 @@ export function AboutChapter({
     if (!interactive || motionDisabled) return;
     event.preventDefault();
     event.currentTarget.setPointerCapture(event.pointerId);
+    const offset = offsetsRef.current[index]!;
+    // 新拖拽独占当前偏移，避免已开始的弹性回位覆盖最新指针位置。
+    gsap.killTweensOf(offset);
+    returningRef.current = false;
     dragRef.current = {
       index,
       pointerId: event.pointerId,
-      startX: event.clientX - offsetsRef.current[index]!.x,
-      startY: event.clientY - offsetsRef.current[index]!.y
+      startX: event.clientX - offset.x,
+      startY: event.clientY - offset.y
     };
     setHover(index);
     window.dispatchEvent(new CustomEvent(LIQUID_GLASS_RIPPLE_EVENT, {
