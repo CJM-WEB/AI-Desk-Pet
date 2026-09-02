@@ -40,19 +40,11 @@ describe('CloudBase V3 Node 运行时工厂', () => {
   });
 
   it('隔离 RDB API Key 与 Storage 函数临时身份，避免 RLS 表查询失去服务端身份', () => {
-    const {
-      fakeRdbApp,
-      fakeStorageApp,
-      fakeBucket,
-      fakeRdb
-    } = createFakeApps();
-    const init = vi.fn()
-      .mockReturnValueOnce(fakeRdbApp)
-      .mockReturnValueOnce(fakeStorageApp);
+    const { sdk, init, events, rdb, bucket } = createIdentitySensitiveSdk();
     const runtime = createCloudBaseServerRuntime(
       runtimeConfig,
       functionContext,
-      { init: init as CloudBaseServerSdk['init'] }
+      sdk
     );
 
     expect(init).toHaveBeenCalledTimes(2);
@@ -70,30 +62,51 @@ describe('CloudBase V3 Node 运行时工厂', () => {
       context: functionContext
     });
     expect(init.mock.calls[1]?.[0]).not.toHaveProperty('accessKey');
-    expect(fakeRdbApp.rdb).toHaveBeenCalledOnce();
-    expect(fakeStorageApp.storage.from).toHaveBeenCalledWith('ai-pet-private');
-    expect(runtime).toEqual({ rdb: fakeRdb, bucket: fakeBucket });
+    expect(events).toEqual([
+      'init:rdb',
+      'rdb:rdb',
+      'init:storage',
+      'bucket:storage:ai-pet-private'
+    ]);
+    expect(runtime).toEqual({ rdb, bucket });
   });
 });
 
-function createFakeApps(): {
-  fakeRdbApp: ReturnType<CloudBaseServerSdk['init']>;
-  fakeStorageApp: ReturnType<CloudBaseServerSdk['init']>;
-  fakeBucket: CloudBaseStorageBucket;
-  fakeRdb: CloudBaseRdbClient;
+/** 模拟 V3 按 env 覆盖请求注册表，客户端创建时读取当前身份。 */
+function createIdentitySensitiveSdk(): {
+  sdk: CloudBaseServerSdk;
+  init: ReturnType<typeof vi.fn>;
+  events: string[];
+  rdb: CloudBaseRdbClient;
+  bucket: CloudBaseStorageBucket;
 } {
-  const fakeRdb = {} as CloudBaseRdbClient;
-  const fakeBucket = {} as CloudBaseStorageBucket;
+  let currentIdentity: 'rdb' | 'storage' | null = null;
+  const events: string[] = [];
+  const rdb = {} as CloudBaseRdbClient;
+  const wrongRdb = {} as CloudBaseRdbClient;
+  const bucket = {} as CloudBaseStorageBucket;
+  const wrongBucket = {} as CloudBaseStorageBucket;
+  const init = vi.fn((options: Parameters<CloudBaseServerSdk['init']>[0]) => {
+    currentIdentity = 'accessKey' in options ? 'rdb' : 'storage';
+    events.push(`init:${currentIdentity}`);
+    return {
+      rdb: vi.fn(() => {
+        events.push(`rdb:${currentIdentity}`);
+        return currentIdentity === 'rdb' ? rdb : wrongRdb;
+      }),
+      storage: {
+        from: vi.fn(bucketId => {
+          events.push(`bucket:${currentIdentity}:${bucketId}`);
+          return currentIdentity === 'storage' ? bucket : wrongBucket;
+        })
+      }
+    } as unknown as ReturnType<CloudBaseServerSdk['init']>;
+  });
   return {
-    fakeRdbApp: {
-      rdb: vi.fn(() => fakeRdb),
-      storage: { from: vi.fn() }
-    } as unknown as ReturnType<CloudBaseServerSdk['init']>,
-    fakeStorageApp: {
-      rdb: vi.fn(),
-      storage: { from: vi.fn(() => fakeBucket) }
-    } as unknown as ReturnType<CloudBaseServerSdk['init']>,
-    fakeRdb,
-    fakeBucket
+    sdk: { init: init as CloudBaseServerSdk['init'] },
+    init,
+    events,
+    rdb,
+    bucket
   };
 }

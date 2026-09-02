@@ -49,7 +49,10 @@ const installedSdk: CloudBaseServerSdk = {
   >
 };
 
-/** RDB 只使用服务端 API Key 查询 RLS 表；私有 Storage 仅使用本次函数临时身份。 */
+/**
+ * V3 SDK 会按 env 覆盖全局请求注册表，RDB client 必须紧接其 API Key 初始化创建；
+ * 私有 Storage 则在后续以本次函数临时身份创建，避免两种身份交叉。
+ */
 export function createCloudBaseServerRuntime(
   config: CloudBaseServerRuntimeConfig,
   context: CloudBaseFunctionContext,
@@ -61,6 +64,7 @@ export function createCloudBaseServerRuntime(
     timeout: config.cloudbaseSdkTimeoutMs,
     accessKey: config.cloudbaseApiKey
   });
+  const rdb = rdbApp.rdb();
   const storageApp = sdk.init({
     env: config.envId,
     region: config.cloudbaseRegion,
@@ -68,7 +72,7 @@ export function createCloudBaseServerRuntime(
     context
   });
   return {
-    rdb: rdbApp.rdb(),
+    rdb,
     bucket: storageApp.storage.from(config.privateBucketId)
   };
 }
