@@ -2,7 +2,7 @@
 
 本文是网站阶段 2C 零费用人工审核方案的现行运维入口。它只描述上海 CloudBase PostgreSQL 开发环境的最小运行面；不构成远端操作授权，更不构成正式生产上线授权。
 
-> 当前状态（2026-09-02）：`remote: in_progress`。上海免费开发环境 `ai-pet-scanner-dev-d0cp…826` 的 16 条 migration、私有 Bucket、`ai-pet-api`/`ai-pet-cleanup`、邮箱 OTP、最小网关与静态托管已经实际部署；完整真实管理员业务 smoke 尚未完成。共享包匿名投稿开关保持 `SHARED_PACKAGE_SUBMISSIONS_ENABLED=false`。这不是正式生产上线，现行证据见 `website-stage-2c-zero-cost-manual-review-acceptance.md`。
+> 当前状态（2026-09-02）：`remote: in_progress`。上海免费开发环境 `ai-pet-scanner-dev-d0cp…826` 的 16 条 migration、私有 Bucket、`ai-pet-api`/`ai-pet-cleanup`、邮箱 OTP、最小网关与静态托管已经实际部署；真实管理员登录、反馈完整链和官方下载计数已通过，共享包链与调度仍未完成。共享包匿名投稿开关保持 `SHARED_PACKAGE_SUBMISSIONS_ENABLED=false`。这不是正式生产上线，现行证据见 `website-stage-2c-zero-cost-manual-review-acceptance.md`。
 
 ## 1. 正式运行面与禁止部署项
 
@@ -64,7 +64,7 @@ CLOUDBASE_API_KEY
 
 以上清单与当前 `config.ts` 的两个 loader 对齐。不得为 worker、Scanner 或腾讯内容安全添加变量，也不得复制旧的 HMAC、Scanner Secret 或腾讯凭据。
 
-身份认证已启用邮箱 OTP，唯一管理员账号为 ACTIVE；真实 OTP 登录尚待验证。管理员路径同时经过网关认证与应用层身份、邮箱白名单和角色校验；客户端在同一 access token 上同时发送 `Authorization: Bearer <token>`（网关）与 `x-ai-pet-admin-token: <token>`（应用层复验），网关认证不能替代应用层授权。公开投稿与状态路径允许匿名访问，仍由限流、管理员审批和私有对象边界保护。
+身份认证已启用邮箱 OTP，唯一管理员账号为 ACTIVE；真实 OTP 登录和管理员双头认证已通过。管理员路径同时经过网关认证与应用层身份、邮箱白名单和角色校验；客户端在同一 access token 上同时发送 `Authorization: Bearer <token>`（网关）与 `x-ai-pet-admin-token: <token>`（应用层复验），网关认证不能替代应用层授权。公开投稿与状态路径允许匿名访问，仍由限流、管理员审批和私有对象边界保护。
 
 最小网关已使用两条 `SCF` 路由：公开 `/api` 不启用网关认证；管理员 `/api/v1/admin` 启用网关认证。最长前缀使管理员路由优先；公开 `GET /api/v1/community?limit=1` 返回 200，未认证管理员请求在网关返回 401 `MISSING_CREDENTIALS`。CORS 只允许实际开发或正式站点来源及所需方法/请求头，不允许带认证信息的通配来源。
 
@@ -78,7 +78,7 @@ pnpm.cmd --filter @myself/website build
 
 静态网站已使用以下三个前端环境变量构建：`NEXT_PUBLIC_CLOUDBASE_ENV_ID`、`NEXT_PUBLIC_CLOUDBASE_PUBLISHABLE_KEY`、`NEXT_PUBLIC_API_BASE_URL`（网关 `/api/v1` 基址）；67/67 个构建文件上传成功，当前静态托管对象总数为 73。将实际 HTTPS 域名加入 Web 安全域名；配置 CSP 与已验证 API 前缀匹配的 CORS。日志、告警和审计不得记录状态令牌、签名 URL、管理员令牌、OTP、密钥或私有对象地址。
 
-监控函数、网关、数据库和存储的错误、5xx/429、审核积压、异常上传和清理失败；当前计费周期总资源点为 3000、已使用 0.13，`packageDeduct=0`、`payAsYouGoDeduct=0`。这只证明尚未发生资源包外或按量扣费，不替代正式生产费用结论。
+上海开发环境函数日志已临时开通且未购买独立日志资源包，用于定位函数、网关和数据库边界错误；CloudBase 系统日志会保存函数响应摘要，`IgnoreSysLog` 真实试验也没有消除该摘要。因此当前只允许测试数据且共享包投稿保持关闭，接入真实投稿或正式上线前必须关闭日志或先形成并验证独立脱敏方案。日志不得替代长期监控与告警。当前计费周期总资源点为 3000、已使用 0.21，`packageDeduct=0`、`payAsYouGoDeduct=0`。这只证明尚未发生资源包外或按量扣费，不替代正式生产费用结论。
 
 ## 6. 投稿与人工审核部署后语义
 
@@ -108,7 +108,7 @@ docker run --rm --network none --read-only --cap-drop ALL `
 
 ## 8. 远端开发环境 smoke 与发布边界
 
-获得远端授权后，在同一环境验证：migration、私有对象短期上传/下载、匿名与管理员授权、新投稿直入人工队列、反馈普通批准、共享包强制发布风险提示、点赞、评论、下载和 cleanup。共享包投稿开关继续关闭，直到另有裁决。
+同一上海环境已经验证：migration、匿名与管理员授权、反馈直入人工队列、普通批准、公开读取、点赞与撤赞、删除隔离、审计记录、官方下载计数和 cleanup 空队列直调。仍待验证私有对象短期上传/下载、共享包强制发布风险提示、完整清理和 cleanup 调度；现有代码没有评论入口，须先纠正规格或另行实现。共享包投稿开关继续关闭，直到另有裁决。
 
 官方安装包计数还必须验证：公开 `POST /api/v1/official-downloads/windows/click` 只接受空对象并只返回空数据；管理员 `GET /api/v1/admin/metrics/official-windows-download` 经现有管理员认证后才返回累计值；公开页面、公开 DTO 与静态导出均不含累计值。上述计数是被服务端接受的点击，既不代表下载、安装、独立用户，也不应把原始 IP、User-Agent、下载地址或管理员令牌写入日志。
 

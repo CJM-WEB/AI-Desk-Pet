@@ -2,7 +2,7 @@
 
 本手册供唯一管理员审核 AI Pet 共享资源包、反馈和建议。普通投稿匿名；管理员身份、私有对象地址、状态令牌和审核证据不得公开。
 
-> 当前状态（2026-09-02）：本地人工审核路径已验证，`remote: in_progress`。上海免费开发环境已部分部署：migration、私有对象存储、`ai-pet-api`/`ai-pet-cleanup`、邮箱 OTP、网关与静态托管已实际完成；真实管理员 OTP 登录和完整业务 smoke 仍待验证。本文不表示阶段 2C 已通过或正式上线，现行证据见 `website-stage-2c-zero-cost-manual-review-acceptance.md`。
+> 当前状态（2026-09-02）：本地人工审核路径已验证，`remote: in_progress`。上海免费开发环境的 migration、私有对象存储、`ai-pet-api`/`ai-pet-cleanup`、邮箱 OTP、网关与静态托管已实际完成；真实管理员 OTP 登录以及反馈批准、公开互动、删除隔离与审计链已通过，共享包链和调度仍待验证。本文不表示阶段 2C 已通过或正式上线，现行证据见 `website-stage-2c-zero-cost-manual-review-acceptance.md`。
 
 ## 1. 审核原则
 
