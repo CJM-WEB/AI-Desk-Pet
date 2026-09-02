@@ -165,6 +165,34 @@ describe('AI Pet 液态玻璃介绍章节', () => {
     window.removeEventListener(LIQUID_GLASS_INTERACTION_EVENT, capture);
   });
 
+  it('多块玻璃交错回位时等待最后一块完成再结束拖拽态', () => {
+    const details: LiquidGlassInteractionDetail[] = [];
+    const capture = (event: Event) => {
+      details.push((event as CustomEvent<LiquidGlassInteractionDetail>).detail);
+    };
+    window.addEventListener(LIQUID_GLASS_INTERACTION_EVENT, capture);
+    render(<AboutChapter interactive />);
+    const editor = document.querySelector<HTMLElement>('[data-glass-id="editor"]')!;
+    const companion = document.querySelector<HTMLElement>('[data-glass-id="companion"]')!;
+    editor.setPointerCapture = vi.fn();
+    companion.setPointerCapture = vi.fn();
+
+    fireEvent.pointerDown(editor, { pointerId: 7, clientX: 100, clientY: 100 });
+    fireEvent.pointerMove(editor, { pointerId: 7, clientX: 120, clientY: 110 });
+    fireEvent.pointerUp(editor, { pointerId: 7, clientX: 120, clientY: 110 });
+    fireEvent.pointerDown(companion, { pointerId: 8, clientX: 200, clientY: 200 });
+    fireEvent.pointerMove(companion, { pointerId: 8, clientX: 224, clientY: 214 });
+    fireEvent.pointerUp(companion, { pointerId: 8, clientX: 224, clientY: 214 });
+
+    const firstCallbacks = vi.mocked(gsap.to).mock.calls[0]![1] as { onComplete?: () => void };
+    const secondCallbacks = vi.mocked(gsap.to).mock.calls[1]![1] as { onComplete?: () => void };
+    firstCallbacks.onComplete?.();
+    expect(details.at(-1)?.dragging).toBe(true);
+    secondCallbacks.onComplete?.();
+    expect(details.at(-1)?.dragging).toBe(false);
+    window.removeEventListener(LIQUID_GLASS_INTERACTION_EVENT, capture);
+  });
+
   it('五章节着色器保留共享仓库文字纹理接口', () => {
     expect(LIQUID_GLASS_FRAGMENT_SHADER).toContain('u_communityTextTexture');
   });

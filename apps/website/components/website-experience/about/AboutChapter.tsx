@@ -45,7 +45,7 @@ export function AboutChapter({
     { x: 0, y: 0 }
   ]);
   const dragRef = useRef<DragState | null>(null);
-  const returningRef = useRef(false);
+  const returningRef = useRef(new Set<GlassIndex>());
   const hoveredRef = useRef<-1 | GlassIndex>(-1);
   const [hovered, setHovered] = useState<-1 | GlassIndex>(-1);
   const progress = Math.min(1, Math.max(0, transitionProgress));
@@ -69,7 +69,7 @@ export function AboutChapter({
       {
         detail: {
           hovered: nextHovered,
-          dragging: dragRef.current !== null || returningRef.current,
+          dragging: dragRef.current !== null || returningRef.current.size > 0,
           offsets
         }
       }
@@ -78,6 +78,7 @@ export function AboutChapter({
 
   useEffect(() => () => {
     offsetsRef.current.forEach(offset => gsap.killTweensOf(offset));
+    returningRef.current.clear();
     window.dispatchEvent(new CustomEvent<LiquidGlassInteractionDetail>(
       LIQUID_GLASS_INTERACTION_EVENT,
       { detail: { hovered: -1, dragging: false, offsets: [0, 0, 0, 0, 0, 0] } }
@@ -97,7 +98,7 @@ export function AboutChapter({
     const offset = offsetsRef.current[index]!;
     // 新拖拽独占当前偏移，避免已开始的弹性回位覆盖最新指针位置。
     gsap.killTweensOf(offset);
-    returningRef.current = false;
+    returningRef.current.delete(index);
     dragRef.current = {
       index,
       pointerId: event.pointerId,
@@ -125,7 +126,7 @@ export function AboutChapter({
     const drag = dragRef.current;
     if (!drag || drag.pointerId !== event.pointerId) return;
     dragRef.current = null;
-    returningRef.current = true;
+    returningRef.current.add(drag.index);
     const offset = offsetsRef.current[drag.index]!;
     const article = articleRefs.current[drag.index];
     gsap.to(offset, {
@@ -139,7 +140,7 @@ export function AboutChapter({
         publishInteraction(hoveredRef.current);
       },
       onComplete: () => {
-        returningRef.current = false;
+        returningRef.current.delete(drag.index);
         publishInteraction(hoveredRef.current);
       }
     });
