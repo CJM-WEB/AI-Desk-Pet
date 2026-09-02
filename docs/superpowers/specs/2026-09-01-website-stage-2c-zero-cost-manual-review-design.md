@@ -3,7 +3,7 @@
 > 日期：2026-09-01
 > 分支：`WebsiteExtension`
 > 状态：已于 2026-09-01 获用户确认
-> 修订：2026-09-02，基于上海真实链证据，按用户持续授权收敛服务端身份与 cleanup 低频调度
+> 修订：2026-09-02，基于上海真实链证据，按用户持续授权收敛服务端身份、cleanup 低频调度与备案根域名开发验收例外
 > 替代范围：在网站阶段 2C 的审核与部署路径内，替代“必须部署 CloudBase Run Scanner、腾讯 TMS/IMS 和 moderation worker”的旧结论；并以真实 HTTP 网关执行证据替代旧的 `context` 临时身份初始化约束；继续沿用上海 PostgreSQL 免费环境、私有存储、唯一管理员、强制发布、审计和公开风险披露边界
 > 验收事实源：`docs/operations/website-stage-2c-zero-cost-manual-review-acceptance.md`
 
@@ -20,7 +20,7 @@
 ## 2. 非目标与硬边界
 
 - 本规格只涉及官网、CloudBase API、包扫描器、数据库 migration、网站测试与运维文档；不得修改桌宠、角色工作室或桌面 Agent 代码。
-- 本轮不执行正式生产部署、不绑定正式域名、不切换线上测试版流量。
+- 本轮不执行正式生产部署、不切换正式生产流量。用户于 2026-09-02 另行明确批准把已备案根域名 `cjmwebsite.cn` 绑定到上海开发环境用于阶段 2C 验收；该例外只覆盖根域名测试接入，不改变开发环境属性，不触碰既有 `www.cjmwebsite.cn` 解析，也不等于正式上线。
 - 不购买套餐、资源包或内容安全服务，不开启按量付费、自动续费或 CloudBase Run。
 - 不把本地扫描结果伪造成 `isolated-scanner` 系统通过证据，不把人工判断写成自动扫描通过。
 - 不降低私有对象、固定对象键、文件大小/MIME、ZIP 结构、管理员认证、状态版本、幂等和审计约束。
@@ -143,8 +143,9 @@ CLI 复用已有 ZIP 防护、预算、路径、图片实际解码、角色包�
 4. 创建上海 PostgreSQL 免费环境；金额必须为 0 元，按量付费与自动续费关闭。
 5. 顺序执行全部 migration，创建私有 Bucket，部署 API 与 cleanup 两个函数。
 6. 配置身份、最小网关和静态托管；不部署 Run、TMS、IMS 或 moderation worker。
-7. 使用本地 Docker 检查测试共享包，再在开发环境验证人工队列、强制发布风险提示、点赞、评论、反馈和下载链。
-8. 保持共享包匿名投稿开关关闭，记录开发环境验收；是否开放开发环境投稿另行裁决。
+7. 如用户另行批准备案域名开发验收，则只把根域名接入同一上海环境，以同域 `/api/v1` 完成公开链验证；免费套餐不能新增 Web 安全域名时，不购买套餐，管理员继续使用既有安全域名入口。
+8. 使用本地 Docker 检查测试共享包，再在开发环境验证人工队列、强制发布风险提示、点赞、评论、反馈和下载链。
+9. 保持共享包匿名投稿开关关闭，记录开发环境验收；是否开放开发环境投稿另行裁决。
 
 ## 8. TDD 与验收
 
@@ -170,6 +171,7 @@ CLI 复用已有 ZIP 防护、预算、路径、图片实际解码、角色包�
 - 反馈普通批准、共享包强制发布、公开风险提示、点赞、评论和下载符合契约；
 - 本地 Docker 的干净包与 EICAR smoke 符合预期；
 - 未部署 CloudBase Run、TMS、IMS 或 moderation worker。
+- 经用户另行批准的备案根域名接入状态、HTTPS、静态页面、公开 API 与原管理员入口兼容性均有真实证据；该证据只属于开发环境。
 
 本地通过但远端未执行时写为 `unverified`；外部免费环境能力不足时写为 `blocked`。任一状态都不等于正式生产上线。
 
@@ -190,3 +192,5 @@ CLI 复用已有 ZIP 防护、预算、路径、图片实际解码、角色包�
 - [CloudBase PostgreSQL](https://docs.cloudbase.net/quick-start/pg-overview)：PG 环境的数据、身份和存储能力。
 - [CloudBase V3 PG 初始化](https://docs.cloudbase.net/api-reference/webv3-pg/initialization)：记录服务端 API Key、运行时身份和 `context` 等官方初始化方式；本项目结合上海 HTTP 网关真实结果采用服务端 API Key。
 - [CloudBase 定时触发器](https://docs.cloudbase.net/en/cli-v1/functions/trigger)：七段 Cron、配置结构与触发器管理方式。
+- [CloudBase 自定义域名](https://docs.cloudbase.net/service/custom-domain)：备案域名、SSL 证书、CNAME 与接入限制。
+- [CloudBase 增加安全域名 API](https://cloud.tencent.com/document/api/876/42764)：Web 安全域名用途与免费套餐拒绝错误码。

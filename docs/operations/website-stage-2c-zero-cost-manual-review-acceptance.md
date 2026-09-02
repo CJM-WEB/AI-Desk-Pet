@@ -5,7 +5,7 @@
 - 日期：2026-09-02。
 - 范围：阶段 2C 零费用人工审核的本地实现、自动化验证、真实 Docker 候选、运维文档收敛，以及上海免费开发环境的实际最小部署与已完成远端 smoke 子项。
 - 提交范围：`5c914ef`（不含）至本次阶段 2C 整分支终审修复提交（含，本记录所在提交）。
-- 远端状态：`remote: in_progress`；最小部署、真实 OTP 管理员登录、反馈完整链、共享包强制发布/风险提示/下载/互动/隔离清理和官方下载计数均已通过；cleanup 每日 timer 配置已创建并启用，函数直调与真实清理通过，自然定时投递尚未观察。
+- 远端状态：`remote: in_progress`；最小部署、备案根域名接入、真实 OTP 管理员登录、反馈完整链、共享包强制发布/风险提示/下载/互动/隔离清理和官方下载计数均已通过；cleanup 每日 timer 配置已创建并启用，函数直调与真实清理通过，自然定时投递尚未观察。
 - 本记录不表示阶段 2C 已通过或正式生产上线；现行规格中的“评论”含义仍须用户裁决。监控、告警、日志脱敏和正式生产发布属于后续独立工作。
 
 ## 已执行的远端环境门
@@ -18,10 +18,10 @@
 | PostgreSQL migration | CLI 对比确认远端与本地全部 16 条 migration 一致；远端最新版本为 `20260901020000`，没有 pending 或 conflict。 |
 | 私有对象存储 | 私有 Bucket `ai-pet-private` 已存在，`public=false`。 |
 | 函数 | 仅部署 `ai-pet-api` 与 `ai-pet-cleanup`；两者均为 Event 云函数、Node.js 20.19。真实共享包 finalize 暴露 V3 双实例身份覆盖后，两个函数均以代码更新部署统一服务端身份；`ai-pet-api` 为 `$LATEST`、Active/Available。免费体验版实际固定超时 3 秒、内存 256 MB。 |
-| 网关 | 两条 `SCF` 路由：公开 `/api` 不启用网关认证；管理员 `/api/v1/admin` 启用网关认证。最长前缀使管理员路由优先。公开 `GET /api/v1/community?limit=1` 返回 200；未认证管理员请求返回 401 `MISSING_CREDENTIALS`。 |
+| 网关 | 默认网关保留公开 `/api` 与管理员 `/api/v1/admin` 两条 `SCF` 路由；备案根域名增加 `/` 静态托管及同语义两条 API 路由。公开 API 按 IP、管理员 API 按用户限流，均为总 QPS 100、单客户端 10。公开 `GET /api/v1/community` 返回 200；未认证管理员请求返回 401 `MISSING_CREDENTIALS`。 |
 | 身份 | 邮箱 OTP 已启用，唯一管理员账号为 ACTIVE；真实 OTP 登录、双头管理员认证、详情读取和管理员指标读取均已通过。 |
-| 静态托管 | 网站以目标环境、Publishable Key 与网关 `/api/v1` 基址构建，67/67 个构建文件上传成功；当前静态托管对象总数为 73。未记录任何 Key 值。 |
-| 投稿与费用 | `SHARED_PACKAGE_SUBMISSIONS_ENABLED=false`。最终复核时当前计费周期总资源点 3000、已使用 1.75；`packageDeduct=0`、`payAsYouGoDeduct=0`，未发生资源包外或按量扣费。 |
+| 静态托管 | 网站以目标环境、既有 Publishable Key 与 `https://cjmwebsite.cn/api/v1` 构建，67/67 个文件上传成功；删除旧哈希产物后当前对象总数为 73，平台维护的 6 个认证文件保留。未记录任何 Key 值。 |
+| 投稿与费用 | `SHARED_PACKAGE_SUBMISSIONS_ENABLED=false`。域名验收后套餐页显示当前计费周期总资源点 3000、已使用 81.39，按量付费开关关闭；HTTP 加速请求数为 0、流量为 0 Byte。没有购买、升级或开启按量。 |
 | 日志与反馈链 | 已临时开通上海开发环境函数日志且未购买独立日志资源包。日志定位并闭环空 GET 正文与 void RPC 204 两个兼容问题；反馈真实执行批准发布、公开读取、点赞 `0→1`、撤赞 `1→0`、删除隔离和公开消失，审计记录保留批准与删除两次动作。CloudBase 系统日志会保存函数响应摘要，因此当前只允许测试数据且共享包投稿继续关闭；接入真实投稿或正式上线前必须关闭该日志或先完成独立脱敏方案。 |
 | 共享包真实链 | 使用一个受控 `uploading` 测试夹具上传 68 字节 PNG 与 1376 字节 ZIP，远端对象身份、大小、MIME 与 SHA-256 一致。管理员 5 分钟 ZIP 地址返回 200 和同一 SHA-256；普通批准因缺少系统证据保持禁用，两步 `force_publish` 后公开依据为 `admin_override`，卡片、详情和下载入口均显示人工覆盖风险提示。公开下载计数 `0→2`，同一幂等键重放只计一次；点赞 `0→1→0`。 |
 | 删除与 cleanup | 测试共享包删除后进入三天隔离，公开列表、详情和下载均不可达，`force_publish` 与 `delete` 审计保留。仅把该精确测试 ID 的 `purge_after` 调整到过去后调用真实 cleanup：记录进入 `purged`、正文和发布字段清空、资产行归零、两个私有对象消失、审计仍保留。远端已创建唯一启用的 `ai-pet-cleanup-daily`，七段 Cron 为 `0 0 4 * * * *`；时区以控制台标注为准。timer 创建后另行直调在 717 ms 内返回 `claimed=0/purged=0/failed=0/expiredOperationsPurged=0`；尚未观察一次平台自然定时投递。 |
@@ -60,7 +60,16 @@
 - 修复按 RED → GREEN 把 RDB 与私有 Storage 收敛为同一个服务端 API Key 实例，并删除第二次 SDK 初始化。该 Key 原本已是 RDB 必需的函数环境变量；管理员网关、Bearer Token、邮箱白名单和角色校验未改变。
 - 同一测试夹具在代码更新后无需重传即成功进入 `manual_review_pending`，随后完成待审短期下载、两步强制发布、公开风险提示、公开下载、幂等计数、点赞/撤赞、隔离删除及物理清理全链。
 - Event 函数省略 `context` 与 API Key 的默认初始化路径未在远端另行试验；当前方案复用函数原本就必须持有的一份服务端 Key，且已通过完整真实链。为一个尚未证明能降低实际权限的替代路径重新部署和重建对象夹具会扩大变更面，因此只把它保留为正式生产前的可选最小权限硬化项，不阻塞开发环境阶段 2C。
-- `cloudbaserc.json` 只为 cleanup 声明每日一次触发器；远端白名单核对为 `name=ai-pet-cleanup-daily`、`type=timer`、`enabled=1`、Cron 匹配。每日约 28–31 次调用，预期由现有套餐覆盖；最终资源复核仍为总资源点 3000、已用 1.75，套餐外与按量扣费均为 0。当前只证明配置存在和函数可执行，不把尚未发生的自然定时投递写成通过。
+- `cloudbaserc.json` 只为 cleanup 声明每日一次触发器；远端白名单核对为 `name=ai-pet-cleanup-daily`、`type=timer`、`enabled=1`、Cron 匹配。每日约 28–31 次调用，预期由现有套餐覆盖；共享包子项结束时资源点为 1.75/3000、套餐外与按量扣费均为 0，后续域名验收的更新读数见下一节。当前只证明配置存在和函数可执行，不把尚未发生的自然定时投递写成通过。
+
+## 2026-09-02 备案根域名开发验收补充
+
+- 用户明确批准把已备案根域名 `cjmwebsite.cn` 接入上海开发环境；既有 `www.cjmwebsite.cn` CNAME 保持不变，没有触碰旧新加坡环境。本接入只用于阶段 2C 开发验收，不构成正式生产切流。
+- 根域 CNAME 已从旧 A 记录切换为 `cjmwebsite.cn.cdn.dnsv1.com`；CloudBase 自定义域名、DNS 与平台 CNAME 状态均为成功。已有双域 SSL 证书被复用，没有购买证书或套餐。
+- 根域路由为 `/` 静态托管、公开 `/api` 云函数和管理员 `/api/v1/admin` 云函数；公开接口按 IP、管理员接口按用户限流。HTTPS 首页与 `GET /api/v1/community` 均返回 200。
+- 免费体验版拒绝新增 Web 安全域名，官方错误为 `OperationDenied.FreePackageDenied`。为保持零额外费用，没有升级套餐；公开构建改用备案根域 API 形成同源请求，原默认静态域名继续作为管理员 OTP 入口。真实已登录管理员工作台仍能读取投稿队列与官方下载计数。
+- 静态构建 67/67 上传成功；每轮覆盖后只删除经本地引用对比确认失效的旧哈希文件，最终保留 67 个当前构建文件和 6 个平台认证文件。真实浏览器复测中首页、共享仓库和支持模块正常，共享仓库不再出现加载失败。
+- 域名验收后套餐页为免费体验版，资源点 81.39/3000，按量付费关闭，HTTP 加速请求数 0、流量 0 Byte。本轮没有购买、升级或开启按量能力。
 
 ## 2026-09-02 本轮新鲜本地验证
 
@@ -77,6 +86,7 @@ git status --short
 
 - `verify:cloudbase`：CloudBase API 280/280（含构建产物 3 项）、包扫描器 67/67 通过。
 - `verify:website`：网站 383/383、生产构建与 Playwright E2E 19/19 通过。
+- 域名接入完成后重新执行 `verify:cloudbase` 与 `verify:website`：CloudBase API 280/280、包扫描器 67/67、网站 383/383、生产构建和 Playwright E2E 19/19 均返回 0。
 - 范围门、测试所有权门与差异检查通过；提交后 `git status --short` 为空。
 - 本轮再次执行完整 `verify:web-chain`：从 scope 到新增的 CloudBase build tool test 均通过，随后在 `scanner-candidate` 因 Docker Desktop daemon 不存在而以 1 退出，按门禁设计未继续执行。网站 E2E 已由上面的独立 `verify:website` 新鲜通过；Scanner 的同日真实候选证据仍见“真实 Docker 候选”，不得把本次失败写成完整链通过。
 
@@ -107,4 +117,4 @@ git status --short
 
 本机 Docker Desktop 在远端共享包复验后发生启动故障，当前无法再次运行同一容器；本阶段早先记录的同日镜像摘要、ClamAV 数据库、干净包、EICAR 和非法包结果仍是实际证据，且本轮未修改 Scanner 代码。该桌面环境故障作为后续运维问题保留，不把未执行的重复扫描写成通过。
 
-共享包投稿开关继续保持 `SHARED_PACKAGE_SUBMISSIONS_ENABLED=false`。后续远端写操作继续执行行动时预览与失败关闭；任何远端验证成功也不自动等于正式生产上线。
+共享包投稿开关继续保持 `SHARED_PACKAGE_SUBMISSIONS_ENABLED=false`。`cjmwebsite.cn` 当前只指向上海开发环境；后续远端写操作继续执行行动时预览与失败关闭，任何远端验证成功也不自动等于正式生产上线。
