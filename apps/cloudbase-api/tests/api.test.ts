@@ -222,13 +222,12 @@ describe('API 生产组合', () => {
 
     expect(productionSdk.createRuntime).toHaveBeenCalledTimes(1);
     expect(productionSdk.createRuntime).toHaveBeenCalledWith(
-      expect.objectContaining({ envId: 'env-test' }),
-      context
+      expect.objectContaining({ envId: 'env-test' })
     );
     expect(handler).toBeTypeOf('function');
   });
 
-  it('主入口每次使用本次函数 context，避免复用过期临时凭据', async () => {
+  it('主入口每次重新创建服务端共享运行时', async () => {
     stubApiConfig();
 
     const first = await productionMain(event('GET', '/api/v1/missing'), context);
@@ -241,8 +240,7 @@ describe('API 生产组合', () => {
     expect(productionSdk.createRuntime).toHaveBeenCalledTimes(2);
     expect(productionSdk.createRuntime).toHaveBeenNthCalledWith(
       2,
-      expect.objectContaining({ envId: 'env-test' }),
-      nextContext
+      expect.objectContaining({ envId: 'env-test' })
     );
     expect(first.statusCode).toBe(404);
     expect(second.statusCode).toBe(404);

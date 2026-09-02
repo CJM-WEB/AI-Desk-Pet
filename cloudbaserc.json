@@ -14,7 +14,14 @@
       "dir": "./apps/cloudbase-api/dist/cleanup",
       "runtime": "Nodejs20.19",
       "handler": "index.main",
-      "timeout": 300
+      "timeout": 300,
+      "triggers": [
+        {
+          "name": "ai-pet-cleanup-daily",
+          "type": "timer",
+          "config": "0 0 4 * * * *"
+        }
+      ]
     }
   ]
 }

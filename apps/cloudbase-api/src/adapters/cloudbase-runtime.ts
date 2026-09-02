@@ -17,26 +17,17 @@ export interface CloudBaseServerRuntime {
 }
 
 export interface CloudBaseServerSdk {
-  init(options: CloudBaseRdbInitOptions | CloudBaseStorageInitOptions): {
+  init(options: CloudBaseServerInitOptions): {
     rdb(): CloudBaseRdbClient;
     storage: { from(bucketId: string): CloudBaseStorageBucket };
   };
 }
 
-type CloudBaseRdbInitOptions = {
+type CloudBaseServerInitOptions = {
   env: string;
   region: 'ap-shanghai';
   timeout: number;
   accessKey: string;
-  context?: never;
-};
-
-type CloudBaseStorageInitOptions = {
-  env: string;
-  region: 'ap-shanghai';
-  timeout: number;
-  context: CloudBaseFunctionContext;
-  accessKey?: never;
 };
 
 type CloudBaseServerRuntimeConfig = CloudBaseRuntimeConfig & {
@@ -50,29 +41,20 @@ const installedSdk: CloudBaseServerSdk = {
 };
 
 /**
- * V3 SDK 会按 env 覆盖全局请求注册表，RDB client 必须紧接其 API Key 初始化创建；
- * 私有 Storage 则在后续以本次函数临时身份创建，避免两种身份交叉。
+ * RDB 与私有 Storage 共用服务端 API Key 实例，避免第二个 context 实例无法读取私有对象。
  */
 export function createCloudBaseServerRuntime(
   config: CloudBaseServerRuntimeConfig,
-  context: CloudBaseFunctionContext,
   sdk: CloudBaseServerSdk = installedSdk
 ): CloudBaseServerRuntime {
-  const rdbApp = sdk.init({
+  const app = sdk.init({
     env: config.envId,
     region: config.cloudbaseRegion,
     timeout: config.cloudbaseSdkTimeoutMs,
     accessKey: config.cloudbaseApiKey
   });
-  const rdb = rdbApp.rdb();
-  const storageApp = sdk.init({
-    env: config.envId,
-    region: config.cloudbaseRegion,
-    timeout: config.cloudbaseSdkTimeoutMs,
-    context
-  });
   return {
-    rdb,
-    bucket: storageApp.storage.from(config.privateBucketId)
+    rdb: app.rdb(),
+    bucket: app.storage.from(config.privateBucketId)
   };
 }

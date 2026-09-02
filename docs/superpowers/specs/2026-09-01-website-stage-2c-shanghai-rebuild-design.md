@@ -146,7 +146,7 @@
 - `2026-08-31-website-stage-2-3-local-closure-design.md` 中“继续固定 `ap-singapore`”的条款。
 - `docs/operations/cloudbase-deployment.md` 中开发环境只能使用 `ap-singapore` 的现行说明。
 
-上述文档的 SDK、PG、存储、审核、管理员权限和失败关闭边界继续有效。正式生产环境地域不由本规格自动裁决；后续生产计划须以阶段 2C 的上海证据重新决定。
+上述文档的 SDK、PG、存储、审核、管理员权限和失败关闭边界继续有效；其中 HTTP 网关执行路径的服务端身份已由后续 `2026-09-01-website-stage-2c-zero-cost-manual-review-design.md` 第 6 节按上海真实证据替代。正式生产环境地域不由本规格自动裁决；后续生产计划须以阶段 2C 的上海证据重新决定。
 
 ## 7. 阶段 2C 云端实施顺序
 

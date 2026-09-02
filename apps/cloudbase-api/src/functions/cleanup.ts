@@ -31,12 +31,12 @@ export async function main(
   return createProductionWorker(context)();
 }
 
-/** 组合隔离清理的生产依赖；每次调用绑定本次临时身份。 */
+/** 组合隔离清理的生产依赖；服务端 API Key 统一访问 RDB 与私有存储。 */
 export function createProductionWorker(
-  context: CloudBaseFunctionContext
+  _context: CloudBaseFunctionContext
 ): () => Promise<PurgeResult> {
   const config = loadCleanupConfig(process.env);
-  const runtime = createCloudBaseServerRuntime(config, context);
+  const runtime = createCloudBaseServerRuntime(config);
   const store = new CloudBasePostgresStore(
     runtime.rdb,
     new CloudBasePostgresRpcClient(config.envId, config.cloudbaseApiKey, {

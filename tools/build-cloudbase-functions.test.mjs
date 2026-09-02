@@ -55,6 +55,17 @@ test('CloudBase 部署配置只保留 API 与清理入口', () => {
   );
 });
 
+test('只有 cleanup 声明每日一次的低频清理触发器', () => {
+  const [apiFunction, cleanupFunction] = cloudBaseConfig.functions;
+
+  assert.equal(Object.hasOwn(apiFunction, 'triggers'), false);
+  assert.deepEqual(cleanupFunction.triggers, [{
+    name: 'ai-pet-cleanup-daily',
+    type: 'timer',
+    config: '0 0 4 * * * *'
+  }]);
+});
+
 test('CloudBase API 不再声明 Tencent 内容审核 SDK', () => {
   assert.equal(
     Object.hasOwn(cloudBaseApiPackage.dependencies, 'tencentcloud-sdk-nodejs'),

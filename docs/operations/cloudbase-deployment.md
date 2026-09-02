@@ -2,7 +2,7 @@
 
 本文是网站阶段 2C 零费用人工审核方案的现行运维入口。它只描述上海 CloudBase PostgreSQL 开发环境的最小运行面；不构成远端操作授权，更不构成正式生产上线授权。
 
-> 当前状态（2026-09-02）：`remote: in_progress`。上海免费开发环境 `ai-pet-scanner-dev-d0cp…826` 的 16 条 migration、私有 Bucket、`ai-pet-api`/`ai-pet-cleanup`、邮箱 OTP、最小网关与静态托管已经实际部署；真实管理员登录、反馈完整链和官方下载计数已通过，共享包链与调度仍未完成。共享包匿名投稿开关保持 `SHARED_PACKAGE_SUBMISSIONS_ENABLED=false`。这不是正式生产上线，现行证据见 `website-stage-2c-zero-cost-manual-review-acceptance.md`。
+> 当前状态（2026-09-02）：`remote: in_progress`。上海免费开发环境 `ai-pet-scanner-dev-d0cp…826` 的 16 条 migration、私有 Bucket、两个函数、邮箱 OTP、最小网关、静态托管、反馈完整链、共享包强制发布/风险披露/互动/隔离清理和官方下载计数均已实际验证；cleanup 每日 timer 配置已创建并启用，函数直调与真实清理通过，自然定时投递尚未观察。只剩规格中的“评论”含义待用户裁决。共享包匿名投稿开关保持 `SHARED_PACKAGE_SUBMISSIONS_ENABLED=false`。这不是正式生产上线，现行证据见 `website-stage-2c-zero-cost-manual-review-acceptance.md`。
 
 ## 1. 正式运行面与禁止部署项
 
@@ -15,7 +15,7 @@
 
 以下旧能力已退役，**禁止部署、配置或作为冒烟前提**：CloudBase Run Scanner、腾讯 TMS、腾讯 IMS、`ai-pet-moderation-worker`、Scanner HTTP/HMAC 协议和 Scanner Secret。云函数构建产物只应包含 `api` 与 `cleanup`。
 
-任何创建页若不能同时证明上海、PostgreSQL、应付 `0 元`、按量付费关闭和自动续费关闭，立即停止。不得通过购买、开启按量、创建持久云密钥或恢复已退役组件绕过该门禁。
+任何创建页若不能同时证明上海、PostgreSQL、应付 `0 元`、按量付费关闭和自动续费关闭，立即停止。不得通过购买、开启按量、未经批准创建持久云密钥或恢复已退役组件绕过该门禁。
 
 ## 2. 环境隔离与投稿开关
 
@@ -64,6 +64,10 @@ CLOUDBASE_API_KEY
 
 以上清单与当前 `config.ts` 的两个 loader 对齐。不得为 worker、Scanner 或腾讯内容安全添加变量，也不得复制旧的 HMAC、Scanner Secret 或腾讯凭据。
 
+两个 Event 函数在 HTTP 网关真实执行中不得把调用 `context` 作为私有 PG Storage 身份。RDB 与 Storage 共用同一 CloudBase V3 服务端 API Key 实例，避免第二次初始化覆盖同环境请求身份；该 Key 只存在于函数环境变量，必须限期、可轮换且不得进入响应、前端或普通日志。管理员 Bearer Token 与邮箱白名单仍是独立授权门，不能用服务端 Key 替代。
+
+`cloudbaserc.json` 只为 `ai-pet-cleanup` 声明一个 `ai-pet-cleanup-daily` timer，七段 Cron 为 `0 0 4 * * * *`。具体钟点按 CloudBase 控制台显示的触发器时区解释；清理函数只按数据库绝对时间挑选已到期记录，因此最坏只增加不足 24 小时等待。不要给 API 函数添加定时器，也不要恢复 moderation worker 调度。
+
 身份认证已启用邮箱 OTP，唯一管理员账号为 ACTIVE；真实 OTP 登录和管理员双头认证已通过。管理员路径同时经过网关认证与应用层身份、邮箱白名单和角色校验；客户端在同一 access token 上同时发送 `Authorization: Bearer <token>`（网关）与 `x-ai-pet-admin-token: <token>`（应用层复验），网关认证不能替代应用层授权。公开投稿与状态路径允许匿名访问，仍由限流、管理员审批和私有对象边界保护。
 
 最小网关已使用两条 `SCF` 路由：公开 `/api` 不启用网关认证；管理员 `/api/v1/admin` 启用网关认证。最长前缀使管理员路由优先；公开 `GET /api/v1/community?limit=1` 返回 200，未认证管理员请求在网关返回 401 `MISSING_CREDENTIALS`。CORS 只允许实际开发或正式站点来源及所需方法/请求头，不允许带认证信息的通配来源。
@@ -108,8 +112,8 @@ docker run --rm --network none --read-only --cap-drop ALL `
 
 ## 8. 远端开发环境 smoke 与发布边界
 
-同一上海环境已经验证：migration、匿名与管理员授权、反馈直入人工队列、普通批准、公开读取、点赞与撤赞、删除隔离、审计记录、官方下载计数和 cleanup 空队列直调。仍待验证私有对象短期上传/下载、共享包强制发布风险提示、完整清理和 cleanup 调度；现有代码没有评论入口，须先纠正规格或另行实现。共享包投稿开关继续关闭，直到另有裁决。
+同一上海环境已经验证：migration、匿名与管理员授权、反馈直入人工队列、普通批准、公开读取、点赞与撤赞、删除隔离、审计记录、官方下载计数、私有对象短期上传/下载、共享包两步强制发布、三处公开风险提示、幂等下载计数和完整物理清理。cleanup 每日 timer 的名称、类型、Cron 与启用状态已核对，函数直调成功，但尚未观察一次平台自然定时投递。现有代码没有共享资源留言/回复入口，规格中的“评论”须由用户确认是反馈正文还是新增留言功能。共享包投稿开关继续关闭，直到另有裁决。
 
-官方安装包计数还必须验证：公开 `POST /api/v1/official-downloads/windows/click` 只接受空对象并只返回空数据；管理员 `GET /api/v1/admin/metrics/official-windows-download` 经现有管理员认证后才返回累计值；公开页面、公开 DTO 与静态导出均不含累计值。上述计数是被服务端接受的点击，既不代表下载、安装、独立用户，也不应把原始 IP、User-Agent、下载地址或管理员令牌写入日志。
+本次已按以下合同验证官方安装包计数，后续重新部署仍须复验：公开 `POST /api/v1/official-downloads/windows/click` 只接受空对象并只返回空数据；管理员 `GET /api/v1/admin/metrics/official-windows-download` 经现有管理员认证后才返回累计值；公开页面、公开 DTO 与静态导出均不含累计值。上述计数是被服务端接受的点击，既不代表下载、安装、独立用户，也不应把原始 IP、User-Agent、下载地址或管理员令牌写入日志。
 
 本地验证通过不等于远端部署、阶段 2C 通过或正式上线。正式生产还需要独立规格和授权，单独裁决套餐、域名、备份、监控、迁移与回滚。

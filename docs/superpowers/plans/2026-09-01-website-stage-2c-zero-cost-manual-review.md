@@ -422,6 +422,15 @@ Expected: 全部通过；没有桌宠路径、Secret、临时归档、CloudBase 
 - Modify: `docs/operations/website-stage-2c-shanghai-acceptance.md`
 - Modify: `docs/operations/cloudbase-deployment.md`
 - Modify: `docs/operations/content-moderation.md`
+- Modify: `apps/cloudbase-api/src/functions/cleanup.ts`
+- Modify: `apps/cloudbase-api/tests/api.test.ts`
+- Modify: `apps/cloudbase-api/tests/cleanup-service.test.ts`
+- Modify: `cloudbaserc.json`
+- Modify: `tools/build-cloudbase-functions.test.mjs`
+- Modify: `docs/superpowers/plans/2026-09-01-website-stage-2c-zero-cost-manual-review.md`
+- Modify: `docs/superpowers/specs/2026-08-01-cloudbase-js-sdk-v3-pg-compatibility-design.md`
+- Modify: `docs/superpowers/specs/2026-09-01-website-stage-2c-shanghai-rebuild-design.md`
+- Modify: `docs/superpowers/specs/2026-09-01-website-stage-2c-zero-cost-manual-review-design.md`
 
 - [x] **Step 8.1：不可逆删除行动门**
 
@@ -437,7 +446,7 @@ Expected: 全部通过；没有桌宠路径、Secret、临时归档、CloudBase 
 
 - [ ] **Step 8.4：真实 smoke**
 
-已通过的远端子项：公开社区 GET 返回 200；未认证管理员请求由网关返回 401 `MISSING_CREDENTIALS`；`ai-pet-cleanup` 真实直调返回 `claimed=0/purged=0/failed=0/expiredOperationsPurged=0`；真实 OTP 管理员登录、双头认证、指标读取和详情读取通过；反馈完成批准发布、公开读取、点赞/撤赞、删除隔离与审计保留；官方下载计数公开写入与管理员读取通过。日志证明详情问题是 CloudBase 空 GET 正文兼容错误，而非 RDB 身份错误；计数问题是 PostgREST void RPC 的 204 空成功响应被误判为 JSON 错误，两者均已按最小修复部署复验。开发环境日志会保存函数响应摘要，`IgnoreSysLog` 试验未能消除，因此只用于测试数据排障，正式上线前必须关闭或完成脱敏方案。仍待共享包强制发布与公开风险提示、待审包短期下载、完整远端数据清理和 cleanup 调度；现有代码没有评论入口，而规格仍列出评论验收，须先纠正规格或另行实现。投稿开关保持关闭，测试数据按已批准清理边界处理。
+已通过的远端子项：公开社区 GET 返回 200；未认证管理员请求由网关返回 401 `MISSING_CREDENTIALS`；真实 OTP 管理员登录、双头认证、指标与详情读取通过；反馈完成批准发布、公开读取、点赞/撤赞、删除隔离与审计保留；官方下载计数公开写入与管理员读取通过。共享包使用私有 PNG/ZIP 实际上传，完成 5 分钟待审下载、两步 `force_publish`、三处公开风险提示、幂等下载计数、点赞/撤赞、隔离删除和精确物理清理；审计在清理后保留。初次 finalize 暴露 V3 双实例身份覆盖，已按 RED → GREEN 收敛为一个服务端实例并部署复验。`ai-pet-cleanup-daily` 已按仓库配置创建并启用；配置后另行直调返回 `claimed=0/purged=0/failed=0/expiredOperationsPurged=0`，自然定时投递尚未观察。开发环境日志会保存函数响应摘要，`IgnoreSysLog` 试验未能消除，因此只用于测试数据排障，正式上线前必须关闭或完成脱敏方案。现有代码没有共享资源留言/回复入口，而规格仍列出评论验收，须由用户确认是反馈正文还是新增留言功能。投稿开关保持关闭，测试数据按已批准清理边界处理。
 
 - [ ] **Step 8.5：记录状态**
 

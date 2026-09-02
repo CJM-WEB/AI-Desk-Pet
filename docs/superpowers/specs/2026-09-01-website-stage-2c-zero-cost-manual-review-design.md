@@ -3,7 +3,8 @@
 > 日期：2026-09-01
 > 分支：`WebsiteExtension`
 > 状态：已于 2026-09-01 获用户确认
-> 替代范围：在网站阶段 2C 的审核与部署路径内，替代“必须部署 CloudBase Run Scanner、腾讯 TMS/IMS 和 moderation worker”的旧结论；继续沿用上海 PostgreSQL 免费环境、私有存储、唯一管理员、强制发布、审计和公开风险披露边界
+> 修订：2026-09-02，基于上海真实链证据，按用户持续授权收敛服务端身份与 cleanup 低频调度
+> 替代范围：在网站阶段 2C 的审核与部署路径内，替代“必须部署 CloudBase Run Scanner、腾讯 TMS/IMS 和 moderation worker”的旧结论；并以真实 HTTP 网关执行证据替代旧的 `context` 临时身份初始化约束；继续沿用上海 PostgreSQL 免费环境、私有存储、唯一管理员、强制发布、审计和公开风险披露边界
 > 验收事实源：`docs/operations/website-stage-2c-zero-cost-manual-review-acceptance.md`
 
 ## 1. 目标
@@ -129,8 +130,10 @@ CLI 复用已有 ZIP 防护、预算、路径、图片实际解码、角色包�
 - 普通批准缺少有效系统证据时继续返回 `TECHNICAL_SCAN_REQUIRED`，客户端不得自动降级为强制发布。
 - 本地扫描失败、超时、ClamAV 数据库不可用、图片无法解码或包结构非法时，管理员界面状态不自动变化；管理员必须主动判断是否继续强制发布。
 - `force_publish` 不得绕过投稿结构约束，也不得改写历史扫描事实。
-- cleanup 继续按既有保留期清理隔离对象，与审核方式无关。
-- 任何需要付费、开启按量或创建持久云密钥的步骤立即停止，不以新增代码绕过。
+- 上海环境中的两个函数保持 Event 类型。真实 HTTP 网关调用证明，把该次调用的 `context` 交给第二个 CloudBase V3 实例后不能读取同环境私有 PG Storage；同一对象用函数内既有服务端 API Key 可读取。为避免双实例身份覆盖，RDB 与私有 Storage 共用一个经批准、限期且可轮换的服务端 API Key 实例；管理员 Bearer Token、邮箱白名单和网关鉴权仍是独立的应用层授权门。
+- 服务端 API Key 只能存在于云函数环境变量，不进入仓库、前端、响应、普通日志或验收记录；泄露或行动时暴露后立即轮换并使旧 Key 失效。
+- cleanup 继续按既有保留期清理隔离对象，与审核方式无关；只为 cleanup 配置每日一次的低频定时触发器。Cron 时区以 CloudBase 控制台触发器页的标注为准，清理函数以数据库绝对时间判断到期，因此时区差异只改变一天内的执行钟点。
+- 任何需要付费、开启按量或未经用户批准创建持久云密钥的步骤立即停止，不以新增代码绕过。
 
 ## 7. 部署顺序
 
@@ -175,7 +178,8 @@ CLI 复用已有 ZIP 防护、预算、路径、图片实际解码、角色包�
 - 本规格在阶段 2C 审核与部署范围内替代 `2026-09-01-website-stage-2c-shanghai-rebuild-design.md` 第 7、9、10 节中关于 Scanner 云托管、TMS/IMS、moderation worker 及其强制 smoke 的要求。
 - 本规格扩展 `2026-08-31-admin-override-publication-design.md`：不再要求新共享包先经过系统审核，但不改变 `force_publish`、`admin_override`、真实扫描事实和公开风险标记。
 - `2026-08-08-direct-manual-review-design.md` 中保留自动审核代码的过渡方案不再是正式路径；本规格要求验证替代路径后删除旧实现。
-- 上海地域、PostgreSQL、零费用、私有存储和非生产边界继续服从 `2026-09-01-website-stage-2c-shanghai-rebuild-design.md`。
+- 上海地域、PostgreSQL、零费用、私有存储和非生产边界继续服从 `2026-09-01-website-stage-2c-shanghai-rebuild-design.md`；Event 函数经 HTTP 网关执行时的服务端身份改由本规格第 6 节覆盖。
+- 本规格第 6 节仅替代 `2026-08-01-cloudbase-js-sdk-v3-pg-compatibility-design.md` 第 50–51、118 行的 HTTP 网关执行身份结论；浏览器、管理员授权、短期 URL、私有 Bucket 和密钥不出日志等边界继续有效。
 
 ## 10. 官方依据
 
@@ -184,3 +188,5 @@ CLI 复用已有 ZIP 防护、预算、路径、图片实际解码、角色包�
 - [文本内容安全购买指南](https://cloud.tencent.com/document/product/1124/37119)：试用额度与到期后计费边界。
 - [图片内容安全购买指南](https://cloud.tencent.com/document/product/1125/62796)：试用额度与到期后计费边界。
 - [CloudBase PostgreSQL](https://docs.cloudbase.net/quick-start/pg-overview)：PG 环境的数据、身份和存储能力。
+- [CloudBase V3 PG 初始化](https://docs.cloudbase.net/api-reference/webv3-pg/initialization)：记录服务端 API Key、运行时身份和 `context` 等官方初始化方式；本项目结合上海 HTTP 网关真实结果采用服务端 API Key。
+- [CloudBase 定时触发器](https://docs.cloudbase.net/en/cli-v1/functions/trigger)：七段 Cron、配置结构与触发器管理方式。

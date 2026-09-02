@@ -1,6 +1,6 @@
 # CloudBase JS SDK V3 PG 兼容迁移设计
 
-> 地域条款已被 2026-09-01 上海重建规格替代。
+> 地域条款已被 2026-09-01 上海重建规格替代；第 50–51、118 行针对 HTTP 网关执行路径的身份结论已被 `2026-09-01-website-stage-2c-zero-cost-manual-review-design.md` 第 6 节替代。
 
 ## 目标
 

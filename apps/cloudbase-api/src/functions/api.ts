@@ -668,12 +668,12 @@ export async function main(
   }
 }
 
-/** 组合公开 API 的生产依赖；每次调用绑定本次临时身份。 */
+/** 组合公开 API 的生产依赖；服务端 API Key 统一访问 RDB 与私有存储。 */
 export function createProductionHandler(
-  context: CloudBaseFunctionContext
+  _context: CloudBaseFunctionContext
 ): ApiHandler {
   const config = loadApiConfig(process.env);
-  const runtime = createCloudBaseServerRuntime(config, context);
+  const runtime = createCloudBaseServerRuntime(config);
   const store = new CloudBasePostgresStore(
     runtime.rdb,
     new CloudBasePostgresRpcClient(config.envId, config.cloudbaseApiKey, {

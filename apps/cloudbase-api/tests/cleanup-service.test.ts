@@ -42,13 +42,12 @@ describe('三天隔离清理服务', () => {
 
     expect(productionSdk.createRuntime).toHaveBeenCalledTimes(1);
     expect(productionSdk.createRuntime).toHaveBeenCalledWith(
-      expect.objectContaining({ envId: 'env-test' }),
-      functionContext
+      expect.objectContaining({ envId: 'env-test' })
     );
     expect(worker).toBeTypeOf('function');
   });
 
-  it('main 把本次函数 context 传给 V3 运行时', async () => {
+  it('main 每次创建服务端共享运行时', async () => {
     stubCleanupConfig();
     vi.stubGlobal('fetch', vi.fn(async (input: string) => new Response(
       JSON.stringify(input.includes('purge_expired_public_interaction_operations') ? 0 : []),
@@ -63,8 +62,7 @@ describe('三天隔离清理服务', () => {
     });
 
     expect(productionSdk.createRuntime).toHaveBeenCalledWith(
-      expect.objectContaining({ envId: 'env-test' }),
-      functionContext
+      expect.objectContaining({ envId: 'env-test' })
     );
   });
 
