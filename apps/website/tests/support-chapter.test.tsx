@@ -4,6 +4,9 @@ import type { SubmissionReceipt } from '@myself/shared-types';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { I18nProvider } from '../components/i18n/I18nProvider';
+import {
+  LIQUID_GLASS_SUPPORT_SELECTION_EVENT
+} from '../components/home-experience/LiquidGlassHome';
 import { LIQUID_GLASS_FRAGMENT_SHADER } from '../components/home-experience/liquid-glass-shaders';
 import { SupportChapter } from '../components/website-experience/support/SupportChapter';
 import type {
@@ -122,6 +125,29 @@ describe('合并后的反馈与支持模块', () => {
       expect(group.querySelector('[data-depth-index="0"]')?.getAttribute('data-blur-px')).toBe('0');
       expect(group.querySelector('[data-depth-index="1"]')?.getAttribute('data-blur-px')).toBe('2.5');
       expect(group.querySelector('[data-depth-index="2"]')?.getAttribute('data-blur-px')).toBe('5');
+    }
+  });
+
+  it('将两组活动索引同步到液态玻璃景深', () => {
+    const selections: Array<{ feedbackIndex: number; paymentIndex: number }> = [];
+    const captureSelection = (event: Event) => {
+      selections.push((event as CustomEvent<{ feedbackIndex: number; paymentIndex: number }>).detail);
+    };
+    window.addEventListener(LIQUID_GLASS_SUPPORT_SELECTION_EVENT, captureSelection);
+
+    try {
+      render(<SupportChapter interactive repository={createRepository()} />);
+      const feedbackGroup = screen.getByRole('group', { name: '选择反馈操作' });
+      const paymentGroup = screen.getByRole('group', { name: '选择付款方式' });
+
+      expect(selections).toEqual([{ feedbackIndex: 0, paymentIndex: 0 }]);
+
+      fireEvent.wheel(feedbackGroup, { deltaY: 100 });
+      fireEvent.wheel(paymentGroup, { deltaY: 100 });
+
+      expect(selections.at(-1)).toEqual({ feedbackIndex: 1, paymentIndex: 1 });
+    } finally {
+      window.removeEventListener(LIQUID_GLASS_SUPPORT_SELECTION_EVENT, captureSelection);
     }
   });
 

@@ -12,6 +12,7 @@ import type { KeyboardEvent as ReactKeyboardEvent, WheelEvent as ReactWheelEvent
 import type { CSSProperties } from 'react';
 import { ApiClient } from '../../../lib/api-client';
 import type { PointerPoint } from '../../home-experience/types';
+import { LIQUID_GLASS_SUPPORT_SELECTION_EVENT } from '../../home-experience/LiquidGlassHome';
 import { interpolateMessage, useI18n } from '../../i18n/I18nProvider';
 import type { Translate } from '../../i18n/i18n-types';
 import { createPaymentMethods, type PaymentMethod } from '../donation/donation-content';
@@ -120,6 +121,15 @@ export function SupportChapter({
     '--support-title-top-y': `${(1 - supportProgress) * -72}vh`,
     '--support-title-bottom-y': `${(1 - supportProgress) * 72}vh`
   } as CSSProperties;
+
+  useEffect(() => {
+    window.dispatchEvent(new CustomEvent(LIQUID_GLASS_SUPPORT_SELECTION_EVENT, {
+      detail: {
+        feedbackIndex: activeFeedbackIndex,
+        paymentIndex: activePaymentIndex
+      }
+    }));
+  }, [activeFeedbackIndex, activePaymentIndex]);
 
   useEffect(() => {
     const syncViewport = () => setViewport({ width: window.innerWidth, height: window.innerHeight });
