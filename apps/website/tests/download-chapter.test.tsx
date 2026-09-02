@@ -3,6 +3,7 @@
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { I18nProvider } from '../components/i18n/I18nProvider';
+import { LIQUID_GLASS_RIPPLE_EVENT } from '../components/home-experience/LiquidGlassHome';
 import { LIQUID_GLASS_FRAGMENT_SHADER } from '../components/home-experience/liquid-glass-shaders';
 import { DownloadChapter } from '../components/website-experience/download/DownloadChapter';
 import { isLocalInputElement } from '../components/website-experience/use-website-controller';
@@ -68,6 +69,21 @@ describe('下载模块', () => {
     expect(notice.textContent).toContain('常见问题');
     expect(container.querySelector('[class*="glassCopyContent"]')).toBeNull();
     expect(LIQUID_GLASS_FRAGMENT_SHADER).toContain('u_downloadTextTexture');
+  });
+
+  it('正常动效进入完成后按下安装提示区只发布一次玻璃水波', () => {
+    const ripple = vi.fn();
+    window.addEventListener(LIQUID_GLASS_RIPPLE_EVENT, ripple);
+    render(<DownloadChapter interactive transitionProgress={2} />);
+
+    fireEvent.pointerDown(screen.getByRole('region', { name: '安装前须知 · 常见问题' }), {
+      button: 0,
+      clientX: 120,
+      clientY: 240
+    });
+
+    expect(ripple).toHaveBeenCalledOnce();
+    window.removeEventListener(LIQUID_GLASS_RIPPLE_EVENT, ripple);
   });
 
   it('Windows 大字在下载过渡末段前保持在屏幕外', () => {

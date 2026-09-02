@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from 'react';
 import type { CSSProperties, MouseEvent } from 'react';
+import { LIQUID_GLASS_RIPPLE_EVENT } from '../home-experience/LiquidGlassHome';
 import type { Locale } from './i18n-types';
 import { useI18n } from './I18nProvider';
 import styles from './language-menu.module.css';
@@ -81,7 +82,7 @@ export function LanguageMenu({ transitionProgress = 0 }: LanguageMenuProps) {
     triggerRef.current?.focus();
   };
 
-  /** 在语言按钮内绘制局部点击波纹。 */
+  /** 在语言按钮内绘制局部点击波纹，并同步共享玻璃的近场水波。 */
   const triggerRipple = (event: MouseEvent<HTMLButtonElement>) => {
     const target = event.currentTarget;
     const bounds = target.getBoundingClientRect();
@@ -91,6 +92,13 @@ export function LanguageMenu({ transitionProgress = 0 }: LanguageMenuProps) {
     ripple.style.top = `${event.clientY - bounds.top}px`;
     ripple.addEventListener('animationend', () => ripple.remove(), { once: true });
     target.append(ripple);
+    window.dispatchEvent(new CustomEvent(LIQUID_GLASS_RIPPLE_EVENT, {
+      detail: {
+        clientX: event.clientX,
+        clientY: event.clientY,
+        strength: 1.35
+      }
+    }));
   };
 
   return (

@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { afterEach, beforeAll, describe, expect, it } from 'vitest';
+import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
+import { LIQUID_GLASS_RIPPLE_EVENT } from '../components/home-experience/LiquidGlassHome';
 import {
   I18nProvider,
   interpolateMessage,
@@ -68,12 +69,19 @@ describe('官网国际化核心', () => {
   it('手动选择中文后保存偏好并同步当前会话', async () => {
     render(<I18nProvider><LanguageMenu /><Probe /></I18nProvider>);
 
-    fireEvent.click(screen.getByRole('button', { name: 'language' }));
+    const ripple = vi.fn();
+    const trigger = screen.getByRole('button', { name: 'language' });
+    window.addEventListener(LIQUID_GLASS_RIPPLE_EVENT, ripple);
+    fireEvent.pointerDown(trigger, { clientX: 120, clientY: 24 });
+    fireEvent.click(trigger, { clientX: 120, clientY: 24 });
+    expect(trigger.querySelectorAll('[class*="ripple"]')).toHaveLength(1);
+    expect(ripple).toHaveBeenCalledOnce();
     fireEvent.click(screen.getByRole('menuitemradio', { name: '简体中文' }));
 
     await waitFor(() => expect(screen.getByText(/^zh-CN:/)).toBeTruthy());
     expect(localStorage.getItem('ai-pet-locale')).toBe('zh-CN');
     expect(document.documentElement.lang).toBe('zh-CN');
+    window.removeEventListener(LIQUID_GLASS_RIPPLE_EVENT, ripple);
   });
 
   it('预置英文偏好在中文浏览器语言下重新挂载后仍优先使用英文', async () => {

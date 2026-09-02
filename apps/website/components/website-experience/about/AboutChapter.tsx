@@ -3,6 +3,11 @@
 import { gsap } from 'gsap';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { CSSProperties, PointerEvent as ReactPointerEvent } from 'react';
+import {
+  LIQUID_GLASS_INTERACTION_EVENT,
+  LIQUID_GLASS_RIPPLE_EVENT
+} from '../../home-experience/LiquidGlassHome';
+import type { LiquidGlassInteractionDetail } from '../../home-experience/LiquidGlassHome';
 import { useI18n } from '../../i18n/I18nProvider';
 import type { ChapterRuntimeProps } from '../types';
 import { createAboutFeatures } from './about-content';
@@ -40,17 +45,49 @@ export function AboutChapter({
     { x: 0, y: 0 }
   ]);
   const dragRef = useRef<DragState | null>(null);
+  const returningRef = useRef(false);
+  const hoveredRef = useRef<-1 | GlassIndex>(-1);
   const [hovered, setHovered] = useState<-1 | GlassIndex>(-1);
   const progress = Math.min(1, Math.max(0, transitionProgress));
   const exitProgress = Math.min(1, Math.max(0, transitionProgress - 1));
   const motionDisabled = reducedMotion || staticFallback;
 
+  /** 将介绍层的临时交互状态投影为共享玻璃可消费的只读快照。 */
+  const publishInteraction = (nextHovered = hoveredRef.current) => {
+    if (typeof window === 'undefined') return;
+    const [first, second, third] = offsetsRef.current;
+    const width = Math.max(window.innerWidth, 1);
+    const height = Math.max(window.innerHeight, 1);
+    const offsetY = (value: number) => value === 0 ? 0 : -value / height;
+    const offsets: LiquidGlassInteractionDetail['offsets'] = [
+      first!.x / width, offsetY(first!.y),
+      second!.x / width, offsetY(second!.y),
+      third!.x / width, offsetY(third!.y)
+    ];
+    window.dispatchEvent(new CustomEvent<LiquidGlassInteractionDetail>(
+      LIQUID_GLASS_INTERACTION_EVENT,
+      {
+        detail: {
+          hovered: nextHovered,
+          dragging: dragRef.current !== null || returningRef.current,
+          offsets
+        }
+      }
+    ));
+  };
+
   useEffect(() => () => {
     offsetsRef.current.forEach(offset => gsap.killTweensOf(offset));
+    window.dispatchEvent(new CustomEvent<LiquidGlassInteractionDetail>(
+      LIQUID_GLASS_INTERACTION_EVENT,
+      { detail: { hovered: -1, dragging: false, offsets: [0, 0, 0, 0, 0, 0] } }
+    ));
   }, []);
 
   const setHover = (index: -1 | GlassIndex) => {
+    hoveredRef.current = index;
     setHovered(index);
+    publishInteraction(index);
   };
 
   const beginDrag = (index: GlassIndex, event: ReactPointerEvent<HTMLElement>) => {
@@ -64,6 +101,9 @@ export function AboutChapter({
       startY: event.clientY - offsetsRef.current[index]!.y
     };
     setHover(index);
+    window.dispatchEvent(new CustomEvent(LIQUID_GLASS_RIPPLE_EVENT, {
+      detail: { clientX: event.clientX, clientY: event.clientY, strength: 1.35 }
+    }));
   };
 
   const moveDrag = (event: ReactPointerEvent<HTMLElement>) => {
@@ -74,12 +114,14 @@ export function AboutChapter({
     offset.y = Math.max(-72, Math.min(72, event.clientY - drag.startY));
     const article = articleRefs.current[drag.index];
     if (article) gsap.set(article, { x: offset.x, y: offset.y });
+    publishInteraction(drag.index);
   };
 
   const releaseDrag = (event: ReactPointerEvent<HTMLElement>) => {
     const drag = dragRef.current;
     if (!drag || drag.pointerId !== event.pointerId) return;
     dragRef.current = null;
+    returningRef.current = true;
     const offset = offsetsRef.current[drag.index]!;
     const article = articleRefs.current[drag.index];
     gsap.to(offset, {
@@ -90,6 +132,11 @@ export function AboutChapter({
       overwrite: true,
       onUpdate: () => {
         if (article) gsap.set(article, { x: offset.x, y: offset.y });
+        publishInteraction(hoveredRef.current);
+      },
+      onComplete: () => {
+        returningRef.current = false;
+        publishInteraction(hoveredRef.current);
       }
     });
   };
