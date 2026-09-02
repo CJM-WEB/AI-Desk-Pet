@@ -226,13 +226,13 @@ describe('共享仓库章节', () => {
     const details: Array<{
       count: number;
       currentPage: number;
-      totalPages: number;
+      totalPages: string;
     }> = [];
     const capture = (event: Event) => {
       details.push((event as CustomEvent<(typeof details)[number]>).detail);
     };
     const expectedVisibleCount = 8;
-    const expectedTotalPages = 2;
+    const expectedTotalPages = '2';
     window.addEventListener(LIQUID_GLASS_COMMUNITY_CARDS_EVENT, capture);
     try {
       renderChapter(createRepository(9).repository);
@@ -244,6 +244,74 @@ describe('共享仓库章节', () => {
           totalPages: expectedTotalPages
         });
       });
+    } finally {
+      window.removeEventListener(LIQUID_GLASS_COMMUNITY_CARDS_EVENT, capture);
+    }
+  });
+
+  it('总页数未知时发布与页面一致的问号快照', async () => {
+    const details: Array<{
+      count: number;
+      currentPage: number;
+      totalPages: number | string;
+    }> = [];
+    const capture = (event: Event) => {
+      details.push((event as CustomEvent<(typeof details)[number]>).detail);
+    };
+    const harness = createRepository(8);
+    harness.listPage.mockResolvedValueOnce({
+      ...createPage(Array.from({ length: 8 }, (_, index) => createItem(index + 1)), 1, 8),
+      hasNext: true,
+      totalKnown: false
+    });
+    window.addEventListener(LIQUID_GLASS_COMMUNITY_CARDS_EVENT, capture);
+    try {
+      renderChapter(harness.repository);
+
+      await waitFor(() => {
+        expect(details.at(-1)).toEqual({
+          count: 8,
+          currentPage: 1,
+          totalPages: '?'
+        });
+      });
+    } finally {
+      window.removeEventListener(LIQUID_GLASS_COMMUNITY_CARDS_EVENT, capture);
+    }
+  });
+
+  it('分页过渡只在可见页切换后更新玻璃快照', async () => {
+    const details: Array<{
+      count: number;
+      currentPage: number;
+      totalPages: string;
+    }> = [];
+    const capture = (event: Event) => {
+      details.push((event as CustomEvent<(typeof details)[number]>).detail);
+    };
+    const harness = createRepository(9);
+    window.addEventListener(LIQUID_GLASS_COMMUNITY_CARDS_EVENT, capture);
+    try {
+      renderChapter(harness.repository);
+      await waitFor(() => {
+        expect(details.at(-1)).toEqual({ count: 8, currentPage: 1, totalPages: '2' });
+      });
+
+      fireEvent.click(screen.getByRole('button', { name: '下一页' }));
+      expect(screen.getByTestId('shared-pet-chapter').dataset.transition).toBe('leaving');
+      expect(details.at(-1)).toEqual({ count: 8, currentPage: 1, totalPages: '2' });
+
+      fireEvent.animationEnd(screen.getAllByTestId('shared-pet-card')[7]!);
+      expect(await screen.findByText('Pet 1')).toBeTruthy();
+      await waitFor(() => {
+        expect(details.at(-1)).toEqual({ count: 1, currentPage: 2, totalPages: '2' });
+      });
+
+      fireEvent.animationEnd(screen.getByTestId('shared-pet-card'));
+      await waitFor(() => {
+        expect(screen.getByTestId('shared-pet-chapter').dataset.transition).toBe('idle');
+      });
+      expect(details.at(-1)).toEqual({ count: 1, currentPage: 2, totalPages: '2' });
     } finally {
       window.removeEventListener(LIQUID_GLASS_COMMUNITY_CARDS_EVENT, capture);
     }

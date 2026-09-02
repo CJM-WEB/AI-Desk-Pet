@@ -46,6 +46,11 @@ describe('共享仓库水波纹契约', () => {
       clientY: 180
     });
     expect(onRipple).toHaveBeenCalledTimes(1);
+    expect((onRipple.mock.calls[0]?.[0] as CustomEvent).detail).toEqual({
+      clientX: 120,
+      clientY: 180,
+      strength: 1.35
+    });
 
     fireEvent.pointerDown(screen.getByRole('button', { name: 'Like Ripple Pet' }));
     fireEvent.pointerDown(screen.getByRole('button', { name: 'Download Ripple Pet' }));

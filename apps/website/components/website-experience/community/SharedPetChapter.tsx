@@ -553,12 +553,12 @@ export function SharedPetChapter({
         detail: {
           count: visiblePage.items.length,
           currentPage: visiblePage.page,
-          totalPages: visiblePage.totalPages
+          totalPages: totalPageLabel
         }
       }));
     });
     return () => window.cancelAnimationFrame(frame);
-  }, [visiblePage.items.length, visiblePage.page, visiblePage.totalPages]);
+  }, [totalPageLabel, visiblePage.items.length, visiblePage.page]);
 
   const chapterStyle = {
     '--community-progress': communityProgress,
