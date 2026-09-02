@@ -454,7 +454,7 @@ function detailRequest(
   return {
     path: { id },
     query: { ...(event.queryStringParameters ?? {}) },
-    body: event.body === undefined ? {} : requestRecord(event)
+    body: event.body === undefined || event.body === '' ? {} : requestRecord(event)
   };
 }
 

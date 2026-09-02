@@ -659,6 +659,26 @@ describe('公开 HTTP API', () => {
     expect(dependencies.admin.getDetail).not.toHaveBeenCalled();
   });
 
+  it('CloudBase 网关的 GET 空字符串 body 按无正文处理', async () => {
+    const dependencies = createDependencies();
+    const main = createApi(dependencies);
+
+    const responses = await Promise.all([
+      main({
+        ...event('GET', '/api/v1/community/community-1'),
+        body: ''
+      }, context),
+      main({
+        ...event('GET', '/api/v1/admin/submissions/submission-1'),
+        body: ''
+      }, context)
+    ]);
+
+    expect(responses.map(response => response.statusCode)).toEqual([200, 200]);
+    expect(dependencies.publicContent.getCommunity).toHaveBeenCalledWith('community-1');
+    expect(dependencies.admin.getDetail).toHaveBeenCalledWith('submission-1');
+  });
+
   it('管理员详情在 strict 请求失败前仍先验证管理员身份', async () => {
     const dependencies = createDependencies();
     dependencies.adminIdentity.requireAdmin.mockRejectedValueOnce(
