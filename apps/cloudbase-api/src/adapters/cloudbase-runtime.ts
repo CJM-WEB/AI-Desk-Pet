@@ -17,16 +17,31 @@ export interface CloudBaseServerRuntime {
 }
 
 export interface CloudBaseServerSdk {
-  init(options: {
-    env: string;
-    region: 'ap-shanghai';
-    timeout: number;
-    context: CloudBaseFunctionContext;
-  }): {
+  init(options: CloudBaseRdbInitOptions | CloudBaseStorageInitOptions): {
     rdb(): CloudBaseRdbClient;
     storage: { from(bucketId: string): CloudBaseStorageBucket };
   };
 }
+
+type CloudBaseRdbInitOptions = {
+  env: string;
+  region: 'ap-shanghai';
+  timeout: number;
+  accessKey: string;
+  context?: never;
+};
+
+type CloudBaseStorageInitOptions = {
+  env: string;
+  region: 'ap-shanghai';
+  timeout: number;
+  context: CloudBaseFunctionContext;
+  accessKey?: never;
+};
+
+type CloudBaseServerRuntimeConfig = CloudBaseRuntimeConfig & {
+  cloudbaseApiKey: string;
+};
 
 const installedSdk: CloudBaseServerSdk = {
   init: options => cloudbase.init(options) as unknown as ReturnType<
@@ -34,20 +49,26 @@ const installedSdk: CloudBaseServerSdk = {
   >
 };
 
-/** 使用本次调用的临时身份创建 V3 运行时，不接收 PostgreSQL API Key。 */
+/** RDB 只使用服务端 API Key 查询 RLS 表；私有 Storage 仅使用本次函数临时身份。 */
 export function createCloudBaseServerRuntime(
-  config: CloudBaseRuntimeConfig,
+  config: CloudBaseServerRuntimeConfig,
   context: CloudBaseFunctionContext,
   sdk: CloudBaseServerSdk = installedSdk
 ): CloudBaseServerRuntime {
-  const app = sdk.init({
+  const rdbApp = sdk.init({
+    env: config.envId,
+    region: config.cloudbaseRegion,
+    timeout: config.cloudbaseSdkTimeoutMs,
+    accessKey: config.cloudbaseApiKey
+  });
+  const storageApp = sdk.init({
     env: config.envId,
     region: config.cloudbaseRegion,
     timeout: config.cloudbaseSdkTimeoutMs,
     context
   });
   return {
-    rdb: app.rdb(),
-    bucket: app.storage.from(config.privateBucketId)
+    rdb: rdbApp.rdb(),
+    bucket: storageApp.storage.from(config.privateBucketId)
   };
 }

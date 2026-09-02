@@ -411,7 +411,9 @@ Expected: 全部通过；没有桌宠路径、Secret、临时归档、CloudBase 
 
 - Modify: `tools/build-cloudbase-functions.mjs`
 - Modify: `apps/cloudbase-api/src/functions/api.ts`
+- Modify: `apps/cloudbase-api/src/adapters/cloudbase-runtime.ts`
 - Modify: `apps/cloudbase-api/tests/build-output.test.ts`
+- Modify: `apps/cloudbase-api/tests/cloudbase-runtime.test.ts`
 - Modify: `apps/website/lib/admin-api-client.ts`
 - Modify: `apps/website/tests/admin-api-client.test.ts`
 - Modify: `docs/superpowers/plans/2026-09-01-website-stage-2c-shanghai-rebuild.md`
@@ -435,7 +437,7 @@ Expected: 全部通过；没有桌宠路径、Secret、临时归档、CloudBase 
 
 - [ ] **Step 8.4：真实 smoke**
 
-已通过的远端子项：公开社区 GET 返回 200；未认证管理员请求由网关返回 401 `MISSING_CREDENTIALS`；`ai-pet-cleanup` 真实直调返回 `claimed=0/purged=0/failed=0/expiredOperationsPurged=0`。本地 Docker 干净包/EICAR 与本地全链证据继续有效，但不构成远端 smoke。仍待真实 OTP 管理员登录、官方下载点击的管理员指标读取、反馈完整批准、共享包强制发布、点赞、评论、短期下载和完整远端数据清理；cleanup 尚未配置定时触发器，因为规格未定义周期，须另行裁决与验证。投稿开关保持关闭，测试数据按已批准清理边界处理。
+已通过的远端子项：公开社区 GET 返回 200；未认证管理员请求由网关返回 401 `MISSING_CREDENTIALS`；`ai-pet-cleanup` 真实直调返回 `claimed=0/purged=0/failed=0/expiredOperationsPurged=0`。本地 Docker 干净包/EICAR 与本地全链证据继续有效，但不构成远端 smoke。已定位真实管理员详情的 RDB 身份缺陷：函数临时身份不能读取启用 RLS 且无公开策略的表，而同一 API Key 的服务端查询可返回映射器所需类型；本地已将 RDB API Key 与 Storage 函数临时身份隔离，仍待远端部署后复验详情读取。仍待真实 OTP 管理员登录、官方下载点击的管理员指标读取、反馈完整批准、共享包强制发布、点赞、评论、短期下载和完整远端数据清理；cleanup 尚未配置定时触发器，因为规格未定义周期，须另行裁决与验证。投稿开关保持关闭，测试数据按已批准清理边界处理。
 
 - [ ] **Step 8.5：记录状态**
 

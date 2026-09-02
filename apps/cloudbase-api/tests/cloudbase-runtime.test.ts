@@ -13,7 +13,8 @@ const runtimeConfig = {
   envId: 'env-test',
   cloudbaseRegion: 'ap-shanghai' as const,
   cloudbaseSdkTimeoutMs: 15_000 as const,
-  privateBucketId: 'ai-pet-private'
+  privateBucketId: 'ai-pet-private',
+  cloudbaseApiKey: 'server-rdb-access-key'
 };
 const functionContext: CloudBaseFunctionContext = {
   eventID: 'event-1',
@@ -38,40 +39,58 @@ describe('CloudBase V3 Node 运行时工厂', () => {
     expect(app.rdb).toBeTypeOf('function');
   });
 
-  it('向 V3 SDK 传递函数原生 context 且不再传 PostgreSQL API Key', () => {
-    const { fakeApp, fakeBucket, fakeRdb } = createFakeApp();
-    const init = vi.fn(
-      (_options: Parameters<CloudBaseServerSdk['init']>[0]) => fakeApp
-    );
+  it('隔离 RDB API Key 与 Storage 函数临时身份，避免 RLS 表查询失去服务端身份', () => {
+    const {
+      fakeRdbApp,
+      fakeStorageApp,
+      fakeBucket,
+      fakeRdb
+    } = createFakeApps();
+    const init = vi.fn()
+      .mockReturnValueOnce(fakeRdbApp)
+      .mockReturnValueOnce(fakeStorageApp);
     const runtime = createCloudBaseServerRuntime(
       runtimeConfig,
       functionContext,
-      { init }
+      { init: init as CloudBaseServerSdk['init'] }
     );
 
-    expect(init).toHaveBeenCalledOnce();
-    expect(init).toHaveBeenCalledWith({
+    expect(init).toHaveBeenCalledTimes(2);
+    expect(init).toHaveBeenNthCalledWith(1, {
+      env: 'env-test',
+      region: 'ap-shanghai',
+      timeout: 15_000,
+      accessKey: 'server-rdb-access-key'
+    });
+    expect(init.mock.calls[0]?.[0]).not.toHaveProperty('context');
+    expect(init).toHaveBeenNthCalledWith(2, {
       env: 'env-test',
       region: 'ap-shanghai',
       timeout: 15_000,
       context: functionContext
     });
-    expect(init.mock.calls[0]?.[0]).not.toHaveProperty('accessKey');
-    expect(fakeApp.rdb).toHaveBeenCalledOnce();
+    expect(init.mock.calls[1]?.[0]).not.toHaveProperty('accessKey');
+    expect(fakeRdbApp.rdb).toHaveBeenCalledOnce();
+    expect(fakeStorageApp.storage.from).toHaveBeenCalledWith('ai-pet-private');
     expect(runtime).toEqual({ rdb: fakeRdb, bucket: fakeBucket });
   });
 });
 
-function createFakeApp(): {
-  fakeApp: ReturnType<CloudBaseServerSdk['init']>;
+function createFakeApps(): {
+  fakeRdbApp: ReturnType<CloudBaseServerSdk['init']>;
+  fakeStorageApp: ReturnType<CloudBaseServerSdk['init']>;
   fakeBucket: CloudBaseStorageBucket;
   fakeRdb: CloudBaseRdbClient;
 } {
   const fakeRdb = {} as CloudBaseRdbClient;
   const fakeBucket = {} as CloudBaseStorageBucket;
   return {
-    fakeApp: {
+    fakeRdbApp: {
       rdb: vi.fn(() => fakeRdb),
+      storage: { from: vi.fn() }
+    } as unknown as ReturnType<CloudBaseServerSdk['init']>,
+    fakeStorageApp: {
+      rdb: vi.fn(),
       storage: { from: vi.fn(() => fakeBucket) }
     } as unknown as ReturnType<CloudBaseServerSdk['init']>,
     fakeRdb,
