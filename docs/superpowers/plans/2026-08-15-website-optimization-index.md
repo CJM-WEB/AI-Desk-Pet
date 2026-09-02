@@ -8,7 +8,7 @@
 
 **Tech Stack:** pnpm workspace、TypeScript 5、Vitest 3、Playwright 1.61、Zod 3、Next.js 15、CloudBase JS SDK 3.6.8、PostgreSQL、Docker、ClamAV。
 
-> 2026-09-02 当前入口：阶段 2A、2B、阶段 3 与阶段四本地治理的既有本地裁决保持通过。阶段 2C 的现行规格与计划为 `2026-09-01-website-stage-2c-zero-cost-manual-review-design.md` 和 `2026-09-01-website-stage-2c-zero-cost-manual-review.md`：云上只保留 PostgreSQL、私有存储、API、cleanup、身份、网关与静态托管；新投稿直入人工队列。远端状态为 `remote: in_progress`，最小部署和有限远端子项已有证据；真实 OTP 管理员登录与完整业务 smoke 仍未完成，投稿开启、阶段 5 正式生产重部署与上线继续冻结。真实状态见 `docs/operations/website-stage-2c-zero-cost-manual-review-acceptance.md`。
+> 2026-09-02 当前入口：阶段 2A、2B、2C、阶段 3 与阶段四本地治理的既有裁决均已通过。阶段 2C 的现行规格与计划为 `2026-09-01-website-stage-2c-zero-cost-manual-review-design.md` 和 `2026-09-01-website-stage-2c-zero-cost-manual-review.md`：云上只保留 PostgreSQL、私有存储、API、cleanup、身份、网关与静态托管；新投稿直入人工队列。上海开发／测试环境状态为 `remote: pass`，真实 OTP、公开反馈／建议正文、共享包强制发布和完整业务 smoke 均已有证据；共享包投稿开启、阶段 5 正式生产重部署与上线继续冻结。真实状态见 `docs/operations/website-stage-2c-zero-cost-manual-review-acceptance.md`。
 
 ## Global Constraints
 

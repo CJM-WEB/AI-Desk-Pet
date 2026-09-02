@@ -14,7 +14,7 @@
 
 > **2026-09-01 执行结果：** Task 1、Task 2 与适用的 Task 4 已完成；Task 3、Task 5–10 按零费用阻断裁剪，未执行远端操作；Task 11 已完成最终本地门禁与文档收敛。阶段 2C 最终状态为 `blocked`，不代表上海 PG 环境已创建、远端已部署或生产已上线。独立证据见 `docs/operations/website-stage-2c-shanghai-acceptance.md`。
 
-> **历史快照（已被后续状态取代）：** 上述 2026-09-01 `blocked` 执行结果仅保留历史事实；2026-09-02 零费用方案已取代其状态。当前入口是 [`2026-09-01-website-stage-2c-zero-cost-manual-review.md`](2026-09-01-website-stage-2c-zero-cost-manual-review.md) 与 [`website-stage-2c-zero-cost-manual-review-acceptance.md`](../../operations/website-stage-2c-zero-cost-manual-review-acceptance.md)，远端状态为 `remote: in_progress`。
+> **历史快照（已被后续状态取代）：** 上述 2026-09-01 `blocked` 执行结果仅保留历史事实；2026-09-02 零费用方案已取代其状态。当前入口是 [`2026-09-01-website-stage-2c-zero-cost-manual-review.md`](2026-09-01-website-stage-2c-zero-cost-manual-review.md) 与 [`website-stage-2c-zero-cost-manual-review-acceptance.md`](../../operations/website-stage-2c-zero-cost-manual-review-acceptance.md)，远端状态为 `remote: pass`；该状态不代表正式生产上线。
 
 ## 全局约束
 
