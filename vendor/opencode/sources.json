@@ -111,7 +111,7 @@
     {
       "source": "packages/core/src/permission.ts",
       "sha256": "f5d5b295452f2ddf17c475a24e77e302bb2b4b65d8a9e02a0f7bc5ef5504a0ba",
-      "localSha256": "1e86587062a140b6c8bcbffa9957de95d7b2e54660e891c9cc9621c394b9d0de"
+      "localSha256": "4da73272e6bbf73b5aba79a9c05ec94194be70351598e93ef57a93f4db190e06"
     },
     {
       "source": "packages/core/src/snapshot.ts",
@@ -136,37 +136,37 @@
     {
       "source": "packages/core/src/tool/read.ts",
       "sha256": "ff3298263962058f05ec4eb2f9007ef0bc42101dbda7908ca79f46a368128752",
-      "localSha256": "d7a05191a3dc9c2272a19737e1dcc066ae521845b445ca67a683bf8aadfa899f"
+      "localSha256": "9e55aa7f93023d229e9adbce60b69f67dfc75e2d84a1be93f5193b84cfe72b85"
     },
     {
       "source": "packages/core/src/tool/write.ts",
       "sha256": "75d9914ff8d765e93e5add9e339b75719857f21d0e0d418bd6f0734e3a51b8cc",
-      "localSha256": "6973340642617a62267465431e2e05ce0cf86761ae448a030248aac2777cfd6f"
+      "localSha256": "bf591e320304a7c1161ffd9026bb5d079d387a9235ba59f18642e8ff2228b316"
     },
     {
       "source": "packages/core/src/tool/edit.ts",
       "sha256": "527fe2d1fa70481c8aed6d6930866d136a1fd4aaea881e4ae8df33a9d7e7d8af",
-      "localSha256": "f5d9bea5e42743e2274991a7ec37f9fe9798174af922f459e7920fd43a751021"
+      "localSha256": "1ad64d61e84a19b9a85eaabc2738f4bc0803d542677bd77acea841b8a5db4752"
     },
     {
       "source": "packages/core/src/tool/apply-patch.ts",
       "sha256": "4ae3d5e0707b7acf6095529a598c00b65cd1d9a9bceddb04d7f92526f59c6ffc",
-      "localSha256": "901e125ba577fad1cbd96358518f89a4e01a9f556910f174f7f1fa5ede20e4ee"
+      "localSha256": "d47befc6521f5e54443bd055c990c3900658f1571b5d8d234f348d2781624752"
     },
     {
       "source": "packages/core/src/tool/glob.ts",
       "sha256": "d197c4460234824c87b168edff59818ad9265ac2defceaf692f045f0cf2b8ec0",
-      "localSha256": "4e55f3fe2f0d783c91d2b74e2ee7cf7535cbcc9dd797d50f08c55b75b280ca0c"
+      "localSha256": "f6da669a27b284ca99159718f9184d5268dc1e91a382625704c1df5bc0aeead5"
     },
     {
       "source": "packages/core/src/tool/grep.ts",
       "sha256": "e2d59350bdde470577c6ae9bdc238eed4daaee8bdaa73c7bcf42a1b076171c73",
-      "localSha256": "6bcfd1228a88518c12aefc7cf794804cfdd84452a3a7f8b707b83c30a57a5004"
+      "localSha256": "ebd492df6d26ca35a3bb5fa042777487bcf6d640c92c139b85e1bceb6a6a74d7"
     },
     {
       "source": "packages/core/src/tool/bash.ts",
       "sha256": "a79fabfe48f831bdff6b3140beccecdc44796d43071ee68356b1052f394c4303",
-      "localSha256": "f405bd824164928d749c165b83953604840ef4255fcb6d54c649d988ca4cddc7"
+      "localSha256": "6143fad6a4c3b73bee6c10dd368ced91b61bd86febe678e29f1053ac440f2249"
     },
     {
       "source": "packages/core/src/tool/todowrite.ts",

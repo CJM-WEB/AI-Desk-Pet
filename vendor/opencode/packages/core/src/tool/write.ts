@@ -94,7 +94,7 @@ const layer = Layer.effectDiscard(
                 const bom = input.content.startsWith("\uFEFF") || (before?.[0] === 0xef && before[1] === 0xbb && before[2] === 0xbf)
                 const content = (bom ? "\uFEFF" : "") + input.content.replace(/^\uFEFF+/, "")
                 return yield* before === undefined ? files.create({ target, content }) : files.writeIfUnchanged({ target, expected: before, content })
-              }).pipe(Effect.mapError(() => new ToolFailure({ message: `Unable to write ${input.path}` }))),
+              }).pipe(Effect.mapError((error) => new ToolFailure({ message: PermissionV2.rejectionMessage(error) ?? `Unable to write ${input.path}` }))),
           }),
           "edit",
         ),

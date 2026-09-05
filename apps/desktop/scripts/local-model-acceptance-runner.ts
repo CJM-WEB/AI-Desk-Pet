@@ -1,17 +1,25 @@
-import { CodingTaskService } from '../src/main/agent/coding-task-service';
+import { createCodingSession } from '@myself/coding-task-core';
+import { capabilityControlPlanSchema } from '@myself/agent-core';
+import { characterChatBehaviorPlanSchema, characterBehaviorDescriptorSchema, movementControlPlanSchema } from '@myself/character-runtime';
+import { randomUUID } from 'node:crypto';
+import { runInNewContext } from 'node:vm';
+import assert from 'node:assert/strict';
+import type { ModelProvider } from '@myself/agent-core';
+import type { CodingModelConnection } from '@myself/coding-task-core';
+import type { AcceptanceResult, AcceptanceScenario } from './run-local-model-acceptance.mjs';
+import { CodingTaskService, type CodingTaskToolResult } from '../src/main/agent/coding-task-service';
 import { resolveCodingTaskResources } from '../src/main/agent/coding-task-resources';
 import { createCodingModelConnection } from '../src/main/providers/coding-model-connection';
-import { access, mkdir, mkdtemp, readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile, realpath } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { basename, join } from 'node:path';
+import { basename, join, resolve, dirname } from 'node:path';
 
-import type { ProviderProfileV2, TaskEvent, ToolRequest } from '@myself/shared-types';
+import type { ProviderProfileV2, ProviderCatalogEntry, TaskEvent } from '@myself/shared-types';
 import { PrivacySessionRegistry } from '../src/main/agent/disclosure-policy';
 import type { ConversationBehaviorPort } from '../src/main/characters/character-behavior-director';
 import { ConversationChatAdapter } from '../src/main/conversation/conversation-chat-adapter';
 import {
   createMainConversationComposition,
-  type MainConversationComposition
 } from '../src/main/conversation/main-conversation-composition';
 import { BUILTIN_LOCAL_PROVIDER_CATALOG_ENTRY } from '../src/main/local-model/local-model-route';
 import { LocalModelRuntime } from '../src/main/local-model/local-model-runtime';
@@ -24,35 +32,11 @@ import type { ProviderSettingsSnapshot } from '../src/main/storage/settings-stor
 type Backend = 'cpu' | 'vulkan';
 
 interface AcceptanceInput {
+  scenario?: AcceptanceScenario['name'] | undefined;
   requestedBackend: Backend;
   resourceRoot: string;
   appPath: string;
   applicationVersion: string;
-}
-
-interface Checks {
-  discreteGpu: boolean;
-  fullGpuOffload: boolean;
-  chineseChat: boolean;
-  reasoningDisabled: boolean;
-  toolCall: boolean;
-  confirmation: boolean;
-  fileSideEffect: boolean;
-  toolResultSummary: boolean;
-  cancelRecovery: boolean;
-  cloudCallsZero: boolean;
-  cloudRouteRestored: boolean;
-  createOperation: boolean;
-  readOperation: boolean;
-  globOperation: boolean;
-  grepOperation: boolean;
-  editOperation: boolean;
-  moveOperation: boolean;
-  deleteOperation: boolean;
-  chineseRelativePath: boolean;
-  clarification: boolean;
-  userRejected: boolean;
-  toolFailureRecovery: boolean;
 }
 
 const VULKAN_OFFLOAD_TIMEOUT_MS = 5_000;
@@ -80,10 +64,6 @@ function containsChinese(value: string): boolean {
   return /\p{Script=Han}/u.test(value);
 }
 
-function normalizedRelativePath(value: string): string {
-  return value.replace(/\\/gu, '/');
-}
-
 /** 验收只采信已提交的助手正文；流式 start/delta 不能单独证明一轮成功。 */
 export function findFinalAssistantText(events: readonly TaskEvent[]): string | undefined {
   for (let index = events.length - 1; index >= 0; index -= 1) {
@@ -94,55 +74,62 @@ export function findFinalAssistantText(events: readonly TaskEvent[]): string | u
   return undefined;
 }
 
-function findPendingAction(events: readonly TaskEvent[]) {
-  const event = events.find(candidate => candidate.type === 'pending_action');
-  if (event?.type !== 'pending_action') {
-    const failure = [...events].reverse().find(candidate => candidate.type === 'error');
-    if (failure?.type === 'error') throw acceptanceError(failure.code);
-    if (events.some(candidate => candidate.type === 'history_disclosure_required')) {
-      throw acceptanceError('HISTORY_DISCLOSURE_REQUIRED');
-    }
-    if (findFinalAssistantText(events) !== undefined) {
-      throw acceptanceError('MODEL_TEXT_INSTEAD_OF_TOOL');
-    }
-    throw acceptanceError('TOOL_CALL_MISSING');
-  }
-  return event.action;
+type PermissionEvent = Extract<TaskEvent, { type: 'task_permission_required' }>;
+
+/** 只识别拒绝场景自己的单文件删除意图；此判断绝不用于批准命令。 */
+export function isExpectedDeletionPermission(event: PermissionEvent, directory: string): boolean {
+  const target = resolve(directory, 'keep.txt').toLowerCase();
+  if (event.request.action === 'delete') return event.request.resources.length === 1
+    && resolve(directory, event.request.resources[0]!).toLowerCase() === target;
+  if (event.request.action !== 'bash' || resolve(event.request.cwd).toLowerCase() !== resolve(directory).toLowerCase()) return false;
+  const command = event.request.command;
+  if (/[;&|`$<>\r\n]/u.test(command)) return false;
+  const tokens = command.match(/"[^"\r\n]*"|'[^'\r\n]*'|[^\s"']+/gu)?.map(token => token.replace(/^["']|["']$/gu, '')) ?? [];
+  if (!/^(?:remove-item|rm|del)$/iu.test(tokens.shift() ?? '')) return false;
+  const paths = tokens.filter(token => !/^(?:-literalpath|-path|-force)$/iu.test(token));
+  return paths.length === 1 && !paths[0]!.startsWith('-') && resolve(directory, paths[0]!).toLowerCase() === target;
 }
 
-/** 验收先确认模型识别出的任务级授权；具体文件或命令动作仍留给后续独立确认。 */
+/** 范围确认只接纳任务；必须继续观察正式最终正文与清理后终态。 */
 export async function submitAcceptanceTurn(options: {
   events: readonly TaskEvent[];
   submit(): Promise<void>;
   resolveCapabilityAuthorization(requestId: string, resolution: 'confirm'): Promise<void>;
   assertNoSideEffect(): Promise<unknown>;
+  resolvePermission?(event: PermissionEvent): Promise<void>;
+  validateScope?(event: Extract<TaskEvent, { type: 'capability_authorization_required' }>): void;
+  tick?(): Promise<void>;
+  timeoutMs?: number;
+  signal?: AbortSignal;
 }): Promise<readonly TaskEvent[]> {
-  const eventStart = options.events.length;
-  await options.submit();
-  const beforeAuthorization = options.events.slice(eventStart);
-  const authorization = beforeAuthorization.find(
-    event => event.type === 'capability_authorization_required'
-  );
-  if (authorization?.type === 'capability_authorization_required') {
-    if (beforeAuthorization.some(event => event.type === 'pending_action')) {
-      throw acceptanceError('CAPABILITY_AUTHORIZATION_BYPASSED');
+  const start = options.events.length;
+  let cursor = start;
+  let submitError: unknown;
+  void options.submit().catch(error => { submitError = error; });
+  const deadline = Date.now() + (options.timeoutMs ?? 150_000);
+  while (Date.now() < deadline) {
+    if (options.signal?.aborted) throw acceptanceError('ACCEPTANCE_CLOSED');
+    if (submitError) throw submitError;
+    while (cursor < options.events.length) {
+      const event = options.events[cursor++]!;
+      if (event.type === 'capability_authorization_required') {
+        options.validateScope?.(event);
+        await options.assertNoSideEffect();
+        await options.resolveCapabilityAuthorization(event.requestId, 'confirm');
+      } else if (event.type === 'task_permission_required') {
+        if (!options.resolvePermission) throw acceptanceError('UNEXPECTED_PERMISSION');
+        await options.resolvePermission(event);
+      } else if (event.type === 'history_disclosure_required') {
+        throw acceptanceError('UNEXPECTED_HISTORY_DISCLOSURE');
+      } else if (event.type === 'phase' && ['success', 'error', 'cancelled'].includes(event.phase)) {
+        return options.events.slice(start);
+      }
     }
-    await options.assertNoSideEffect();
-    await options.resolveCapabilityAuthorization(authorization.requestId, 'confirm');
+    await options.tick?.();
+    await new Promise(resolve => setTimeout(resolve, 20));
   }
-  return options.events.slice(eventStart);
-}
-
-async function assertPathDoesNotExist(path: string): Promise<true> {
-  try {
-    await access(path);
-  } catch (error) {
-    if (typeof error === 'object' && error !== null && Reflect.get(error, 'code') === 'ENOENT') {
-      return true;
-    }
-    throw acceptanceError('FILE_STATE_CHECK_FAILED');
-  }
-  throw acceptanceError('CONFIRMATION_SIDE_EFFECT_DETECTED');
+  if (options.signal?.aborted) throw acceptanceError('ACCEPTANCE_CLOSED');
+  throw acceptanceError('TURN_TIMEOUT');
 }
 
 function behaviorPort(): ConversationBehaviorPort {
@@ -305,457 +292,313 @@ export async function runAcceptanceLifecycle<T>(options: {
   }
 }
 
-/**
- * 验收只负责组合正式 Main 模块；Runtime 独占进程、Token、health、argv 与清理。
- * 公开结果只返回布尔事实，Prompt、正文、路径和进程输出都留在当前函数内。
- */
-export async function runLocalModelAcceptance(input: AcceptanceInput) {
-  const temporaryRoot = await mkdtemp(join(tmpdir(), 'ai-pet-real-local-model-acceptance-'));
-  const authorizedRoot = join(temporaryRoot, 'authorized');
-  const recycleRoot = join(temporaryRoot, 'recycle');
-  await mkdir(authorizedRoot, { recursive: true });
-  await mkdir(recycleRoot, { recursive: true });
-  let vulkanObservation: Readonly<{
-    deviceClass: 'discrete' | 'integrated' | 'unknown';
-    offloadedLayers: number;
-    totalLayers: number;
-  }> | null = null;
-  const runtime = new LocalModelRuntime({
-    root: input.resourceRoot,
-    applicationVersion: input.applicationVersion,
-    cachePath: join(temporaryRoot, 'model-hash-cache.json'),
-    tokenRoot: join(temporaryRoot, 'tokens'),
-    backendPreference: input.requestedBackend === 'cpu' ? 'cpu-only' : 'vulkan-only',
-    acceptanceDiagnostics: {
-      onVulkanOffloadObserved: observation => { vulkanObservation = observation; }
+/** 拒绝单个操作可结束为任务 error；外层仍独立等待正式 close，清理失败不能被此断言覆盖。 */
+export function assertRejectionCompleted(events: readonly TaskEvent[]): void {
+  if (!events.some(event => event.type === 'phase' && (event.phase === 'success' || event.phase === 'error')))
+    throw acceptanceError('REJECTION_NOT_COMPLETED');
+}
+
+/** 模型属性读取、调用及其微任务共用 VM 期限；宿主仅消费布尔原始值。 */
+export function verifyRepairedFunction(source: string): void {
+  const valid: unknown = runInNewContext(`${source}
+;(() => {
+    const add = exports.add;
+    return typeof add === 'function' && add(7, 8) === 15 && add(-5, 2) === -3;
+  })()`, { exports: {} }, { timeout: 1_000, microtaskMode: 'afterEvaluate' });
+  assert.equal(valid, true);
+}
+
+export interface ModelAcceptanceEnvironment {
+  scenario?: AcceptanceScenario['name'] | undefined;
+  model: 'qwen' | 'deepseek';
+  appPath: string;
+  resourceRoot: string;
+  temporaryRoot: string;
+  catalog: readonly ProviderCatalogEntry[];
+  readSettings(): Promise<ProviderSettingsSnapshot>;
+  createProvider(profile: ProviderProfileV2): ModelProvider;
+  createConnection(profile: ProviderProfileV2): CodingModelConnection;
+  assertReady(profile: ProviderProfileV2): void;
+  start(): Promise<void>;
+  close(): Promise<void>;
+  requestedBackend: Backend | null;
+  activeBackend(): Backend | null;
+  verifyIsolation?(): Promise<{ cloudCallsZero: boolean; cloudRouteRestored: boolean }>;
+  abortProvider?(): Promise<void>;
+  progress?(stage: string): void;
+}
+
+/** 诊断包装只映射已知类别，绝不公开异常原文、cause、路径或任意元数据。 */
+export function classifyAcceptanceCleanup(error: unknown): string {
+  const message = error instanceof Error ? error.message : '';
+  if (message.includes('helper 未正常结算')) return 'CLOSE_HELPER_UNSETTLED';
+  if (message.includes('控制通道提前断开')) return 'CLOSE_CONTROL_EARLY';
+  if (message.includes('控制消息顺序无效')) return 'CLOSE_CONTROL_ORDER';
+  if (message.includes('清理超时')) return 'CLOSE_JOB_TIMEOUT';
+  const code = error && typeof error === 'object' ? Reflect.get(error, 'code') : undefined;
+  if (['EBUSY', 'EPERM', 'ENOTEMPTY'].includes(String(code))) return 'CLOSE_FILESYSTEM_BUSY';
+  return 'CLOSE_OTHER';
+}
+
+/** 两模型只共享验收场景；所有任务执行、权限与进程树均由正式组合和 Core 承担。 */
+export async function runCodingModelAcceptance(input: ModelAcceptanceEnvironment): Promise<AcceptanceResult> {
+  await mkdir(join(input.temporaryRoot, 'project'));
+  const authorizedRoot = await realpath(join(input.temporaryRoot, 'project'));
+  const note = randomUUID();
+  const batch = randomUUID();
+  const kept = randomUUID();
+  await writeFile(join(authorizedRoot, 'note.txt'), `本轮内容：${note}`, 'utf8');
+  await writeFile(join(authorizedRoot, '配置说明.txt'), `批次编号：${batch}`, 'utf8');
+  await writeFile(join(authorizedRoot, 'keep.txt'), kept, 'utf8');
+  const broken = 'exports.add = (a, b) => a - b;\n';
+  const testSource = "const assert = require('node:assert/strict'); const {add} = require('./sum.cjs'); assert.equal(add(2,3),5); assert.equal(add(-1,4),3); console.log('PASS');\n";
+  await writeFile(join(authorizedRoot, 'sum.cjs'), broken, 'utf8');
+  await writeFile(join(authorizedRoot, 'test.cjs'), testSource, 'utf8');
+  await writeFile(join(authorizedRoot, 'watch.cjs'), "const fs = require('node:fs'); fs.writeFileSync('ready.json', JSON.stringify({pid:process.pid})); setInterval(()=>fs.appendFileSync('heartbeat.txt','x'),100); console.log('READY');\n", 'utf8');
+  await writeFile(join(authorizedRoot, 'package.json'), JSON.stringify({ name: 'acceptance-project', private: true, scripts: { test: 'node test.cjs', build: 'node watch.cjs' } }), 'utf8');
+  const events: TaskEvent[] = [];
+  const facts: CodingTaskToolResult[] = [];
+  const privacySessions = new PrivacySessionRegistry();
+  privacySessions.register('coding-acceptance', { incognito: false });
+  let modelId = '';
+  const composition = createMainConversationComposition({
+    catalog: input.catalog, privacySessions, sessionId: 'coding-acceptance',
+    readProviderSettings: input.readSettings, assertProviderReady: input.assertReady,
+    readAuthorizedRootPath: async () => authorizedRoot,
+    readPrivacySettings: async () => ({ dataCategories: { memory: false } }),
+    createChatAdapter: profile => {
+      const provider = input.createProvider(profile);
+      return new ConversationChatAdapter({ respond: async (request, signal) => {
+        const response = await provider.respond(request, signal);
+        const plan = response.type === 'text' ? response.structured_output?.capabilityPlan : undefined;
+        const kind = plan && typeof plan === 'object' ? Reflect.get(plan, 'kind') : undefined;
+        if (response.type === 'text' && response.structured_output) {
+          for (const [field, schema] of Object.entries({ capabilityPlan: capabilityControlPlanSchema, behaviorPlan: characterChatBehaviorPlanSchema, activity: characterBehaviorDescriptorSchema, status: characterBehaviorDescriptorSchema, movementControl: movementControlPlanSchema })) {
+            const validation = schema.safeParse(response.structured_output[field]);
+            if (!validation.success) {
+              input.progress?.(`INVALID_${field.toUpperCase()}`);
+              for (const issue of validation.error.issues) {
+                const part = issue.path.filter(value => ['kind', 'emotion', 'state', 'action', 'duration', 'preferredTool'].includes(String(value))).join('_').toUpperCase();
+                input.progress?.(`SCHEMA_${issue.code.toUpperCase()}_${part}`);
+              }
+            }
+          }
+          const preferred = plan && typeof plan === 'object' ? Reflect.get(plan, 'preferredTool') : undefined;
+          if (['read', 'bash', 'edit', 'write', 'read_file', 'powershell'].includes(String(preferred))) input.progress?.(`PREFERENCE_${String(preferred).toUpperCase()}`);
+        }
+        input.progress?.(kind === 'agent_task' ? 'CHAT_AGENT_SUGGESTED' : kind === 'chat' ? 'CHAT_ONLY' : 'CHAT_PLAN_MISSING');
+        return response;
+      } }, error => input.progress?.(`CHAT_${error.code}`));
+    },
+    createAgentService: ({ snapshot, primaryProfile, emit, emitTrustedToolResult }) => new CodingTaskService({
+      createSession: async options => {
+        const session = await createCodingSession(options);
+        return { ...session, close: async () => {
+          try { await session.close(); }
+          catch (error) { input.progress?.(classifyAcceptanceCleanup(error)); throw error; }
+        } };
+      },
+      sessionOptions: async () => ({ directory: snapshot.authorizedRootPath, dataDirectory: input.temporaryRoot,
+        approvedCommands: snapshot.approvedCommands, model: input.createConnection(primaryProfile),
+        ...await resolveCodingTaskResources({ appPath: input.appPath, isPackaged: false, resourcesPath: input.resourceRoot }),
+        trashFile: async () => { throw acceptanceError('UNEXPECTED_DELETE'); }
+      }), emit,
+      emitTrustedToolResult: result => { facts.push(result); emitTrustedToolResult(result); }
+    }),
+    behavior: behaviorPort(), emit: event => events.push(event)
+  });
+  const result: AcceptanceResult = { selection: input.scenario ?? 'all', model: input.model, modelId, requestedBackend: input.requestedBackend,
+    activeBackend: null, phase: 'failed', reasonCode: null, cleanup: false,
+    checks: { chineseChat: false, providerAbortRecovery: false, cloudCallsZero: false, cloudRouteRestored: false }, scenarios: [] };
+  const lifecycle = new AbortController();
+  let closed: Promise<void> | undefined;
+  const close = () => closed ??= (async () => {
+    lifecycle.abort();
+    const settled = await Promise.allSettled([composition.close(), input.close()]);
+    if (settled.some(item => item.status === 'rejected')) throw acceptanceError('PROCESS_CLEANUP_FAILED');
+    await removeAcceptanceRoot(input.temporaryRoot);
+    result.cleanup = true;
+  })();
+  const turn = (text: string, options: { permission?: (event: PermissionEvent) => Promise<void>; tick?: () => Promise<void>; before?: () => Promise<unknown> } = {}) => submitAcceptanceTurn({
+    events, signal: lifecycle.signal, submit: () => composition.coordinator.submit(text),
+    resolveCapabilityAuthorization: (id, choice) => composition.coordinator.resolveCapabilityAuthorization(id, choice),
+    assertNoSideEffect: options.before ?? (async () => undefined),
+    validateScope: scope => {
+      if (resolve(scope.directory) !== resolve(authorizedRoot) || scope.modelId !== modelId
+        || scope.actions.join(',') !== 'read,create,edit'
+        || scope.approvedCommands.some(command => !['npm.cmd run test', 'npm.cmd run build'].includes(command))) throw acceptanceError('SCOPE_MISMATCH');
+    },
+    ...(options.permission ? { resolvePermission: options.permission } : {}),
+    ...(options.tick ? { tick: options.tick } : {})
+  });
+  const requireSuccess = (turnEvents: readonly TaskEvent[]) => {
+    if (!turnEvents.some(event => event.type === 'phase' && event.phase === 'success')) throw acceptanceError('TASK_NOT_SUCCESS');
+    const text = findFinalAssistantText(turnEvents);
+    if (!text?.trim()) throw acceptanceError('FINAL_TEXT_MISSING');
+    return text;
+  };
+  const scenario = async (name: AcceptanceScenario['name'], run: (start: number) => Promise<void>) => {
+    if (input.scenario && input.scenario !== name) return;
+    await composition.resetForConfigurationChange();
+    const start = facts.length;
+    const record: AcceptanceScenario = { name, phase: 'failed', reasonCode: null, operations: 0, exits: [] };
+    result.scenarios.push(record);
+    input.progress?.(name.toUpperCase());
+    try { await run(start); record.phase = 'passed'; }
+    catch (error) {
+      record.reasonCode = stableAcceptanceError(error, name.toUpperCase()).message;
+      await composition.coordinator.cancelActive();
+    } finally {
+      record.operations = facts.length - start;
+      record.exits = facts.slice(start).flatMap(fact => fact.exit === undefined ? [] : [fact.exit]);
+      input.progress?.(record.reasonCode ?? `${name.toUpperCase()}_${record.phase.toUpperCase()}`);
     }
+  };
+  try {
+    await runAcceptanceLifecycle({ timeoutMs: ACCEPTANCE_TIMEOUT_MS, cancelActive: () => { void composition.coordinator.cancelActive(); }, close,
+      run: async () => {
+        input.progress?.('RUNTIME_START');
+        await input.start();
+        const settings = await input.readSettings();
+        modelId = settings.profiles.find(profile => profile.id === settings.route.agentProfileId)?.modelId ?? '';
+        if (!modelId) throw acceptanceError('MODEL_MISSING');
+        result.modelId = modelId;
+        result.activeBackend = input.activeBackend();
+        input.progress?.('CHAT');
+        const chat = requireSuccess(await turn('只用简短中文回答：你好。'));
+        if (!containsChinese(chat) || /<\/?think>|reasoning_content/iu.test(chat)) throw acceptanceError('CHINESE_CHAT_FAILED');
+        result.checks.chineseChat = true;
+        if (input.abortProvider) await input.abortProvider();
+        await scenario('read', async start => {
+          const text = requireSuccess(await turn('帮我看看 note.txt 里写了什么，把内容显示给我。'));
+          if (!text.includes(note) || !facts.slice(start).some(fact => fact.toolName === 'read' && fact.ok)) throw acceptanceError('DISK_CONTENT_MISSING');
+        });
+        result.checks.providerAbortRecovery = input.abortProvider !== undefined && result.scenarios.find(item => item.name === 'read')?.phase === 'passed';
+        await scenario('question', async start => {
+          const text = requireSuccess(await turn('配置说明里记录的批次编号是多少。'));
+          input.progress?.(/(?:粘贴|贴出|贴上|发给我|提供.{0,20}(?:内容|正文)|(?:内容|正文).{0,20}提供)/u.test(text) ? 'ANSWER_REQUEST_CONTENT' : /(?:路径|文件位置|哪份|哪一份|哪个文件|哪一个文件)/u.test(text) ? 'ANSWER_REQUEST_LOCATION' : /(?:请.{0,20}提供|提供.{0,20}说明|未提供|不清楚)/u.test(text) ? 'ANSWER_CLARIFICATION' : /(?:无法.{0,12}(?:访问|读取)|不能.{0,12}(?:访问|读取))/u.test(text) ? 'ANSWER_NO_ACCESS' : /(?:正在.{0,12}(?:读取|查看)|已.{0,12}(?:读取|查看))/u.test(text) ? 'ANSWER_EXECUTION_CLAIM' : 'ANSWER_OTHER');
+          if (!text.includes(batch) || !facts.slice(start).some(fact => ['read', 'grep'].includes(fact.toolName) && fact.ok)) throw acceptanceError('DISK_ANSWER_MISSING');
+        });
+        await scenario('question_explicit', async start => {
+          const text = requireSuccess(await turn('请查看项目中的 配置说明.txt，里面记录的批次编号是多少。'));
+          if (!text.includes(batch) || !facts.slice(start).some(fact => ['read', 'grep'].includes(fact.toolName) && fact.ok)) throw acceptanceError('DISK_ANSWER_MISSING');
+        });
+        const permitKnownCommand = (commands: readonly string[]) => async (event: PermissionEvent) => {
+          if (event.request.action !== 'bash' || resolve(event.request.cwd) !== resolve(authorizedRoot)
+            || !commands.includes(event.request.command)) throw acceptanceError('UNEXPECTED_PERMISSION');
+          await composition.coordinator.resolveFileAction(event.actionId, 'confirm');
+        };
+        await scenario('repair', async start => {
+          requireSuccess(await turn('请先运行现有测试确认问题，再修好 sum.cjs 中的函数并重新测试。', {
+            before: async () => assert.equal(await readFile(join(authorizedRoot, 'sum.cjs'), 'utf8'), broken),
+            permission: permitKnownCommand(['npm test', 'npm run test', 'npm.cmd test', 'node test.cjs'])
+          }));
+          const exits = facts.slice(start).flatMap(fact => fact.exit === undefined ? [] : [fact.exit]);
+          if (exits.length < 2 || exits[0] === 0 || exits.at(-1) !== 0) throw acceptanceError('TEST_EXIT_SEQUENCE_MISSING');
+          verifyRepairedFunction(await readFile(join(authorizedRoot, 'sum.cjs'), 'utf8'));
+          assert.equal(await readFile(join(authorizedRoot, 'test.cjs'), 'utf8'), testSource);
+        });
+        await scenario('reject', async () => {
+          let rejected = false;
+          assertRejectionCompleted(await turn('请删除项目里的 keep.txt 文件。', { permission: async event => {
+            input.progress?.(`PERMISSION_${event.request.action.toUpperCase()}`);
+            const expected = isExpectedDeletionPermission(event, authorizedRoot);
+            await composition.coordinator.resolveFileAction(event.actionId, 'cancel');
+            rejected ||= expected;
+          } }));
+          if (!rejected) throw acceptanceError('PERMISSION_NOT_OBSERVED');
+          assert.equal(await readFile(join(authorizedRoot, 'keep.txt'), 'utf8'), kept);
+        });
+        await scenario('cancel', async () => {
+          let cancelled = false;
+          let pid = 0;
+          const turnEvents = await turn('请运行项目现有的 build 脚本，观察它持续运行的状态。', {
+            permission: permitKnownCommand(['npm run build', 'node watch.cjs']),
+            tick: async () => {
+              if (cancelled) return;
+              let ready: string;
+              try { ready = await readFile(join(authorizedRoot, 'ready.json'), 'utf8'); } catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return; throw error; }
+              pid = JSON.parse(ready).pid as number;
+              if (!Number.isInteger(pid) || pid <= 0) throw acceptanceError('READY_INVALID');
+              process.kill(pid, 0);
+              cancelled = true;
+              await composition.coordinator.cancelActive();
+            }
+          });
+          if (!cancelled || !turnEvents.some(event => event.type === 'phase' && event.phase === 'cancelled')) throw acceptanceError('CANCEL_NOT_OBSERVED');
+          try { process.kill(pid, 0); throw acceptanceError('COMMAND_STILL_RUNNING'); } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error; }
+          const heartbeat = async () => readFile(join(authorizedRoot, 'heartbeat.txt'), 'utf8').catch(error => { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return ''; throw error; });
+          const before = await heartbeat();
+          await new Promise(resolve => setTimeout(resolve, 350));
+          assert.equal(await heartbeat(), before);
+        });
+        if (input.verifyIsolation) Object.assign(result.checks, await input.verifyIsolation());
+        result.phase = result.scenarios.every(item => item.phase === 'passed') ? (input.scenario ? 'partial' : 'passed') : 'failed';
+        result.reasonCode = result.scenarios.find(item => item.phase === 'failed')?.reasonCode ?? null;
+      }
+    });
+  } catch (error) { result.phase = 'failed'; result.reasonCode = stableAcceptanceError(error, 'ACCEPTANCE').message; }
+  return result;
+}
+
+/** 只删除本次 mkdtemp 的真实根；必须先由上层完成模型与 Core 的关闭。 */
+export async function removeAcceptanceRoot(root: string): Promise<void> {
+  const actual = await realpath(root);
+  const parent = await realpath(tmpdir());
+  if (dirname(actual).toLowerCase() !== parent.toLowerCase() || !basename(actual).startsWith('ai-pet-')) throw acceptanceError('CLEANUP_ROOT_INVALID');
+  await rm(actual, { recursive: true, force: true });
+}
+
+export async function runLocalModelAcceptance(input: AcceptanceInput, progress?: (stage: string) => void): Promise<AcceptanceResult> {
+  const temporaryRoot = await mkdtemp(join(tmpdir(), 'ai-pet-real-local-model-acceptance-'));
+  let observation: { deviceClass: string; offloadedLayers: number; totalLayers: number } | null = null;
+  const runtime = new LocalModelRuntime({ root: input.resourceRoot, applicationVersion: input.applicationVersion,
+    cachePath: join(temporaryRoot, 'model-hash-cache.json'), tokenRoot: join(temporaryRoot, 'tokens'),
+    backendPreference: input.requestedBackend === 'cpu' ? 'cpu-only' : 'vulkan-only',
+    acceptanceDiagnostics: { onVulkanOffloadObserved: value => { observation = value; } }
   });
   const localProvider = new LocalModelProvider(runtime);
-  const registry = new ProviderRegistry(
-    [BUILTIN_LOCAL_PROVIDER_CATALOG_ENTRY],
-    () => localProvider
-  );
-  const cloudSettings = cloudProviderSettings();
+  const catalog = [BUILTIN_LOCAL_PROVIDER_CATALOG_ENTRY];
+  const registry = new ProviderRegistry(catalog, () => localProvider);
   let cloudFetchCalls = 0;
   let cloudSecretCalls = 0;
   let enabled = true;
-  let recycleSequence = 0;
-  const observedReadTools = new Set<string>();
-  let composition: MainConversationComposition | undefined;
-  const localModelService = new LocalModelService({
-    initialEnabled: true,
-    runtime,
-    readCloudProviderSettings: async () => structuredClone(cloudSettings),
-    saveEnabled: async nextEnabled => { enabled = nextEnabled; },
-    resetForConfigurationChange: async () => {
-      await composition?.resetForConfigurationChange();
+  const cloudSettings = cloudProviderSettings();
+  const local = new LocalModelService({ initialEnabled: true, runtime,
+    readCloudProviderSettings: async () => structuredClone(cloudSettings), saveEnabled: async value => { enabled = value; },
+    resetForConfigurationChange: async () => undefined, publishStatus: () => undefined
+  });
+  const createProvider = (profile: ProviderProfileV2) => registry.create(profile,
+    async () => { cloudSecretCalls++; return 'acceptance-cloud-secret'; },
+    async () => { cloudFetchCalls++; return cloudChatResponse(); });
+  return runCodingModelAcceptance({ model: 'qwen', ...input, temporaryRoot, catalog,
+    readSettings: () => local.providerSettingsSnapshot(), createProvider,
+    createConnection: profile => createCodingModelConnection(profile, { catalog, localModel: runtime,
+      readSecret: async () => { cloudSecretCalls++; throw acceptanceError('CLOUD_CALL_DETECTED'); } }),
+    assertReady: profile => assertProviderReady(profile, runtime.getStatus()),
+    start: async () => {
+      await local.start();
+      if (runtime.getStatus().backend !== input.requestedBackend) throw acceptanceError('BACKEND_MISMATCH');
+      if (input.requestedBackend === 'vulkan') {
+        await waitForVulkanOffload(() => observation !== null);
+        if (observation?.deviceClass !== 'discrete' || observation.offloadedLayers !== observation.totalLayers) throw acceptanceError('GPU_OFFLOAD_INCOMPLETE');
+      }
+    }, close: () => local.close(), activeBackend: () => runtime.getStatus().backend as Backend | null,
+    abortProvider: async () => {
+      const abort = new AbortController();
+      const response = localProvider.respond({ messages: [{ role: 'user', content: '这条验收请求会立即取消。' }], tools: [], toolChoice: 'none', reasoningMode: 'disabled' }, abort.signal);
+      abort.abort();
+      await response.then(() => { throw acceptanceError('PROVIDER_ABORT_FAILED'); }, error => { if (!(error instanceof Error) || error.name !== 'AbortError') throw acceptanceError('PROVIDER_ABORT_FAILED'); });
     },
-    publishStatus: () => undefined
+    verifyIsolation: async () => {
+      const cloudCallsZero = cloudFetchCalls === 0 && cloudSecretCalls === 0;
+      if (!cloudCallsZero) throw acceptanceError('CLOUD_CALL_DETECTED');
+      await local.setEnabled(false);
+      const settings = await local.providerSettingsSnapshot();
+      const profile = settings.profiles.find(value => value.id === settings.route.chatProfileId)!;
+      await createProvider(profile).respond({ messages: [{ role: 'user', content: '你好' }], tools: [], toolChoice: 'none', reasoningMode: 'disabled' }, new AbortController().signal);
+      if (enabled || cloudFetchCalls !== 1 || cloudSecretCalls !== 1) throw acceptanceError('CLOUD_ROUTE_RESTORE_FAILED');
+      return { cloudCallsZero, cloudRouteRestored: true };
+    }, ...(progress ? { progress } : {})
   });
-  const privacySessions = new PrivacySessionRegistry();
-  privacySessions.register('local-model-acceptance', { incognito: false });
-  const events: TaskEvent[] = [];
-  const createProvider = (profile: ProviderProfileV2) => registry.create(
-    profile,
-    async () => {
-      cloudSecretCalls += 1;
-      return 'acceptance-cloud-secret';
-    },
-    async () => {
-      cloudFetchCalls += 1;
-      return cloudChatResponse();
-    }
-  );
-  composition = createMainConversationComposition({
-    catalog: [BUILTIN_LOCAL_PROVIDER_CATALOG_ENTRY],
-    privacySessions,
-    sessionId: 'local-model-acceptance',
-    readProviderSettings: () => localModelService.providerSettingsSnapshot(),
-    assertProviderReady: profile => assertProviderReady(profile, runtime.getStatus()),
-    readAuthorizedRootPath: async () => authorizedRoot,
-    readPrivacySettings: async () => ({ dataCategories: { memory: false } }),
-    createChatAdapter: profile => new ConversationChatAdapter(createProvider(profile)),
-    createAgentService: ({ snapshot, primaryProfile, emit, emitTrustedToolResult }) => new CodingTaskService({
-      sessionOptions: async () => ({
-        directory: snapshot.authorizedRootPath, dataDirectory: temporaryRoot,
-        approvedCommands: snapshot.approvedCommands,
-        model: createCodingModelConnection(primaryProfile, {
-          catalog: [BUILTIN_LOCAL_PROVIDER_CATALOG_ENTRY], localModel: runtime,
-          readSecret: async () => { cloudSecretCalls += 1; return 'acceptance-cloud-secret'; }
-        }),
-        ...await resolveCodingTaskResources({ appPath: input.appPath, isPackaged: false, resourcesPath: input.resourceRoot }),
-        trashFile: async absolutePath => {
-          if (basename(absolutePath) === 'acceptance-failure.txt') throw acceptanceError('FIXTURE_RECYCLE_FAILED');
-          recycleSequence += 1;
-          await rename(absolutePath, join(recycleRoot, `${recycleSequence}.recycled`));
-        }
-      }),
-      emit,
-      emitTrustedToolResult: result => { observedReadTools.add(result.toolName); emitTrustedToolResult(result); }
-    }),
-    behavior: behaviorPort(),
-    emit: event => events.push(event)
-  });
-  const submitTurn = (
-    text: string,
-    assertNoSideEffect: () => Promise<unknown> = async () => undefined
-  ) => submitAcceptanceTurn({
-    events,
-    submit: () => composition.coordinator.submit(text),
-    resolveCapabilityAuthorization: (requestId, resolution) =>
-      composition.coordinator.resolveCapabilityAuthorization(requestId, resolution),
-    assertNoSideEffect
-  });
-
-  let closePromise: Promise<void> | undefined;
-  const closeAcceptance = (): Promise<void> => {
-    closePromise ??= (async () => {
-      const cleanup = await Promise.allSettled([
-        composition.close(),
-        localModelService.close()
-      ]);
-      let temporaryRootRemoved = true;
-      try {
-        await rm(temporaryRoot, { recursive: true, force: true });
-      } catch {
-        temporaryRootRemoved = false;
-      }
-      if (!temporaryRootRemoved || cleanup.some(result => result.status === 'rejected')) {
-        throw acceptanceError('PROCESS_CLEANUP_FAILED');
-      }
-    })();
-    return closePromise;
-  };
-
-  return runAcceptanceLifecycle({
-      timeoutMs: ACCEPTANCE_TIMEOUT_MS,
-      cancelActive: () => composition.coordinator.cancelActive(),
-      close: closeAcceptance,
-      run: async () => {
-        let acceptanceStage = 'RUNTIME_START';
-        try {
-        await localModelService.start();
-    if (input.requestedBackend === 'vulkan') {
-      await waitForVulkanOffload(() => vulkanObservation !== null);
-      if (vulkanObservation?.deviceClass !== 'discrete') {
-        throw acceptanceError('DISCRETE_GPU_NOT_SELECTED');
-      }
-      if (vulkanObservation.offloadedLayers !== vulkanObservation.totalLayers) {
-        throw acceptanceError('GPU_OFFLOAD_INCOMPLETE');
-      }
-    }
-    const activeBackend = runtime.getStatus().backend;
-    if (activeBackend !== input.requestedBackend) throw acceptanceError('BACKEND_MISMATCH');
-
-    const checks: Checks = {
-      discreteGpu: input.requestedBackend === 'vulkan',
-      fullGpuOffload: input.requestedBackend === 'vulkan',
-      chineseChat: false,
-      reasoningDisabled: false,
-      toolCall: false,
-      confirmation: false,
-      fileSideEffect: false,
-      toolResultSummary: false,
-      cancelRecovery: false,
-      cloudCallsZero: false,
-      cloudRouteRestored: false,
-      createOperation: false,
-      readOperation: false,
-      globOperation: false,
-      grepOperation: false,
-      editOperation: false,
-      moveOperation: false,
-      deleteOperation: false,
-      chineseRelativePath: false,
-      clarification: false,
-      userRejected: false,
-      toolFailureRecovery: false
-    };
-
-    acceptanceStage = 'CHAT';
-    const chatEventStart = events.length;
-    await submitTurn('只用简短中文回答：你好。');
-    const chatMessage = findFinalAssistantText(events.slice(chatEventStart));
-    if (
-      chatMessage === undefined
-      || !containsChinese(chatMessage)
-      || /<think>|<\/think>|reasoning_content/iu.test(chatMessage)
-    ) {
-      throw acceptanceError('CHINESE_CHAT_FAILED');
-    }
-    checks.chineseChat = true;
-    checks.reasoningDisabled = true;
-
-    // 同一生产 LocalModelProvider 必须在 Abort 后继续供正式 Main Agent 使用。
-    const interruption = new AbortController();
-    const interruptedResponse = localProvider.respond({
-      messages: [{ role: 'user', content: '这条验收请求会立即取消。' }],
-      tools: [],
-      toolChoice: 'none',
-      reasoningMode: 'disabled'
-    }, interruption.signal);
-    interruption.abort(new DOMException('验收主动取消', 'AbortError'));
-    await interruptedResponse.then(
-      () => { throw acceptanceError('PROVIDER_ABORT_FAILED'); },
-      error => {
-        if (!(error instanceof Error) || error.name !== 'AbortError') throw error;
-      }
-    );
-    // 普通聊天与文件工具是两条独立真实探针；用正式会话重置隔离历史，避免互相污染模型裁决。
-    await composition.resetForConfigurationChange();
-
-    acceptanceStage = 'CREATE';
-    const createEventStart = events.length;
-    const createdTarget = join(authorizedRoot, 'acceptance-created.txt');
-    await submitTurn(
-      '在授权根目录下创建 acceptance-created.txt，内容只写 accepted。路径和内容齐全，请立即调用创建文件工具。',
-      () => assertPathDoesNotExist(createdTarget)
-    );
-    const createAction = findPendingAction(events.slice(createEventStart));
-    if (
-      createAction.operation !== 'create_file'
-      || normalizedRelativePath(createAction.targetRelativePath) !== 'acceptance-created.txt'
-    ) throw acceptanceError('TOOL_CALL_MISSING');
-    checks.toolCall = true;
-    checks.confirmation = await assertPathDoesNotExist(createdTarget);
-    const confirmEventStart = events.length;
-    await composition.coordinator.resolveFileAction(createAction.actionId, 'confirm');
-    if (await readFile(createdTarget, 'utf8') !== 'accepted') {
-      throw acceptanceError('FILE_SIDE_EFFECT_FAILED');
-    }
-    checks.fileSideEffect = true;
-    checks.createOperation = true;
-    checks.toolResultSummary = (
-      findFinalAssistantText(events.slice(confirmEventStart))?.trim().length ?? 0
-    ) > 0;
-    if (!checks.toolResultSummary) throw acceptanceError('TOOL_RESULT_SUMMARY_FAILED');
-
-    await mkdir(join(authorizedRoot, '目标目录'));
-    await composition.resetForConfigurationChange();
-    acceptanceStage = 'MOVE';
-    const moveEventStart = events.length;
-    const movedTarget = join(authorizedRoot, '目标目录', 'acceptance-created.txt');
-    await submitTurn(
-      '把授权根目录的 acceptance-created.txt 移动到目标目录。源和目标目录路径齐全，请立即调用移动文件工具。',
-      async () => { await access(createdTarget); await assertPathDoesNotExist(movedTarget); }
-    );
-    const moveAction = findPendingAction(events.slice(moveEventStart));
-    if (
-      moveAction.operation !== 'move_file'
-      || normalizedRelativePath(moveAction.sourceRelativePath) !== 'acceptance-created.txt'
-      || normalizedRelativePath(moveAction.targetRelativePath) !== '目标目录/acceptance-created.txt'
-    ) throw acceptanceError('MOVE_TOOL_CALL_MISSING');
-    await access(createdTarget);
-    await assertPathDoesNotExist(movedTarget);
-    await composition.coordinator.resolveFileAction(moveAction.actionId, 'confirm');
-    await assertPathDoesNotExist(createdTarget);
-    if (await readFile(movedTarget, 'utf8') !== 'accepted') {
-      throw acceptanceError('MOVE_SIDE_EFFECT_FAILED');
-    }
-    checks.moveOperation = true;
-
-    await composition.resetForConfigurationChange();
-    acceptanceStage = 'DELETE';
-    const deleteEventStart = events.length;
-    await submitTurn(
-      '删除相对路径 目标目录/acceptance-created.txt 的文件。相对路径齐全，请立即调用删除文件工具。',
-      async () => { await access(movedTarget); }
-    );
-    const deleteAction = findPendingAction(events.slice(deleteEventStart));
-    if (
-      deleteAction.operation !== 'delete_file'
-      || normalizedRelativePath(deleteAction.targetRelativePath) !== '目标目录/acceptance-created.txt'
-    ) throw acceptanceError('DELETE_TOOL_CALL_MISSING');
-    await access(movedTarget);
-    await composition.coordinator.resolveFileAction(deleteAction.actionId, 'confirm');
-    await assertPathDoesNotExist(movedTarget);
-    checks.deleteOperation = true;
-
-    await mkdir(join(authorizedRoot, '资料'));
-    await composition.resetForConfigurationChange();
-    acceptanceStage = 'CHINESE_PATH';
-    const chineseEventStart = events.length;
-    const chineseTarget = join(authorizedRoot, '资料', '中文记录.txt');
-    await submitTurn(
-      '创建相对路径 资料/中文记录.txt，内容只写 你好。相对路径和内容齐全，请立即调用创建文件工具。',
-      () => assertPathDoesNotExist(chineseTarget)
-    );
-    const chineseAction = findPendingAction(events.slice(chineseEventStart));
-    if (
-      chineseAction.operation !== 'create_file'
-      || normalizedRelativePath(chineseAction.targetRelativePath) !== '资料/中文记录.txt'
-    ) throw acceptanceError('CHINESE_PATH_TOOL_CALL_MISSING');
-    await assertPathDoesNotExist(chineseTarget);
-    await composition.coordinator.resolveFileAction(chineseAction.actionId, 'confirm');
-    if (await readFile(chineseTarget, 'utf8') !== '你好') {
-      throw acceptanceError('CHINESE_PATH_SIDE_EFFECT_FAILED');
-    }
-    checks.chineseRelativePath = true;
-
-    await composition.resetForConfigurationChange();
-    acceptanceStage = 'READ';
-    await submitTurn(
-      '读取相对路径 资料/中文记录.txt 的正文。路径齐全，请立即调用读取文件工具。',
-      async () => { if (await readFile(chineseTarget, 'utf8') !== '你好') throw acceptanceError('PREAUTH_FILE_SIDE_EFFECT'); }
-    );
-    if (!observedReadTools.has('read_file')) throw acceptanceError('READ_TOOL_CALL_MISSING');
-    checks.readOperation = true;
-
-    await composition.resetForConfigurationChange();
-    acceptanceStage = 'GLOB';
-    await submitTurn(
-      '按文件名匹配 资料/*.txt。模式齐全，请立即调用文件名匹配工具。',
-      async () => { if (await readFile(chineseTarget, 'utf8') !== '你好') throw acceptanceError('PREAUTH_FILE_SIDE_EFFECT'); }
-    );
-    if (!observedReadTools.has('glob_files')) throw acceptanceError('GLOB_TOOL_CALL_MISSING');
-    checks.globOperation = true;
-
-    await composition.resetForConfigurationChange();
-    acceptanceStage = 'GREP';
-    await submitTurn(
-      '在文件内容中搜索“你好”。查询齐全，请立即调用内容搜索工具。',
-      async () => { if (await readFile(chineseTarget, 'utf8') !== '你好') throw acceptanceError('PREAUTH_FILE_SIDE_EFFECT'); }
-    );
-    if (!observedReadTools.has('grep_files')) throw acceptanceError('GREP_TOOL_CALL_MISSING');
-    checks.grepOperation = true;
-
-    await composition.resetForConfigurationChange();
-    acceptanceStage = 'EDIT';
-    const editEventStart = events.length;
-    await submitTurn(
-      '把相对路径 资料/中文记录.txt 中唯一的“你好”精确替换为“您好”。路径、旧文本和新文本齐全，请立即调用精确编辑文件工具。',
-      async () => { if (await readFile(chineseTarget, 'utf8') !== '你好') throw acceptanceError('PREAUTH_FILE_SIDE_EFFECT'); }
-    );
-    const editAction = findPendingAction(events.slice(editEventStart));
-    if (
-      editAction.operation !== 'apply_patch'
-      || normalizedRelativePath(editAction.targetRelativePath) !== '资料/中文记录.txt'
-    ) throw acceptanceError('EDIT_TOOL_CALL_MISSING');
-    await composition.coordinator.resolveFileAction(editAction.actionId, 'confirm');
-    if (await readFile(chineseTarget, 'utf8') !== '您好') {
-      throw acceptanceError('EDIT_SIDE_EFFECT_FAILED');
-    }
-    checks.editOperation = true;
-
-    await composition.resetForConfigurationChange();
-    acceptanceStage = 'CLARIFICATION';
-    const clarificationEventStart = events.length;
-    await submitTurn('删除一个文件，但我还没有提供目标路径。请先询问缺少的信息。');
-    const clarificationEvents = events.slice(clarificationEventStart);
-    if (
-      clarificationEvents.some(event => event.type === 'pending_action')
-      || findFinalAssistantText(clarificationEvents) !== '请提供目标文件或目录的相对路径。'
-    ) {
-      throw acceptanceError('CLARIFICATION_FAILED');
-    }
-    const clarificationTarget = join(authorizedRoot, 'acceptance-clarification.txt');
-    await writeFile(clarificationTarget, 'keep after clarification', 'utf8');
-    const clarificationContinuationStart = events.length;
-    await submitTurn('目标相对路径是 acceptance-clarification.txt。', async () => {
-      if (await readFile(clarificationTarget, 'utf8') !== 'keep after clarification') {
-        throw acceptanceError('PREAUTH_FILE_SIDE_EFFECT');
-      }
-    });
-    const clarificationAction = findPendingAction(events.slice(clarificationContinuationStart));
-    if (
-      clarificationAction.operation !== 'delete_file'
-      || normalizedRelativePath(clarificationAction.targetRelativePath) !== 'acceptance-clarification.txt'
-    ) {
-      throw acceptanceError('CLARIFICATION_CONTINUATION_FAILED');
-    }
-    await composition.coordinator.resolveFileAction(clarificationAction.actionId, 'cancel');
-    if (await readFile(clarificationTarget, 'utf8') !== 'keep after clarification') {
-      throw acceptanceError('CLARIFICATION_CANCEL_SIDE_EFFECT');
-    }
-    checks.clarification = true;
-
-    await composition.resetForConfigurationChange();
-    acceptanceStage = 'USER_REJECTION';
-    const cancelEventStart = events.length;
-    const cancelledTarget = join(authorizedRoot, 'acceptance-cancelled.txt');
-    await submitTurn(
-      '在授权根目录下创建 acceptance-cancelled.txt，内容只写 cancelled。路径和内容齐全，请立即调用创建文件工具。',
-      () => assertPathDoesNotExist(cancelledTarget)
-    );
-    const cancelAction = findPendingAction(events.slice(cancelEventStart));
-    if (
-      cancelAction.operation !== 'create_file'
-      || normalizedRelativePath(cancelAction.targetRelativePath) !== 'acceptance-cancelled.txt'
-    ) throw acceptanceError('USER_REJECTION_TOOL_CALL_MISSING');
-    await assertPathDoesNotExist(cancelledTarget);
-    await composition.coordinator.resolveFileAction(cancelAction.actionId, 'cancel');
-    await assertPathDoesNotExist(cancelledTarget);
-    checks.userRejected = true;
-
-    await writeFile(join(authorizedRoot, 'acceptance-failure.txt'), 'keep', 'utf8');
-    await composition.resetForConfigurationChange();
-    acceptanceStage = 'TOOL_FAILURE';
-    const failureEventStart = events.length;
-    const failureTarget = join(authorizedRoot, 'acceptance-failure.txt');
-    await submitTurn(
-      '删除授权根目录的 acceptance-failure.txt。相对路径齐全，请立即调用删除文件工具。',
-      async () => { await access(failureTarget); }
-    );
-    const failureAction = findPendingAction(events.slice(failureEventStart));
-    if (
-      failureAction.operation !== 'delete_file'
-      || normalizedRelativePath(failureAction.targetRelativePath) !== 'acceptance-failure.txt'
-    ) throw acceptanceError('FAILURE_TOOL_CALL_MISSING');
-    await access(failureTarget);
-    const failureResolutionStart = events.length;
-    await composition.coordinator.resolveFileAction(failureAction.actionId, 'confirm');
-    const failureEvents = events.slice(failureResolutionStart);
-    if (!failureEvents.some(event => event.type === 'error' && event.code === 'RECYCLE_BIN_FAILED')) {
-      throw acceptanceError('CONTROLLED_TOOL_FAILURE_EVENT_MISSING');
-    }
-    if (findFinalAssistantText(failureEvents) !== '本地能力操作失败，未完成请求。') {
-      throw acceptanceError('CONTROLLED_TOOL_FAILURE_SUMMARY_MISSING');
-    }
-    if (!failureEvents.some(event => event.type === 'phase' && event.phase === 'error')) {
-      throw acceptanceError('CONTROLLED_TOOL_FAILURE_PHASE_MISSING');
-    }
-    await access(failureTarget);
-
-    await composition.resetForConfigurationChange();
-    acceptanceStage = 'TOOL_FAILURE_RECOVERY';
-    const recoveryEventStart = events.length;
-    const recoveredTarget = join(authorizedRoot, 'acceptance-recovered.txt');
-    await submitTurn(
-      '在授权根目录下创建 acceptance-recovered.txt，内容只写 recovered。路径和内容齐全，请立即调用创建文件工具。',
-      () => assertPathDoesNotExist(recoveredTarget)
-    );
-    const recoveryAction = findPendingAction(events.slice(recoveryEventStart));
-    if (
-      recoveryAction.operation !== 'create_file'
-      || normalizedRelativePath(recoveryAction.targetRelativePath) !== 'acceptance-recovered.txt'
-    ) throw acceptanceError('CANCEL_RECOVERY_FAILED');
-    await assertPathDoesNotExist(recoveredTarget);
-    await composition.coordinator.resolveFileAction(recoveryAction.actionId, 'confirm');
-    if (await readFile(recoveredTarget, 'utf8') !== 'recovered') {
-      throw acceptanceError('TOOL_FAILURE_RECOVERY_FAILED');
-    }
-    checks.cancelRecovery = true;
-    checks.toolFailureRecovery = true;
-
-    acceptanceStage = 'CLOUD_ROUTE';
-    checks.cloudCallsZero = cloudFetchCalls === 0 && cloudSecretCalls === 0;
-    if (!checks.cloudCallsZero) throw acceptanceError('CLOUD_CALL_DETECTED');
-    await localModelService.setEnabled(false);
-    if (enabled) throw acceptanceError('CLOUD_ROUTE_RESTORE_FAILED');
-    await submitTurn('只用简短中文回答：你好。');
-    checks.cloudRouteRestored = cloudFetchCalls === 1 && cloudSecretCalls === 1;
-    if (!checks.cloudRouteRestored) throw acceptanceError('CLOUD_ROUTE_RESTORE_FAILED');
-
-    return {
-      requestedBackend: input.requestedBackend,
-          activeBackend,
-          phase: 'passed' as const,
-          reasonCode: null,
-      checks
-    };
-        } catch (error) {
-          throw stableAcceptanceError(error, acceptanceStage);
-        }
-      }
-    });
 }

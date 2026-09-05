@@ -95,13 +95,13 @@ const layer = Layer.effectDiscard(
               return content
             }).pipe(
               Effect.mapError((error) => {
-                const message =
+                const message = PermissionV2.rejectionMessage(error) ?? (
                   error instanceof ReadToolFileSystem.BinaryFileError ||
                   error instanceof ReadToolFileSystem.MediaIngestLimitError ||
                   error instanceof Image.DecodeError ||
                   error instanceof Image.SizeError
                     ? error.message
-                    : `Unable to read ${input.path}`
+                    : `Unable to read ${input.path}`)
                 return new ToolFailure({ message })
               }),
             )

@@ -29,6 +29,7 @@ export const characterJsonOutputInstructions = [
   'mode=2 表示每段移动结束后回到 idle，再由 Main 随机等待 10–30 秒；mode=2 时 behaviorPlan 不得描述正在移动，只有 move_once 才描述本轮移动。',
   '只动一下、跑远一点或去屏幕某区域用 move_once；target 只能是 random_work_area 或公开屏幕区域，绝不提供坐标；distance 按用户语义选择 near、medium、far。',
   'capabilityPlan 每轮必填：普通聊天返回 {"kind":"chat"}；用户明确要求真实文件、目录或 PowerShell 操作时返回 {"kind":"agent_task","preferredTool":工具名或null}。它只用于请求 Main 授权，绝不表示已经执行。',
+  '本地文件内容问答需取实际信息，可建议 agent_task；缺定位时问文件名或位置，不能只让粘贴全文。操作讨论、示例、普通聊天用 chat。',
   '示例“停止不动”：movementControl={"kind":"set_mode","mode":0}。',
   '示例“时不时动一下”：movementControl={"kind":"set_mode","mode":2}。',
   '示例“跑远一点”：movementControl={"kind":"move_once","target":"random_work_area","distance":"far"}。',
@@ -139,6 +140,7 @@ export class ConversationChatAdapter {
     const controls = 解析聊天控制字段(response);
     if (controls !== null) return { text: response.text, ...controls };
 
+    let taskSuggestion = 解析独立任务建议(response.structured_output);
     const controlError = new ProviderResponseError('CONTROL_SCHEMA_INVALID', 'chat_control');
     this.reportResponseErrorSafely(controlError, correlationId);
     try {
@@ -146,12 +148,13 @@ export class ConversationChatAdapter {
       if (repaired.type === 'text' && repaired.structured_output !== undefined) {
         const repairedControls = 解析聊天控制字段(repaired);
         if (repairedControls !== null) return { text: response.text, ...repairedControls };
+        taskSuggestion ??= 解析独立任务建议(repaired.structured_output);
       }
     } catch (error) {
       if (input.signal.aborted || (error instanceof Error && error.name === 'AbortError')) throw error;
     }
-    // 首次正文已通过可见边界；修复失败只丢弃控制副作用，不用错误替换正文。
-    return { text: response.text };
+    // 表现控制修复失败时整组丢弃；独立严格任务建议仍须经过 Main 范围授权。
+    return { text: response.text, ...(taskSuggestion === undefined ? {} : { capabilityPlan: taskSuggestion }) };
   }
 
   private reportResponseErrorSafely(
@@ -164,6 +167,17 @@ export class ConversationChatAdapter {
       // 诊断上报仅尽力执行，不能替换正文回退或原始格式错误。
     }
   }
+}
+
+/** 降级候选仅接纳已知外层形状；未知字段不能借表现校验失败进入能力链。 */
+function 解析独立任务建议(output: Record<string, unknown> | undefined): CapabilityControlPlan | undefined {
+  if (output === undefined || Object.getPrototypeOf(output) !== Object.prototype) return undefined;
+  const required = ['activity', 'status', 'movementControl', 'behaviorPlan', 'capabilityPlan'];
+  if (required.some(key => !Object.prototype.hasOwnProperty.call(output, key))
+    || Object.keys(output).some(key => key !== 'text' && !required.includes(key))) return undefined;
+  if ('text' in output && (typeof output.text !== 'string' || !是合法正文(output.text))) return undefined;
+  const parsed = capabilityControlPlanSchema.safeParse(output.capabilityPlan);
+  return parsed.success && parsed.data.kind === 'agent_task' ? parsed.data : undefined;
 }
 
 type ChatControls = Omit<ConversationChatReply, 'text'>;

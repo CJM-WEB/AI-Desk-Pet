@@ -1,120 +1,98 @@
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, rm, realpath } from 'node:fs/promises';
+import { spawn } from 'node:child_process';
 import { tmpdir } from 'node:os';
-import { dirname, join, resolve } from 'node:path';
+import { basename, dirname, join, resolve } from 'node:path';
+import { createRequire } from 'node:module';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-
 import { build } from 'esbuild';
 
-const allowedBackends = new Set(['cpu', 'vulkan']);
-
-export function parseAcceptanceArguments(arguments_) {
-  const equalArgument = arguments_.find(argument => argument.startsWith('--backend='));
-  const backendIndex = arguments_.indexOf('--backend');
-  const backend = equalArgument?.slice('--backend='.length)
-    ?? (backendIndex >= 0 ? arguments_[backendIndex + 1] : undefined);
-  if (backend === undefined || backend === '') throw new Error('ACCEPTANCE_BACKEND_REQUIRED');
-  if (!allowedBackends.has(backend)) throw new Error('ACCEPTANCE_BACKEND_INVALID');
-  return { backend };
+const value = (args, name) => args.find(arg => arg.startsWith(`${name}=`))?.slice(name.length + 1)
+  ?? (args.indexOf(name) >= 0 ? args[args.indexOf(name) + 1] : undefined);
+const scenarioNames = ['read', 'question', 'question_explicit', 'repair', 'reject', 'cancel'];
+export function parseAcceptanceArguments(args) {
+  const scenario = value(args, '--scenario');
+  if ((scenario !== undefined || args.includes('--scenario')) && !scenarioNames.includes(scenario)) throw new Error('ACCEPTANCE_SCENARIO_INVALID');
+  const selection = scenario === undefined ? {} : { scenario };
+  const model = value(args, '--model') ?? 'qwen';
+  if (model === 'deepseek') {
+    const profileId = value(args, '--profile');
+    const userData = value(args, '--user-data');
+    if (!profileId || profileId === 'default') throw new Error('ACCEPTANCE_PROFILE_REQUIRED');
+    if (!userData) throw new Error('ACCEPTANCE_USER_DATA_REQUIRED');
+    return { model, profileId, userData, ...selection };
+  }
+  if (model !== 'qwen') throw new Error('ACCEPTANCE_MODEL_INVALID');
+  const backend = value(args, '--backend');
+  if (!backend) throw new Error('ACCEPTANCE_BACKEND_REQUIRED');
+  if (!['cpu', 'vulkan'].includes(backend)) throw new Error('ACCEPTANCE_BACKEND_INVALID');
+  return { model, backend, ...selection };
 }
-
-/** 公开记录只从可信结果重新构造，禁止透传 Prompt、绝对路径、Token 或原始进程日志。 */
+const code = candidate => typeof candidate === 'string' && /^[A-Z][A-Z0-9_]{0,119}$/u.test(candidate) ? candidate : null;
+const backend = candidate => ['cpu', 'vulkan'].includes(candidate) ? candidate : null;
+const count = candidate => Number.isSafeInteger(candidate) && candidate >= 0 ? candidate : 0;
+/** 每层重新构造白名单，模型正文与私有元数据不能随对象扩展进入记录。 */
 export function createAcceptanceRecord(result) {
-  return {
-    schemaVersion: 1,
-    requestedBackend: result.requestedBackend,
-    activeBackend: result.activeBackend,
-    phase: result.phase,
-    reasonCode: result.reasonCode,
-    toolName: 'create_file',
-    checks: {
-      discreteGpu: result.checks.discreteGpu === true,
-      fullGpuOffload: result.checks.fullGpuOffload === true,
-      chineseChat: result.checks.chineseChat === true,
-      reasoningDisabled: result.checks.reasoningDisabled === true,
-      toolCall: result.checks.toolCall === true,
-      confirmation: result.checks.confirmation === true,
-      fileSideEffect: result.checks.fileSideEffect === true,
-      toolResultSummary: result.checks.toolResultSummary === true,
-      cancelRecovery: result.checks.cancelRecovery === true,
-      cloudCallsZero: result.checks.cloudCallsZero === true,
-      cloudRouteRestored: result.checks.cloudRouteRestored === true,
-      createOperation: result.checks.createOperation === true,
-      readOperation: result.checks.readOperation === true,
-      globOperation: result.checks.globOperation === true,
-      grepOperation: result.checks.grepOperation === true,
-      editOperation: result.checks.editOperation === true,
-      moveOperation: result.checks.moveOperation === true,
-      deleteOperation: result.checks.deleteOperation === true,
-      chineseRelativePath: result.checks.chineseRelativePath === true,
-      clarification: result.checks.clarification === true,
-      userRejected: result.checks.userRejected === true,
-      toolFailureRecovery: result.checks.toolFailureRecovery === true
-    }
+  const selection = scenarioNames.includes(result.selection) ? result.selection : 'all';
+  return { schemaVersion: 2, selection, model: result.model === 'deepseek' ? 'deepseek' : 'qwen',
+    modelId: typeof result.modelId === 'string' && /^[a-zA-Z0-9._-]{1,100}$/u.test(result.modelId) ? result.modelId : '',
+    requestedBackend: backend(result.requestedBackend), activeBackend: backend(result.activeBackend),
+    phase: ['passed', 'partial'].includes(result.phase) ? (selection === 'all' ? 'passed' : 'partial') : 'failed', reasonCode: code(result.reasonCode), cleanup: result.cleanup === true,
+    checks: Object.fromEntries(['chineseChat', 'providerAbortRecovery', 'cloudCallsZero', 'cloudRouteRestored'].map(key => [key, result.checks?.[key] === true])),
+    scenarios: (Array.isArray(result.scenarios) ? result.scenarios : []).filter(item => ['read', 'question', 'question_explicit', 'repair', 'reject', 'cancel'].includes(item.name)).slice(0, 6).map(item => ({
+      name: item.name, phase: item.phase === 'passed' ? 'passed' : 'failed', reasonCode: code(item.reasonCode), operations: count(item.operations),
+      exits: (Array.isArray(item.exits) ? item.exits : []).filter(exit => Number.isSafeInteger(exit) && Math.abs(exit) <= 2 ** 32).slice(0, 100)
+    }))
   };
 }
-
-function isMainModule() {
-  return process.argv[1] !== undefined
-    && resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+const progress = stage => { if (/^[A-Z_]{1,80}$/u.test(stage)) process.stderr.write(`ACCEPTANCE_STAGE ${stage}\n`); };
+async function runElectron(outputFile, args, desktopRoot, bundleRoot) {
+  const executable = createRequire(import.meta.url)('electron');
+  return new Promise((resolveRun, reject) => {
+    const child = spawn(executable, [outputFile, args.userData, args.profileId, desktopRoot, bundleRoot, args.scenario ?? 'all'], { windowsHide: true, timeout: 15 * 60_000 + 30_000, stdio: ['ignore', 'ignore', 'ignore', 'ipc'] });
+    let result;
+    child.on('message', message => {
+      if (message?.type === 'progress') progress(message.stage);
+      if (message?.type === 'result') result = createAcceptanceRecord(message.result);
+    });
+    child.once('error', () => reject(new Error('ELECTRON_START_FAILED')));
+    child.once('exit', exit => result ? resolveRun(result) : reject(new Error(exit === 0 ? 'ELECTRON_RESULT_MISSING' : 'ELECTRON_FAILED')));
+  });
 }
-
 async function run() {
   let bundleRoot;
   let output;
-  let succeeded = false;
   try {
-    const { backend } = parseAcceptanceArguments(process.argv.slice(2));
-    // 仅供 CLI 契约测试注入稳定超时码；双重测试开关避免影响人工真实验收。
-    if (
-      process.env.NODE_ENV === 'test'
-      && process.env.AI_PET_LOCAL_MODEL_ACCEPTANCE_TIMEOUT_FIXTURE === '1'
-    ) {
-      throw new Error('ACCEPTANCE_TIMEOUT');
-    }
+    const args = parseAcceptanceArguments(process.argv.slice(2));
+    if (process.env.NODE_ENV === 'test' && process.env.AI_PET_LOCAL_MODEL_ACCEPTANCE_TIMEOUT_FIXTURE === '1') throw new Error('ACCEPTANCE_TIMEOUT');
     const scriptDirectory = dirname(fileURLToPath(import.meta.url));
     const desktopRoot = resolve(scriptDirectory, '..');
     bundleRoot = await mkdtemp(join(tmpdir(), 'ai-pet-local-model-acceptance-bundle-'));
     const outputFile = join(bundleRoot, 'runner.mjs');
-    await build({
-      entryPoints: [join(scriptDirectory, 'local-model-acceptance-runner.ts')],
-      outfile: outputFile,
-      bundle: true,
-      platform: 'node',
-      format: 'esm',
-      target: 'node22',
-      sourcemap: false,
-      logLevel: 'silent'
-    });
-    const runner = await import(`${pathToFileURL(outputFile).href}?run=${Date.now()}`);
-    const result = await runner.runLocalModelAcceptance({
-      requestedBackend: backend,
-      appPath: desktopRoot,
-      resourceRoot: join(desktopRoot, 'resources', 'local-model'),
-      applicationVersion: '0.1.0-alpha.1'
-    });
-    output = createAcceptanceRecord(result);
-    succeeded = true;
-  } catch (error) {
-    const reasonCode = error instanceof Error && /^[A-Z][A-Z0-9_]+$/u.test(error.message)
-      ? error.message
-      : 'ACCEPTANCE_FAILED';
-    output = {
-      schemaVersion: 1,
-      phase: 'failed',
-      reasonCode
-    };
-  } finally {
-    if (bundleRoot !== undefined) {
+    await buildAcceptanceBundle(scriptDirectory, outputFile, args.model);
+    if (args.model === 'deepseek') output = await runElectron(outputFile, args, desktopRoot, bundleRoot);
+    else {
+      const runner = await import(pathToFileURL(outputFile).href);
+      output = createAcceptanceRecord(await runner.runLocalModelAcceptance({ requestedBackend: args.backend, scenario: args.scenario, appPath: desktopRoot,
+        resourceRoot: join(desktopRoot, 'resources', 'local-model'), applicationVersion: '0.1.0-alpha.1' }, progress));
+    }
+  } catch (error) { output = { schemaVersion: 2, phase: 'failed', reasonCode: code(error?.message) ?? 'ACCEPTANCE_FAILED' }; }
+  finally {
+    if (bundleRoot) {
       try {
-        await rm(bundleRoot, { recursive: true, force: true });
-      } catch {
-        output = { schemaVersion: 1, phase: 'failed', reasonCode: 'PROCESS_CLEANUP_FAILED' };
-        succeeded = false;
-      }
+        const actual = await realpath(bundleRoot);
+        if (dirname(actual).toLowerCase() !== (await realpath(tmpdir())).toLowerCase() || !basename(actual).startsWith('ai-pet-local-model-acceptance-bundle-')) throw new Error('CLEANUP_ROOT_INVALID');
+        await rm(actual, { recursive: true, force: true });
+      } catch { output = { ...output, phase: 'failed', reasonCode: 'PROCESS_CLEANUP_FAILED', cleanup: false }; }
     }
   }
   process.stdout.write(`${JSON.stringify(output)}\n`);
-  if (!succeeded) process.exitCode = 1;
+  if (!['passed', 'partial'].includes(output.phase)) process.exitCode = 1;
 }
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) await run();
 
-if (isMainModule()) await run();
+export async function buildAcceptanceBundle(scriptDirectory, outputFile, model) {
+  await build({ entryPoints: [join(scriptDirectory, model === 'deepseek' ? 'deepseek-acceptance-main.ts' : 'local-model-acceptance-runner.ts')],
+    outfile: outputFile, bundle: true, platform: 'node', format: 'esm', target: 'node24',
+    banner: { js: "import { createRequire as acceptanceCreateRequire } from 'node:module'; const require = acceptanceCreateRequire(import.meta.url);" },
+    mainFields: ['module', 'main'], external: ['electron'], sourcemap: false, logLevel: 'silent' });
+}

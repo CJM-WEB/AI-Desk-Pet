@@ -33,22 +33,30 @@ async function launch(command: ChildProcess.Command, trusted: WindowsJobHelper |
   const name = 'aipet-job-' + randomUUID().replaceAll('-', '');
   const helper = spawn(executablePath, [name], { windowsHide: true, shell: false, stdio: ['ignore', 'pipe', 'pipe'] });
   let socket: Socket | undefined; let pid = 0; let settled: number | undefined; let rootExited = false;
+  let settlementDeadline: ReturnType<typeof setTimeout> | undefined;
   let failure: Error | undefined; let ended = false; let cancelSent = false; let buffer = '';
   let readyResolve!: () => void; let readyReject!: (e: Error) => void;
   const ready = new Promise<void>((yes, no) => { readyResolve = yes; readyReject = no; });
   let doneResolve!: (code: number) => void; let doneReject!: (e: Error) => void;
   const done = new Promise<number>((yes, no) => { doneResolve = yes; doneReject = no; });
   void done.catch(() => undefined); void ready.catch(() => undefined);
+  // helper 的 close 不等待独立命名管道；两份证据到齐才结算，坏帧仍锁定失败。
+  const finish = () => {
+    if (!ended || (!failure && settled === undefined)) return;
+    clearTimeout(settlementDeadline); socket?.destroy();
+    if (failure) { readyReject(failure); doneReject(failure); } else doneResolve(settled!);
+  };
   const fail = (reason: unknown) => {
     if (failure) return;
     failure = reason instanceof Error ? reason : new Error(String(reason)); onCleanupFailure(failure); readyReject(failure);
-    socket?.destroy(); helper.kill(); // 只终止本调用持有的 helper；其 Job 最后句柄关闭是内核兜底，仍报告未确认。
+    socket?.destroy(); if (!ended) helper.kill(); finish(); // 只终止本调用持有的 helper；其 Job 最后句柄关闭是内核兜底，仍报告未确认。
   };
   helper.once('error', fail);
   helper.once('close', code => {
-    ended = true; socket?.destroy();
-    if (!failure && (code !== 0 || settled === undefined)) fail(new Error('Windows Job 清理未确认：helper 未正常结算'));
-    if (failure) { readyReject(failure); doneReject(failure); } else doneResolve(settled!);
+    ended = true;
+    if (!failure && code !== 0) fail(new Error('Windows Job 清理未确认：helper 未正常结算'));
+    if (!failure && settled === undefined) settlementDeadline = setTimeout(() => fail(new Error('Windows Job 清理超时，未确认退出')), 5000);
+    finish();
   });
   const deadline = setTimeout(() => fail(new Error('Windows Job 启动超时')), 5000);
   const pipe = `\\\\.\\pipe\\${name}`;
@@ -79,6 +87,7 @@ async function launch(command: ChildProcess.Command, trusted: WindowsJobHelper |
             else throw new Error('Windows Job 清理失败或控制消息顺序无效');
           } catch (cause) { fail(cause); }
         }
+        finish();
       });
       attempt.once('end', () => { if (settled === undefined) fail(new Error('Windows Job 控制通道提前断开')); });
     });

@@ -1,6 +1,6 @@
 # DeepSeek 与内置 Qwen 文件任务实施计划
 
-> 执行方式：使用 subagent-driven-development 分任务实施与审查，使用 test-driven-development 执行 RED → GREEN → REFACTOR。用户只授权 Git 只读操作，所有步骤均不提交、不建分支、不推送。
+> 执行方式：使用 subagent-driven-development 分任务实施与审查，使用 test-driven-development 执行 RED → GREEN → REFACTOR。用户后续已授权完成并验证的小任务进行 Git 提交，由主控统一处理，暂不 push；早期只读记录按当时事实保留。
 
 **目标：** 使用现有 DeepSeek 与内置免费 Qwen，从正式桌宠入口完成实际文件读取、编辑以及构建／测试／修正任务。
 
@@ -203,6 +203,8 @@ Task 1 审查保留的 Minor 同时在本任务收口：初始化失败以及 di
 
 ## 任务 3：接入正式桌面入口和现有模型
 
+实施与独立审查已完成，3B 复审关闭目标引用与清理屏障两项重要发现。下列勾选项对应自动化证据；实际 Electron 界面、最终分发和旧专属文件删除仍由任务 4 收口，详见[验收记录](../../operations/2026-09-05-deepseek-qwen-coding-tasks.md)。
+
 **执行状态：** 3A模型／资源与3B正式入口的实施、定向自动化和独立审查已完成；3B两项重要发现经一轮RED/GREEN修复与独立复审关闭。下列跨阶段项目涉及的实际模型、Electron界面、分发和旧源码删除继续由任务4验收；完成事实见独立验收记录。
 
 **执行拆分：** 3A 先实现模型协议／连接、上下文预算及可信程序的构建与分发接缝；经独立审查后，3B 再接入正式任务服务、授权卡、会话与事件生命周期。两步串行，不并行改写同一运行链；3A 完成不代表桌面入口已经替换。以下要求按所属职责分别验收，完整正式链由 3B 与任务 4 验证。
@@ -292,11 +294,11 @@ try {
 
 定向 RED/GREEN 命令：`pnpm.cmd --filter @myself/desktop test -- tests/coding-task-service.test.ts tests/capability-task-adapter.test.ts tests/main-conversation-composition.test.ts`。随后运行 desktop 的 `typecheck`、相关 Renderer／共享契约测试和桌面构建，最后由任务 4 运行全门禁。
 
-- [ ] RED：通过正式 Conversation 组合提交自然表达读取，断言实际文件正文进入聊天事件并结束运行；HTTP 夹具只模拟模型，不预设 Router 必须选中的工具或返回固定成功短语。
-- [ ] DeepSeek 从现有实际选中 profile 取得 baseUrl/modelId 与 Main 凭据回调；Qwen 从已运行的私有本地连接取得配置，保留 `enable_thinking:false`、`parallel_tool_calls:false`。不经过旧单工具 ModelResponse，不静默切换模型。
-- [ ] RED → GREEN：普通聊天无工具，明确任务进入范围授权；一次授权后在范围内连续读写和运行批准命令。授权界面显示任务、目录、模型及可执行范围；高风险或范围外的具体请求使用独立确认。
-- [ ] RED → GREEN：重置、模型切换、目录变化、关闭及取消终止旧核心；迟到事件不能进入新会话。工具结果是任务事件来源，角色表现仅消费最小事实摘要。
-- [ ] RED → GREEN：模型仅说“正在读取”时不会形成无活动请求的永久运行态；真实失败、拒绝及部分执行准确展示。
+- [x] RED：通过正式 Conversation 组合提交自然表达读取，断言实际文件正文进入聊天事件并结束运行；HTTP 夹具只模拟模型，不预设 Router 必须选中的工具或返回固定成功短语。
+- [x] DeepSeek 从现有实际选中 profile 取得 baseUrl/modelId 与 Main 凭据回调；Qwen 从已运行的私有本地连接取得配置，保留 `enable_thinking:false`、`parallel_tool_calls:false`。不经过旧单工具 ModelResponse，不静默切换模型。
+- [x] RED → GREEN：普通聊天无工具，明确任务进入范围授权；一次授权后在范围内连续读写和运行批准命令。授权界面显示任务、目录、模型及可执行范围；高风险或范围外的具体请求使用独立确认。
+- [x] RED → GREEN：重置、模型切换、目录变化、关闭及取消终止旧核心；迟到事件不能进入新会话。工具结果是任务事件来源，角色表现仅消费最小事实摘要。
+- [x] RED → GREEN：模型仅说“正在读取”时不会形成无活动请求的永久运行态；真实失败、拒绝及部分执行准确展示。
 - [ ] 正式构建只加载一条新任务链；打包所需原代码、资源及依赖可解析。依据通过的替换范围删除旧专用实现和测试，保留仍用于普通聊天的公共组件。
 
 **完成标准：** 正式入口使用现有 DeepSeek／Qwen 配置运行新核心，授权、正文、终态与取消可在 Electron 链路观察。

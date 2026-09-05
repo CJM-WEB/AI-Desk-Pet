@@ -57,11 +57,22 @@ export type AskResult = typeof AskResult.Type
 
 export const Event = Permission.Event
 
-export class DeclinedError extends Schema.TaggedErrorClass<DeclinedError>()("PermissionV2.DeclinedError", {}) {}
+// 拒绝反馈仅解释已有用户决定，不改变权限裁决或取消整项任务。
+const rejectionNotice = "The user rejected permission for this operation. Do not retry the same rejected effect using another tool, command, or path. Continue only with independent authorized work; report any goal depending on this operation as incomplete."
+
+export class DeclinedError extends Schema.TaggedErrorClass<DeclinedError>()("PermissionV2.DeclinedError", {}) {
+  override get message() { return rejectionNotice }
+}
 
 export class CorrectedError extends Schema.TaggedErrorClass<CorrectedError>()("PermissionV2.CorrectedError", {
   feedback: Schema.String,
-}) {}
+}) {
+  override get message() { return `${rejectionNotice} User feedback: ${this.feedback}` }
+}
+
+// 仅公开已知拒绝类型；未知系统异常不能借此透传给模型。
+export const rejectionMessage = (error: unknown): string | undefined =>
+  error instanceof DeclinedError || error instanceof CorrectedError ? error.message : undefined
 
 export class BlockedError extends Schema.TaggedErrorClass<BlockedError>()("PermissionV2.BlockedError", {
   rules: Permission.Ruleset,

@@ -1,3 +1,5 @@
+import { PermissionV2 } from '@opencode-ai/core/permission';
+import { Effect } from 'effect';
 import { readFile, writeFile, mkdir, symlink } from 'node:fs/promises';
 import { join } from 'node:path';
 import { expect, test } from 'vitest';
@@ -163,4 +165,57 @@ test('覆盖许可等待时父目录改为 Junction，批准后仍拒绝越界�
     expect(await readFile(join(f.dataDirectory, 'victim.txt'), 'utf8')).toBe('before');
     expect(f.events).toContainEqual(expect.objectContaining({ type: 'tool', name: 'write', status: 'failed' }));
   } finally { controller.abort(); await execution; await f.close(); }
+});
+
+// 模型必须收到真实拒绝语义，同时原任务仍可继续执行其他已许可读取。
+test.each([
+  { name: 'bash', action: 'bash', args: { command: 'Remove-Item keep.txt', workdir: '.' } },
+  { name: 'apply_patch', action: 'delete', args: { patchText: '*** Begin Patch\n*** Delete File: keep.txt\n*** End Patch' } },
+])('$name 拒绝反馈保留用户决定且不取消其他许可操作', async item => {
+  const f = await fixture([[{ name: item.name, args: item.args }], [{ name: 'read', args: { path: 'note.txt' } }], '结束']);
+  const controller = new AbortController(); let execution: Promise<unknown> | undefined;
+  try {
+    await writeFile(join(f.directory, 'keep.txt'), 'unchanged');
+    await writeFile(join(f.directory, 'note.txt'), 'allowed-read');
+    execution = f.session.run('执行本轮任务', controller.signal);
+    const permission = await waitForPermission(f.events, item.action);
+    await f.session.replyPermission(permission.id, 'reject');
+    await execution;
+    expect(f.requests).toHaveLength(3);
+    const refusal = JSON.stringify(f.requests[1]!.messages.filter(message => message.role === 'tool'));
+    expect(refusal).toContain('The user rejected permission');
+    expect(refusal).not.toContain('Unable to');
+    expect(await readFile(join(f.directory, 'keep.txt'), 'utf8')).toBe('unchanged');
+    expect(f.events).toContainEqual(expect.objectContaining({ type: 'tool', name: 'read', status: 'completed' }));
+    await f.session.close();
+  } finally { controller.abort(); await execution?.catch(() => undefined); await f.close(); }
+});
+
+test('V2拒绝错误经真实Effect保留明确决定与补充反馈，未知异常不被透传', async () => {
+  expect(PermissionV2.rejectionMessage(new Error('private diagnostic'))).toBeUndefined();
+  for (const error of [new PermissionV2.DeclinedError(), new PermissionV2.CorrectedError({ feedback: 'keep the file' })]) {
+    const message = await Effect.runPromise(Effect.fail(error).pipe(Effect.catch(value => Effect.succeed(value.message))));
+    expect(message).toContain('The user rejected permission');
+    expect(message).toContain('Do not retry');
+    if (error instanceof PermissionV2.CorrectedError) expect(message).toContain('keep the file');
+  }
+});
+
+test('外部目录读取拒绝反馈明确，随后独立根内读取仍正常完成', async () => {
+  const steps: Step[] = [];
+  const f = await fixture(steps); const controller = new AbortController(); let execution: Promise<unknown> | undefined;
+  try {
+    const outside = join(f.dataDirectory, 'outside.txt');
+    await writeFile(outside, 'private-outside'); await writeFile(join(f.directory, 'note.txt'), 'allowed-read');
+    steps.push([{ name: 'read', args: { path: outside } }], [{ name: 'read', args: { path: 'note.txt' } }], '结束');
+    execution = f.session.run('读取本轮文件', controller.signal);
+    const permission = await waitForPermission(f.events, 'external_directory');
+    await f.session.replyPermission(permission.id, 'reject'); await execution;
+    expect(f.requests).toHaveLength(3);
+    const refusal = JSON.stringify(f.requests[1]!.messages.filter(message => message.role === 'tool'));
+    expect(refusal).toContain('The user rejected permission');
+    expect(JSON.stringify(f.requests)).not.toContain('private-outside');
+    expect(f.events).toContainEqual(expect.objectContaining({ type: 'tool', name: 'read', status: 'completed' }));
+    await f.session.close();
+  } finally { controller.abort(); await execution?.catch(() => undefined); await f.close(); }
 });

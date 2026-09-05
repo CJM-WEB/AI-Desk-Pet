@@ -204,11 +204,11 @@ describe('Main 会话组合模块', () => {
     expect(harness.factoryInputs).toHaveLength(0);
     await harness.composition.close();
   });
-  test('自然读取从正式范围授权进入真实 Core，确认 IPC 不等待最终正文', async () => {
+  test('自然读取表现降级后仍先确认正式范围，确认 IPC 不等待最终正文', async () => {
     const nonce = randomUUID();
     let forward: (event: CodingSessionEvent) => void = () => undefined;
     const f = await fixture([[{ name: 'read', args: { path: 'note.txt' } }], nonce], { onEvent: event => forward(event) });
-    const base = baseOptions({ chatResponse: { type: 'text', text: '申请任务', structured_output: { text: '申请任务', activity: '等待授权', status: 'idle', behaviorPlan: { kind: 'none', emotion: 'calm' }, movementControl: { kind: 'keep' }, capabilityPlan: { kind: 'agent_task', preferredTool: null } } } });
+    const base = baseOptions({ chatResponse: { type: 'text', text: '申请任务', structured_output: { text: '申请任务', activity: '等待授权', status: 'idle', behaviorPlan: { kind: 'none', emotion: 'neutral' }, movementControl: { kind: 'keep' }, capabilityPlan: { kind: 'agent_task', preferredTool: null } } } });
     await base.composition.close();
     const events: TaskEvent[] = [];
     let creates = 0;

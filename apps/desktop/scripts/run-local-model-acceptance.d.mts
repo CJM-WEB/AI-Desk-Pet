@@ -1,46 +1,25 @@
 export type AcceptanceBackend = 'cpu' | 'vulkan';
-
-export interface AcceptanceChecks {
-  discreteGpu: boolean;
-  fullGpuOffload: boolean;
-  chineseChat: boolean;
-  reasoningDisabled: boolean;
-  toolCall: boolean;
-  confirmation: boolean;
-  fileSideEffect: boolean;
-  toolResultSummary: boolean;
-  cancelRecovery: boolean;
-  cloudCallsZero: boolean;
-  cloudRouteRestored: boolean;
-  createOperation: boolean;
-  readOperation: boolean;
-  globOperation: boolean;
-  grepOperation: boolean;
-  editOperation: boolean;
-  moveOperation: boolean;
-  deleteOperation: boolean;
-  chineseRelativePath: boolean;
-  clarification: boolean;
-  userRejected: boolean;
-  toolFailureRecovery: boolean;
+export interface AcceptanceScenario {
+  name: 'read' | 'question' | 'question_explicit' | 'repair' | 'reject' | 'cancel';
+  phase: 'passed' | 'failed';
+  reasonCode: string | null;
+  operations: number;
+  exits: number[];
 }
-
 export interface AcceptanceResult {
-  requestedBackend: AcceptanceBackend;
-  activeBackend: AcceptanceBackend;
-  phase: 'passed';
-  reasonCode: null;
-  checks: AcceptanceChecks;
-  [key: string]: unknown;
+  selection: 'all' | AcceptanceScenario['name'];
+  model: 'qwen' | 'deepseek';
+  modelId: string;
+  requestedBackend: AcceptanceBackend | null;
+  activeBackend: AcceptanceBackend | null;
+  phase: 'passed' | 'failed' | 'partial';
+  reasonCode: string | null;
+  cleanup: boolean;
+  checks: { chineseChat: boolean; providerAbortRecovery: boolean; cloudCallsZero: boolean; cloudRouteRestored: boolean };
+  scenarios: AcceptanceScenario[];
 }
+export type AcceptanceArguments = { scenario?: AcceptanceScenario['name'] } & ({ model: 'qwen'; backend: AcceptanceBackend } | { model: 'deepseek'; profileId: string; userData: string });
+export function parseAcceptanceArguments(arguments_: string[]): AcceptanceArguments;
+export function createAcceptanceRecord(result: AcceptanceResult): AcceptanceResult & { schemaVersion: 2 };
 
-export function parseAcceptanceArguments(arguments_: string[]): { backend: AcceptanceBackend };
-export function createAcceptanceRecord(result: AcceptanceResult): Readonly<{
-  schemaVersion: 1;
-  requestedBackend: AcceptanceBackend;
-  activeBackend: AcceptanceBackend;
-  phase: AcceptanceResult['phase'];
-  reasonCode: AcceptanceResult['reasonCode'];
-  toolName: 'create_file';
-  checks: AcceptanceChecks;
-}>;
+export function buildAcceptanceBundle(scriptDirectory: string, outputFile: string, model: string): Promise<void>;

@@ -77,6 +77,34 @@ function 取得请求(provider: ModelProvider): ModelRequest {
 }
 
 describe('ConversationChatAdapter', () => {
+  test('实际发给聊天模型的契约包含本地内容问答和缺少位置时的能力边界', async () => {
+    const provider = 响应为({ type: 'text', text: '请指定文件位置。', structured_output: 完整控制字段() });
+    await new ConversationChatAdapter(provider).respond({ history: [], text: '说明文件里记录的编号是多少。', behaviorContext, signal: new AbortController().signal });
+    const system = 取得请求(provider).messages.find(message => message.role === 'system')?.content;
+    expect(system).toMatch(/本地文件.{0,30}实际信息.{0,80}agent_task/u);
+    expect(system).toMatch(/文件名.{0,20}位置/u);
+    expect(system).toMatch(/不能.{0,30}粘贴.{0,20}全文/u);
+    expect(取得请求(provider)).toMatchObject({ tools: [], toolChoice: 'none' });
+  });
+
+  test('表现情绪无效且修复仍失败时保留严格任务建议，不提交任何表现控制', async () => {
+    const provider = 响应为({ type: 'text', text: '准备读取。', structured_output: 完整控制字段({
+      behaviorPlan: { kind: 'none', emotion: 'neutral' },
+      capabilityPlan: { kind: 'agent_task', preferredTool: 'read_file' }
+    }) });
+    const reply = await new ConversationChatAdapter(provider).respond({ history: [], text: '帮我看看 note.txt 里写了什么，把内容显示给我。', behaviorContext, signal: new AbortController().signal });
+    expect(reply).toEqual({ text: '准备读取。', capabilityPlan: { kind: 'agent_task', preferredTool: 'read_file' } });
+  });
+
+  test.each(['capability', 'outer'])('表现降级不接纳带未知字段的%s候选', async kind => {
+    const output = 完整控制字段({ behaviorPlan: { kind: 'none', emotion: 'neutral' },
+      capabilityPlan: { kind: 'agent_task', preferredTool: 'read_file', ...(kind === 'capability' ? { authorized: true } : {}) },
+      ...(kind === 'outer' ? { permission: 'approved' } : {})
+    });
+    const reply = await new ConversationChatAdapter(响应为({ type: 'text', text: '准备读取。', structured_output: output })).respond({ history: [], text: '帮我看看 note.txt', behaviorContext, signal: new AbortController().signal });
+    expect(reply).toEqual({ text: '准备读取。' });
+  });
+
   test('控制字段损坏时保留首次正文、只记录稳定子码并以无工具请求修复一次', async () => {
     const sensitiveValues = [
       'sk-private-chat-key',

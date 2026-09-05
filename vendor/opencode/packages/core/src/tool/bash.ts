@@ -191,7 +191,7 @@ const layer = Layer.effectDiscard(
                 truncated: result.outputTruncated === true,
                 ...(warnings.length ? { warnings } : {}),
               }
-            }).pipe(Effect.mapError(() => new ToolFailure({ message: `Unable to execute command: ${input.command}` }))),
+            }).pipe(Effect.mapError((error) => new ToolFailure({ message: PermissionV2.rejectionMessage(error) ?? `Unable to execute command: ${input.command}` }))),
         }),
       })
       .pipe(Effect.orDie)

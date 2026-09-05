@@ -76,7 +76,9 @@ const layer = Layer.effectDiscard(
             toModelOutput: ({ output }) => [{ type: "text", text: toModelOutput(output) }],
             execute: (input, context) => {
               const applied: Array<typeof Applied.Type> = []
-              const fail = (path: string) => {
+              const fail = (path: string, error?: unknown) => {
+                const rejection = PermissionV2.rejectionMessage(error)
+                if (rejection) return new ToolFailure({ message: rejection })
                 const prefix =
                   applied.length === 0
                     ? `Unable to apply patch at ${path}`
@@ -196,7 +198,7 @@ const layer = Layer.effectDiscard(
                   { discard: true },
                 )
                 return { applied, files: patchFiles }
-              }).pipe(Effect.mapError((error) => (error instanceof ToolFailure ? error : fail("patch"))))
+              }).pipe(Effect.mapError((error) => (error instanceof ToolFailure ? error : fail("patch", error))))
             },
           }),
           "edit",

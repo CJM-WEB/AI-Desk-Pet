@@ -1,3 +1,7 @@
+import { EventEmitter } from 'node:events';
+import vm from 'node:vm';
+import ts from 'typescript';
+import { basename, isAbsolute } from 'node:path';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -57,6 +61,7 @@ test.runIf(process.platform === 'win32').each(['cancel', 'timeout', 'parent-exit
 test.runIf(process.platform === 'win32').each(['bind', 'terminate', 'query', 'active'] as const)('真实 helper 故障注入 %s 明确失败且无残留', async mode => {
   const directory = await mkdtemp(join(tmpdir(), '任务 故障-')); const failures: Error[] = [];
   let execution: Promise<unknown> | undefined;
+  const controller = new AbortController();
   try {
     let source = await readFile(resolve(import.meta.dirname, '../native/windows-job-helper.cs'), 'utf8');
     if (mode === 'bind') source = source.replace('Check(UpdateProcThreadAttribute(si.Attributes, 0, new IntPtr(0x2000D), jobs, new IntPtr(IntPtr.Size), IntPtr.Zero, IntPtr.Zero), "JOB_LIST");', 'Check(false, "JOB_LIST 故障注入");');
@@ -67,13 +72,18 @@ test.runIf(process.platform === 'win32').each(['bind', 'terminate', 'query', 'ac
     await writeFile(input, source);
     execFileSync(join(process.env.SystemRoot ?? 'C:/Windows', 'Microsoft.NET/Framework64/v4.0.30319/csc.exe'), ['/nologo', '/target:exe', '/r:System.Web.Extensions.dll', '/out:' + executablePath, input], { windowsHide: true, stdio: 'pipe' });
     const layer = await processRuntime({ executablePath, sha256: createHash('sha256').update(await readFile(executablePath)).digest('hex') }, failure => failures.push(failure));
-    execution = Effect.runPromiseExit(AppProcess.Service.use(p => p.run(ChildProcess.make(process.execPath, ['-e', 'require("node:fs").writeFileSync("pid",String(process.pid)); setInterval(()=>{},100)'], { cwd: directory, stdin: 'ignore' }), { timeout: '500 millis' })).pipe(Effect.provide(layer)));
+    execution = Effect.runPromiseExit(AppProcess.Service.use(p => p.run(ChildProcess.make(process.execPath, ['-e', 'require("node:fs").writeFileSync("pid",String(process.pid)); setInterval(()=>{},100)'], { cwd: directory, stdin: 'ignore' }), { signal: controller.signal, timeout: '8 seconds' })).pipe(Effect.provide(layer)));
+    // 清理故障必须在目标真实启动后触发，不能以机器启动速度作为测试前提。
+    if (mode !== 'bind') {
+      await until(async () => { try { return Number(await readFile(join(directory, 'pid'), 'utf8')) > 0; } catch { return false; } });
+      controller.abort();
+    }
     const result = await execution;
     expect(Exit.isFailure(result as Exit.Exit<unknown, unknown>)).toBe(true);
     expect(failures.length).toBeGreaterThan(0);
     if (mode === 'bind') await expect(readFile(join(directory, 'pid'))).rejects.toBeDefined();
     else { const pid = Number(await readFile(join(directory, 'pid'), 'utf8')); await until(async () => !alive(pid)); }
-  } finally { await execution; await rm(directory, { recursive: true, force: true }); }
+  } finally { controller.abort(); await execution; await rm(directory, { recursive: true, force: true }); }
 }, 15000);
 
 test.runIf(process.platform === 'win32')('helper 在 READY 后异常退出时内核清理目标并报告未确认', async () => {
@@ -109,4 +119,59 @@ test('命令输出不能伪造控制帧，输出上限与目标退出码保持�
   const layer = await processRuntime();
   const result = await Effect.runPromise(AppProcess.Service.use(p => p.run(ChildProcess.make(process.execPath, ['-e', 'console.log(JSON.stringify({type:"settled",exit:0,activeProcesses:0})); console.log("x".repeat(200000)); process.exit(71)'], { stdin: 'ignore' }), { maxOutputBytes: 1024, timeout: '5 seconds' })).pipe(Effect.provide(layer)));
   expect(result.exitCode).toBe(71); expect(result.stdoutTruncated).toBe(true); expect(result.stdout.length).toBe(1024); expect(result.stdout.toString()).toContain('"type":"settled"');
+});
+
+// 仅注入外部进程/管道事件；执行从生产文件读取并去类型的原 launch 函数，不复制状态机。
+test.each(['normal', 'reordered', 'partial', 'missing', 'invalid-active', 'nonzero', 'silent'] as const)('独立控制管道与 helper 退出顺序：%s', async mode => {
+  const source = await readFile(resolve(import.meta.dirname, '../src/windows-job-spawner.ts'), 'utf8');
+  const start = source.indexOf('async function launch(');
+  const end = source.indexOf('\nexport function windowsJobLayer', start);
+  const quote = source.slice(source.indexOf('const quote ='), source.indexOf('\n', source.indexOf('const quote =')));
+  const code = ts.transpileModule(quote + '\n' + source.slice(start, end), { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS } }).outputText;
+  const helper = Object.assign(new EventEmitter(), { kill: () => true });
+  let destroyed = false;
+  const socket = Object.assign(new EventEmitter(), { destroy: () => { destroyed = true; }, write: () => true, setEncoding: () => undefined });
+  const timers = new Set<ReturnType<typeof setTimeout>>();
+  const failures: Error[] = [];
+  const context = { Buffer, Error, process: { cwd: () => 'C:/fixture', env: {} }, basename, isAbsolute,
+    randomUUID: () => 'fixture', realpath: async (value: string) => value,
+    verifyExecutable: async () => 'C:/fixture/helper.exe', which: (value: string) => value,
+    spawn: () => helper, connect: () => socket,
+    setTimeout: (callback: () => void, delay: number) => { const timer = setTimeout(callback, Math.min(delay, 50)); timers.add(timer); return timer; },
+    clearTimeout: (timer: ReturnType<typeof setTimeout>) => { clearTimeout(timer); timers.delete(timer); }
+  };
+  vm.createContext(context);
+  vm.runInContext(code + '\nglobalThis.launchForTest = launch;', context);
+  type Owned = { done: Promise<number>; close(): Promise<void> };
+  const launch = (context as typeof context & { launchForTest(command: unknown, trusted: unknown, onFailure: (error: Error) => void): Promise<Owned> }).launchForTest;
+  try {
+    const pending = launch({ _tag: 'StandardCommand', command: 'C:/fixture/target.exe', args: [], options: { stdin: 'ignore' } }, {}, error => failures.push(error));
+    await new Promise(resolve => setImmediate(resolve));
+    socket.emit('connect'); socket.emit('data', '{"type":"ready","pid":123}\n');
+    const owned = await pending;
+    const outcome = owned.done.then(exit => ({ exit }), () => ({ failed: true }));
+    socket.emit('data', '{"type":"root_exit","exit":7}\n');
+    const frame = '{"type":"settled","exit":7,"activeProcesses":0}\n';
+    if (mode === 'normal') { socket.emit('data', frame); helper.emit('close', 0); }
+    else if (mode === 'reordered' || mode === 'partial') {
+      if (mode === 'partial') socket.emit('data', frame.slice(0, 20));
+      helper.emit('close', 0);
+      expect(destroyed).toBe(false);
+      expect(failures).toHaveLength(0);
+      socket.emit('data', mode === 'partial' ? frame.slice(20) : frame);
+    } else if (mode === 'missing') { helper.emit('close', 0); socket.emit('end'); }
+    else if (mode === 'invalid-active') { socket.emit('data', frame.replace('"activeProcesses":0', '"activeProcesses":1')); helper.emit('close', 0); }
+    else if (mode === 'nonzero') { socket.emit('data', frame); helper.emit('close', 1); }
+    else helper.emit('close', 0);
+    if (['normal', 'reordered', 'partial'].includes(mode)) {
+      expect(await outcome).toEqual({ exit: 7 });
+      await owned.close();
+      expect(failures).toHaveLength(0);
+    } else {
+      expect(await outcome).toEqual({ failed: true });
+      await expect(owned.close()).rejects.toBeDefined();
+      expect(failures).toHaveLength(1);
+    }
+    expect(destroyed).toBe(true);
+  } finally { for (const timer of timers) clearTimeout(timer); helper.removeAllListeners(); socket.removeAllListeners(); }
 });
