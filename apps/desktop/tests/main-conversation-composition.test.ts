@@ -1,3 +1,5 @@
+import { tmpdir } from 'node:os';
+const testRoot = await realpath(tmpdir());
 import type {
   ModelProvider,
   ModelRequest,
@@ -20,6 +22,14 @@ import {
 } from '../src/main/local-model/local-model-route';
 import { assertProviderReady } from '../src/main/settings/session-preflight';
 import type { ProviderSettingsSnapshot } from '../src/main/storage/settings-store';
+import { fixture } from './fixtures/coding-task-http';
+import { CodingTaskService } from '../src/main/agent/coding-task-service';
+import { writeFile, realpath } from 'node:fs/promises';
+import { join } from 'node:path';
+import { randomUUID } from 'node:crypto';
+import type { CodingSessionEvent } from '@myself/coding-task-core';
+import { fileURLToPath } from 'node:url';
+import { resolveCodingTaskResources } from '../src/main/agent/coding-task-resources';
 
 function behaviorDouble(): ConversationBehaviorPort {
   return {
@@ -129,7 +139,7 @@ function baseOptions(input: {
     }
   };
   const readProviderSettings = vi.fn(async () => providerSettings);
-  const readAuthorizedRootPath = vi.fn(async () => 'D:\\authorized');
+  const readAuthorizedRootPath = vi.fn(async () => testRoot);
   const privacySettings = { dataCategories: { memory: false } };
   const readPrivacySettings = vi.fn(async () => privacySettings);
   const factoryInputs: Array<MainConversationAgentFactoryInput<
@@ -185,6 +195,90 @@ function baseOptions(input: {
 }
 
 describe('Main 会话组合模块', () => {
+  test('不支持的任务协议在范围准备时明确拒绝，普通聊天入口保留', async () => {
+    const harness = baseOptions();
+    harness.providerSettings.profiles = [{ ...primary, mode: 'custom', protocol: 'anthropic', baseUrl: 'https://example.com', additionalParameters: {} }];
+    harness.providerSettings.route.fallbackProfileIds = [];
+    harness.providerSettings.route.allowCrossProviderFallback = false;
+    await expect(harness.composition.capabilityTasks.prepareSnapshot({ generation: 'g1', taskKind: 'file' })).rejects.toMatchObject({ code: 'CODING_MODEL_PROTOCOL_UNSUPPORTED' });
+    expect(harness.factoryInputs).toHaveLength(0);
+    await harness.composition.close();
+  });
+  test('自然读取从正式范围授权进入真实 Core，确认 IPC 不等待最终正文', async () => {
+    const nonce = randomUUID();
+    let forward: (event: CodingSessionEvent) => void = () => undefined;
+    const f = await fixture([[{ name: 'read', args: { path: 'note.txt' } }], nonce], { onEvent: event => forward(event) });
+    const base = baseOptions({ chatResponse: { type: 'text', text: '申请任务', structured_output: { text: '申请任务', activity: '等待授权', status: 'idle', behaviorPlan: { kind: 'none', emotion: 'calm' }, movementControl: { kind: 'keep' }, capabilityPlan: { kind: 'agent_task', preferredTool: null } } } });
+    await base.composition.close();
+    const events: TaskEvent[] = [];
+    let creates = 0;
+    const execution = deferred();
+    const composition = createMainConversationComposition({ ...base.options,
+      readAuthorizedRootPath: async () => f.directory,
+      createAgentService: input => {
+        creates += 1;
+        return new CodingTaskService({
+          sessionOptions: async () => ({ directory: input.snapshot.authorizedRootPath, dataDirectory: f.dataDirectory, approvedCommands: [], model: { baseUrl: '', modelId: primary.modelId, contextWindow: 8192, outputTokens: 2048, readCredential: async () => 'fixture' } }),
+          createSession: async options => { forward = options.onEvent; return { ...f.session, run: async (text, signal) => { await execution.promise; return f.session.run(text, signal); } }; },
+          emit: input.emit, emitTrustedToolResult: input.emitTrustedToolResult
+        });
+      }, emit: event => events.push(event)
+    });
+    try {
+      await writeFile(join(f.directory, 'note.txt'), nonce);
+      await writeFile(join(f.directory, 'package.json'), JSON.stringify({ packageManager: 'pnpm@10.0.0', scripts: { test: 'vitest run', lint: 'eslint .' } }));
+      await composition.coordinator.submit('帮我看看 note.txt 里写了什么');
+      expect(creates).toBe(0);
+      expect(f.requests).toHaveLength(0);
+      const scope = events.find(event => event.type === 'capability_authorization_required');
+      expect(scope).toBeDefined();
+      if (scope?.type !== 'capability_authorization_required') throw new Error('缺少范围授权');
+      expect(scope).toMatchObject({ directory: await realpath(f.directory), modelId: 'model-test', approvedCommands: ['pnpm.cmd run test', 'pnpm.cmd run lint'], actions: ['read', 'create', 'edit'] });
+      let confirmed = false;
+      const confirmation = composition.coordinator.resolveCapabilityAuthorization(scope.requestId, 'confirm').then(() => { confirmed = true; });
+      for (let index = 0; index < 30; index += 1) await Promise.resolve();
+      expect(confirmed).toBe(true);
+      execution.resolve();
+      await confirmation;
+      await expect.poll(() => events.at(-1)).toEqual({ type: 'phase', phase: 'success' });
+      expect(events).toContainEqual({ type: 'message', role: 'assistant', text: nonce });
+      expect(JSON.stringify(f.requests[1])).toContain(nonce);
+      await composition.coordinator.submit('任务完成了吗');
+      expect(events).toContainEqual({ type: 'message', role: 'assistant', text: '上一个任务已结束，状态：运行结束。收到 1 项实际工具结果。' });
+    } finally { execution.resolve(); await composition.close(); await f.close(); }
+  });
+
+  test.each([0, 7])('正式 Core 命令退出码 %s 与实际操作数进入状态追问', async exit => {
+    const resources = await resolveCodingTaskResources({ appPath: fileURLToPath(new URL('..', import.meta.url)), isPackaged: false, resourcesPath: '' });
+    let forward: (event: CodingSessionEvent) => void = () => undefined;
+    const f = await fixture([[{ name: 'bash', args: { command: `exit ${exit}`, cwd: '.' } }], '模型声称运行完成'], { ...resources, onEvent: event => forward(event) });
+    const base = baseOptions();
+    await base.composition.close();
+    const events: TaskEvent[] = [];
+    const composition = createMainConversationComposition({ ...base.options,
+      readAuthorizedRootPath: async () => f.directory,
+      createAgentService: input => new CodingTaskService({
+        sessionOptions: async () => ({ ...resources, directory: input.snapshot.authorizedRootPath, dataDirectory: f.dataDirectory, approvedCommands: input.snapshot.approvedCommands, model: { baseUrl: '', modelId: primary.modelId, contextWindow: 8192, outputTokens: 2048, readCredential: async () => 'fixture' } }),
+        createSession: async options => { forward = options.onEvent; return f.session; },
+        emit: input.emit, emitTrustedToolResult: input.emitTrustedToolResult
+      }), emit: event => events.push(event)
+    });
+    try {
+      await composition.coordinator.submit('执行 PowerShell 命令检查项目');
+      const scope = events.find(event => event.type === 'capability_authorization_required');
+      if (scope?.type !== 'capability_authorization_required') throw new Error('缺少范围授权');
+      await composition.coordinator.resolveCapabilityAuthorization(scope.requestId, 'confirm');
+      await expect.poll(() => events.some(event => event.type === 'task_permission_required')).toBe(true);
+      const permission = events.find(event => event.type === 'task_permission_required');
+      if (permission?.type !== 'task_permission_required') throw new Error('缺少命令许可');
+      await composition.coordinator.resolveFileAction(permission.actionId, 'confirm');
+      await expect.poll(() => events.at(-1)).toEqual({ type: 'phase', phase: exit === 0 ? 'success' : 'error' });
+      expect(JSON.stringify(f.requests[1])).toContain(`exit ${exit}`);
+      await composition.coordinator.submit('任务完成了吗');
+      expect(events).toContainEqual({ type: 'message', role: 'assistant', text: `上一个任务已结束，状态：${exit === 0 ? '运行结束' : '失败'}。收到 1 项实际工具结果。最近命令退出码：${exit}。` });
+    } finally { await composition.close(); await f.close(); }
+  });
+
   test('普通聊天只读模型设置且不会触碰授权或文件 Agent 工厂', async () => {
     const harness = baseOptions();
 
@@ -215,14 +309,16 @@ describe('Main 会话组合模块', () => {
       profileId: 'primary',
       providerIdentity: 'custom:openai-compatible:https://same.example/v1',
       providerName: 'primary',
+      directory: testRoot, modelId: 'model-test', approvedCommands: [],
       capabilityRevision: expect.any(String)
     });
-    expect(harness.createdAgentProfiles).toEqual(['primary', 'same-fallback']);
+    expect(harness.createdAgentProfiles).toEqual(['primary']);
     expect(harness.createdAgentProfiles).not.toContain('cross-fallback');
     expect(harness.factoryInputs[0]?.snapshot).toEqual({
       providerSettings: harness.providerSettings,
-      authorizedRootPath: 'D:\\authorized',
+      authorizedRootPath: testRoot,
       taskKind: 'file',
+      approvedCommands: [],
       privacySettings: harness.privacySettings
     });
     expect(harness.options).not.toHaveProperty('readEnabledReadTools');
@@ -245,7 +341,7 @@ describe('Main 会话组合模块', () => {
   test('配置重置撤销旧目标并允许从新授权快照重新创建', async () => {
     const harness = baseOptions();
     await harness.composition.capabilityTasks.prepareTarget({ generation: 'generation-old', taskKind: 'file' });
-    harness.readAuthorizedRootPath.mockResolvedValue('E:\\new-root');
+    harness.readAuthorizedRootPath.mockResolvedValue(process.cwd());
 
     await harness.composition.resetForConfigurationChange();
     await expect(harness.composition.capabilityTasks.prepareTarget({ generation: 'generation-new', taskKind: 'file' }))

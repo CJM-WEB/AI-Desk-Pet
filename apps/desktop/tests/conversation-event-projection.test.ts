@@ -30,6 +30,17 @@ const validPendingFileActionEvent = {
 } as const;
 
 describe('ConversationEventProjection', () => {
+  test('新任务许可的准确命令和目录只进入聊天，pet 仍只接收阶段', () => {
+    const chat = target();
+    const pet = target();
+    const projection = new ConversationEventProjection({ getChatTarget: () => chat, getPetTarget: () => pet, behavior: { handleTaskEvent: vi.fn() } });
+    const permission = { type: 'task_permission_required', actionId: 'permission-1', summary: '运行命令', request: { action: 'bash', command: 'pnpm.cmd test', cwd: 'D:\\project', resources: ['command-sha256:fixture'] } } as const;
+    expect(projection.publish(permission)).toEqual(permission);
+    expect(chat.send).toHaveBeenCalledWith(ipcChannels.taskEvent, permission);
+    expect(pet.send).not.toHaveBeenCalled();
+    projection.publish({ type: 'phase', phase: 'awaiting_confirmation' });
+    expect(pet.send).toHaveBeenCalledExactlyOnceWith(ipcChannels.taskEvent, { type: 'phase', phase: 'awaiting_confirmation' });
+  });
   test('pending_action 完整进入聊天窗口与主进程行为，且不投递给宠物窗口', () => {
     const chat = target();
     const pet = target();

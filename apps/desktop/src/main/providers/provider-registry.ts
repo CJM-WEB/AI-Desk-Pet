@@ -56,7 +56,7 @@ function validateAdditionalParameters(
   }
 }
 
-function resolveProfile(
+export function resolveProviderProfile(
   profile: ProviderProfileV2,
   catalog: readonly ProviderCatalogEntry[]
 ): { protocol: ProviderProtocol; config: ProviderAdapterConfig } {
@@ -105,7 +105,7 @@ export class ProviderRegistry {
       return this.wrapWithDiagnostics(profile, this.builtinLocalProviderFactory());
     }
 
-    const { protocol, config } = resolveProfile(profile, this.catalog);
+    const { protocol, config } = resolveProviderProfile(profile, this.catalog);
 
     if (protocol === 'anthropic') {
       return this.wrapWithDiagnostics(profile,

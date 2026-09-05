@@ -3,6 +3,9 @@ import {
   type ModelSelection
 } from '@myself/agent-core';
 import { createHash } from 'node:crypto';
+import { readFile, realpath } from 'node:fs/promises';
+import { join } from 'node:path';
+import { taskApprovedCommandsSchema } from '@myself/shared-types';
 import type {
   ProviderCatalogEntry,
   ProviderProfileV2,
@@ -11,6 +14,7 @@ import type {
 import { DisclosurePolicy, type PrivacySessionRegistry } from
   '../agent/disclosure-policy';
 import type { ProviderSettingsSnapshot } from '../storage/settings-store';
+import { resolveProviderProfile } from '../providers/provider-registry';
 import {
   normalizeModelRoutePreflightError,
   settingsIncompleteError
@@ -24,7 +28,7 @@ import {
   type CapabilityTaskAgentPort
 } from './capability-task-adapter';
 import type { CapabilityTaskKind } from './conversation-coordinator';
-import type { AgentTrustedToolResult } from '../agent/agent-service';
+import type { CodingTaskToolResult as AgentTrustedToolResult } from '../agent/coding-task-service';
 import type { ConversationBehaviorPort } from
   '../characters/character-behavior-director';
 
@@ -33,6 +37,7 @@ export type MainConversationAgentSnapshot<TPrivacy> = Readonly<{
   providerSettings: ProviderSettingsSnapshot;
   authorizedRootPath: string;
   privacySettings: TPrivacy;
+  approvedCommands: readonly string[];
 }>;
 
 export interface MainConversationAgentFactoryInput<TPrivacy> {
@@ -131,19 +136,22 @@ export function createMainConversationComposition<TPrivacy>(
   };
 
   const getAuthorizedRootPath = async (taskKind: CapabilityTaskKind): Promise<string | null> => {
-    const [providerSettings, authorizedRootPath, privacySettings] =
+    const [providerSettings, rootPath, privacySettings] =
       await Promise.all([
         options.readProviderSettings(),
         options.readAuthorizedRootPath(),
         options.readPrivacySettings()
       ]);
+    const authorizedRootPath = rootPath === null ? null : await realpath(rootPath);
+    const approvedCommands = authorizedRootPath === null ? [] : await projectCommands(authorizedRootPath);
     preparedAgentSnapshot = authorizedRootPath === null
       ? null
       : Object.freeze({
           providerSettings,
           authorizedRootPath,
           taskKind,
-          privacySettings
+          privacySettings,
+          approvedCommands
         });
     if (activeAgentRootPath !== null && activeAgentRootPath !== authorizedRootPath) return null;
     return authorizedRootPath;
@@ -177,6 +185,9 @@ export function createMainConversationComposition<TPrivacy>(
       profileId: selection.disclosureTarget.profileId,
       providerIdentity: selection.disclosureTarget.providerIdentity,
       providerName: primaryProfile.displayName,
+      directory: snapshot.authorizedRootPath,
+      modelId: primaryProfile.modelId,
+      approvedCommands: snapshot.approvedCommands,
       capabilityRevision
     };
   };
@@ -190,13 +201,15 @@ export function createMainConversationComposition<TPrivacy>(
     const selection = select(snapshot.providerSettings, 'agent');
     const primaryProfile = selection.profile;
     assertProviderReady(primaryProfile);
-    const fallbackProfiles = sameProviderAgentFallbacks(
-      snapshot.providerSettings, selection, options.catalog
-    );
+    if (resolveProviderProfile(primaryProfile, options.catalog).protocol !== 'openai-compatible') {
+      throw Object.assign(new Error('CODING_MODEL_PROTOCOL_UNSUPPORTED'), { code: 'CODING_MODEL_PROTOCOL_UNSUPPORTED' });
+    }
+    const fallbackProfiles: readonly ProviderProfileV2[] = [];
     const capabilityRevision = createHash('sha256').update(JSON.stringify({
       generation: input.generation,
       taskKind: snapshot.taskKind,
       authorizedRootPath: snapshot.authorizedRootPath,
+      approvedCommands: snapshot.approvedCommands,
       providerSettings: snapshot.providerSettings
     })).digest('hex');
     preparedAgentTarget = Object.freeze({
@@ -212,6 +225,9 @@ export function createMainConversationComposition<TPrivacy>(
       profileId: selection.disclosureTarget.profileId,
       providerIdentity: selection.disclosureTarget.providerIdentity,
       providerName: primaryProfile.displayName,
+      directory: snapshot.authorizedRootPath,
+      modelId: primaryProfile.modelId,
+      approvedCommands: snapshot.approvedCommands,
       capabilityRevision
     });
   };
@@ -271,27 +287,20 @@ export function createMainConversationComposition<TPrivacy>(
   }
 }
 
-/** 使用 ModelRouter 解析每个候选目标，绝不复制 Provider identity 算法。 */
-function sameProviderAgentFallbacks(
-  providerSettings: ProviderSettingsSnapshot,
-  selection: ModelSelection,
-  catalog: readonly ProviderCatalogEntry[]
-): ProviderProfileV2[] {
-  return selection.fallbackProfiles.filter(profile => {
-    const router = new ModelRouter({
-      profiles: providerSettings.profiles,
-      route: {
-        ...providerSettings.route,
-        agentProfileId: profile.id,
-        fallbackProfileIds: [],
-        allowCrossProviderFallback: false
-      },
-      catalog: [...catalog]
-    });
-    const candidate = router.select('agent', {
-      allowedCrossProviderProfileIds: new Set()
-    });
-    return candidate.disclosureTarget.providerIdentity
-      === selection.disclosureTarget.providerIdentity;
-  });
+/** 只列出当前项目确实存在的固定质量脚本；未知命令交由原 Core 具体许可。 */
+async function projectCommands(directory: string): Promise<readonly string[]> {
+  try {
+    const packageInfo: unknown = JSON.parse(await readFile(join(directory, 'package.json'), 'utf8'));
+    if (!packageInfo || typeof packageInfo !== 'object') return [];
+    const scripts = Reflect.get(packageInfo, 'scripts');
+    if (!scripts || typeof scripts !== 'object' || Array.isArray(scripts)) return [];
+    const manager = Reflect.get(packageInfo, 'packageManager');
+    const executable = typeof manager === 'string' && manager.startsWith('pnpm@') ? 'pnpm.cmd' : typeof manager === 'string' && manager.startsWith('yarn@') ? 'yarn.cmd' : 'npm.cmd';
+    return Object.freeze(taskApprovedCommandsSchema.parse(['build', 'test', 'typecheck', 'lint']
+      .filter(name => typeof Reflect.get(scripts, name) === 'string' && Reflect.get(scripts, name).trim().length > 0)
+      .map(name => `${executable} run ${name}`)));
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT' || error instanceof SyntaxError) return [];
+    throw error;
+  }
 }

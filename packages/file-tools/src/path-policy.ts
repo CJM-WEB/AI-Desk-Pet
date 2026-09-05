@@ -226,6 +226,40 @@ function assertNotProtected(
   }
 }
 
+/** 共用系统与私有数据保护，不授予路径权限或文件执行能力。 */
+export function assertUnprotectedFilePath(candidate: string): void {
+  assertNotProtected(candidate, protectedWindowsRoots(process.env), protectedWindowsProfilesRoots(process.env));
+}
+
+/** 把同一保护集合转换成 rg 排除参数，避免递归搜索先读取私有内容再过滤结果。 */
+export function protectedSearchGlobs(directory: string): readonly string[] {
+  const escape = (value: string) => value.replaceAll('\\', '/').replace(/[?*\[\]{}]/gu, '\\$&');
+  const globs = [...SENSITIVE_PATH_BASENAMES].flatMap(name => [`!**/${escape(name)}`, `!**/${escape(name)}/**`]);
+  const append = (root: string) => {
+    const relation = win32.relative(directory, root);
+    if (relation && relation !== '..' && !relation.startsWith('..\\') && !win32.isAbsolute(relation)) {
+      const pattern = escape(relation); globs.push(`!${pattern}`, `!${pattern}/**`);
+    }
+  };
+  protectedWindowsRoots(process.env).forEach(append);
+  for (const profiles of protectedWindowsProfilesRoots(process.env)) {
+    const below = win32.relative(directory, profiles);
+    if (below === '' || (below !== '..' && !below.startsWith('..\\') && !win32.isAbsolute(below))) {
+      for (const privateRoot of PRIVATE_USER_PROFILE_RELATIVE_ROOTS) {
+        const pattern = `${below ? escape(below) + '/' : ''}*/${escape(privateRoot)}`;
+        globs.push(`!${pattern}`, `!${pattern}/**`);
+      }
+    } else {
+      const inside = win32.relative(profiles, directory);
+      if (inside && inside !== '..' && !inside.startsWith('..\\') && !win32.isAbsolute(inside)) {
+        const userRoot = win32.join(profiles, inside.split('\\')[0]!);
+        PRIVATE_USER_PROFILE_RELATIVE_ROOTS.forEach(privateRoot => append(win32.join(userRoot, privateRoot)));
+      }
+    }
+  }
+  return globs;
+}
+
 export class PathPolicy {
   private constructor(
     private readonly rootReal: string,

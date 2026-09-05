@@ -53,7 +53,7 @@ export function ChatPanel({ api = window.myself }: { api?: MyselfApi }) {
   const conversationRevision = useTaskStore(state => state.conversationRevision);
   const phase = useTaskStore(state => state.phase);
   const messages = useTaskStore(state => state.messages);
-  const pendingAction = useTaskStore(state => state.pendingAction);
+  const pendingAction = useTaskStore(state => state.pendingPermissions[0]);
   const pendingHistoryDisclosure = useTaskStore(state => state.pendingHistoryDisclosure);
   const pendingCapabilityAuthorization = useTaskStore(
     state => state.pendingCapabilityAuthorization
@@ -156,6 +156,7 @@ export function ChatPanel({ api = window.myself }: { api?: MyselfApi }) {
     setInteractionErrorState(null);
     try {
       await api.confirmAction(pendingAction.actionId);
+      if (isCurrentOwner(owner, actionOwner.current)) taskStore.getState().completeTaskPermission(pendingAction.actionId);
     } catch {
       if (isCurrentOwner(owner, actionOwner.current)) {
         setInteractionErrorState({
@@ -182,6 +183,7 @@ export function ChatPanel({ api = window.myself }: { api?: MyselfApi }) {
     setInteractionErrorState(null);
     try {
       await api.cancelAction(pendingAction.actionId);
+      if (isCurrentOwner(owner, actionOwner.current)) taskStore.getState().completeTaskPermission(pendingAction.actionId);
     } catch {
       if (isCurrentOwner(owner, actionOwner.current)) {
         setInteractionErrorState({

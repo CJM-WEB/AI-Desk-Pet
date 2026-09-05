@@ -1,8 +1,7 @@
 import { createHash } from 'node:crypto';
-import { access, readFile, rename, writeFile } from 'node:fs/promises';
+import { access, mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { basename, join } from 'node:path';
-import { AgentLoop, ModelRouter } from '@myself/agent-core';
-import { FileToolService, PathPolicy } from '@myself/file-tools';
+import { ModelRouter } from '@myself/agent-core';
 import {
   providerCatalog,
   type ProviderProfileV2,
@@ -27,10 +26,9 @@ declare const __MYSELF_BUILD_IDENTITY__: Readonly<{
   commitShortHash: string;
   buildRootCategory: 'primary_checkout' | 'linked_worktree' | 'source_archive';
 }>;
-import { AgentService } from './agent/agent-service';
-import { PendingActionStore } from './agent/pending-action-store';
-import { createMainAgentSession } from './agent/main-agent-session-factory';
-import { PowerShellTool } from './agent/powershell-tool';
+import { CodingTaskService } from './agent/coding-task-service';
+import { resolveCodingTaskResources } from './agent/coding-task-resources';
+import { createCodingModelConnection } from './providers/coding-model-connection';
 import { PrivacySessionRegistry } from './agent/disclosure-policy';
 import { ConversationChatAdapter } from './conversation/conversation-chat-adapter';
 import { CapabilityTaskAdapter } from './conversation/capability-task-adapter';
@@ -140,7 +138,6 @@ let tray: Tray | null = null;
 let isQuitting = false;
 let activeCapabilityTaskAdapter: CapabilityTaskAdapter | null = null;
 let primaryPetWindow: BrowserWindow | null = null;
-let e2eRecycleAttempt = 0;
 
 const e2eBoundary = resolveMainE2eBoundary({
   appIsPackaged: app.isPackaged,
@@ -189,6 +186,8 @@ async function verifyExplorerSpaceResourceIntegrity(resourceRoot: string): Promi
     throw new Error('EXPLORER_SPACE_RESOURCE_INTEGRITY_FAILED');
   }
 }
+
+let e2eRecycleAttempt = 0;
 
 /** E2E 只把目标搬入受校验的临时目录，并用空标记记录调用次数，绝不触碰系统回收站。 */
 async function moveToE2eRecycleBin(absolutePath: string): Promise<void> {
@@ -1010,50 +1009,26 @@ async function createApplicationWindows(
         correlationId
       )
     ),
-    createAgentService: ({
-      snapshot,
-      generation,
-      primaryProfile,
-      fallbackProfiles,
-      emit,
-      emitTrustedToolResult
-    }) => {
-      const loop = new AgentLoop();
-      const pendingActions = new PendingActionStore({
-        onDiscard: execution => loop.discard(execution.continuationToken)
-      });
-      return new AgentService({
-        loop,
-        pending: pendingActions,
-        createSession: () => createMainAgentSession({
-          initialCapability: snapshot.taskKind,
-          authorizedRootPath: snapshot.authorizedRootPath,
-          generation,
-          provider: providerRegistry.create(
-            primaryProfile,
-            () => secrets.readForProviderCall(primaryProfile.id)
-          ),
-          fallbackProviders: fallbackProfiles
-            .filter(fallback => fallback.hasStoredSecret)
-            .map(fallback => providerRegistry.create(
-              fallback,
-              () => secrets.readForProviderCall(fallback.id)
-            )),
-          createFileTools: async () => {
-            const policy = await PathPolicy.create(snapshot.authorizedRootPath);
-            return new FileToolService(policy, {
-              moveToRecycleBin: e2eBoundary
-                ? absolutePath => moveToE2eRecycleBin(absolutePath)
-                : absolutePath => shell.trashItem(absolutePath)
-            });
-          },
-          createPowerShellTool: () => new PowerShellTool()
-        }),
-        emit,
-        emitTrustedToolResult,
-        emitBehaviorIntent: intent => characterBehaviorDirector.handleAgentBehaviorIntent(intent)
-      });
-    },
+    createAgentService: ({ snapshot, primaryProfile, emit, emitTrustedToolResult }) => new CodingTaskService({
+      sessionOptions: async () => {
+        const dataDirectory = join(app.getPath('userData'), 'coding-tasks');
+        await mkdir(dataDirectory, { recursive: true });
+        return {
+          directory: snapshot.authorizedRootPath, dataDirectory,
+          approvedCommands: snapshot.approvedCommands,
+          model: createCodingModelConnection(primaryProfile, {
+            catalog: mainProviderCatalog,
+            readSecret: () => secrets.readForProviderCall(primaryProfile.id),
+            localModel: localModelRuntime
+          }),
+          ...await resolveCodingTaskResources({ appPath: app.getAppPath(), isPackaged: app.isPackaged, resourcesPath: process.resourcesPath }),
+          trashFile: absolutePath => e2eBoundary
+            ? moveToE2eRecycleBin(absolutePath)
+            : shell.trashItem(absolutePath)
+        };
+      },
+      emit, emitTrustedToolResult
+    }),
     emit: emitConversationEvent
   });
   const conversationCoordinator = conversationComposition.coordinator;

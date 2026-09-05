@@ -1,0 +1,91 @@
+# DeepSeek 与内置 Qwen 文件任务接入验收记录
+
+日期：2026-09-05。状态：正式桌面入口实现及独立审查完成；完整真实模型、Electron界面和标准门禁验收进行中。
+
+适用[文件任务规格](../superpowers/specs/2026-09-05-ai-pet-coding-assistant-design.md)与[实施计划](../superpowers/plans/2026-09-05-deepseek-qwen-coding-tasks.md)。本记录只证明下面已执行的范围，不代替用户真实体验或未执行的阶段门禁。角色自主状态不在本轮实现范围。
+
+## 环境与来源
+
+- Windows 开发工作区，系统 Node 24.18.0、pnpm 11.9.0。开始时 Electron 为 43.1.1；Task 3A 经退出故障对照后固定为 43.5.0，内嵌 Node 24.19.0。系统 Node 和 Electron 嵌入运行时分别验证，不能互相代替。
+- OpenCode 源码来自本地 `D:/AgentLearning`，固定提交 `2a6be0a03b93a6734070e10a6c3b56863475f214`；只组装文件任务所需原核心，来源、许可证与本地补丁由 `vendor/opencode` 清单记录。
+- 工作区初始 Git 基线为 `d7abbef`。Task 1至3B期间仅执行Git只读操作；用户随后授权经验证的阶段提交，暂不push。
+- 自动化文件与命令验证使用隔离临时项目；真实模型探针不修改用户项目，也不在报告保存凭据或文件正文。
+
+## 已完成的原核心接缝
+
+原 runner、会话、工具结果关联和权限服务已在 `packages/coding-task-core` 组装。文件工具包括 read、glob、grep、write、edit、apply_patch、bash 和 todowrite；没有用旧 AgentLoop 或 FileToolService 驱动这些验证。
+
+| 验证范围 | 实际结果 | 证据边界 |
+| --- | --- | --- |
+| 原核心随机文本读取、结果回注、失败与取消 | 自动化通过 | 组件与 HTTP 模型夹具，不是正式桌面入口 |
+| 搜索、编辑、真实命令先失败再修正并通过 | 自动化通过 | 隔离项目；工具事实来自磁盘和进程 |
+| 任务内许可、单次拒绝、覆盖冲突、越界路径 | 自动化通过 | 删除回收站宿主接口的正式接入仍待后续验证 |
+| Windows Job 的取消、超时与子进程清理 | 自动化通过 | 不构成 OS 沙箱；正式桌面关闭路径仍待验证 |
+| Task 2 完整 Node 测试 | 65 项通过、1 项跳过 | 该时点完整包结果，后续新增测试须另记 |
+| Core 类型检查 | 自动化通过 | 不证明最终桌面构建已接入 |
+| Task 2 首次完整 Electron 测试 | 58 项通过、1 项失败 | 失败为双 Job 测试最终临时目录清理的 EBUSY |
+| 上项修正后的 Electron 定向复测 | 1 项通过 | 已检查目标与 helper 全部退出再有限等待目录释放；尚未据此宣称完整 Electron 重跑通过 |
+
+Task 2 独立审查发现两项路径问题：缺失父目录导致后续 Windows 路径段未校验；单文件 grep 在许可等待后未重新校验目标。两项均先观察真实失败测试再修复，定向 31 项通过，独立复审无未解决的重要发现。grep 回归使用许可期间的实际符号链接替换，并检查私有随机标记不会进入第二轮模型工具消息。
+
+实际命令包括 `pnpm.cmd --filter @myself/coding-task-core test`、`pnpm.cmd --filter @myself/coding-task-core typecheck`、`node packages/coding-task-core/run-electron-tests.cjs`，以及 Electron 定向的 `node packages/coding-task-core/run-electron-tests.cjs tests/windows-job-spawner.test.ts -t '两个独立'`。完整 Node 与 Electron 结果分别记录，不将单项重测写成整包通过。
+
+## 真实模型的早期组件证据
+
+内置 Qwen 与已配置 DeepSeek 都曾通过原 Core 的单文件自然读取探针：模型事先不知道的随机标记由真实 read 返回，并进入最终正文；各自为一次 read 调用。Qwen 该次约 1,367 毫秒，DeepSeek 约 1,896 毫秒，仅是单次观察。
+
+此证据尚不覆盖正式授权卡、界面显示、编程闭环或稳定成功率。早期 DeepSeek 探针的 `thinking` 普通请求覆盖被原 transport 拒绝，成功读取使用未指定该字段的默认策略；不能记为已验证关闭思考。正式协议扩展完成后必须重新运行真实 DeepSeek 验收。
+
+## 模型连接与构建接缝的自动化结果
+
+Task 3A 已实现 DeepSeek 的原协议扩展、本地 Qwen 连接身份与运行 generation 复核、小上下文压缩配置，以及固定 helper／ripgrep 的准备和分发接缝。此步不调用真实 Provider，不替换正式任务入口。独立审查发现开发资源定位、PowerShell 根校验和干净测试环境三项重要问题；三项均已先复现再修复，独立复审确认全部解决且未发现新问题。下表证明该接缝的自动化结果，不代表正式桌面链已经完成。
+
+| 命令／范围 | 当前实际结果 |
+| --- | --- |
+| Core 模型协议与压缩定向测试 | 8 项通过 |
+| 现有桌面模型配置连接定向测试 | 7 项通过 |
+| ripgrep 准备定向测试 | 2 项通过 |
+| 桌面资源与打包配置定向测试 | 18 项通过 |
+| `pnpm.cmd --filter @myself/coding-task-core test` | 系统 Node 下 75 项通过、1 项跳过 |
+| `node packages/coding-task-core/run-electron-tests.cjs` | Electron 43.5.0／内嵌 Node 24.19.0 下 76 项通过，退出码 0 |
+| `pnpm.cmd --filter @myself/desktop test` | 系统 Node 下 110 个文件、2,882 项测试通过 |
+| Core 与 Desktop `typecheck`、Desktop `build` | 自动化通过；未据此宣称安装包已验收 |
+
+第一轮修复后，资源与配置两个定向文件共 22 项通过；Desktop `typecheck`、`build` 和差异格式检查再次通过。开发资源解析现在必须使用 Main 提供的应用根；空、相对、UNC 和设备形式的系统根均拒绝。测试自行准备临时资源，在 Core 工作区生成目录暂时不存在时也已通过，随后原目录恢复。未为此重复运行未受影响的 Core 或桌面全套测试。
+
+完整 Electron 测试最初在 43.1.1 下出现“76 项断言通过，但退出时报 `PostQueuedCompletionStatus` 句柄错误、退出码 1”，该次判失败。官方 [PR 52956](https://github.com/electron/electron/pull/52956)与 [43.5.0 发布记录](https://releases.electronjs.org/release/v43.5.0)给出了匹配的 Windows 退出修复。同一测试在官方 43.5.0 二进制下只剩旧版本断言失败；固定桌面依赖并更新该断言后，正式整包正常通过。该对照支持采用同一主版本内官方修复，不能代替后续正式 GUI 关闭链的测试。
+
+原 43.1.1 失败只有工具输出中的 native stderr，没有独立 JavaScript stack。桌面测试保留了既有故障注入输出和 jsdom canvas 提示，构建保留既有 lucide 指令警告；没有把它们写成无输出噪声的运行。用户正在运行的开发实例未因该对照被停止。
+
+## 正式桌面入口的自动化结果
+
+Task 3B 将正式 Main 接到 `ConversationCoordinator → CapabilityTaskAdapter → CodingTaskService → createCodingSession`。当前正式构建只有新任务执行链；旧专属源码仍等待替换验收后按用户要求批准删除。普通聊天与角色保留自己的链路。
+
+正式组合的真实 HTTP／Core 测试从自然读取请求开始：范围确认前没有 Core 请求，确认及时返回，原 read 读取随机正文并回注模型，最终消息含实际内容，关闭完成后发布终态。具体许可、取消／reset清理屏障、有限历史接纳、Renderer卡片消费者和pet只接收phase均有定向验证；这不是实际窗口观察。
+
+独立审查发现并修复两项问题：激活时重建目标引用导致全部可信结果摘要丢失；旧 Core 清理失败后可通过第二次提交绕过屏障。两项均先观察正确失败，再最小修复，独立复审确认关闭。正式组合回归验证读取计数及真实 PowerShell退出码0／7；清理故障测试验证反复提交、重置和关闭仍拒绝且不创建新服务。
+
+| 命令／范围 | 实际结果 |
+| --- | --- |
+| 3B Core完整测试 | 83项通过、1项既有跳过；含8项历史／环境测试 |
+| 共享契约与审核测试 | 40项通过 |
+| `pnpm.cmd typecheck` | 全工作区通过，包括共享类型直接消费者 |
+| 修复后Adapter、正式组合、Coordinator、CodingTaskService定向测试 | 4文件130项通过 |
+| 修复后Desktop `typecheck`、`build` | 通过，生产边界脚本通过 |
+| 原E2E隔离回收站宿主回调 | 恢复接线后的24项边界单元测试通过；完整Electron删除流程待验证 |
+
+初始历史部分接纳后的失败封闭有实现，但数据库中途故障或接纳中途取消后的再次运行没有独立故障注入，保留为覆盖限制。现有真实验收脚本在3B只迁移工厂与类型，完整自然场景由任务4继续实施；未使用旧脚本的成功字段证明新链。
+
+## 桌宠与网站隔离
+
+`apps/website`、`apps/cloudbase-api`、`apps/package-scanner` 的业务、配置与运行入口未修改。共享锁文件曾因依赖重算带动既有网站链记录变化，已恢复，并单独核对六个相关 importer 及其 317 个 package／snapshot，与 Git 基线一致。后续依赖操作仍须重查该图，不能仅以网站源码无改动认定隔离完成。
+
+共享契约只读调查确认：官网与 CloudBase API 的命名导出来自 `shared-types/src/moderation.ts`，没有消费 TaskEvent、Provider profile 或任务授权类型；扫描器仅存在经角色包的传递构建依赖。因此新任务契约限定在桌面事件，投稿审核导出保持原样。3B全工作区类型检查已通过；最终构建与门禁仍按其实际执行范围记录。
+
+## 尚待完成
+
+- 正式Electron界面的任务范围卡、具体许可卡、正文与终态、取消和配置失效验收。
+- DeepSeek 与内置 Qwen 分别从正式链执行自然读取、内容问答、改测修正、拒绝及取消。
+- 完整 Electron 运行、`pnpm.cmd verify:desktop` 与相关直接消费者门禁。
+- 列明被替代旧文件，取得大量删除的二次批准后清理；当前尚未执行该删除批次。
+- 真实 Windows 窗口体验和未自动化的安装／卸载行为仍待用户人工确认。

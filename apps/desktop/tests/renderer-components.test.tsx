@@ -284,49 +284,19 @@ describe('Renderer 可见组件', () => {
     installMyselfApi({ confirmAction });
     act(() => {
       taskStore.getState().apply({
-        type: 'pending_action',
-        action: {
-          category: 'file',
-          actionId: 'old-action',
-          conversationId: 'old-conversation',
-          risk: 'write',
-          operation: 'create_file',
-          summary: '旧文件',
-          targetRelativePath: 'old.txt',
-          contentCharacters: 0,
-          contentPreview: null,
-          contentPreviewSuppressedReason: null,
-          previewTruncated: false,
-          createdAt: '2026-08-10T12:00:00.000Z',
-          expiresAt: '2026-08-10T12:02:00.000Z'
-        }
+        type: 'task_permission_required', actionId: 'old-action', summary: '覆盖文件', request: { action: 'overwrite', resources: ['old.txt'] }
       });
     });
     render(<ChatPanel />);
-    fireEvent.click(screen.getByRole('button', { name: '确认创建文件' }));
+    fireEvent.click(screen.getByRole('button', { name: '确认覆盖文件' }));
 
     act(() => {
       taskStore.getState().apply({ type: 'conversation_reset', generation: 'generation-new' });
       taskStore.getState().apply({
-        type: 'pending_action',
-        action: {
-          category: 'file',
-          actionId: 'new-action',
-          conversationId: 'new-conversation',
-          risk: 'write',
-          operation: 'apply_patch',
-          summary: '新目录',
-          targetRelativePath: 'new',
-          addedLines: 1,
-          removedLines: 0,
-          diffPreview: '@@ -1 +1 @@',
-          previewTruncated: false,
-          createdAt: '2026-08-10T12:03:00.000Z',
-          expiresAt: '2026-08-10T12:05:00.000Z'
-        }
+        type: 'task_permission_required', actionId: 'new-action', summary: '覆盖文件', request: { action: 'overwrite', resources: ['new'] }
       });
     });
-    const newConfirm = screen.getByRole('button', { name: '确认应用补丁' }) as HTMLButtonElement;
+    const newConfirm = screen.getByRole('button', { name: '确认覆盖文件' }) as HTMLButtonElement;
     expect(newConfirm.disabled).toBe(false);
     fireEvent.click(newConfirm);
     await waitFor(() => expect(confirmAction).toHaveBeenCalledTimes(2));
@@ -336,7 +306,7 @@ describe('Renderer 可见组件', () => {
       await oldAction.promise.catch(() => undefined);
     });
     expect(screen.queryByRole('alert')).toBeNull();
-    expect(screen.getByRole('button', { name: '确认应用补丁' })).toBeTruthy();
+    expect(screen.queryByRole('alert')).toBeNull();
   });
 
   test('外部会话重置后旧消息提交 reject 不追加错误或改写新阶段', async () => {
@@ -388,22 +358,7 @@ describe('Renderer 可见组件', () => {
     act(() => {
       taskStore.getState().apply({ type: 'message', role: 'assistant', text: '保留到广播' });
       taskStore.getState().apply({
-        type: 'pending_action',
-        action: {
-          category: 'file',
-          actionId: 'action-reset',
-          conversationId: 'conversation-1',
-          risk: 'write',
-          operation: 'create_file',
-          summary: '创建文件',
-          targetRelativePath: 'notes.md',
-          contentCharacters: 0,
-          contentPreview: null,
-          contentPreviewSuppressedReason: null,
-          previewTruncated: false,
-          createdAt: '2026-08-10T12:00:00.000Z',
-          expiresAt: '2026-08-10T12:02:00.000Z'
-        }
+        type: 'task_permission_required', actionId: 'action-reset', summary: '覆盖文件', request: { action: 'overwrite', resources: ['notes.md'] }
       });
     });
     render(<ChatPanel />);
@@ -424,7 +379,7 @@ describe('Renderer 可见组件', () => {
       taskStore.getState().apply({ type: 'conversation_reset', generation: 'generation-2' });
     });
     expect(screen.queryByText('保留到广播')).toBeNull();
-    expect(screen.queryByRole('button', { name: '确认创建文件' })).toBeNull();
+    expect(screen.queryByRole('button', { name: '确认覆盖文件' })).toBeNull();
   });
 
   test('新对话 IPC 失败不伪造重置成功', async () => {
@@ -501,190 +456,11 @@ describe('Renderer 可见组件', () => {
     }
   });
 
-  test('创建确认卡显示字符数和受限正文预览', () => {
-    const markup = renderToStaticMarkup(
-      <ConfirmationCard
-        action={{
-          actionId: 'action-1',
-          conversationId: 'conversation-1',
-          risk: 'write',
-          category: 'file',
-          operation: 'create_file',
-          summary: '创建 notes.md',
-          targetRelativePath: 'notes.md',
-          contentCharacters: 204,
-          contentPreview: '仅展示前两百个字符',
-          contentPreviewSuppressedReason: null,
-          previewTruncated: true,
-          createdAt: '2026-07-20T12:00:00.000Z',
-          expiresAt: '2026-07-20T12:02:00.000Z'
-        }}
-        busy={false}
-        onConfirm={vi.fn()}
-        onCancel={vi.fn()}
-      />
-    );
-
-    expect(markup).toContain('notes.md');
-    expect(markup).toContain('204');
-    expect(markup).toContain('仅展示前两百个字符');
-    expect(markup).toContain('确认创建文件');
-    expect(markup).toContain('先不创建');
-    expect(markup).toContain('不会覆盖已有文件');
-    expect(markup).not.toContain('C:\\');
-    expect(markup).not.toContain('create_file');
-  });
-
-  test.each([
-    ['sensitive', '检测到敏感内容'],
-    ['too_long', '正文超过预览上限']
-  ] as const)('创建确认卡正文因%s被抑制时只展示原因', (reason, reasonLabel) => {
-    const markup = renderToStaticMarkup(
-      <ConfirmationCard
-        action={{
-          actionId: `action-${reason}`,
-          conversationId: 'conversation-1',
-          risk: 'write',
-          category: 'file',
-          operation: 'create_file',
-          summary: '创建 sensitive.txt',
-          targetRelativePath: 'sensitive.txt',
-          contentCharacters: 28,
-          contentPreview: null,
-          contentPreviewSuppressedReason: reason,
-          previewTruncated: reason === 'too_long',
-          createdAt: '2026-07-20T12:00:00.000Z',
-          expiresAt: '2026-07-20T12:02:00.000Z'
-        }}
-        busy={false}
-        onConfirm={vi.fn()}
-        onCancel={vi.fn()}
-      />
-    );
-
-    expect(markup).toContain('28');
-    expect(markup).toContain(reasonLabel);
-    expect(markup).not.toContain('private-value');
-  });
-
-  test('删除确认卡按 operation 显示回收站提示', () => {
-    const markup = renderToStaticMarkup(
-      <ConfirmationCard
-        action={{
-          actionId: 'action-recycle',
-          conversationId: 'conversation-1',
-          risk: 'write',
-          category: 'file',
-          operation: 'delete_file',
-          summary: '备份目录',
-          targetRelativePath: 'docs/backup',
-          targetType: 'empty_directory',
-          createdAt: '2026-08-07T12:00:00.000Z',
-          expiresAt: '2026-08-07T12:02:00.000Z'
-        }}
-        busy={false}
-        onConfirm={vi.fn()}
-        onCancel={vi.fn()}
-      />
-    );
-
-    expect(markup).toContain('移入 Windows 回收站，可从回收站恢复');
-    expect(markup).toContain('待移入项目');
-    expect(markup).not.toContain('目标位置');
-    expect(markup).toContain('确认删除');
-    expect(markup).toContain('先不删除');
-    expect(markup).toContain('danger-button');
-    expect(markup).not.toContain('永久删除');
-    expect(markup).not.toContain('delete_file');
-  });
-
-  test('移动确认卡同时显示源文件和最终目标位置', () => {
-    const markup = renderToStaticMarkup(
-      <ConfirmationCard
-        action={{
-          actionId: 'action-move',
-          conversationId: 'conversation-1',
-          risk: 'write',
-          category: 'file',
-          operation: 'move_file',
-          summary: '移动 docs/source.txt 到 archive/source.txt',
-          sourceRelativePath: 'docs/source.txt',
-          targetRelativePath: 'archive/source.txt',
-          createdAt: '2026-08-25T12:00:00.000Z',
-          expiresAt: '2026-08-25T12:02:00.000Z'
-        }}
-        busy={false}
-        onConfirm={vi.fn()}
-        onCancel={vi.fn()}
-      />
-    );
-
-    expect(markup).toContain('源文件');
-    expect(markup).toContain('docs/source.txt');
-    expect(markup).toContain('目标位置');
-    expect(markup).toContain('archive/source.txt');
-    expect(markup).toContain('确认移动文件');
-    expect(markup).toContain('先不移动');
-    expect(markup).toContain('不会覆盖已有文件');
-  });
-
-  test('补丁确认卡不依赖 summary 关键字并展示增删行与预览', () => {
-    const markup = renderToStaticMarkup(
-      <ConfirmationCard
-        action={{
-          actionId: 'action-directory',
-          conversationId: 'conversation-1',
-          risk: 'write',
-          category: 'file',
-          operation: 'apply_patch',
-          summary: '新建一个收纳位置',
-          targetRelativePath: 'archive',
-          addedLines: 3,
-          removedLines: 1,
-          diffPreview: '@@ -1 +1 @@',
-          previewTruncated: false,
-          createdAt: '2026-08-07T12:00:00.000Z',
-          expiresAt: '2026-08-07T12:02:00.000Z'
-        }}
-        busy={false}
-        onConfirm={vi.fn()}
-        onCancel={vi.fn()}
-      />
-    );
-
-    expect(markup).toContain('确认应用补丁');
-    expect(markup).toContain('新增 3 行，删除 1 行');
-    expect(markup).toContain('@@ -1 +1 @@');
-    expect(markup).toContain('仅修改已有文件；执行前还会再次进行冲突校验。');
-  });
-
-  test('PowerShell 确认卡展示完整命令、目录摘要、前台模式和非沙箱风险', () => {
-    const markup = renderToStaticMarkup(
-      <ConfirmationCard
-        action={{
-          actionId: 'shell-1',
-          conversationId: 'conversation-1',
-          category: 'powershell',
-          risk: 'shell',
-          operation: 'powershell',
-          summary: '运行 PowerShell 命令',
-          command: 'Get-ChildItem -Force',
-          workingDirectoryLabel: '项目目录',
-          runMode: 'foreground',
-          createdAt: '2026-08-12T12:00:00.000Z',
-          expiresAt: '2026-08-12T12:02:00.000Z'
-        }}
-        busy={false}
-        onConfirm={vi.fn()}
-        onCancel={vi.fn()}
-      />
-    );
-
-    expect(markup).toContain('Get-ChildItem -Force');
-    expect(markup).toContain('项目目录');
-    expect(markup).toContain('以当前 Windows 用户权限在前台非交互执行；这不是安全沙箱');
-    expect(markup).toContain('确认运行命令');
-    expect(markup).toContain('先不运行');
+  test.each(['delete', 'overwrite', 'external_directory'] as const)('具体 %s 许可显示准确路径和固定操作含义', action => {
+    const markup = renderToStaticMarkup(<ConfirmationCard action={{ type: 'task_permission_required', actionId: 'permission-1', summary: '核对目标', request: { action, resources: ['D:\\project\\note.txt'] } }} busy={false} onConfirm={vi.fn()} onCancel={vi.fn()} />);
+    expect(markup).toContain('D:\\project\\note.txt');
+    expect(markup).toContain(action === 'delete' ? 'Windows 回收站' : action === 'overwrite' ? '覆盖已有文件' : '超出原授权目录');
+    expect(markup).toContain('拒绝本次操作');
   });
 
   test('设置工作区仅提供模型、隐私和本地数据导航', () => {

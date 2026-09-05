@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import type { FilePlanningHint, ModelMessage } from '@myself/agent-core';
+import type { ModelMessage } from '@myself/agent-core';
 import type {
   HistoryDisclosureDecision,
   TaskEvent
@@ -11,25 +11,16 @@ import type {
   ConversationBehaviorPort,
   ExplicitBehaviorDirective
 } from '../characters/character-behavior-director';
-import type { AgentFileTaskOutcome, AgentTrustedToolResult } from '../agent/agent-service';
-import {
-  capabilityIntentRouter,
-  createFilePlanningHint,
-  type CapabilityIntent
-} from './capability-intent-router';
+import type { CodingTaskOutcome as AgentFileTaskOutcome, CodingTaskToolResult as AgentTrustedToolResult } from '../agent/coding-task-service';
+import { capabilityIntentRouter } from './capability-intent-router';
 import {
   isPublicFileTaskErrorCode,
   publicFileTaskErrorDetails
 } from '../agent/file-task-public-errors';
-import {
-  CapabilityTransactionStore,
-  type CapabilityTransactionSnapshot
-} from './capability-transaction';
 import { ProviderResponseError } from '../providers/provider-response-error';
 
 const 最大用户消息字符数 = 4_000;
 const 任务级授权有效期毫秒 = 2 * 60 * 1_000;
-const 最大私有规划上下文字符数 = 1_200;
 
 export interface ChatTurnFactory {
   create(signal: AbortSignal): Promise<{
@@ -46,6 +37,9 @@ export type PreparedCapabilityTarget = Readonly<{
   profileId: string;
   providerIdentity: string;
   providerName: string;
+  directory: string;
+  modelId: string;
+  approvedCommands: readonly string[];
   /** Main 内部能力快照指纹，绑定授权根与完整 Provider 设置。 */
   capabilityRevision: string;
 }>;
@@ -60,7 +54,6 @@ export interface ConversationCapabilityTaskPort {
   prepareTarget(input: {
     generation: string;
     taskKind: CapabilityTaskKind;
-    continuationTarget?: PreparedCapabilityTarget;
   }): Promise<PreparedCapabilityTarget>;
   prepareSnapshot(input: {
     generation: string;
@@ -76,10 +69,8 @@ export interface ConversationCapabilityTaskPort {
     visibleHistory: readonly ModelMessage[];
     generation: string;
     taskKind: CapabilityTaskKind;
-    planningHint?: FilePlanningHint;
-    privatePlanningContext?: string;
   }): Promise<AgentFileTaskOutcome>;
-  cancelActive(): void;
+  cancelActive(): void | Promise<void>;
   resolveAction(actionId: string, decision: 'confirm' | 'cancel'): Promise<void>;
   resetForNewConversation(): Promise<void>;
   close(): Promise<void>;
@@ -112,10 +103,6 @@ interface TurnContext {
   explicitDirective: ExplicitBehaviorDirective | null;
   generation: string;
   controller: AbortController;
-  planningHint?: FilePlanningHint;
-  continuationTarget?: PreparedCapabilityTarget;
-  transactionContinuation?: boolean;
-  privatePlanningContext?: string;
   modelEscalation?: 'allowed' | 'blocked';
 }
 
@@ -124,14 +111,8 @@ type PendingCapabilityAuthorization = Readonly<{
   context: TurnContext;
   taskKind: CapabilityTaskKind;
   target: PreparedCapabilityTarget;
-  preferredTool: import('@myself/agent-core').AgentPlanningTool | null;
+  visibleHistory: readonly ModelMessage[];
   expiresAtMs: number;
-}>;
-
-type PendingFileContinuation = Readonly<{
-  generation: string;
-  capabilityText: string;
-  target: PreparedCapabilityTarget;
 }>;
 
 interface PendingChatDisclosure extends TurnContext {
@@ -162,13 +143,6 @@ interface ActiveCapabilityTurn {
   outcomeReady: boolean;
 }
 
-type ReplayableFileTurn = Readonly<{
-  generation: string;
-  capabilityText: string;
-  target: PreparedCapabilityTarget;
-  planningHint?: FilePlanningHint;
-}>;
-
 export class ConversationCoordinator {
   private assistantTurnSequence = 0;
   private state: ConversationState = { kind: 'idle' };
@@ -176,12 +150,10 @@ export class ConversationCoordinator {
   private generation: string;
   private readonly unsubscribeCapabilityEvents: () => void;
   private readonly unsubscribeTrustedToolResults: () => void;
-  private readonly capabilityTransaction = new CapabilityTransactionStore();
-  private capabilityTransactionTarget: PreparedCapabilityTarget | null = null;
+  private resultSummary: { operations: number; lastExit?: number; phase: 'success' | 'error' | 'cancelled' | null } | null = null;
+  private backgroundTask: Promise<void> | null = null;
   private pendingDisclosure: PendingHistoryDisclosure | null = null;
   private activeCapabilityTurn: ActiveCapabilityTurn | null = null;
-  private replayableFileTurn: ReplayableFileTurn | null = null;
-  private pendingFileContinuation: PendingFileContinuation | null = null;
   private pendingCapabilityAuthorization: PendingCapabilityAuthorization | null = null;
   private closePromise: Promise<void> | null = null;
 
@@ -214,16 +186,15 @@ export class ConversationCoordinator {
       throw normalizedError;
     }
 
-    const existingTransaction = this.capabilityTransaction.snapshot();
-    if (existingTransaction === null) this.clearCapabilityTransactionState();
-    if (existingTransaction?.generation === this.generation) {
-      const earlyIntent = capabilityIntentRouter.route(normalized);
-      const beginsNewCapabilityTask = earlyIntent.kind === 'powershell_task'
-        || earlyIntent.kind === 'file_task';
-      if (beginsNewCapabilityTask) {
-        this.invalidateCapabilityTransaction('new_task');
-      }
+    if (this.resultSummary !== null && this.resultSummary.phase !== null
+      && /^(?:上一个任务|任务|上次任务)?(?:完成了吗|成功了吗|结束了吗)[？?。]?$/u.test(normalized)) {
+      const summary = this.resultSummary;
+      this.options.emit({ type: 'message', role: 'user', text: normalized });
+      this.options.emit({ type: 'message', role: 'assistant', text: `上一个任务已结束，状态：${summary.phase === 'success' ? '运行结束' : summary.phase === 'error' ? '失败' : '已取消'}。收到 ${summary.operations} 项实际工具结果。${summary.lastExit === undefined ? '' : `最近命令退出码：${summary.lastExit}。`}` });
+      this.options.emit({ type: 'phase', phase: 'success' });
+      return;
     }
+    if (capabilityIntentRouter.route(normalized).kind !== 'chat') this.resultSummary = null;
 
     const context: TurnContext = {
       text: normalized,
@@ -250,121 +221,13 @@ export class ConversationCoordinator {
       context.capabilityText = prepared.capabilityText;
       context.explicitDirective = prepared.explicitDirective;
 
-      const transactionSnapshot = this.capabilityTransaction.snapshot();
-      if (transactionSnapshot === null) this.clearCapabilityTransactionState();
-      const transactionFollowUp = transactionSnapshot?.generation === context.generation
-        ? this.capabilityTransaction.classifyFollowUp(context.capabilityText)
-        : 'none';
-
-      const continuation = this.pendingFileContinuation;
-      const continuationIntent = capabilityIntentRouter.route(context.capabilityText);
-      const canUseTrustedFileContinuation = (
-        continuation?.generation === context.generation
-        || (
-          transactionSnapshot?.generation === context.generation
-          && transactionSnapshot.kind === 'file'
-          && this.capabilityTransactionTarget !== null
-        )
-      );
-      const trustedContinuationIntent = canUseTrustedFileContinuation
-        ? capabilityIntentRouter.routeTrustedFileContinuation(context.capabilityText)
-        : null;
-      const trustedReferenceContinuation = continuationIntent.kind === 'chat'
-        && continuationIntent.modelEscalation === 'allowed'
-        && trustedContinuationIntent?.kind === 'file_task'
-        && createFilePlanningHint(context.capabilityText) !== null;
-      const trustedPendingContinuation = continuationIntent.kind === 'chat'
-        && continuationIntent.modelEscalation === 'allowed'
-        && trustedContinuationIntent?.kind === 'file_task';
-      if (
-        transactionSnapshot !== null
-        && isTerminalTransactionPhase(transactionSnapshot.phase)
-        && (
-          transactionFollowUp === 'status'
-          || (transactionFollowUp === 'continue' && isBareContinueFollowUp(context.capabilityText))
-        )
-      ) {
-        this.finishTransactionStatusFollowUp(transactionSnapshot);
-        return;
-      }
-      if (
-        transactionSnapshot !== null
-        && transactionFollowUp === 'retry'
-        && isTerminalTransactionPhase(transactionSnapshot.phase)
-      ) {
-        if (
-          transactionSnapshot.phase === 'failed'
-          && transactionSnapshot.kind === 'file'
-          && transactionSnapshot.hasSuccessfulMutation
-        ) {
-          this.finishPartialMutationRetryBlocked();
-          return;
-        }
-        if (!this.prepareFailedFileRetry(context, transactionSnapshot)) {
-          this.finishTransactionStatusFollowUp(transactionSnapshot);
-          return;
-        }
-      } else if (
-        transactionSnapshot !== null
-        && this.capabilityTransactionTarget !== null
-        && transactionSnapshot.kind === 'file'
-        && continuationIntent.kind !== 'powershell_task'
-        && !isBlockedChatIntent(continuationIntent)
-        && (transactionFollowUp === 'continue' || trustedReferenceContinuation)
-      ) {
-        context.transactionContinuation = true;
-        context.continuationTarget = this.capabilityTransactionTarget;
-        context.privatePlanningContext = serializePrivatePlanningContext(transactionSnapshot);
-      }
-      const transactionContinuationIntent: CapabilityIntent = {
-        kind: 'file_task',
-        evidence: { kind: 'explicit_file_operation' }
-      };
-      let effectiveIntent: CapabilityIntent = context.transactionContinuation
-        ? transactionContinuationIntent
-        : continuationIntent;
-      if (
-        continuation?.generation === context.generation
-        && context.capabilityText.trim().length > 0
-        && trustedPendingContinuation
-      ) {
-        this.pendingFileContinuation = null;
-        // 小模型需要明确后续路径覆盖先前缺失字段，避免把两轮文本误判为互相矛盾。
-        context.capabilityText = `${continuation.capabilityText}\n补充信息（覆盖此前缺失字段）：${context.capabilityText}`;
-        context.continuationTarget = continuation.target;
-      } else if (continuation !== null) {
-        // 续接只接受紧邻的下一条有效路径；普通聊天或新能力请求都明确放弃旧澄清。
-        this.pendingFileContinuation = null;
-        if (
-          continuation.generation === context.generation
-          && continuationIntent.kind === 'chat'
-          && continuationIntent.modelEscalation === 'allowed'
-          && trustedContinuationIntent?.kind === 'chat'
-          && trustedContinuationIntent.modelEscalation === 'blocked'
-        ) effectiveIntent = trustedContinuationIntent;
-      }
-
-      // Router 是唯一分流权威；能力任务在创建聊天 Provider 前处理。
-      const intent: CapabilityIntent = context.continuationTarget === undefined
-        ? effectiveIntent
-        : context.transactionContinuation
-          ? transactionContinuationIntent
-          : trustedContinuationIntent ?? continuationIntent;
+      const intent = capabilityIntentRouter.route(context.capabilityText);
       if (intent.kind === 'chat') context.modelEscalation = intent.modelEscalation;
       if (intent.kind === 'file_task' || intent.kind === 'powershell_task') {
         if (intent.kind === 'powershell_task' && intent.evidence.requestedRunMode === 'background') {
           throw publicErrorForCode('POWERSHELL_BACKGROUND_UNSUPPORTED');
         }
         const taskKind: CapabilityTaskKind = intent.kind === 'file_task' ? 'file' : 'powershell';
-        if (transactionSnapshot !== null && !context.transactionContinuation
-          && context.continuationTarget === undefined) {
-          this.invalidateCapabilityTransaction('new_task');
-        }
-        if (taskKind === 'file') {
-          // Router 提示不携带工具授权，Agent 仍从完整受控文件工具集中接受真实 tool_call。
-          const planningHint = createFilePlanningHint(context.capabilityText);
-          if (planningHint !== null) context.planningHint = planningHint;
-        }
         this.state = {
           kind: 'preparing_capability_task',
           generation: context.generation,
@@ -431,13 +294,13 @@ export class ConversationCoordinator {
     }
   }
 
-  cancelActive(): void {
+  async cancelActive(): Promise<void> {
     if (this.state.kind !== 'idle' && this.state.kind !== 'resetting' && this.state.kind !== 'closed') {
       this.options.behavior.cancelActive();
     }
     if (this.state.kind === 'awaiting_capability_authorization') {
       this.pendingCapabilityAuthorization = null;
-      this.options.capabilityTasks.cancelActive();
+      await this.options.capabilityTasks.cancelActive();
       this.state = { kind: 'idle' };
       this.options.emit({ type: 'phase', phase: 'cancelled' });
       return;
@@ -451,7 +314,7 @@ export class ConversationCoordinator {
       const releasedState: ConversationState = { kind: 'idle' };
       this.state = releasedState;
       this.pendingDisclosure = null;
-      if (cancelCapabilityPreparation) this.options.capabilityTasks.cancelActive();
+      if (cancelCapabilityPreparation) await this.options.capabilityTasks.cancelActive();
       controller.abort();
       if (this.state === releasedState) {
         this.options.emit({ type: 'phase', phase: 'cancelled' });
@@ -464,7 +327,7 @@ export class ConversationCoordinator {
       const releasedState: ConversationState = { kind: 'idle' };
       this.state = releasedState;
       this.pendingDisclosure = null;
-      if (pending?.kind === 'capability_task') this.options.capabilityTasks.cancelActive();
+      if (pending?.kind === 'capability_task') await this.options.capabilityTasks.cancelActive();
       controller?.abort();
       if (this.state === releasedState) {
         this.options.emit({ type: 'phase', phase: 'cancelled' });
@@ -475,12 +338,7 @@ export class ConversationCoordinator {
       this.state.kind === 'running_capability_task'
       || this.state.kind === 'awaiting_capability_confirmation'
     ) {
-      const releasedState: ConversationState = { kind: 'idle' };
-      this.state = releasedState;
-      this.options.capabilityTasks.cancelActive();
-      if (this.state === releasedState) {
-        this.options.emit({ type: 'phase', phase: 'cancelled' });
-      }
+      await this.options.capabilityTasks.cancelActive();
     }
   }
 
@@ -496,14 +354,14 @@ export class ConversationCoordinator {
     }
     this.pendingCapabilityAuthorization = null;
     if (Date.now() >= pending.expiresAtMs) {
-      this.options.capabilityTasks.cancelActive();
+      await this.options.capabilityTasks.cancelActive();
       this.state = { kind: 'idle' };
       const expired = publicErrorForCode('ACTION_EXPIRED');
       this.reportFailure(expired);
       throw expired;
     }
     if (decision === 'cancel') {
-      this.options.capabilityTasks.cancelActive();
+      await this.options.capabilityTasks.cancelActive();
       this.options.emit({
         type: 'message', role: 'assistant', text: '已取消进入本地任务，未执行任何操作。'
       });
@@ -523,11 +381,12 @@ export class ConversationCoordinator {
         taskKind: pending.taskKind,
         target: pending.target
       });
-      const planningHint = preferredToolPlanningHint(pending.preferredTool);
-      if (planningHint !== undefined) pending.context.planningHint = planningHint;
-      await this.continuePreparedCapabilityTask(pending.context, pending.taskKind, pending.target);
+      const running = this.submitCapabilityTask(pending.context, pending.taskKind, pending.target, pending.visibleHistory);
+      this.backgroundTask = running;
+      void running.then(() => { if (this.backgroundTask === running) this.backgroundTask = null; }, () => { if (this.backgroundTask === running) this.backgroundTask = null; });
     } catch (error) {
       const normalized = publicFileError(error);
+      await this.options.capabilityTasks.cancelActive();
       this.state = { kind: 'idle' };
       this.reportFailure(normalized);
       throw normalized;
@@ -540,7 +399,7 @@ export class ConversationCoordinator {
   ): Promise<void> {
     const active = this.activeCapabilityTurn;
     if (
-      this.state.kind !== 'awaiting_capability_confirmation'
+      (this.state.kind !== 'awaiting_capability_confirmation' && this.state.kind !== 'running_capability_task')
       || active === null
       || active.generation !== this.generation
     ) {
@@ -556,9 +415,7 @@ export class ConversationCoordinator {
     } catch (error) {
       const normalized = publicFileError(error);
       if (this.activeCapabilityTurn === active) {
-        this.activeCapabilityTurn = null;
-        this.state = { kind: 'idle' };
-        this.reportFailure(normalized);
+        this.state = { kind: 'awaiting_capability_confirmation', generation: active.generation, taskKind: active.taskKind };
       }
       throw normalized;
     }
@@ -602,7 +459,7 @@ export class ConversationCoordinator {
           visibleHistory
         );
       } else {
-        await this.submitCapabilityTask(pending, pending.taskKind, pending.target, visibleHistory);
+        this.requestCapabilityScope(pending, pending.taskKind, pending.target, visibleHistory);
       }
     } catch (error) {
       if (!this.ownsTurnContext(pending)) {
@@ -636,10 +493,8 @@ export class ConversationCoordinator {
     this.state = resettingState;
     this.pendingDisclosure = null;
     this.activeCapabilityTurn = null;
-    this.replayableFileTurn = null;
-    this.pendingFileContinuation = null;
     this.pendingCapabilityAuthorization = null;
-    this.invalidateCapabilityTransaction('generation_changed');
+    this.resultSummary = null;
 
     const failures: unknown[] = [];
     try {
@@ -690,23 +545,21 @@ export class ConversationCoordinator {
     this.state = { kind: 'closed' };
     this.pendingDisclosure = null;
     this.activeCapabilityTurn = null;
-    this.replayableFileTurn = null;
-    this.pendingFileContinuation = null;
     this.pendingCapabilityAuthorization = null;
-    this.invalidateCapabilityTransaction('closed');
+    this.resultSummary = null;
     const closing = Promise.resolve().then(async () => {
       const failures: unknown[] = [];
       for (const cleanup of [
         () => this.unsubscribeCapabilityEvents(),
         () => this.unsubscribeTrustedToolResults(),
         () => controller?.abort(),
-        () => {
-          if (cancelCapabilityTask) this.options.capabilityTasks.cancelActive();
+        async () => {
+          if (cancelCapabilityTask) await this.options.capabilityTasks.cancelActive();
         },
         () => this.options.disclosureAdapter.reset()
       ]) {
         try {
-          cleanup();
+          await cleanup();
         } catch (error) {
           failures.push(error);
         }
@@ -812,112 +665,29 @@ export class ConversationCoordinator {
       && pending.generation === this.generation;
   }
 
-  /** 能力目标在 Main 内先完成授权与 Provider 快照，再据此计算本轮历史披露。 */
-  private async prepareCapabilityTask(
-    context: TurnContext,
-    taskKind: CapabilityTaskKind
-  ): Promise<void> {
+  /** 所有本地任务先固定目标、完成历史披露，再等待任务范围确认。 */
+  private async prepareCapabilityTask(context: TurnContext, taskKind: CapabilityTaskKind): Promise<void> {
     let target: PreparedCapabilityTarget;
-    try {
-      target = await this.options.capabilityTasks.prepareTarget({
-        generation: context.generation,
-        taskKind,
-        ...(context.continuationTarget === undefined
-          ? {}
-          : { continuationTarget: context.continuationTarget })
-      });
-    } catch (error) {
-      throw publicFileError(error);
-    }
+    try { target = await this.options.capabilityTasks.prepareSnapshot({ generation: context.generation, taskKind }); }
+    catch (error) { throw publicFileError(error); }
     if (!this.isRunning(context)) return;
-    if (
-      context.continuationTarget !== undefined
-      && (
-        target.profileId !== context.continuationTarget.profileId
-        || target.providerIdentity !== context.continuationTarget.providerIdentity
-        || target.capabilityRevision !== context.continuationTarget.capabilityRevision
-      )
-    ) {
-      const providerChanged = target.profileId !== context.continuationTarget.profileId
-        || target.providerIdentity !== context.continuationTarget.providerIdentity;
-      this.capabilityTransaction.invalidate(
-        providerChanged ? 'provider_changed' : 'authorization_root_changed'
-      );
-      this.capabilityTransactionTarget = null;
-      // 新快照已经占用 Adapter owner，拒绝续接时同步释放，避免阻塞后续任务。
-      this.options.capabilityTasks.cancelActive();
-      throw publicErrorForCode('FILE_TARGET_MISMATCH');
-    }
-    const requestId = this.createId();
-    const disclosure = this.options.disclosureAdapter.prepare({
-      requestId,
-      targetProfileId: target.profileId,
-      targetProviderIdentity: target.providerIdentity,
-      targetProviderName: target.providerName,
-      history: this.options.history
-    });
-    if (!this.isRunning(context)) return;
-    if (disclosure.kind === 'confirmation_required') {
-      this.pendingDisclosure = {
-        kind: 'capability_task',
-        ...context,
-        requestId,
-        taskKind,
-        target
-      };
-      this.state = {
-        kind: 'awaiting_history_disclosure',
-        generation: context.generation,
-        requestId
-      };
-      this.options.emit({
-        type: 'history_disclosure_required',
-        requestId: disclosure.requestId,
-        targetProviderName: disclosure.targetProviderName,
-        messageCount: disclosure.messageCount,
-        characterCount: disclosure.characterCount
-      });
-      return;
-    }
-    await this.submitCapabilityTask(context, taskKind, target, disclosure.messages);
+    await this.continuePreparedCapabilityTask(context, taskKind, target);
   }
 
-  /** 模型只能请求任务授权；Agent、工具表和本地端口均在用户确认后创建。 */
-  private async prepareModelCapabilityAuthorization(
-    context: TurnContext,
-    reply: Awaited<ReturnType<ConversationChatAdapter['respond']>>
-  ): Promise<void> {
-    if (reply.capabilityPlan?.kind !== 'agent_task') return;
-    // 模型升级只能请求受控文件任务；PowerShell 必须由 Router 根据用户原文明确分流。
-    const taskKind: CapabilityTaskKind = 'file';
-    const target = await this.options.capabilityTasks.prepareSnapshot({
-      generation: context.generation,
-      taskKind
-    });
-    if (!this.isRunning(context)) return;
+  private async prepareModelCapabilityAuthorization(context: TurnContext, _reply: Awaited<ReturnType<ConversationChatAdapter['respond']>>): Promise<void> {
+    await this.prepareCapabilityTask(context, 'file');
+  }
+
+  private requestCapabilityScope(context: TurnContext, taskKind: CapabilityTaskKind, target: PreparedCapabilityTarget, visibleHistory: readonly ModelMessage[]): void {
+    this.resultSummary = null;
     const requestId = this.createId();
     const expiresAtMs = Date.now() + 任务级授权有效期毫秒;
-    this.pendingCapabilityAuthorization = {
-      requestId,
-      context,
-      taskKind,
-      target,
-      preferredTool: reply.capabilityPlan.preferredTool,
-      expiresAtMs
-    };
-    this.state = {
-      kind: 'awaiting_capability_authorization',
-      generation: context.generation,
-      requestId
-    };
-    this.options.emit({
-      type: 'capability_authorization_required',
-      requestId,
-      capability: taskKind,
-      requestSummary: summarizeCapabilityRequest(context.text),
-      targetProviderName: target.providerName,
-      expiresAt: new Date(expiresAtMs).toISOString()
-    });
+    this.pendingCapabilityAuthorization = { requestId, context, taskKind, target, visibleHistory, expiresAtMs };
+    this.state = { kind: 'awaiting_capability_authorization', generation: context.generation, requestId };
+    this.options.emit({ type: 'capability_authorization_required', requestId, capability: taskKind,
+      requestSummary: summarizeCapabilityRequest(context.text), targetProviderName: target.providerName,
+      directory: target.directory, modelId: target.modelId, actions: ['read', 'create', 'edit'], approvedCommands: [...target.approvedCommands],
+      expiresAt: new Date(expiresAtMs).toISOString() });
   }
 
   private async continuePreparedCapabilityTask(
@@ -946,7 +716,7 @@ export class ConversationCoordinator {
       });
       return;
     }
-    await this.submitCapabilityTask(context, taskKind, target, disclosure.messages);
+    this.requestCapabilityScope(context, taskKind, target, disclosure.messages);
   }
 
   private async submitCapabilityTask(
@@ -956,31 +726,7 @@ export class ConversationCoordinator {
     visibleHistory: readonly ModelMessage[]
   ): Promise<void> {
     if (context.generation !== this.generation) return;
-    const expectedOperation = expectedOperationForTask(taskKind, context.planningHint);
-    if (context.transactionContinuation) {
-      this.capabilityTransaction.beginTurn(
-        expectedOperation === undefined ? undefined : { expectedOperation }
-      );
-    } else {
-      this.capabilityTransaction.begin({
-        id: `${context.generation}:${taskKind}`,
-        generation: context.generation,
-        kind: taskKind,
-        profileId: target.profileId,
-        capabilityRevision: target.capabilityRevision
-      }, expectedOperation === undefined ? undefined : { expectedOperation });
-      this.capabilityTransactionTarget = target;
-    }
-    if (taskKind === 'file') {
-      this.replayableFileTurn = Object.freeze({
-        generation: context.generation,
-        capabilityText: context.capabilityText,
-        target,
-        ...(context.planningHint === undefined ? {} : { planningHint: context.planningHint })
-      });
-    } else {
-      this.replayableFileTurn = null;
-    }
+    this.resultSummary = { operations: 0, phase: null };
     const active: ActiveCapabilityTurn = {
       generation: context.generation,
       text: context.text,
@@ -993,63 +739,33 @@ export class ConversationCoordinator {
     this.activeCapabilityTurn = active;
     this.state = { kind: 'running_capability_task', generation: context.generation, taskKind };
     try {
-      const submission = {
-        text: context.capabilityText,
-        visibleHistory,
-        generation: context.generation,
-        taskKind,
-        ...(context.planningHint === undefined ? {} : { planningHint: context.planningHint }),
-        ...(context.privatePlanningContext === undefined
-          ? {}
-          : { privatePlanningContext: context.privatePlanningContext })
-      };
-      const outcome = await this.options.capabilityTasks.submit(submission);
-      if (
-        taskKind === 'file'
-        && outcome.kind === 'clarification'
-        && outcome.missingField === 'target_path'
-        && outcome.acted === false
-        && context.generation === this.generation
-      ) {
-        this.capabilityTransaction.apply({ type: 'clarification' });
-        this.pendingFileContinuation = Object.freeze({
-          generation: context.generation,
-          capabilityText: context.capabilityText,
-          target
-        });
-      }
+      await this.options.capabilityTasks.submit({ text: context.capabilityText, visibleHistory, generation: context.generation, taskKind });
       active.outcomeReady = true;
-      if (active.terminalPhase === 'success' && this.activeCapabilityTurn === active) {
+      if (active.terminalPhase !== null && this.activeCapabilityTurn === active) {
         this.activeCapabilityTurn = null;
         this.state = { kind: 'idle' };
-        this.options.emit({ type: 'phase', phase: 'success' });
+        this.options.emit({ type: 'phase', phase: active.terminalPhase });
       }
     } catch (error) {
       if (active.generation !== this.generation || this.isClosed()) return;
       const normalized = publicFileError(error);
-      if (active.terminalPhase === 'error') throw reportedFileError(normalized);
-      if (active.terminalPhase === 'cancelled' || this.activeCapabilityTurn !== active) return;
+      if (active.terminalPhase !== null || this.activeCapabilityTurn !== active) return;
       this.activeCapabilityTurn = null;
-      this.state = {
-        kind: 'running_chat',
-        generation: context.generation,
-        controller: context.controller
-      };
-      throw normalized;
+      this.state = { kind: 'idle' };
+      this.reportFailure(normalized);
     }
   }
 
   /** 能力事件只能更新当前 generation；终态在公开前先完成 Main 历史与状态提交。 */
   private handleCapabilityEvent(event: TaskEvent, generation: string): void {
     if (this.state.kind === 'closed' || generation !== this.generation) return;
-    this.capabilityTransaction.apply(event);
     const active = this.activeCapabilityTurn;
     if (active?.generation === generation) {
       if (event.type === 'message' && event.role === 'assistant') {
         active.assistantText = event.text;
       }
       if (
-        event.type === 'pending_action'
+        event.type === 'task_permission_required'
         || (event.type === 'phase' && event.phase === 'awaiting_confirmation')
       ) {
         this.state = {
@@ -1058,7 +774,7 @@ export class ConversationCoordinator {
           taskKind: active.taskKind
         };
       }
-      if (event.type === 'phase' && event.phase === 'success') {
+      if (event.type === 'phase' && (event.phase === 'success' || event.phase === 'error' || event.phase === 'cancelled')) {
         if (active.assistantText !== null) {
           this.options.history.append({
             userText: active.text,
@@ -1066,20 +782,14 @@ export class ConversationCoordinator {
             providerIdentity: active.target.providerIdentity
           });
         }
-        active.terminalPhase = 'success';
-        // outcome（尤其 target_path 澄清）先由 submit 返回并提交，再公开 idle/success。
+        active.terminalPhase = event.phase;
+        if (this.resultSummary) this.resultSummary.phase = event.phase;
+        // 提交 Promise 结算后再释放协调器入口，避免终态事件内同步重入新任务。
         if (!active.outcomeReady) return;
         this.activeCapabilityTurn = null;
         this.state = { kind: 'idle' };
       }
-      if (
-        event.type === 'phase'
-        && (event.phase === 'error' || event.phase === 'cancelled')
-      ) {
-        active.terminalPhase = event.phase;
-        this.activeCapabilityTurn = null;
-        this.state = { kind: 'idle' };
-      }
+
     }
     this.options.emit(event);
   }
@@ -1089,80 +799,15 @@ export class ConversationCoordinator {
     generation: string,
     target: PreparedCapabilityTarget
   ): void {
-    const transaction = this.capabilityTransaction.snapshot();
-    if (transaction === null || generation !== this.generation
-      || transaction.generation !== generation
-      || transaction.profileId !== target.profileId
-      || transaction.capabilityRevision !== target.capabilityRevision) return;
-    this.capabilityTransaction.apply(result);
+    const active = this.activeCapabilityTurn;
+    if (!active || generation !== this.generation || active.target !== target || !this.resultSummary) return;
+    this.resultSummary.operations += 1;
+    if (result.exit !== undefined) this.resultSummary.lastExit = result.exit;
   }
 
   private handleAwaitingConfirmationFollowUp(text: unknown): boolean {
-    if (this.state.kind !== 'awaiting_capability_confirmation' || typeof text !== 'string'
-      || this.capabilityTransaction.classifyFollowUp(text) !== 'continue') return false;
-    const normalized = normalizeUserText(text);
-    this.options.emit({ type: 'message', role: 'user', text: normalized });
-    this.options.emit({
-      type: 'message',
-      role: 'assistant',
-      text: '当前操作仍在等待确认，请先处理现有确认卡。'
-    });
-    this.options.emit({ type: 'phase', phase: 'awaiting_confirmation' });
-    return true;
-  }
-
-  private finishTransactionStatusFollowUp(transaction: CapabilityTransactionSnapshot): void {
-    const hasSummaryWarning = transaction.warningCodes.some(code =>
-      code === 'PROVIDER_SUMMARY_FAILED_AFTER_WRITE'
-      || code === 'PROVIDER_SUMMARY_FAILED_AFTER_CAPABILITY_RESULT');
-    const text = transaction.phase !== 'completed'
-      ? '上一个本地任务未成功完成。'
-      : hasSummaryWarning
-        ? '上一个本地操作已成功，但模型总结失败。'
-        : '上一个本地任务已成功完成。';
-    this.options.emit({ type: 'message', role: 'assistant', text });
-    this.state = { kind: 'idle' };
-    this.options.emit({ type: 'phase', phase: 'success' });
-  }
-
-  private finishPartialMutationRetryBlocked(): void {
-    this.options.emit({
-      type: 'message',
-      role: 'assistant',
-      text: '任务已部分执行，不能自动重试。'
-    });
-    this.state = { kind: 'idle' };
-    this.options.emit({ type: 'phase', phase: 'success' });
-  }
-
-  private clearCapabilityTransactionState(): void {
-    this.capabilityTransactionTarget = null;
-    this.pendingFileContinuation = null;
-  }
-
-  private invalidateCapabilityTransaction(
-    reason: Parameters<CapabilityTransactionStore['invalidate']>[0]
-  ): void {
-    this.capabilityTransaction.invalidate(reason);
-    this.clearCapabilityTransactionState();
-  }
-
-  private prepareFailedFileRetry(
-    context: TurnContext,
-    transaction: CapabilityTransactionSnapshot
-  ): boolean {
-    const replay = this.replayableFileTurn;
-    if (
-      transaction.phase !== 'failed'
-      || transaction.kind !== 'file'
-      || replay === null
-      || replay.generation !== context.generation
-    ) return false;
-    context.transactionContinuation = true;
-    context.capabilityText = replay.capabilityText;
-    context.continuationTarget = replay.target;
-    context.privatePlanningContext = serializePrivatePlanningContext(transaction);
-    if (replay.planningHint !== undefined) context.planningHint = replay.planningHint;
+    if (this.state.kind !== 'awaiting_capability_confirmation' || typeof text !== 'string' || !isBareContinueFollowUp(text)) return false;
+    this.options.emit({ type: 'message', role: 'assistant', text: '请先处理当前权限确认卡。' });
     return true;
   }
 
@@ -1195,26 +840,6 @@ export class ConversationCoordinator {
   }
 }
 
-function serializePrivatePlanningContext(
-  transaction: CapabilityTransactionSnapshot
-): string {
-  const value: {
-    references: CapabilityTransactionSnapshot['references'][number][];
-    toolTranscript: CapabilityTransactionSnapshot['toolTranscript'][number][];
-  } = { references: [], toolTranscript: [] };
-  for (const reference of transaction.references) {
-    const candidate = { ...value, references: [...value.references, reference] };
-    if (JSON.stringify(candidate).length > 最大私有规划上下文字符数) break;
-    value.references.push(reference);
-  }
-  for (const item of [...transaction.toolTranscript].reverse()) {
-    const candidate = { ...value, toolTranscript: [item, ...value.toolTranscript] };
-    if (JSON.stringify(candidate).length > 最大私有规划上下文字符数) break;
-    value.toolTranscript.unshift(item);
-  }
-  return JSON.stringify(value);
-}
-
 function normalizeUserText(input: unknown): string {
   const normalized = typeof input === 'string' ? input.trim() : '';
   const characters = Array.from(normalized).length;
@@ -1228,33 +853,9 @@ function summarizeCapabilityRequest(text: string): string {
   return Array.from(text.replace(/\s+/gu, ' ').trim()).slice(0, 240).join('');
 }
 
-function isTerminalTransactionPhase(
-  phase: CapabilityTransactionSnapshot['phase']
-): phase is 'completed' | 'failed' {
-  return phase === 'completed' || phase === 'failed';
-}
-
-function expectedOperationForTask(
-  taskKind: CapabilityTaskKind,
-  planningHint?: FilePlanningHint
-): import('@myself/agent-core').FilePlanningOperation | 'powershell' | undefined {
-  return planningHint?.operation ?? (taskKind === 'powershell' ? 'powershell' : undefined);
-}
-
-function isBlockedChatIntent(intent: CapabilityIntent): boolean {
-  return intent.kind === 'chat' && intent.modelEscalation === 'blocked';
-}
-
 function isBareContinueFollowUp(text: string): boolean {
   return /^(?:继续(?:执行)?|接着(?:执行)?|continue|go on)[。！!]?$/iu
     .test(text.normalize('NFKC').trim());
-}
-
-function preferredToolPlanningHint(
-  tool: import('@myself/agent-core').AgentPlanningTool | null
-): FilePlanningHint | undefined {
-  if (tool === null || tool === 'powershell') return undefined;
-  return { operation: tool };
 }
 
 const 公开错误消息: Readonly<Record<string, string>> = Object.freeze({
@@ -1271,6 +872,7 @@ const 公开错误消息: Readonly<Record<string, string>> = Object.freeze({
     PROVIDER_TIMEOUT: '模型请求超时。',
     PROVIDER_MALFORMED_RESPONSE: '模型响应格式不兼容，请重试。',
     SETTINGS_INCOMPLETE: '请先完成模型服务设置。',
+    CODING_MODEL_PROTOCOL_UNSUPPORTED: '当前模型协议暂不支持编程任务，请选择 DeepSeek 或内置 Qwen。',
     LOCAL_MODEL_LOADING: '本地模型正在加载，请稍后重试。',
     LOCAL_MODEL_FAULTED: '本地模型启动失败，请前往设置查看。',
     LOCAL_MODEL_DISABLED: '内置本地模型已关闭。',

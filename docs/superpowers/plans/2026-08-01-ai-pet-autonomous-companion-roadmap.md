@@ -1,5 +1,7 @@
 # AI 桌宠自主陪伴演进 Implementation Plan
 
+> **2026-09-05 文件任务修订：** 文件／命令任务执行器、确认频率与事务续接按[新文件任务规格](../specs/2026-09-05-ai-pet-coding-assistant-design.md)替代，使用有限 OpenCode Core 原链；实际完成范围见[验收记录](../../operations/2026-09-05-deepseek-qwen-coding-tasks.md)。下文旧文件工具、AgentService及继续令牌复用点属于历史基线。普通聊天、角色、Explorer、长期记忆及 MCP 边界仍按各自规格；Git 操作服从当前 `AGENTS.md` 与用户授权，本轮允许已验证阶段提交，暂不push。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** 在不替换现有 Electron/TypeScript 主体系的前提下，逐步交付自主角色行为、文件实体交互、Explorer 动态层级、本地长期记忆、主动陪伴、动态模型目录和可选语音能力。

@@ -88,6 +88,7 @@ async function run() {
     const runner = await import(`${pathToFileURL(outputFile).href}?run=${Date.now()}`);
     const result = await runner.runLocalModelAcceptance({
       requestedBackend: backend,
+      appPath: desktopRoot,
       resourceRoot: join(desktopRoot, 'resources', 'local-model'),
       applicationVersion: '0.1.0-alpha.1'
     });

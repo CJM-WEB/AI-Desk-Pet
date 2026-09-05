@@ -77,13 +77,28 @@ describe('electron-builder 配置', () => {
       'resources/windows/explorer-space-bridge.ps1',
       'resources/windows/explorer-space-shell-tab-helper.cs',
       'resources/windows/explorer-space-integrity.json',
-      'resources/local-model'
+      'resources/local-model',
+      '../../packages/coding-task-core/dist'
     ]);
     expect(extraResources).toContain('- from: resources/local-model\n    to: local-model');
+    expect(extraResources).toContain('- from: ../../packages/coding-task-core/dist\n    to: coding-task-resources');
     expect(extraResources).not.toMatch(/userData|authorized|habitat|characters/iu);
 
     const files = readSection(configText, 'files');
     expect(files).toContain('- resources/characters/default/**/*');
+  });
+
+  test('桌面开发与构建会先准备固定 Core helper 和 ripgrep 资源', async () => {
+    expect(packageJson.dependencies).toHaveProperty('@myself/coding-task-core', 'workspace:*');
+    expect(packageJson.scripts['prepare:coding-task-resources'])
+      .toBe('pnpm --filter @myself/coding-task-core prepare:trusted-resources');
+    expect(packageJson.scripts.predev).toBe('pnpm prepare:coding-task-resources');
+    expect(packageJson.scripts.prebuild).toBe('pnpm prepare:coding-task-resources');
+
+    const coreRoot = new URL('../../../packages/coding-task-core/', import.meta.url);
+    const corePackage = JSON.parse(await readFile(new URL('package.json', coreRoot), 'utf8'));
+    expect(corePackage.scripts['prepare:trusted-resources'])
+      .toBe('pnpm build:windows-helper && pnpm prepare:ripgrep');
   });
 
   test('Windows 打包先校验固定本地模型资源且普通构建不触发暂存', () => {

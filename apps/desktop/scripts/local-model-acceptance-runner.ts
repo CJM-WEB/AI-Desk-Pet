@@ -1,15 +1,12 @@
+import { CodingTaskService } from '../src/main/agent/coding-task-service';
+import { resolveCodingTaskResources } from '../src/main/agent/coding-task-resources';
+import { createCodingModelConnection } from '../src/main/providers/coding-model-connection';
 import { access, mkdir, mkdtemp, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
 
-import { AgentLoop } from '@myself/agent-core';
-import { FileToolService, PathPolicy } from '@myself/file-tools';
 import type { ProviderProfileV2, TaskEvent, ToolRequest } from '@myself/shared-types';
-import { AgentService } from '../src/main/agent/agent-service';
 import { PrivacySessionRegistry } from '../src/main/agent/disclosure-policy';
-import { createMainAgentSession } from '../src/main/agent/main-agent-session-factory';
-import { PendingActionStore } from '../src/main/agent/pending-action-store';
-import { PowerShellTool } from '../src/main/agent/powershell-tool';
 import type { ConversationBehaviorPort } from '../src/main/characters/character-behavior-director';
 import { ConversationChatAdapter } from '../src/main/conversation/conversation-chat-adapter';
 import {
@@ -29,6 +26,7 @@ type Backend = 'cpu' | 'vulkan';
 interface AcceptanceInput {
   requestedBackend: Backend;
   resourceRoot: string;
+  appPath: string;
   applicationVersion: string;
 }
 
@@ -377,45 +375,24 @@ export async function runLocalModelAcceptance(input: AcceptanceInput) {
     readAuthorizedRootPath: async () => authorizedRoot,
     readPrivacySettings: async () => ({ dataCategories: { memory: false } }),
     createChatAdapter: profile => new ConversationChatAdapter(createProvider(profile)),
-    createAgentService: ({ snapshot, generation, primaryProfile, fallbackProfiles, emit }) => {
-      const loop = new AgentLoop();
-      const pending = new PendingActionStore({
-        onDiscard: execution => loop.discard(execution.continuationToken)
-      });
-      return new AgentService({
-        loop,
-        pending,
-        createSession: () => createMainAgentSession({
-          initialCapability: snapshot.taskKind,
-          authorizedRootPath: snapshot.authorizedRootPath,
-          generation,
-          provider: createProvider(primaryProfile),
-          fallbackProviders: fallbackProfiles.map(createProvider),
-          createFileTools: async () => {
-            const fileTools = new FileToolService(
-              await PathPolicy.create(snapshot.authorizedRootPath), {
-              moveToRecycleBin: async absolutePath => {
-                if (basename(absolutePath) === 'acceptance-failure.txt') {
-                  throw acceptanceError('FIXTURE_RECYCLE_FAILED');
-                }
-                recycleSequence += 1;
-                await rename(absolutePath, join(recycleRoot, `${recycleSequence}.recycled`));
-              }
-            });
-            const executeRead = fileTools.executeRead.bind(fileTools);
-            fileTools.executeRead = async (request: ToolRequest) => {
-              const result = await executeRead(request);
-              observedReadTools.add(request.toolName);
-              return result;
-            };
-            return fileTools;
-          },
-          createPowerShellTool: () => new PowerShellTool()
+    createAgentService: ({ snapshot, primaryProfile, emit, emitTrustedToolResult }) => new CodingTaskService({
+      sessionOptions: async () => ({
+        directory: snapshot.authorizedRootPath, dataDirectory: temporaryRoot,
+        approvedCommands: snapshot.approvedCommands,
+        model: createCodingModelConnection(primaryProfile, {
+          catalog: [BUILTIN_LOCAL_PROVIDER_CATALOG_ENTRY], localModel: runtime,
+          readSecret: async () => { cloudSecretCalls += 1; return 'acceptance-cloud-secret'; }
         }),
-        emit,
-        createConversationId: () => 'local-model-acceptance'
-      });
-    },
+        ...await resolveCodingTaskResources({ appPath: input.appPath, isPackaged: false, resourcesPath: input.resourceRoot }),
+        trashFile: async absolutePath => {
+          if (basename(absolutePath) === 'acceptance-failure.txt') throw acceptanceError('FIXTURE_RECYCLE_FAILED');
+          recycleSequence += 1;
+          await rename(absolutePath, join(recycleRoot, `${recycleSequence}.recycled`));
+        }
+      }),
+      emit,
+      emitTrustedToolResult: result => { observedReadTools.add(result.toolName); emitTrustedToolResult(result); }
+    }),
     behavior: behaviorPort(),
     emit: event => events.push(event)
   });

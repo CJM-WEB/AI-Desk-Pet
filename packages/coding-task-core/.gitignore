@@ -1,0 +1,4 @@
+src/index.d.ts
+*.log
+.electron-smoke/
+.cache/

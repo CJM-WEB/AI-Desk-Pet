@@ -42,6 +42,33 @@ afterEach(() => {
 });
 
 describe('聊天面板本地模型状态', () => {
+  test('范围确认返回后可回复多张具体许可，只移除已接纳的当前项', async () => {
+    const api = {
+      submitMessage: vi.fn().mockResolvedValue(undefined), cancelTask: vi.fn().mockResolvedValue(undefined),
+      confirmAction: vi.fn().mockResolvedValue(undefined), cancelAction: vi.fn().mockResolvedValue(undefined),
+      resetConversation: vi.fn().mockResolvedValue(undefined), resolveHistoryDisclosure: vi.fn().mockResolvedValue(undefined),
+      resolveCapabilityAuthorization: vi.fn().mockResolvedValue(undefined), openSettings: vi.fn(), hideChat: vi.fn(),
+      getSettingsDashboard: vi.fn().mockResolvedValue(dashboardWithLocalModel({ enabled: true, phase: 'ready', backend: 'cpu', reasonCode: null })),
+      onLocalModelStatus: vi.fn(() => vi.fn())
+    };
+    render(<ChatPanel api={api as never} />);
+    await act(async () => { await Promise.resolve(); });
+    act(() => taskStore.getState().apply({ type: 'capability_authorization_required', requestId: 'scope-1', capability: 'file', requestSummary: '检查项目', targetProviderName: 'DeepSeek', directory: 'D:\\project', modelId: 'model-test', actions: ['read', 'create', 'edit'], approvedCommands: ['pnpm.cmd run test'], expiresAt: new Date(Date.now() + 120000).toISOString() }));
+    expect(screen.getByText('D:\\project')).toBeDefined();
+    await act(async () => fireEvent.click(screen.getByRole('button', { name: '授权并开始任务' })));
+    act(() => {
+      for (const actionId of ['permission-1', 'permission-2']) taskStore.getState().apply({ type: 'task_permission_required', actionId, summary: `运行命令 ${actionId}`, request: { action: 'bash', command: 'pnpm.cmd lint', cwd: 'D:\\project', resources: ['command-sha256:fixture'] } });
+    });
+    await act(async () => fireEvent.click(screen.getByRole('button', { name: '确认运行命令' })));
+    expect(api.confirmAction).toHaveBeenCalledWith('permission-1');
+    expect(screen.getByText('运行命令 permission-2')).toBeDefined();
+    await act(async () => fireEvent.click(screen.getByRole('button', { name: '拒绝本次操作' })));
+    expect(api.cancelAction).toHaveBeenCalledWith('permission-2');
+    expect(taskStore.getState().phase).not.toBe('cancelled');
+    act(() => taskStore.getState().apply({ type: 'phase', phase: 'success' }));
+    expect(screen.queryByRole('button', { name: '确认运行命令' })).toBeNull();
+  });
+
   test('首次状态事件前，Dashboard 的 loading 快照会禁发并给出文字反馈', async () => {
     const api = {
       submitMessage: vi.fn().mockResolvedValue(undefined),

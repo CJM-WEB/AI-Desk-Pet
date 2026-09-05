@@ -33,6 +33,10 @@ const buildIdentity = Object.freeze({
 
 export default defineConfig({
   main: {
+    resolve: {
+      // Core 同时提供 UMD 与 ESM 的依赖时，Main 必须优先内联 ESM 入口。
+      mainFields: ['module', 'main']
+    },
     define: {
       __MYSELF_BUILD_IDENTITY__: JSON.stringify(buildIdentity)
     },
@@ -42,10 +46,19 @@ export default defineConfig({
         include: ['@modelcontextprotocol/sdk'],
         exclude: [
           '@myself/agent-core',
+          '@myself/coding-task-core',
           '@myself/character-assets',
           '@myself/character-runtime',
           '@myself/file-tools',
-          '@myself/shared-types'
+          '@myself/shared-types',
+          '@opencode-ai/core',
+          '@opencode-ai/llm',
+          '@opencode-ai/effect-drizzle-sqlite',
+          '@opencode-ai/schema',
+          '@effect/platform-node',
+          'effect',
+          'drizzle-orm',
+          'jsonc-parser'
         ]
       }
     }

@@ -1,10 +1,10 @@
-import type { FilePlanningHint, ModelMessage } from '@myself/agent-core';
+import type { ModelMessage } from '@myself/agent-core';
 import type { TaskEvent } from '@myself/shared-types';
 import type {
-  AgentFileTaskOutcome,
-  AgentFileTaskSubmission,
-  AgentTrustedToolResult
-} from '../agent/agent-service';
+  CodingTaskOutcome as AgentFileTaskOutcome,
+  CodingTaskSubmission as AgentFileTaskSubmission,
+  CodingTaskToolResult as AgentTrustedToolResult
+} from '../agent/coding-task-service';
 import type {
   CapabilityTaskKind,
   ConversationCapabilityTaskPort,
@@ -13,11 +13,11 @@ import type {
 
 export interface CapabilityTaskAgentPort {
   submitFileTask(input: AgentFileTaskSubmission): Promise<AgentFileTaskOutcome>;
-  cancelActive(): void;
+  cancelActive(): void | Promise<void>;
   confirm(actionId: string): Promise<void>;
-  cancelAction(actionId: string): void;
+  cancelAction(actionId: string): void | Promise<void>;
   resetForNewConversation(): Promise<void>;
-  close(): void;
+  close(): void | Promise<void>;
 }
 
 export type PreparedAgentTarget = PreparedCapabilityTarget & Readonly<{
@@ -64,6 +64,8 @@ export class CapabilityTaskAdapter implements ConversationCapabilityTaskPort {
   ) => void>();
   private active: ActiveSubmission | null = null;
   private inFlightOwner: symbol | null = null;
+  private replyOwner: symbol | null = null;
+  private cancelPromise: Promise<void> | null = null;
   private preparingOwner: symbol | null = null;
   private agent: OwnedAgent | null = null;
   private prepareCleanupPromise: Promise<void> | null = null;
@@ -92,7 +94,6 @@ export class CapabilityTaskAdapter implements ConversationCapabilityTaskPort {
   async prepareTarget(input: {
     generation: string;
     taskKind: CapabilityTaskKind;
-    continuationTarget?: PreparedCapabilityTarget;
   }): Promise<PreparedCapabilityTarget> {
     const target = await this.prepareSnapshotForSubmission(input);
     if (!this.agent) await this.activateTarget({ ...input, target });
@@ -109,7 +110,6 @@ export class CapabilityTaskAdapter implements ConversationCapabilityTaskPort {
   private async prepareSnapshotForSubmission(input: {
     generation: string;
     taskKind: CapabilityTaskKind;
-    continuationTarget?: PreparedCapabilityTarget;
   }): Promise<PreparedCapabilityTarget> {
     this.assertAvailable();
     if (this.active || this.inFlightOwner) throw adapterError('TASK_ALREADY_ACTIVE');
@@ -132,30 +132,13 @@ export class CapabilityTaskAdapter implements ConversationCapabilityTaskPort {
         this.assertOwned(owner);
       }
       const previousAgent = this.agent;
-      if (previousAgent && input.continuationTarget !== undefined) {
-        const authorizedRoot = await this.options.getAuthorizedRootPath(input.taskKind);
-        this.assertOwned(owner);
-        if (typeof authorizedRoot !== 'string' || authorizedRoot.trim().length === 0) {
-          throw adapterError('FILE_AUTHORIZATION_REQUIRED');
-        }
-        const target = this.options.createTargetSnapshot(input);
-        this.assertOwned(owner);
-        if (previousAgent.generation === input.generation
-          && sameTarget(previousAgent.target, input.continuationTarget)
-          && sameTarget(previousAgent.target, target)) {
-          this.active.target = previousAgent.target;
-          return previousAgent.target;
-        }
-      }
       if (previousAgent) {
         this.agent = null;
         const cleanup = this.resetOwnedAgent(previousAgent);
         this.prepareCleanupPromise = cleanup;
-        try {
-          await cleanup;
-        } finally {
-          if (this.prepareCleanupPromise === cleanup) this.prepareCleanupPromise = null;
-        }
+        await cleanup;
+        // 只有确认清理成功才移除闸门；拒绝态须跨重试、reset 与 close 持续保留。
+        if (this.prepareCleanupPromise === cleanup) this.prepareCleanupPromise = null;
         this.assertOwned(owner);
       }
       const authorizedRoot = await this.options.getAuthorizedRootPath(input.taskKind);
@@ -193,7 +176,9 @@ export class CapabilityTaskAdapter implements ConversationCapabilityTaskPort {
       if (this.agent === owned) this.agent = null;
       throw adapterError('FILE_TARGET_MISMATCH');
     }
-    prepared.target = owned.target;
+    // 指纹复核后沿用已授权快照引用，让协调器与私有工具事实保持同一目标身份。
+    owned.target = input.target;
+    prepared.target = input.target;
   }
 
   async submit(input: {
@@ -201,8 +186,6 @@ export class CapabilityTaskAdapter implements ConversationCapabilityTaskPort {
     visibleHistory: readonly ModelMessage[];
     generation: string;
     taskKind: CapabilityTaskKind;
-    planningHint?: FilePlanningHint;
-    privatePlanningContext?: string;
   }): Promise<AgentFileTaskOutcome> {
     this.assertAvailable();
     const prepared = this.active;
@@ -227,6 +210,9 @@ export class CapabilityTaskAdapter implements ConversationCapabilityTaskPort {
         throw adapterError('FILE_AUTHORIZATION_REQUIRED');
       }
 
+      const currentTarget = this.options.createTargetSnapshot({ generation: input.generation, taskKind: input.taskKind });
+      if (!sameTarget(currentTarget, prepared.target)) throw adapterError('FILE_TARGET_MISMATCH');
+
       const ownedAgent = this.agent;
       if (!ownedAgent || ownedAgent.target !== prepared.target) {
         throw adapterError('FILE_TARGET_MISMATCH');
@@ -238,10 +224,6 @@ export class CapabilityTaskAdapter implements ConversationCapabilityTaskPort {
         text: input.text,
         visibleHistory: input.visibleHistory,
         submissionOwner,
-        ...(input.planningHint === undefined ? {} : { planningHint: input.planningHint }),
-        ...(input.privatePlanningContext === undefined
-          ? {}
-          : { privatePlanningContext: input.privatePlanningContext })
       };
       return await ownedAgent.service.submitFileTask(submission);
     } finally {
@@ -254,16 +236,24 @@ export class CapabilityTaskAdapter implements ConversationCapabilityTaskPort {
     }
   }
 
-  cancelActive(): void {
+  async cancelActive(): Promise<void> {
+    if (this.cancelPromise) return this.cancelPromise;
     const active = this.active;
     if (!active) return;
-    this.agent?.service.cancelActive();
-    if (this.active?.owner === active.owner) this.active = null;
     // 仅准备阶段尚未进入 Agent 不可逆执行，可立即撤销 owner 允许下一请求接管。
     if (this.preparingOwner === active.owner) {
+      this.active = null;
       this.preparingOwner = null;
       if (this.inFlightOwner === active.owner) this.inFlightOwner = null;
+      return;
     }
+    // 取消请求本身不释放任务；宿主 run/close 的结算构成下一任务的进入屏障。
+    const cancelling = Promise.resolve(this.agent?.service.cancelActive()).then(() => {
+      if (this.active?.owner === active.owner) this.active = null;
+    });
+    this.cancelPromise = cancelling;
+    await cancelling;
+    if (this.cancelPromise === cancelling) this.cancelPromise = null;
   }
 
   async resolveAction(actionId: string, decision: 'confirm' | 'cancel'): Promise<void> {
@@ -271,24 +261,25 @@ export class CapabilityTaskAdapter implements ConversationCapabilityTaskPort {
     const active = this.active;
     const service = this.agent?.service;
     if (!active || !service) throw adapterError('ACTION_EXPIRED');
-    if (this.inFlightOwner) throw adapterError('TASK_ALREADY_ACTIVE');
+    if (this.replyOwner || this.cancelPromise) throw adapterError('TASK_ALREADY_ACTIVE');
     const owner = active.owner;
     // 每次决议先消费当前等待态；Agent 若在同一调用栈内发布下一张确认卡，
     // publishAgentEvent 会重新置位，从而保留原任务 owner 与能力快照绑定。
     active.awaitingConfirmation = false;
-    this.inFlightOwner = owner;
+    this.replyOwner = owner;
     try {
       if (decision === 'confirm') {
         await service.confirm(actionId);
       } else {
-        service.cancelAction(actionId);
+        await service.cancelAction(actionId);
       }
     } finally {
-      if (this.inFlightOwner === owner) this.inFlightOwner = null;
+      if (this.replyOwner === owner) this.replyOwner = null;
       const retained = this.active;
       if (
         retained?.owner === owner
-        && (decision === 'cancel' || !retained.awaitingConfirmation)
+        && this.inFlightOwner !== owner
+        && !retained.awaitingConfirmation
       ) {
         this.active = null;
       }
@@ -385,6 +376,9 @@ export class CapabilityTaskAdapter implements ConversationCapabilityTaskPort {
       profileId: prepared.profileId,
       providerIdentity: prepared.providerIdentity,
       providerName: prepared.providerName,
+      directory: prepared.directory,
+      modelId: prepared.modelId,
+      approvedCommands: prepared.approvedCommands,
       capabilityRevision: prepared.capabilityRevision
     });
     const owned = { service, owner, generation, target };
@@ -398,7 +392,7 @@ export class CapabilityTaskAdapter implements ConversationCapabilityTaskPort {
       () => service.close()
     ]) {
       try {
-        cleanup();
+        void Promise.resolve(cleanup()).catch(() => undefined);
       } catch {
         // 未安装实例的清理失败不具备覆盖所有权错误的权限。
       }
@@ -479,7 +473,7 @@ export class CapabilityTaskAdapter implements ConversationCapabilityTaskPort {
 
   private assertAvailable(): void {
     this.assertOpen();
-    if (this.resetPromise) throw adapterError('TASK_ALREADY_ACTIVE');
+    if (this.resetPromise || this.cancelPromise || this.replyOwner) throw adapterError('TASK_ALREADY_ACTIVE');
   }
 
   private assertOwned(owner: symbol): void {

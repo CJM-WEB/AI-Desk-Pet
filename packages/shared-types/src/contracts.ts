@@ -47,6 +47,11 @@ export type HistoryDisclosureRequiredEvent = z.infer<
   typeof historyDisclosureRequiredEventSchema
 >;
 
+export const taskPermissionIdSchema = z.string().min(1).max(128);
+export const taskCommandSchema = z.string().min(1).max(16_384);
+export const taskApprovedCommandsSchema = z.array(taskCommandSchema).max(16)
+  .refine(commands => commands.reduce((sum, command) => sum + command.length, 0) <= 32_768);
+
 /** 模型补充识别的本地任务必须先经过独立授权，不能伪装成具体工具确认。 */
 export const capabilityAuthorizationRequiredEventSchema = z.object({
   type: z.literal('capability_authorization_required'),
@@ -54,11 +59,29 @@ export const capabilityAuthorizationRequiredEventSchema = z.object({
   capability: z.enum(['file', 'powershell']),
   requestSummary: z.string().trim().min(1).max(240),
   targetProviderName: z.string().min(1).max(128),
+  directory: z.string().min(1).max(1_024),
+  modelId: z.string().min(1),
+  actions: z.tuple([z.literal('read'), z.literal('create'), z.literal('edit')]),
+  approvedCommands: taskApprovedCommandsSchema,
   expiresAt: z.string().datetime({ offset: true })
 }).strict();
 export type CapabilityAuthorizationRequiredEvent = z.infer<
   typeof capabilityAuthorizationRequiredEventSchema
 >;
+
+const taskPermissionResourcesSchema = z.array(z.string().min(1).max(1_024)).min(1).max(16)
+  .refine(resources => resources.reduce((sum, resource) => sum + resource.length, 0) <= 4_096);
+/** 只承载用户决策所需的原许可信息，不包含工具调用或独立的过期计时器。 */
+export const taskPermissionRequiredEventSchema = z.object({
+  type: z.literal('task_permission_required'),
+  actionId: taskPermissionIdSchema,
+  summary: z.string().min(1).max(240),
+  request: z.discriminatedUnion('action', [
+    z.object({ action: z.literal('bash'), resources: taskPermissionResourcesSchema, command: taskCommandSchema, cwd: z.string().min(1).max(1_024) }).strict(),
+    z.object({ action: z.enum(['external_directory', 'delete', 'overwrite']), resources: taskPermissionResourcesSchema }).strict()
+  ])
+}).strict();
+export type TaskPermissionRequiredEvent = z.infer<typeof taskPermissionRequiredEventSchema>;
 
 export const conversationResetEventSchema = z.object({
   type: z.literal('conversation_reset'),
@@ -320,6 +343,7 @@ export const taskEventSchema = z.discriminatedUnion('type', [
   }).strict(),
   historyDisclosureRequiredEventSchema,
   capabilityAuthorizationRequiredEventSchema,
+  taskPermissionRequiredEventSchema,
   conversationResetEventSchema
 ]);
 export type TaskEvent = z.infer<typeof taskEventSchema>;

@@ -8,6 +8,22 @@ import {
   toolRequestSchema
 } from '../src/contracts';
 
+describe('正式任务许可契约', () => {
+  const permission = { type: 'task_permission_required', actionId: 'permission-1', summary: '运行命令', request: { action: 'bash', resources: ['command-sha256:fixture'], command: 'pnpm.cmd test', cwd: 'D:\\project' } };
+  it('仅接受决策字段且不接受独立过期时间或原始metadata', () => {
+    expect(taskEventSchema.parse(permission)).toEqual(permission);
+    expect(taskEventSchema.safeParse({ ...permission, expiresAt: '2026-09-05T00:00:00Z' }).success).toBe(false);
+    expect(taskEventSchema.safeParse({ ...permission, metadata: { secret: 'private' } }).success).toBe(false);
+  });
+  it('范围命令列表执行累计预算，不因单条合规而允许超限列表', () => {
+    const scope = { type: 'capability_authorization_required', requestId: 'scope-1', capability: 'file', requestSummary: '任务', targetProviderName: 'DeepSeek', directory: 'D:\\project', modelId: 'model-test', actions: ['read', 'create', 'edit'], approvedCommands: ['a'.repeat(16384), 'b'.repeat(16384), 'c'], expiresAt: '2026-09-05T00:00:00Z' };
+    expect(taskEventSchema.safeParse(scope).success).toBe(false);
+  });
+  it.each([{ resources: Array.from({ length: 17 }, () => 'a') }, { resources: ['a'.repeat(1025)] }, { resources: Array.from({ length: 5 }, () => 'a'.repeat(1000)) }, { command: 'a'.repeat(16385) }, { action: 'arbitrary' }])('具体许可拒绝超预算或未知动作 %#', change => {
+    expect(taskEventSchema.safeParse({ ...permission, request: { ...permission.request, ...change } }).success).toBe(false);
+  });
+});
+
 describe('publicSettingsSchema', () => {
   it('公开设置不接受桌面全局位置', () => {
     const settings = {
@@ -197,6 +213,7 @@ describe('任务级授权协议', () => {
   it('使用独立事件且不接受 PendingAction 字段', () => {
     const event = {
       type: 'capability_authorization_required',
+      directory: 'D:\\authorized', modelId: 'model-test', actions: ['read', 'create', 'edit'], approvedCommands: [],
       requestId: 'cap-1',
       capability: 'file',
       requestSummary: '请整理当前目录',

@@ -16,9 +16,9 @@ import { ConversationChatAdapter } from '../src/main/conversation/conversation-c
 import type { ConversationBehaviorPort } from
   '../src/main/characters/character-behavior-director';
 import type {
-  AgentFileTaskOutcome,
-  AgentTrustedToolResult
-} from '../src/main/agent/agent-service';
+  CodingTaskOutcome as AgentFileTaskOutcome,
+  CodingTaskToolResult as AgentTrustedToolResult
+} from '../src/main/agent/coding-task-service';
 import { conversationIntentCases } from '../../../tests/fixtures/natural-intent-matrix';
 import { ProviderResponseError } from '../src/main/providers/provider-response-error';
 
@@ -89,11 +89,13 @@ class CapturingCapabilityTasks implements ConversationCapabilityTaskPort {
     providerIdentity: string;
     providerName: string;
     capabilityRevision: string;
+    directory: string; modelId: string; approvedCommands: readonly string[];
   } = Object.freeze({
     profileId: 'profile-agent',
     providerIdentity: 'openai',
     providerName: 'OpenAI Agent',
-    capabilityRevision: 'revision-agent'
+    capabilityRevision: 'revision-agent',
+    directory: 'D:\\authorized', modelId: 'model-test', approvedCommands: [],
   });
   private listener: Parameters<ConversationCapabilityTaskPort['onEvent']>[0] | null = null;
   private trustedResultListener:
@@ -318,7 +320,35 @@ function errorCode(error: unknown): unknown {
     : undefined;
 }
 
+function scopeId(harness: ReturnType<typeof createHarness>): string {
+  const event = harness.events.filter(event => event.type === 'capability_authorization_required').at(-1);
+  if (event?.type !== 'capability_authorization_required') throw new Error('缺少范围卡');
+  return event.requestId;
+}
+
+async function authorizeTask(harness: ReturnType<typeof createHarness>): Promise<void> {
+  const event = harness.events.filter(event => event.type === 'capability_authorization_required').at(-1);
+  if (!event || event.type !== 'capability_authorization_required') return;
+  await harness.coordinator.resolveCapabilityAuthorization(event.requestId, 'confirm');
+  for (let index = 0; index < 8; index += 1) await Promise.resolve();
+}
+
 describe('ConversationCoordinator', () => {
+  test('状态追问只使用当前代有限工具事实，重置后不保留旧结果', async () => {
+    const harness = createHarness([]);
+    await harness.coordinator.submit('执行 PowerShell 测试');
+    expect(harness.fileTasks.submissions).toHaveLength(0);
+    await authorizeTask(harness);
+    harness.fileTasks.publishTrustedToolResult({ toolName: 'bash', ok: false, relativePaths: [], exit: 1 }, 'generation-current');
+    harness.fileTasks.publishTrustedToolResult({ toolName: 'bash', ok: true, relativePaths: [], exit: 0 }, 'generation-current');
+    harness.fileTasks.publish({ type: 'phase', phase: 'success' }, 'generation-current');
+    await harness.coordinator.submit('上一个任务完成了吗');
+    expect(harness.factoryCallCount()).toBe(0);
+    expect(harness.fileTasks.submissions).toHaveLength(1);
+    expect(harness.events).toContainEqual(expect.objectContaining({ type: 'message', role: 'assistant', text: expect.stringContaining('最近命令退出码：0') }));
+    await harness.coordinator.resetConversation();
+    await expect(harness.coordinator.submit('上一个任务完成了吗')).rejects.toBeDefined();
+  });
   test('模型能力计划只在允许升级时发布独立任务授权且确认前不激活 Agent', async () => {
     const requests: ModelRequest[] = [];
     const script: ProviderScript = {
@@ -348,10 +378,11 @@ describe('ConversationCoordinator', () => {
 
     expect(harness.events).toContainEqual({
       type: 'capability_authorization_required',
-      requestId: 'request-2',
+      requestId: expect.any(String),
       capability: 'file',
       requestSummary: '请整理当前目录并生成说明',
       targetProviderName: 'OpenAI Agent',
+      directory: 'D:\\authorized', modelId: 'model-test', actions: ['read', 'create', 'edit'], approvedCommands: [],
       expiresAt: expect.any(String)
     });
     expect(harness.fileTasks.activationCalls).toBe(0);
@@ -359,7 +390,7 @@ describe('ConversationCoordinator', () => {
     expect(harness.events.filter(event => event.type.startsWith('assistant_message_'))).toEqual([]);
     expect(JSON.stringify(harness.events)).not.toContain('文件已经创建完成');
 
-    await harness.coordinator.resolveCapabilityAuthorization('request-2', 'confirm');
+    await harness.coordinator.resolveCapabilityAuthorization(scopeId(harness), 'confirm');
     expect(harness.fileTasks.activationCalls).toBe(1);
     expect(harness.fileTasks.submissions).toHaveLength(1);
   });
@@ -386,7 +417,7 @@ describe('ConversationCoordinator', () => {
       }));
       await vi.advanceTimersByTimeAsync(120_001);
 
-      await expect(harness.coordinator.resolveCapabilityAuthorization('request-2', 'confirm'))
+      await expect(harness.coordinator.resolveCapabilityAuthorization(scopeId(harness), 'confirm'))
         .rejects.toMatchObject({ code: 'ACTION_EXPIRED' });
       expect(harness.fileTasks.activationCalls).toBe(0);
       expect(harness.fileTasks.cancelCalls).toBe(1);
@@ -409,7 +440,7 @@ describe('ConversationCoordinator', () => {
     }]);
 
     await harness.coordinator.submit('请帮我完成一个本地整理任务');
-    await harness.coordinator.resolveCapabilityAuthorization('request-2', 'cancel');
+    await harness.coordinator.resolveCapabilityAuthorization(scopeId(harness), 'cancel');
 
     expect(JSON.stringify(harness.events)).not.toContain('文件已经成功删除');
     expect(harness.events).toContainEqual({
@@ -434,140 +465,6 @@ describe('ConversationCoordinator', () => {
     expect(harness.fileTasks.preparedGenerations).toHaveLength(0);
     expect(harness.fileTasks.activationCalls).toBe(0);
   });
-  test('截图删除原句生成完整 delete_file 规划提示且不允许无根据澄清', async () => {
-    const harness = createHarness([]);
-
-    await harness.coordinator.submit('把当前指定目录下的empty文件夹删除了');
-
-    expect(harness.fileTasks.submissions).toEqual([expect.objectContaining({
-      text: '把当前指定目录下的empty文件夹删除了',
-      planningHint: {
-        operation: 'delete_file'
-      }
-    })]);
-  });
-
-  test('截图创建目录原句生成完整 create_directory 规划提示', async () => {
-    const harness = createHarness([]);
-
-    await harness.coordinator.submit('那在当前目录下创建一个名为abc的文件夹');
-
-    expect(harness.fileTasks.submissions).toEqual([expect.objectContaining({
-      planningHint: {
-        operation: 'create_directory'
-      }
-    })]);
-  });
-
-  test('结构化澄清后的紧邻路径以覆盖缺失字段的语义续接文件任务', async () => {
-    const fileTasks = new CapturingCapabilityTasks();
-    fileTasks.nextOutcome = { kind: 'clarification', missingField: 'target_path', acted: false };
-    const harness = createHarness([], { fileTasks });
-
-    await harness.coordinator.submit('删除一个文件，但我还没有提供目标路径。请先询问缺少的信息。');
-    fileTasks.publish({ type: 'phase', phase: 'success' }, 'generation-current');
-    fileTasks.nextOutcome = { kind: 'completed', acted: false };
-    await harness.coordinator.submit('目标相对路径是 acceptance-clarification.txt。');
-
-    expect(fileTasks.submissions[1]?.text).toBe(
-      '删除一个文件，但我还没有提供目标路径。请先询问缺少的信息。\n'
-      + '补充信息（覆盖此前缺失字段）：目标相对路径是 acceptance-clarification.txt。'
-    );
-    expect(fileTasks.submissions[1]?.planningHint).toEqual({ operation: 'delete_file' });
-  });
-
-  test('结构化澄清接受自然相对路径补充并继续原文件任务', async () => {
-    const fileTasks = new CapturingCapabilityTasks();
-    fileTasks.nextOutcome = { kind: 'clarification', missingField: 'target_path', acted: false };
-    const harness = createHarness([], { fileTasks });
-
-    await harness.coordinator.submit('删除一个文件，但还没有目标路径。');
-    fileTasks.publish({ type: 'phase', phase: 'success' }, 'generation-current');
-    fileTasks.nextOutcome = { kind: 'completed', acted: false };
-    await harness.coordinator.submit('TempTest下的empty文件夹');
-
-    expect(fileTasks.submissions).toHaveLength(2);
-    expect(fileTasks.submissions[1]?.text).toBe(
-      '删除一个文件，但还没有目标路径。\n'
-      + '补充信息（覆盖此前缺失字段）：TempTest下的empty文件夹'
-    );
-  });
-
-  test('结构化澄清后的普通聊天不续接文件任务且清理旧澄清', async () => {
-    const fileTasks = new CapturingCapabilityTasks();
-    fileTasks.nextOutcome = { kind: 'clarification', missingField: 'target_path', acted: false };
-    const chat = scriptedProvider({ type: 'text', text: '你好呀。' });
-    const harness = createHarness([1, 2].map(index => ({
-      profileId: `chat-profile-${index}`,
-      providerIdentity: 'openai',
-      providerName: 'Chat',
-      script: chat
-    })), { fileTasks });
-
-    await harness.coordinator.submit('删除一个文件，但还没有目标路径。');
-    fileTasks.publish({ type: 'phase', phase: 'success' }, 'generation-current');
-    await harness.coordinator.submit('你好呀');
-    await harness.coordinator.submit('TempTest下的empty文件夹');
-
-    expect(fileTasks.submissions).toHaveLength(1);
-    expect(chat.requests).toHaveLength(2);
-    expect(harness.events).toContainEqual({ type: 'message', role: 'assistant', text: '你好呀。' });
-    expect(harness.events.some(event => event.type === 'error')).toBe(false);
-  });
-
-  test.each([
-    'C:\\Temp\\acceptance-clarification.txt',
-    '../acceptance-clarification.txt',
-    '/tmp/acceptance-clarification.txt',
-    '\\\\server\\share\\acceptance-clarification.txt'
-  ])('结构化澄清拒绝越界路径“%s”且不显示任务失败', async unsafePath => {
-    const fileTasks = new CapturingCapabilityTasks();
-    fileTasks.nextOutcome = { kind: 'clarification', missingField: 'target_path', acted: false };
-    const chat = scriptedProvider({
-      type: 'text',
-      text: '这个路径不在授权根内。',
-      structured_output: 完整聊天控制({
-        capabilityPlan: { kind: 'agent_task', preferredTool: 'delete_file' }
-      })
-    });
-    const harness = createHarness([{
-      profileId: 'chat-profile', providerIdentity: 'openai', providerName: 'Chat', script: chat
-    }], { fileTasks });
-
-    await harness.coordinator.submit('删除一个文件，但还没有目标路径。');
-    fileTasks.publish({ type: 'phase', phase: 'success' }, 'generation-current');
-    await harness.coordinator.submit(unsafePath);
-
-    expect(fileTasks.submissions).toHaveLength(1);
-    expect(chat.requests).toHaveLength(1);
-    expect(harness.events.some(event => event.type === 'capability_authorization_required')).toBe(false);
-    expect(harness.events.some(event => event.type === 'error')).toBe(false);
-  });
-
-  test.each([
-    '不要执行删除 acceptance-clarification.txt',
-    'Please never delete acceptance-clarification.txt',
-    '“删除 acceptance-clarification.txt”只是引用',
-    '```powershell\nRemove-Item acceptance-clarification.txt\n```'
-  ])('澄清待续接时 blocked 文本不会借用旧任务提权：%s', async blockedText => {
-    const fileTasks = new CapturingCapabilityTasks();
-    fileTasks.nextOutcome = { kind: 'clarification', missingField: 'target_path', acted: false };
-    const chat = scriptedProvider({ type: 'text', text: '只讨论，不执行。' });
-    const harness = createHarness([1, 2].map(index => ({
-      profileId: `chat-profile-${index}`,
-      providerIdentity: 'openai',
-      providerName: 'Chat',
-      script: chat
-    })), { fileTasks });
-
-    await harness.coordinator.submit('删除一个文件，但还没有目标路径。');
-    fileTasks.publish({ type: 'phase', phase: 'success' }, 'generation-current');
-    await harness.coordinator.submit(blockedText);
-    await harness.coordinator.submit('目标相对路径是 should-not-continue.txt。');
-
-    expect(fileTasks.submissions).toHaveLength(1);
-  });
-
   test('在能力分流与 Provider 创建前等待显式 Gate，并只把剩余能力文本交给文件链', async () => {
     const release = deferredVoid();
     const behavior = behaviorPortDouble({
@@ -588,6 +485,7 @@ describe('ConversationCoordinator', () => {
     expect(harness.factoryCallCount()).toBe(0);
     release.resolve();
     await pending;
+    await authorizeTask(harness);
 
     expect(harness.fileTasks.submissions).toEqual([expect.objectContaining({
       text: '删除 old.txt'
@@ -626,7 +524,9 @@ describe('ConversationCoordinator', () => {
       }
     ], { behavior });
     await harness.coordinator.submit('第一轮');
+    await authorizeTask(harness);
     await harness.coordinator.submit('第二轮');
+    await authorizeTask(harness);
 
     expect(second.requests).toEqual([]);
     mode = 'autonomous';
@@ -658,6 +558,7 @@ describe('ConversationCoordinator', () => {
       }]);
 
       await harness.coordinator.submit(text);
+    await authorizeTask(harness);
 
       expect(harness.factoryCallCount()).toBe(1);
       expect(harness.fileTasks.preparedGenerations).toEqual([]);
@@ -680,6 +581,7 @@ describe('ConversationCoordinator', () => {
       }]);
 
       await harness.coordinator.submit(text);
+    await authorizeTask(harness);
 
       expect(harness.factoryCallCount()).toBe(expected === 'chat' ? 1 : 0);
       expect(harness.fileTasks.submissions).toHaveLength(expected === 'chat' ? 0 : 1);
@@ -700,6 +602,7 @@ describe('ConversationCoordinator', () => {
       const harness = createHarness([]);
 
       await harness.coordinator.submit(text);
+    await authorizeTask(harness);
 
       expect(harness.factoryCallCount()).toBe(0);
       expect(harness.fileTasks.preparedGenerations).toEqual(['generation-current']);
@@ -716,6 +619,7 @@ describe('ConversationCoordinator', () => {
     const harness = createHarness([]);
 
     await expect(harness.coordinator.submit('执行这条命令 npm test')).resolves.toBeUndefined();
+    await authorizeTask(harness);
 
     expect(harness.factoryCallCount()).toBe(0);
     expect(harness.fileTasks.preparedGenerations).toEqual(['generation-current']);
@@ -742,6 +646,7 @@ describe('ConversationCoordinator', () => {
 
     await expect(harness.coordinator.submit('把 report.md 复制到 archive 目录'))
       .resolves.toBeUndefined();
+    await authorizeTask(harness);
 
     expect(harness.factoryCallCount()).toBe(0);
     expect(harness.fileTasks.submissions).toHaveLength(1);
@@ -758,6 +663,7 @@ describe('ConversationCoordinator', () => {
 
     harness.coordinator.cancelActive();
     await expect(harness.coordinator.submit('读取 new.txt')).resolves.toBeUndefined();
+    await authorizeTask(harness);
 
     expect(fileTasks.cancelCalls).toBe(1);
     expect(fileTasks.preparedGenerations).toEqual([
@@ -1328,6 +1234,7 @@ describe('ConversationCoordinator', () => {
         providerIdentity: 'openai'
       });
       await harness.coordinator.submit('新消息');
+    await authorizeTask(harness);
       harness.disclosureAdapter.resolve = () => {
         if (action === 'cancel') harness.coordinator.cancelActive();
         else void harness.coordinator.close();
@@ -1362,6 +1269,7 @@ describe('ConversationCoordinator', () => {
     };
 
     await harness.coordinator.submit('追加后关闭');
+    await authorizeTask(harness);
 
     expect(harness.history.turns()).toEqual([{
       userText: '追加后关闭',
@@ -1515,7 +1423,7 @@ describe('ConversationCoordinator', () => {
     await Promise.resolve();
 
     expect(settled).toBe(false);
-    expect(fileTasks.closeCalls).toBe(1);
+    await vi.waitFor(() => expect(fileTasks.closeCalls).toBe(1));
     barrier.resolve();
     await Promise.all([first, second]);
     expect(settled).toBe(true);
@@ -1575,6 +1483,8 @@ describe('ConversationCoordinator', () => {
     });
 
     const submitting = harness.coordinator.submit('整理文件');
+    await submitting;
+    await authorizeTask(harness);
     await vi.waitFor(() => expect(harness.fileTasks.submissions).toHaveLength(1));
     harness.fileTasks.publish({ type: 'message', role: 'assistant', text: '整理完成' }, 'generation-current');
     harness.fileTasks.publish({ type: 'phase', phase: 'success' }, 'generation-current');
@@ -1595,612 +1505,6 @@ describe('ConversationCoordinator', () => {
       assistantText: '整理完成',
       providerIdentity: 'openai'
     });
-  });
-
-  test('确认前继续不执行，确认后的可信创建引用续接同代文件事务', async () => {
-    const fileTasks = new CapturingCapabilityTasks();
-    let executionCalls = 0;
-    fileTasks.submit = async input => {
-      fileTasks.submissions.push(input);
-      if (fileTasks.submissions.length === 1) {
-        fileTasks.publish({
-          type: 'pending_action',
-          action: {
-            category: 'file',
-            actionId: 'create-action',
-            conversationId: 'conversation-1',
-            risk: 'write',
-            operation: 'create_file',
-            summary: '创建 test.txt',
-            targetRelativePath: 'test.txt',
-            contentCharacters: 0,
-            contentPreview: '',
-            contentPreviewSuppressedReason: null,
-            previewTruncated: false,
-            createdAt: '2026-08-28T00:00:00.000Z',
-            expiresAt: '2026-08-28T00:02:00.000Z'
-          }
-        }, input.generation);
-        fileTasks.publish({ type: 'phase', phase: 'awaiting_confirmation' }, input.generation);
-      }
-      return { kind: 'completed', acted: true };
-    };
-    fileTasks.resolveAction = async () => {
-      executionCalls += 1;
-      fileTasks.publishTrustedToolResult({
-        toolName: 'create_file',
-        ok: true,
-        relativePaths: ['test.txt']
-      }, 'generation-current');
-      fileTasks.publish({ type: 'message', role: 'assistant', text: '已创建文件。' }, 'generation-current');
-      fileTasks.publish({ type: 'phase', phase: 'success' }, 'generation-current');
-    };
-    const harness = createHarness([], { fileTasks });
-
-    await harness.coordinator.submit('创建 test.txt');
-    await expect(harness.coordinator.submit('继续')).resolves.toBeUndefined();
-    expect(executionCalls).toBe(0);
-    expect(fileTasks.submissions).toHaveLength(1);
-
-    await harness.coordinator.resolveFileAction('create-action', 'confirm');
-    await harness.coordinator.submit('把刚创建的文件内容改为 hello');
-
-    expect(fileTasks.submissions).toHaveLength(2);
-    expect(fileTasks.submissions[1]).toMatchObject({
-      generation: 'generation-current',
-      taskKind: 'file'
-    });
-    expect(fileTasks.submissions[1]?.text).toBe('把刚创建的文件内容改为 hello');
-    expect(fileTasks.submissions[1]?.planningHint).toEqual({ operation: 'edit_file' });
-    expect(fileTasks.submissions[1]?.privatePlanningContext).toContain('"role":"created"');
-    expect(fileTasks.submissions[1]?.privatePlanningContext).toContain('"relativePath":"test.txt"');
-    expect(harness.factoryCallCount()).toBe(0);
-  });
-
-  test.each([
-    '这个文件内容是好的',
-    '这个文件内容很好',
-    '不要把这个文件内容发给模型',
-    '“读取这个文件内容”只是引用',
-    '```text\n读取这个文件内容\n```'
-  ])('完成后的普通评论、否定、引用和代码块“%s”保持普通聊天零工具', async followUp => {
-    const fileTasks = new CapturingCapabilityTasks();
-    fileTasks.submit = async input => {
-      fileTasks.submissions.push(input);
-      fileTasks.publishTrustedToolResult({
-        toolName: 'read_file',
-        ok: true,
-        relativePaths: ['test.txt']
-      }, input.generation);
-      fileTasks.publish({ type: 'message', role: 'assistant', text: '读取完成。' }, input.generation);
-      fileTasks.publish({ type: 'phase', phase: 'success' }, input.generation);
-      return { kind: 'completed', acted: true };
-    };
-    const chat = scriptedProvider({ type: 'text', text: '这里只是普通聊天。' });
-    const harness = createHarness([{
-      profileId: 'chat-profile',
-      providerIdentity: 'openai',
-      providerName: 'Chat',
-      script: chat
-    }], { fileTasks });
-
-    await harness.coordinator.submit('读取 test.txt');
-    await harness.coordinator.submit(followUp);
-
-    expect(fileTasks.submissions).toHaveLength(1);
-    expect(chat.requests).toHaveLength(1);
-    expect(chat.requests[0]).toMatchObject({ tools: [], toolChoice: 'none' });
-  });
-
-  test('多结果事务的独立私有规划上下文不超过 1200 字符', async () => {
-    const fileTasks = new CapturingCapabilityTasks();
-    fileTasks.submit = async input => {
-      fileTasks.submissions.push(input);
-      if (fileTasks.submissions.length === 1) {
-        for (let index = 0; index < 40; index += 1) {
-          fileTasks.publishTrustedToolResult({
-            toolName: `read_file_${index}`,
-            ok: true,
-            relativePaths: [`docs/${'x'.repeat(40)}-${index}.txt`]
-          }, input.generation);
-        }
-        fileTasks.publish({ type: 'phase', phase: 'success' }, input.generation);
-      }
-      return { kind: 'completed', acted: true };
-    };
-    const harness = createHarness([], { fileTasks });
-
-    await harness.coordinator.submit('读取 docs/test.txt');
-    await harness.coordinator.submit('读取那个文件');
-
-    const continuation = fileTasks.submissions[1];
-    expect(continuation?.text).toBe('读取那个文件');
-    expect(continuation?.privatePlanningContext?.length).toBeLessThanOrEqual(1_200);
-    expect(() => JSON.parse(continuation?.privatePlanningContext ?? '')).not.toThrow();
-  });
-
-  test('成功询问只回答可信事务终态且不创建聊天或文件执行', async () => {
-    const fileTasks = new CapturingCapabilityTasks();
-    fileTasks.submit = async input => {
-      fileTasks.submissions.push(input);
-      fileTasks.publishTrustedToolResult({
-        toolName: 'read_file',
-        ok: true,
-        relativePaths: ['test.txt']
-      }, input.generation);
-      fileTasks.publish({ type: 'message', role: 'assistant', text: '读取完成。' }, input.generation);
-      fileTasks.publish({ type: 'phase', phase: 'success' }, input.generation);
-      return { kind: 'completed', acted: true };
-    };
-    const harness = createHarness([], { fileTasks });
-    await harness.coordinator.submit('读取 test.txt');
-    const submissionCount = fileTasks.submissions.length;
-
-    await harness.coordinator.submit('成功了吗');
-
-    expect(fileTasks.submissions).toHaveLength(submissionCount);
-    expect(harness.factoryCallCount()).toBe(0);
-    expect(harness.events).toContainEqual({
-      type: 'message', role: 'assistant', text: '上一个本地任务已成功完成。'
-    });
-  });
-
-  test('completed 终态下继续只报告可信终态，不重新提交 Agent', async () => {
-    const fileTasks = new CapturingCapabilityTasks();
-    fileTasks.submit = async input => {
-      fileTasks.submissions.push(input);
-      fileTasks.publishTrustedToolResult({
-        toolName: 'read_file',
-        ok: true,
-        relativePaths: ['test.txt']
-      }, input.generation);
-      fileTasks.publish({ type: 'message', role: 'assistant', text: '读取完成。' }, input.generation);
-      fileTasks.publish({ type: 'phase', phase: 'success' }, input.generation);
-      return { kind: 'completed', acted: true };
-    };
-    const harness = createHarness([], { fileTasks });
-    await harness.coordinator.submit('读取 test.txt');
-
-    await harness.coordinator.submit('继续');
-
-    expect(fileTasks.submissions).toHaveLength(1);
-    expect(harness.factoryCallCount()).toBe(0);
-    expect(harness.events).toContainEqual({
-      type: 'message',
-      role: 'assistant',
-      text: '上一个本地任务已成功完成。'
-    });
-  });
-
-  test('真实写入成功但模型总结失败时状态询问携带 summary warning', async () => {
-    const fileTasks = new CapturingCapabilityTasks();
-    fileTasks.submit = async input => {
-      fileTasks.submissions.push(input);
-      fileTasks.publishTrustedToolResult({
-        toolName: 'create_file', ok: true, relativePaths: ['test.txt']
-      }, input.generation);
-      fileTasks.publish({
-        type: 'error',
-        code: 'PROVIDER_SUMMARY_FAILED_AFTER_WRITE',
-        message: '本地文件操作已成功，但模型总结失败。'
-      }, input.generation);
-      fileTasks.publish({ type: 'phase', phase: 'error' }, input.generation);
-      return { kind: 'completed', acted: true };
-    };
-    const harness = createHarness([], { fileTasks });
-    await harness.coordinator.submit('创建 test.txt');
-
-    await harness.coordinator.submit('成功了吗');
-
-    expect(harness.events).toContainEqual({
-      type: 'message',
-      role: 'assistant',
-      text: '上一个本地操作已成功，但模型总结失败。'
-    });
-    expect(harness.factoryCallCount()).toBe(0);
-  });
-
-  test('写入成功但总结失败后 retry 不会重放已成功 mutation', async () => {
-    const fileTasks = new CapturingCapabilityTasks();
-    fileTasks.submit = async input => {
-      fileTasks.submissions.push(input);
-      fileTasks.publishTrustedToolResult({
-        toolName: 'create_file',
-        ok: true,
-        relativePaths: ['test.txt']
-      }, input.generation);
-      fileTasks.publish({
-        type: 'error',
-        code: 'PROVIDER_SUMMARY_FAILED_AFTER_WRITE',
-        message: '本地文件操作已成功，但模型总结失败。'
-      }, input.generation);
-      fileTasks.publish({ type: 'phase', phase: 'error' }, input.generation);
-      return { kind: 'completed', acted: true };
-    };
-    const chat = scriptedProvider({ type: 'text', text: '不应进入普通聊天重放。' });
-    const harness = createHarness([{
-      profileId: 'chat-profile',
-      providerIdentity: 'openai',
-      providerName: 'Chat',
-      script: chat
-    }], { fileTasks });
-    await harness.coordinator.submit('创建 test.txt');
-
-    await harness.coordinator.submit('retry');
-
-    expect(fileTasks.submissions).toHaveLength(1);
-    expect(chat.requests).toHaveLength(0);
-    expect(harness.events).toContainEqual({
-      type: 'message',
-      role: 'assistant',
-      text: '上一个本地操作已成功，但模型总结失败。'
-    });
-  });
-
-  test('failed 终态在本回合已有成功 mutation 时 retry 只提示部分执行且不重放', async () => {
-    const fileTasks = new CapturingCapabilityTasks();
-    fileTasks.submit = async input => {
-      fileTasks.submissions.push(input);
-      fileTasks.publishTrustedToolResult({
-        toolName: 'create_file',
-        ok: true,
-        relativePaths: ['partial.txt']
-      }, input.generation);
-      fileTasks.publish({
-        type: 'error',
-        code: 'AGENT_INTERNAL_ERROR',
-        message: '任务执行失败，请重试。'
-      }, input.generation);
-      fileTasks.publish({ type: 'phase', phase: 'error' }, input.generation);
-      return { kind: 'completed', acted: true };
-    };
-    const harness = createHarness([], { fileTasks });
-    await harness.coordinator.submit('创建 partial.txt');
-
-    await harness.coordinator.submit('retry');
-
-    expect(fileTasks.submissions).toHaveLength(1);
-    expect(harness.events).toContainEqual({
-      type: 'message',
-      role: 'assistant',
-      text: '任务已部分执行，不能自动重试。'
-    });
-    expect(harness.factoryCallCount()).toBe(0);
-  });
-
-  test('failed 终态只有 retry 才从最后可信状态重开，continue 只报告失败终态', async () => {
-    const fileTasks = new CapturingCapabilityTasks();
-    fileTasks.submit = async input => {
-      fileTasks.submissions.push(input);
-      if (fileTasks.submissions.length === 1) {
-        fileTasks.publishTrustedToolResult({
-          toolName: 'create_file',
-          ok: true,
-          relativePaths: ['test.txt']
-        }, input.generation);
-        fileTasks.publish({ type: 'message', role: 'assistant', text: '已创建文件。' }, input.generation);
-        fileTasks.publish({ type: 'phase', phase: 'success' }, input.generation);
-        return { kind: 'completed', acted: true };
-      }
-      if (fileTasks.submissions.length === 2) {
-        fileTasks.publishTrustedToolResult({
-          toolName: 'read_file',
-          ok: true,
-          relativePaths: ['test.txt']
-        }, input.generation);
-        fileTasks.publish({
-          type: 'error',
-          code: 'AGENT_INTERNAL_ERROR',
-          message: '任务执行失败，请重试。'
-        }, input.generation);
-        fileTasks.publish({ type: 'phase', phase: 'error' }, input.generation);
-        return { kind: 'completed', acted: true };
-      }
-      fileTasks.publish({ type: 'message', role: 'assistant', text: '已按最后可信状态重试。' }, input.generation);
-      fileTasks.publish({ type: 'phase', phase: 'success' }, input.generation);
-      return { kind: 'completed', acted: true };
-    };
-    const harness = createHarness([], { fileTasks });
-    await harness.coordinator.submit('创建 test.txt');
-    await harness.coordinator.submit('把刚创建的文件内容改为 hello');
-
-    await harness.coordinator.submit('继续');
-    expect(fileTasks.submissions).toHaveLength(2);
-    expect(harness.events).toContainEqual({
-      type: 'message',
-      role: 'assistant',
-      text: '上一个本地任务未成功完成。'
-    });
-
-    await harness.coordinator.submit('retry');
-
-    expect(fileTasks.submissions).toHaveLength(3);
-    expect(fileTasks.submissions[2]).toMatchObject({
-      text: '把刚创建的文件内容改为 hello',
-      taskKind: 'file'
-    });
-    expect(fileTasks.submissions[2]?.planningHint).toEqual({ operation: 'edit_file' });
-    expect(fileTasks.submissions[2]?.privatePlanningContext).toContain('"role":"created"');
-    expect(fileTasks.submissions[2]?.privatePlanningContext).toContain('"toolName":"read_file"');
-  });
-
-  test('新一轮文件续接未调用工具时不借用历史成功终态', async () => {
-    const fileTasks = new CapturingCapabilityTasks();
-    fileTasks.submit = async input => {
-      fileTasks.submissions.push(input);
-      if (fileTasks.submissions.length === 1) {
-        fileTasks.publishTrustedToolResult({
-          toolName: 'read_file', ok: true, relativePaths: ['test.txt']
-        }, input.generation);
-      }
-      fileTasks.publish({ type: 'phase', phase: 'success' }, input.generation);
-      return { kind: 'completed', acted: fileTasks.submissions.length === 1 };
-    };
-    const chat = scriptedProvider({ type: 'text', text: '本轮没有可信工具结果。' });
-    const harness = createHarness([{
-      profileId: 'profile-openai',
-      providerIdentity: 'openai',
-      providerName: 'OpenAI',
-      script: chat
-    }], { fileTasks });
-
-    await harness.coordinator.submit('读取 test.txt');
-    await harness.coordinator.submit('修改那个文件');
-    await harness.coordinator.submit('成功了吗');
-
-    expect(fileTasks.submissions).toHaveLength(2);
-    expect(chat.requests).toHaveLength(1);
-    expect(harness.events).toContainEqual({
-      type: 'message', role: 'assistant', text: '本轮没有可信工具结果。'
-    });
-  });
-
-  test('明确新文件任务替换旧引用，后续指代只携带新任务可信路径', async () => {
-    const fileTasks = new CapturingCapabilityTasks();
-    fileTasks.submit = async input => {
-      fileTasks.submissions.push(input);
-      const first = fileTasks.submissions.length === 1;
-      fileTasks.publishTrustedToolResult({
-        toolName: first ? 'create_file' : 'read_file',
-        ok: true,
-        relativePaths: [first ? 'old.txt' : 'new.txt']
-      }, input.generation);
-      fileTasks.publish({
-        type: 'message', role: 'assistant', text: first ? '创建完成。' : '读取完成。'
-      }, input.generation);
-      fileTasks.publish({ type: 'phase', phase: 'success' }, input.generation);
-      return { kind: 'completed', acted: true };
-    };
-    const harness = createHarness([], { fileTasks });
-
-    await harness.coordinator.submit('创建 old.txt');
-    await harness.coordinator.submit('读取 new.txt');
-    await harness.coordinator.submit('修改那个文件');
-
-    expect(fileTasks.submissions[1]?.text).toBe('读取 new.txt');
-    expect(fileTasks.submissions[2]?.text).toBe('修改那个文件');
-    expect(fileTasks.submissions[2]?.privatePlanningContext)
-      .toContain('"relativePath":"new.txt"');
-    expect(fileTasks.submissions[2]?.privatePlanningContext).not.toContain('old.txt');
-  });
-
-  test('明确新任务即使预检失败也不保留上一事务成功终态', async () => {
-    const fileTasks = new CapturingCapabilityTasks();
-    fileTasks.submit = async input => {
-      fileTasks.submissions.push(input);
-      fileTasks.publishTrustedToolResult({
-        toolName: 'read_file', ok: true, relativePaths: ['old.txt']
-      }, input.generation);
-      fileTasks.publish({ type: 'message', role: 'assistant', text: '读取完成。' }, input.generation);
-      fileTasks.publish({ type: 'phase', phase: 'success' }, input.generation);
-      return { kind: 'completed', acted: true };
-    };
-    const chat = scriptedProvider({ type: 'text', text: '没有可续接的旧事务。' });
-    const harness = createHarness([{
-      profileId: 'profile-openai',
-      providerIdentity: 'openai',
-      providerName: 'OpenAI',
-      script: chat
-    }], { fileTasks });
-    await harness.coordinator.submit('读取 old.txt');
-    fileTasks.prepareError = Object.assign(new Error('FILE_AUTHORIZATION_REQUIRED'), {
-      code: 'FILE_AUTHORIZATION_REQUIRED'
-    });
-
-    await expect(harness.coordinator.submit('读取 new.txt')).rejects.toSatisfy(
-      error => errorCode(error) === 'FILE_AUTHORIZATION_REQUIRED'
-    );
-    fileTasks.prepareError = null;
-    await harness.coordinator.submit('成功了吗');
-
-    expect(chat.requests).toHaveLength(1);
-    expect(harness.events).not.toContainEqual({
-      type: 'message', role: 'assistant', text: '上一个本地任务已成功完成。'
-    });
-  });
-
-  test('明确新任务在行为预处理抛错前已经清空旧事务', async () => {
-    const fileTasks = new CapturingCapabilityTasks();
-    fileTasks.submit = async input => {
-      fileTasks.submissions.push(input);
-      fileTasks.publishTrustedToolResult({
-        toolName: 'read_file', ok: true, relativePaths: ['old.txt']
-      }, input.generation);
-      fileTasks.publish({ type: 'phase', phase: 'success' }, input.generation);
-      return { kind: 'completed', acted: true };
-    };
-    const prepareUserPrompt = vi.fn(async (text: string) => {
-      if (text === '读取 new.txt') throw new Error('BEHAVIOR_PREPARE_FAILED');
-      return { originalText: text, capabilityText: text, explicitDirective: null };
-    });
-    const chat = scriptedProvider({ type: 'text', text: '没有旧事务。' });
-    const harness = createHarness([{
-      profileId: 'profile-openai',
-      providerIdentity: 'openai',
-      providerName: 'OpenAI',
-      script: chat
-    }], { fileTasks, behavior: behaviorPortDouble({ prepareUserPrompt }) });
-    await harness.coordinator.submit('读取 old.txt');
-
-    await expect(harness.coordinator.submit('读取 new.txt')).rejects.toThrow();
-    await harness.coordinator.submit('成功了吗');
-
-    expect(chat.requests).toHaveLength(1);
-    expect(harness.events).not.toContainEqual({
-      type: 'message', role: 'assistant', text: '上一个本地任务已成功完成。'
-    });
-  });
-
-  test('明确 PowerShell 新任务在行为预处理抛错前已经清空旧事务', async () => {
-    const fileTasks = new CapturingCapabilityTasks();
-    fileTasks.submit = async input => {
-      fileTasks.submissions.push(input);
-      fileTasks.publishTrustedToolResult({
-        toolName: 'read_file', ok: true, relativePaths: ['old.txt']
-      }, input.generation);
-      fileTasks.publish({ type: 'phase', phase: 'success' }, input.generation);
-      return { kind: 'completed', acted: true };
-    };
-    const powerShellText = '执行 PowerShell npm test';
-    const prepareUserPrompt = vi.fn(async (text: string) => {
-      if (text === powerShellText) throw new Error('BEHAVIOR_PREPARE_FAILED');
-      return { originalText: text, capabilityText: text, explicitDirective: null };
-    });
-    const chat = scriptedProvider({ type: 'text', text: '没有旧事务。' });
-    const harness = createHarness([{
-      profileId: 'profile-openai',
-      providerIdentity: 'openai',
-      providerName: 'OpenAI',
-      script: chat
-    }], { fileTasks, behavior: behaviorPortDouble({ prepareUserPrompt }) });
-    await harness.coordinator.submit('读取 old.txt');
-
-    await expect(harness.coordinator.submit(powerShellText)).rejects.toThrow();
-    await harness.coordinator.submit('成功了吗');
-
-    expect(chat.requests).toHaveLength(1);
-    expect(harness.events).not.toContainEqual({
-      type: 'message', role: 'assistant', text: '上一个本地任务已成功完成。'
-    });
-  });
-
-  test('reset 更换 generation 后旧事务终态与可信引用立即失效', async () => {
-    const fileTasks = new CapturingCapabilityTasks();
-    fileTasks.submit = async input => {
-      fileTasks.submissions.push(input);
-      fileTasks.publishTrustedToolResult({
-        toolName: 'read_file', ok: true, relativePaths: ['old.txt']
-      }, input.generation);
-      fileTasks.publish({ type: 'message', role: 'assistant', text: '读取完成。' }, input.generation);
-      fileTasks.publish({ type: 'phase', phase: 'success' }, input.generation);
-      return { kind: 'completed', acted: true };
-    };
-    const chat = scriptedProvider({ type: 'text', text: '这是新的聊天回复。' });
-    const harness = createHarness([{
-      profileId: 'profile-openai',
-      providerIdentity: 'openai',
-      providerName: 'OpenAI',
-      script: chat
-    }], { fileTasks });
-    await harness.coordinator.submit('读取 old.txt');
-
-    await harness.coordinator.resetConversation();
-    await harness.coordinator.submit('成功了吗');
-
-    expect(chat.requests).toHaveLength(1);
-    expect(harness.events).toContainEqual({
-      type: 'message', role: 'assistant', text: '这是新的聊天回复。'
-    });
-    expect(harness.events).not.toContainEqual({
-      type: 'message', role: 'assistant', text: '上一个本地任务已成功完成。'
-    });
-  });
-
-  test('Provider 或授权能力修订变化时拒绝续接并立即清空旧事务', async () => {
-    const fileTasks = new CapturingCapabilityTasks();
-    fileTasks.submit = async input => {
-      fileTasks.submissions.push(input);
-      fileTasks.publishTrustedToolResult({
-        toolName: 'read_file', ok: true, relativePaths: ['old.txt']
-      }, input.generation);
-      fileTasks.publish({ type: 'message', role: 'assistant', text: '读取完成。' }, input.generation);
-      fileTasks.publish({ type: 'phase', phase: 'success' }, input.generation);
-      return { kind: 'completed', acted: true };
-    };
-    const chat = scriptedProvider({ type: 'text', text: '旧事务已失效。' });
-    const harness = createHarness([{
-      profileId: 'profile-openai',
-      providerIdentity: 'openai',
-      providerName: 'OpenAI',
-      script: chat
-    }], { fileTasks });
-    await harness.coordinator.submit('读取 old.txt');
-    fileTasks.target = Object.freeze({
-      profileId: 'profile-agent-new',
-      providerIdentity: 'anthropic',
-      providerName: 'Anthropic Agent',
-      capabilityRevision: 'revision-agent-new'
-    });
-
-    await expect(harness.coordinator.submit('修改那个文件')).rejects.toSatisfy(
-      error => errorCode(error) === 'FILE_TARGET_MISMATCH'
-    );
-    await harness.coordinator.submit('成功了吗');
-
-    expect(fileTasks.cancelCalls).toBe(1);
-    expect(chat.requests).toHaveLength(1);
-    expect(harness.events).not.toContainEqual({
-      type: 'message', role: 'assistant', text: '上一个本地任务已成功完成。'
-    });
-  });
-
-  test('事务超过 10 分钟 TTL 后不再续接旧引用，而是回落普通聊天', async () => {
-    vi.useFakeTimers();
-    vi.setSystemTime(new Date('2026-08-28T00:00:00.000Z'));
-    try {
-      const fileTasks = new CapturingCapabilityTasks();
-      fileTasks.submit = async input => {
-        fileTasks.submissions.push(input);
-        fileTasks.publishTrustedToolResult({
-          toolName: 'read_file',
-          ok: true,
-          relativePaths: ['old.txt']
-        }, input.generation);
-        fileTasks.publish({ type: 'message', role: 'assistant', text: '读取完成。' }, input.generation);
-        fileTasks.publish({ type: 'phase', phase: 'success' }, input.generation);
-        return { kind: 'completed', acted: true };
-      };
-      const chat = scriptedProvider({ type: 'text', text: '旧事务已过期。' });
-      const harness = createHarness([{
-        profileId: 'chat-profile',
-        providerIdentity: 'openai',
-        providerName: 'Chat',
-        script: chat
-      }], { fileTasks });
-      await harness.coordinator.submit('读取 old.txt');
-
-      await vi.advanceTimersByTimeAsync(10 * 60 * 1_000 + 1);
-      await harness.coordinator.submit('修改那个文件');
-
-      expect(fileTasks.submissions).toHaveLength(1);
-      expect(chat.requests).toHaveLength(1);
-      expect(chat.requests[0]).toMatchObject({ tools: [], toolChoice: 'none' });
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-
-  test('把 order 文件放入目录直接进入文件事务并保留移动规划提示', async () => {
-    const harness = createHarness([]);
-
-    await harness.coordinator.submit('把 order 文件放入 a 文件夹');
-
-    expect(harness.fileTasks.submissions).toEqual([expect.objectContaining({
-      text: '把 order 文件放入 a 文件夹',
-      taskKind: 'file',
-      planningHint: { operation: 'move_file' }
-    })]);
-    expect(harness.factoryCallCount()).toBe(0);
   });
 
   test('文件目标预检缺少授权时稳定失败，且不降级为聊天成功', async () => {
@@ -2225,6 +1529,7 @@ describe('ConversationCoordinator', () => {
   test('文件任务 phase:error 公开失败后释放状态、允许再次提交且不写历史', async () => {
     const harness = createHarness([]);
     await harness.coordinator.submit('读取 失败.txt');
+    await authorizeTask(harness);
 
     harness.fileTasks.publish({
       type: 'error',
@@ -2240,138 +1545,9 @@ describe('ConversationCoordinator', () => {
     });
     expect(harness.history.turns()).toEqual([]);
     await expect(harness.coordinator.submit('读取 重试.txt')).resolves.toBeUndefined();
+    await authorizeTask(harness);
     expect(harness.fileTasks.submissions).toHaveLength(2);
   });
-
-  test('文件失败终态同步重入新提交时旧 reject 不覆盖新 owner 且不重复报错', async () => {
-    const fileTasks = new CapturingCapabilityTasks();
-    const nextProvider = deferredProvider();
-    let submissionCount = 0;
-    fileTasks.submit = async input => {
-      fileTasks.submissions.push(input);
-      submissionCount += 1;
-      if (submissionCount !== 1) return { kind: 'completed', acted: false };
-      fileTasks.publish({
-        type: 'error',
-        code: 'PATH_INVALID',
-        message: '文件路径无效。'
-      }, input.generation);
-      fileTasks.publish({ type: 'phase', phase: 'error' }, input.generation);
-      throw Object.assign(new Error('private-path-details'), { code: 'PATH_INVALID' });
-    };
-    let newPending: Promise<void> | null = null;
-    const harness = createHarness([{
-      profileId: 'profile-openai',
-      providerIdentity: 'openai',
-      providerName: 'OpenAI',
-      script: nextProvider
-    }], {
-      fileTasks,
-      onEmit: (event, coordinator) => {
-        if (event.type === 'phase' && event.phase === 'error' && newPending === null) {
-          newPending = coordinator.submit('同步重入的新任务');
-        }
-      }
-    });
-
-    await expect(harness.coordinator.submit('读取 失败.txt')).rejects
-      .toSatisfy(error => errorCode(error) === 'PATH_INVALID');
-    await vi.waitFor(() => expect(nextProvider.requests).toHaveLength(1));
-
-    expect(harness.events.filter(event => event.type === 'error')).toEqual([{
-      type: 'error',
-      code: 'PATH_INVALID',
-      message: '文件路径无效。'
-    }]);
-    expect(JSON.stringify(harness.events)).not.toContain('private-path-details');
-    nextProvider.resolve({
-      type: 'text',
-      text: '新任务完成'
-    });
-    await newPending;
-    expect(harness.events).toContainEqual({
-      type: 'message',
-      role: 'assistant',
-      text: '新任务完成'
-    });
-  });
-
-  test.each([
-    ['ENTRY_CHANGED', '文件在确认后发生变化，未执行操作。', '请重新发起文件操作并确认最新内容。'],
-    ['ENTRY_TYPE_UNSUPPORTED', '该文件类型或目录状态不支持此操作。', '请选择普通文本文件、普通文件或空目录后重试。'],
-    ['LINK_NOT_ALLOWED', '不允许对符号链接或 Junction 执行此文件操作。', '请选择授权目录内的普通文件或目录。'],
-    ['RECYCLE_BIN_FAILED', '无法将目标移入 Windows 回收站，原目标仍保留。', '请检查目标是否被占用或 Windows 回收站是否可用后重试。']
-  ] as const)(
-    '文件端口错误 %s 已发布后不降级、不重复且不泄露底层消息',
-    async (code, message, nextAction) => {
-      const fileTasks = new CapturingCapabilityTasks();
-      fileTasks.submit = async input => {
-        fileTasks.submissions.push(input);
-        fileTasks.publish({ type: 'error', code, message, nextAction }, input.generation);
-        fileTasks.publish({ type: 'phase', phase: 'error' }, input.generation);
-        throw Object.assign(new Error('C:\\private\\secret.txt'), { code });
-      };
-      const harness = createHarness([], { fileTasks });
-
-      await expect(harness.coordinator.submit('整理文件')).rejects
-        .toSatisfy(error => errorCode(error) === code);
-
-      expect(harness.events.filter(event => event.type === 'error')).toEqual([{
-        type: 'error',
-        code,
-        message,
-        nextAction
-      }]);
-      expect(JSON.stringify(harness.events)).not.toContain('private');
-      expect(phases(harness.events).filter(phase => phase === 'error')).toHaveLength(1);
-    }
-  );
-
-  test.each([
-    ['ENTRY_CHANGED', '文件在确认后发生变化，未执行操作。', '请重新发起文件操作并确认最新内容。'],
-    ['RECYCLE_BIN_FAILED', '无法将目标移入 Windows 回收站，原目标仍保留。', '请检查目标是否被占用或 Windows 回收站是否可用后重试。']
-  ] as const)(
-    '确认路径的 %s 已发布后保持原错误码且不重复发布',
-    async (code, message, nextAction) => {
-      const fileTasks = new CapturingCapabilityTasks();
-      fileTasks.submit = async input => {
-        fileTasks.submissions.push(input);
-        fileTasks.publish({
-          type: 'pending_action',
-          action: {
-            category: 'file',
-            actionId: 'pending-action',
-            conversationId: 'conversation-1',
-            risk: 'write',
-            operation: 'delete_file',
-            summary: '删除文件',
-            targetRelativePath: 'old.txt',
-            targetType: 'file',
-            createdAt: '2026-08-12T00:00:00.000Z',
-            expiresAt: '2026-08-12T00:02:00.000Z'
-          }
-        }, input.generation);
-        fileTasks.publish({ type: 'phase', phase: 'awaiting_confirmation' }, input.generation);
-        return { kind: 'completed', acted: true };
-      };
-      fileTasks.resolveAction = async () => {
-        fileTasks.publish({ type: 'error', code, message, nextAction }, 'generation-current');
-        fileTasks.publish({ type: 'phase', phase: 'error' }, 'generation-current');
-        throw Object.assign(new Error('C:\\private\\secret.txt'), { code });
-      };
-      const harness = createHarness([], { fileTasks });
-      await harness.coordinator.submit('删除 old.txt');
-
-      await expect(harness.coordinator.resolveFileAction('pending-action', 'confirm')).rejects
-        .toSatisfy(error => errorCode(error) === code);
-
-      expect(harness.events.filter(event => event.type === 'error')).toEqual([{
-        type: 'error', code, message, nextAction
-      }]);
-      expect(phases(harness.events).filter(phase => phase === 'error')).toHaveLength(1);
-      expect(JSON.stringify(harness.events)).not.toContain('private');
-    }
-  );
 
   test.each([
     ['share_once', [
@@ -2385,7 +1561,8 @@ describe('ConversationCoordinator', () => {
       profileId: 'profile-anthropic-agent',
       providerIdentity: 'anthropic',
       providerName: 'Anthropic Agent',
-      capabilityRevision: 'revision-anthropic'
+      capabilityRevision: 'revision-anthropic',
+    directory: 'D:\\authorized', modelId: 'model-test', approvedCommands: [],
     });
     harness.history.append({
       userText: '旧问题',
@@ -2394,6 +1571,7 @@ describe('ConversationCoordinator', () => {
     });
 
     await harness.coordinator.submit('整理文件');
+    await authorizeTask(harness);
 
     expect(harness.fileTasks.submissions).toEqual([]);
     expect(harness.events).toContainEqual({
@@ -2407,6 +1585,7 @@ describe('ConversationCoordinator', () => {
       .toSatisfy(error => errorCode(error) === 'DISCLOSURE_REQUEST_EXPIRED');
 
     await harness.coordinator.resolveHistoryDisclosure('request-1', decision);
+    await authorizeTask(harness);
 
     expect(harness.fileTasks.submissions).toEqual([{
       text: '整理文件',
@@ -2471,7 +1650,8 @@ describe('ConversationCoordinator', () => {
       profileId: 'profile-anthropic-agent',
       providerIdentity: 'anthropic',
       providerName: 'Anthropic Agent',
-      capabilityRevision: 'revision-anthropic'
+      capabilityRevision: 'revision-anthropic',
+    directory: 'D:\\authorized', modelId: 'model-test', approvedCommands: [],
     });
     harness.history.append({
       userText: '旧问题',

@@ -17,6 +17,8 @@ extraResources:
     to: windows/explorer-space-integrity.json
   - from: resources/local-model
     to: local-model
+  - from: ../../packages/coding-task-core/dist
+    to: coding-task-resources
 asar: true
 win:
   target:

@@ -60,6 +60,11 @@ const agentMutatingInvocations = [
 ] as const;
 
 describe('Agent IPC', () => {
+  test.each([ipcChannels.actionConfirm, ipcChannels.actionCancel])('具体许可 %s 拒绝超过128字符的 opaque id', async channel => {
+    const fixture = createAgentIpcFixture();
+    await expect(fixture.handlers.get(channel)!(fixture.currentEvent, { actionId: 'x'.repeat(129) })).rejects.toThrow();
+    expect(fixture.service.resolveFileAction).not.toHaveBeenCalled();
+  });
   test('任务级授权使用独立通道和严格请求字段', async () => {
     const fixture = createAgentIpcFixture();
     const handler = fixture.handlers.get(ipcChannels.capabilityAuthorizationResolve)!;

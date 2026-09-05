@@ -1,6 +1,7 @@
 import type { IpcMain, IpcMainInvokeEvent, WebContents } from 'electron';
 import {
   type HistoryDisclosureDecision,
+  taskPermissionIdSchema,
   modelRouteConfigSchema,
   storedProviderProfileV2Schema,
   type PublicSettings
@@ -98,7 +99,7 @@ const chatSubmitSchema = z.object({
 }).strict();
 
 const actionIdSchema = z.object({
-  actionId: z.string().min(1)
+  actionId: taskPermissionIdSchema
 }).strict();
 
 const historyDisclosureSchema = z.object({
@@ -114,7 +115,7 @@ const emptyArgumentsSchema = z.tuple([]);
 export interface AgentIpcService {
   submit(text: string): Promise<void>;
   hasReportedFailure(error: unknown): boolean;
-  cancelActive(): void;
+  cancelActive(): void | Promise<void>;
   resolveFileAction(actionId: string, decision: 'confirm' | 'cancel'): Promise<void>;
   resolveHistoryDisclosure(
     requestId: string,

@@ -2,6 +2,7 @@ packages:
   - apps/*
   - packages/*
   - tools/*
+  - vendor/opencode/packages/*
 
 allowBuilds:
   core-js-pure: false

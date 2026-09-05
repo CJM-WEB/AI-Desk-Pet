@@ -268,6 +268,7 @@ describe('Renderer 任务视图状态', () => {
       const store = createTaskStore();
       store.getState().apply({
         type: 'capability_authorization_required',
+      directory: 'D:\\authorized', modelId: 'model-test', actions: ['read', 'create', 'edit'], approvedCommands: [],
         requestId: `capability-${phase}`,
         capability: 'file',
         requestSummary: '整理当前目录',

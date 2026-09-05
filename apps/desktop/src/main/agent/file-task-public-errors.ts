@@ -37,7 +37,7 @@ const 公开文件错误 = Object.freeze({
   },
   PERMISSION_DENIED: { message: 'Windows 拒绝了本地文件操作。' },
   TOOL_PERMISSION_DENIED: { message: '该工具操作未获本地权限策略允许。' },
-  FILE_TASK_USER_CANCELLED: { message: '文件操作已取消，未执行本地写入。' }
+  FILE_TASK_USER_CANCELLED: { message: '文件操作已取消；已完成的本地写入不会自动撤销。' }
 } satisfies Readonly<Record<string, PublicFileTaskErrorDetails>>);
 
 export function publicFileTaskErrorDetails(code: string): PublicFileTaskErrorDetails | null {

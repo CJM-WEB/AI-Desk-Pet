@@ -2,12 +2,12 @@ import { describe, expect, test, vi } from 'vitest';
 import type { ModelMessage } from '@myself/agent-core';
 import type { TaskEvent } from '@myself/shared-types';
 import type {
-  AgentFileTaskSubmission,
-  AgentService,
-  AgentTrustedToolResult
-} from '../src/main/agent/agent-service';
+  CodingTaskSubmission as AgentFileTaskSubmission,
+  CodingTaskToolResult as AgentTrustedToolResult
+} from '../src/main/agent/coding-task-service';
 import { CapabilityTaskAdapter } from '../src/main/conversation/capability-task-adapter';
-import type { CapabilityTaskAdapterOptions } from '../src/main/conversation/capability-task-adapter';
+import { CodingTaskService } from '../src/main/agent/coding-task-service';
+import type { CapabilityTaskAgentPort as AgentService, CapabilityTaskAdapterOptions } from '../src/main/conversation/capability-task-adapter';
 
 type AgentDouble = {
   submitFileTask: ReturnType<typeof vi.fn>;
@@ -66,7 +66,6 @@ type 准备参数契约 = 断言类型<类型完全一致<
   {
     generation: string;
     taskKind: 'file' | 'powershell';
-    continuationTarget?: import('../src/main/conversation/conversation-coordinator').PreparedCapabilityTarget;
   }
 >>;
 type 提交参数契约 = 断言类型<类型完全一致<
@@ -76,8 +75,6 @@ type 提交参数契约 = 断言类型<类型完全一致<
     visibleHistory: readonly ModelMessage[];
     generation: string;
     taskKind: 'file' | 'powershell';
-    planningHint?: import('@myself/agent-core').FilePlanningHint;
-    privatePlanningContext?: string;
   }
 >>;
 
@@ -91,11 +88,12 @@ function preparedAgent(
     providerIdentity: string;
     providerName: string;
     capabilityRevision: string;
+    directory: string; modelId: string; approvedCommands: readonly string[];
   } = {
     profileId: 'profile-agent',
     providerIdentity: 'openai',
     providerName: 'OpenAI Agent',
-    capabilityRevision: 'revision-agent'
+    capabilityRevision: 'revision-agent', directory: 'D:\\authorized', modelId: 'model-test', approvedCommands: []
   }
 ) {
   return { service: asAgentService(agent), ...target };
@@ -105,7 +103,7 @@ const defaultTargetSnapshot = Object.freeze({
   profileId: 'profile-agent',
   providerIdentity: 'openai',
   providerName: 'OpenAI Agent',
-  capabilityRevision: 'revision-agent'
+  capabilityRevision: 'revision-agent', directory: 'D:\\authorized', modelId: 'model-test', approvedCommands: []
 });
 
 /** 测试默认显式提供无 Agent 的能力快照，个别目标绑定用例可覆盖它。 */
@@ -133,38 +131,55 @@ async function submitPrepared(
 }
 
 describe('CapabilityTaskAdapter', () => {
-  test('同一有效事务续接复用 PreparedTarget、OwnedAgent 与同一 service', async () => {
-    const agent = createAgentDouble();
-    const createAgentTarget = vi.fn(() => preparedAgent(agent));
+  test('原核心提交未决时可回复许可，拒绝单次许可后仍接收最终正文', async () => {
+    const permissionShown = deferred();
+    const permissionReply = deferred();
+    const finishRun = deferred();
+    let emit!: (event: TaskEvent) => void;
+    const agent = createAgentDouble(async () => {
+      emit({ type: 'phase', phase: 'awaiting_confirmation' });
+      permissionShown.resolve();
+      await permissionReply.promise;
+      await finishRun.promise;
+      emit({ type: 'message', role: 'assistant', text: '本次许可已拒绝，任务总结仍可见' });
+      emit({ type: 'phase', phase: 'success' });
+    });
+    agent.cancelAction.mockImplementation(async () => permissionReply.resolve());
     const adapter = createAdapter({
-      getAuthorizedRootPath: vi.fn(async () => 'D:\\authorized'),
-      createAgentTarget
+      getAuthorizedRootPath: async () => 'D:\\authorized',
+      createAgentTarget: input => { emit = input.emit; return preparedAgent(agent); }
     });
+    const events: TaskEvent[] = [];
+    adapter.onEvent(event => events.push(event));
+    await adapter.prepareTarget({ generation: 'g1', taskKind: 'file' });
+    const submission = adapter.submit({ text: '读取文件', visibleHistory: [], generation: 'g1', taskKind: 'file' });
+    await permissionShown.promise;
+    await expect(adapter.resolveAction('permission-1', 'cancel')).resolves.toBeUndefined();
+    await expect(adapter.prepareTarget({ generation: 'g1', taskKind: 'file' })).rejects.toMatchObject({ code: 'TASK_ALREADY_ACTIVE' });
+    finishRun.resolve();
+    await submission;
+    expect(events).toContainEqual({ type: 'message', role: 'assistant', text: '本次许可已拒绝，任务总结仍可见' });
+    expect(events).toContainEqual({ type: 'phase', phase: 'success' });
+  });
 
-    const target = await adapter.prepareTarget({ generation: 'g1', taskKind: 'file' });
-    await adapter.submit({
-      text: '读取 test.txt',
-      visibleHistory: [],
-      generation: 'g1',
-      taskKind: 'file'
+  test('取消保持 owner 直到服务清理完成，期间拒绝新任务', async () => {
+    const cleanup = deferred();
+    let emit!: (event: TaskEvent) => void;
+    const agent = createAgentDouble();
+    agent.cancelActive.mockImplementation(async () => {
+      await cleanup.promise;
+      emit({ type: 'phase', phase: 'cancelled' });
     });
-    const continuedTarget = await adapter.prepareTarget({
-      generation: 'g1',
-      taskKind: 'file',
-      continuationTarget: target
+    const adapter = createAdapter({
+      getAuthorizedRootPath: async () => 'D:\\authorized',
+      createAgentTarget: input => { emit = input.emit; return preparedAgent(agent); }
     });
-    await adapter.submit({
-      text: '修改刚读取的文件',
-      visibleHistory: [],
-      generation: 'g1',
-      taskKind: 'file'
-    });
-
-    expect(continuedTarget).toBe(target);
-    expect(createAgentTarget).toHaveBeenCalledOnce();
-    expect(agent.submitFileTask).toHaveBeenCalledTimes(2);
-    expect(agent.resetForNewConversation).not.toHaveBeenCalled();
-    expect(agent.close).not.toHaveBeenCalled();
+    await adapter.prepareTarget({ generation: 'g1', taskKind: 'file' });
+    const cancelling = adapter.cancelActive();
+    await expect(adapter.prepareTarget({ generation: 'g1', taskKind: 'file' })).rejects.toMatchObject({ code: 'TASK_ALREADY_ACTIVE' });
+    cleanup.resolve();
+    await cancelling;
+    await expect(adapter.prepareTarget({ generation: 'g1', taskKind: 'file' })).resolves.toBeDefined();
   });
 
   test('私有工具结果只在当前 owner 内绑定 generation 与目标转发并丢弃迟到结果', async () => {
@@ -264,14 +279,13 @@ describe('CapabilityTaskAdapter', () => {
       taskKind: 'file'
     });
     await vi.waitFor(() => expect(agent.submitFileTask).toHaveBeenCalledTimes(1));
-    adapter.cancelActive();
+    await adapter.cancelActive();
     firstSubmission.resolve();
     await first;
 
     await adapter.prepareTarget({
       generation: 'g1',
-      taskKind: 'file',
-      continuationTarget: target
+      taskKind: 'file'
     });
     const second = adapter.submit({
       text: '读取新文件',
@@ -338,7 +352,7 @@ describe('CapabilityTaskAdapter', () => {
     const oldPrepare = adapter.prepareTarget({ generation: 'g-old', taskKind: 'file' });
     await vi.waitFor(() => expect(authorizationCalls).toBe(1));
 
-    adapter.cancelActive();
+    await adapter.cancelActive();
     await expect(adapter.prepareTarget({ generation: 'g-new', taskKind: 'file' })).resolves.toMatchObject({
       profileId: 'profile-agent'
     });
@@ -366,11 +380,11 @@ describe('CapabilityTaskAdapter', () => {
       createAgentTarget
     });
     await adapter.prepareTarget({ generation: 'g-old', taskKind: 'file' });
-    adapter.cancelActive();
+    await adapter.cancelActive();
 
     const replacing = adapter.prepareTarget({ generation: 'g-replacing', taskKind: 'file' });
     await vi.waitFor(() => expect(oldAgent.resetForNewConversation).toHaveBeenCalledOnce());
-    adapter.cancelActive();
+    await adapter.cancelActive();
     let nextSettled = false;
     const next = adapter.prepareTarget({ generation: 'g-new', taskKind: 'file' }).then(target => {
       nextSettled = true;
@@ -399,7 +413,7 @@ describe('CapabilityTaskAdapter', () => {
         createAgentTarget: () => preparedAgent(oldAgent)
       });
       await adapter.prepareTarget({ generation: 'g-old', taskKind: 'file' });
-      adapter.cancelActive();
+      await adapter.cancelActive();
       const replacing = adapter.prepareTarget({ generation: 'g-replacing', taskKind: 'file' });
       await vi.waitFor(() => expect(oldAgent.resetForNewConversation).toHaveBeenCalledOnce());
 
@@ -552,7 +566,7 @@ describe('CapabilityTaskAdapter', () => {
       taskKind: 'file'
     });
     await vi.waitFor(() => expect(agent.submitFileTask).toHaveBeenCalledOnce());
-    adapter.cancelActive();
+    await adapter.cancelActive();
 
     await expect(adapter.prepareTarget({ generation: 'g-too-early', taskKind: 'file' })).rejects
       .toMatchObject({ code: 'TASK_ALREADY_ACTIVE' });
@@ -592,7 +606,7 @@ describe('CapabilityTaskAdapter', () => {
 
     const confirming = adapter.resolveAction('pending-action', 'confirm');
     await vi.waitFor(() => expect(agent.confirm).toHaveBeenCalledOnce());
-    adapter.cancelActive();
+    await adapter.cancelActive();
     emitAgentEvent({ type: 'phase', phase: 'cancelled' });
 
     await expect(adapter.prepareTarget({ generation: 'g-too-early', taskKind: 'file' })).rejects
@@ -751,6 +765,33 @@ describe('CapabilityTaskAdapter', () => {
     expect(agent.close).toHaveBeenCalledOnce();
   });
 
+  test('旧 Core 清理失败后连续准备及新 generation 均保留失败屏障，reset/close 不得抹掉', async () => {
+    let factories = 0;
+    const adapter = createAdapter({
+      getAuthorizedRootPath: vi.fn(async () => 'D:\\authorized'),
+      createAgentTarget: ({ emit, emitTrustedToolResult }) => {
+        factories += 1;
+        return { ...defaultTargetSnapshot, service: new CodingTaskService({
+          sessionOptions: async () => ({ directory: 'D:\\authorized', dataDirectory: 'D:\\data', approvedCommands: [], model: { baseUrl: '', modelId: 'fixture', contextWindow: 8192, outputTokens: 2048, readCredential: async () => 'fixture' } }),
+          createSession: async () => ({ run: async () => ({ text: '运行结束', toolCalls: 0 }), replyPermission: async () => undefined, close: async () => { throw new Error('原 Core 清理未确认'); } }),
+          emit, emitTrustedToolResult
+        }) };
+      }
+    });
+    await submitPrepared(adapter, { text: '任务', visibleHistory: [], generation: 'g1', taskKind: 'file' });
+    for (const generation of ['g1', 'g2']) {
+      await expect(adapter.prepareTarget({ generation, taskKind: 'file' })).rejects.toMatchObject({ code: 'CODING_TASK_CLEANUP_FAILED' });
+      expect(factories).toBe(1);
+    }
+    await expect(adapter.resetForNewConversation()).rejects.toMatchObject({ code: 'CODING_TASK_CLEANUP_FAILED' });
+    await expect(adapter.resetForNewConversation()).rejects.toMatchObject({ code: 'CODING_TASK_CLEANUP_FAILED' });
+    await expect(adapter.prepareTarget({ generation: 'g3', taskKind: 'file' })).rejects.toMatchObject({ code: 'TASK_ALREADY_ACTIVE' });
+    await expect(adapter.close()).rejects.toMatchObject({ code: 'CODING_TASK_CLEANUP_FAILED' });
+    await expect(adapter.close()).rejects.toMatchObject({ code: 'CODING_TASK_CLEANUP_FAILED' });
+    await expect(adapter.prepareTarget({ generation: 'g4', taskKind: 'file' })).rejects.toMatchObject({ code: 'CONVERSATION_CLOSED' });
+    expect(factories).toBe(1);
+  });
+
   test('close 后拒绝新任务并隔离旧 Agent 事件', async () => {
     let emitAgentEvent!: (event: TaskEvent) => void;
     const agent = createAgentDouble();
@@ -835,13 +876,13 @@ describe('CapabilityTaskAdapter', () => {
         profileId: 'profile-a',
         providerIdentity: 'provider-a',
         providerName: 'Provider A',
-        capabilityRevision: 'revision-a'
+        capabilityRevision: 'revision-a', directory: 'D:\\authorized', modelId: 'model-test', approvedCommands: []
       }),
       preparedAgent(agentB, {
         profileId: 'profile-b',
         providerIdentity: 'provider-b',
         providerName: 'Provider B',
-        capabilityRevision: 'revision-b'
+        capabilityRevision: 'revision-b', directory: 'D:\\authorized', modelId: 'model-test', approvedCommands: []
       })
     ];
     const adapter = createAdapter({
@@ -854,20 +895,20 @@ describe('CapabilityTaskAdapter', () => {
     });
 
     const target = await adapter.prepareTarget({ generation: 'g-bound', taskKind: 'file' });
-    await adapter.submit({
+    await expect(adapter.submit({
       text: '整理文件',
       visibleHistory: [],
       generation: 'g-bound',
       taskKind: 'file'
-    });
+    })).rejects.toMatchObject({ code: 'FILE_TARGET_MISMATCH' });
 
     expect(target).toEqual({
       profileId: 'profile-a',
       providerIdentity: 'provider-a',
       providerName: 'Provider A',
-      capabilityRevision: 'revision-a'
+      capabilityRevision: 'revision-a', directory: 'D:\\authorized', modelId: 'model-test', approvedCommands: []
     });
-    expect(agentA.submitFileTask).toHaveBeenCalledOnce();
+    expect(agentA.submitFileTask).not.toHaveBeenCalled();
     expect(agentB.submitFileTask).not.toHaveBeenCalled();
   });
 

@@ -1,0 +1,27 @@
+{
+  "name": "@myself/coding-task-core",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "types": "./src/index.d.ts",
+    "default": "./src/index.ts"
+  },
+  "scripts": {
+    "pretest": "pnpm prepare:trusted-resources",
+    "test": "vitest run --config vitest.config.ts",
+    "typecheck": "node ../../vendor/opencode/build-types.cjs",
+    "build:windows-helper": "node build-windows-helper.cjs",
+    "prepare:ripgrep": "node prepare-ripgrep.cjs",
+    "prepare:trusted-resources": "pnpm build:windows-helper && pnpm prepare:ripgrep"
+  },
+  "dependencies": {
+    "@opencode-ai/core": "workspace:*",
+    "@opencode-ai/llm": "workspace:*",
+    "effect": "4.0.0-beta.83",
+    "drizzle-orm": "1.0.0-rc.2",
+    "@effect/platform-node": "4.0.0-beta.83"
+  },
+  "devDependencies": {
+    "yauzl": "3.4.0"
+  }
+}

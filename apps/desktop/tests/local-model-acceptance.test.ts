@@ -32,6 +32,7 @@ describe('真实本地模型验收脚本', () => {
       submit: async () => {
         events.push({
           type: 'capability_authorization_required',
+      directory: 'D:\\authorized', modelId: 'model-test', actions: ['read', 'create', 'edit'], approvedCommands: [],
           requestId: 'request-1',
           capability: 'file',
           requestSummary: '创建文件',
@@ -56,7 +57,8 @@ describe('真实本地模型验收脚本', () => {
       events,
       submit: async () => {
         events.push({
-          type: 'capability_authorization_required', requestId: 'request-1', capability: 'file',
+          type: 'capability_authorization_required',
+      directory: 'D:\\authorized', modelId: 'model-test', actions: ['read', 'create', 'edit'], approvedCommands: [], requestId: 'request-1', capability: 'file',
           requestSummary: '创建文件', targetProviderName: '本地模型',
           expiresAt: new Date(Date.now() + 60_000).toISOString()
         });
@@ -245,8 +247,6 @@ describe('真实本地模型验收脚本', () => {
     expect(source).toContain('new LocalModelService(');
     expect(source).toContain('new ProviderRegistry(');
     expect(source).toContain('createMainConversationComposition(');
-    expect(source).toContain('createPowerShellTool: () => new PowerShellTool()');
-    expect(source).not.toContain("createPowerShellTool: () => { throw acceptanceError('TOOL_UNKNOWN'); }");
     expect(source).toContain('coordinator.resolveFileAction(');
     expect(source).toContain("event.code === 'RECYCLE_BIN_FAILED'");
     expect(source).toContain("findFinalAssistantText(failureEvents) !== '本地能力操作失败，未完成请求。'");

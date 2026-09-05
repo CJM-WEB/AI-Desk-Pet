@@ -1,0 +1,44 @@
+{
+  "schemaVersion": 1,
+  "repository": "https://github.com/BurntSushi/ripgrep",
+  "releaseTag": "15.1.0",
+  "tagObject": "dd0b4f5477d2962eea82dd6d2864f987d574934a",
+  "commit": "af60c2de9d85e7f3d81c78601669468cf02dabab",
+  "archive": {
+    "url": "https://github.com/BurntSushi/ripgrep/releases/download/15.1.0/ripgrep-15.1.0-x86_64-pc-windows-msvc.zip",
+    "file": "ripgrep-15.1.0-x86_64-pc-windows-msvc.zip",
+    "size": 1810687,
+    "sha256": "124510b94b6baa3380d051fdf4650eaa80a302c876d611e9dba0b2e18d87493a",
+    "root": "ripgrep-15.1.0-x86_64-pc-windows-msvc/"
+  },
+  "files": [
+    {
+      "archivePath": "ripgrep-15.1.0-x86_64-pc-windows-msvc/rg.exe",
+      "outputPath": "rg.exe",
+      "size": 4266496,
+      "sha256": "decdd4992f3f1b9a5ef9898f1b40ab16886d579d6516b4efd3d5eaa19364e408",
+      "kind": "executable"
+    },
+    {
+      "archivePath": "ripgrep-15.1.0-x86_64-pc-windows-msvc/COPYING",
+      "outputPath": "ripgrep-licenses/COPYING",
+      "size": 129,
+      "sha256": "dfe7d0a6134a17d3de7409762e08dc02133303912875cab40a74ba07a390f85a",
+      "kind": "license"
+    },
+    {
+      "archivePath": "ripgrep-15.1.0-x86_64-pc-windows-msvc/LICENSE-MIT",
+      "outputPath": "ripgrep-licenses/LICENSE-MIT",
+      "size": 1102,
+      "sha256": "970813655a1bf777d2ead189cef71ab73ab92ce04dc864027d61a45de03e6728",
+      "kind": "license"
+    },
+    {
+      "archivePath": "ripgrep-15.1.0-x86_64-pc-windows-msvc/UNLICENSE",
+      "outputPath": "ripgrep-licenses/UNLICENSE",
+      "size": 1235,
+      "sha256": "640514163b17f977adc997cb16f51871122cfb0555ebad1a3f01e167b7ba8857",
+      "kind": "license"
+    }
+  ]
+}

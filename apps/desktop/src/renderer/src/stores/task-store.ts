@@ -8,6 +8,8 @@ import {
   ASSISTANT_STREAM_TEXT_MAX_CHARACTERS,
   ASSISTANT_STREAM_TURN_ID_MAX_CHARACTERS,
   type PendingAction,
+  type TaskPermissionRequiredEvent,
+  type CapabilityAuthorizationRequiredEvent,
   type TaskEvent,
   type TaskPhase
 } from '@myself/shared-types';
@@ -36,19 +38,15 @@ export type PendingHistoryDisclosure = Readonly<{
   characterCount: number;
 }>;
 
-export type PendingCapabilityAuthorization = Readonly<{
-  requestId: string;
-  capability: 'file' | 'powershell';
-  requestSummary: string;
-  targetProviderName: string;
-  expiresAt: string;
-}>;
+export type PendingCapabilityAuthorization = Omit<CapabilityAuthorizationRequiredEvent, 'type'>;
 
 export interface TaskViewState {
   conversationRevision: number;
   phase: TaskPhase;
   messages: TaskViewMessage[];
   pendingAction: PendingAction | null;
+  pendingPermissions: TaskPermissionRequiredEvent[];
+  completeTaskPermission(actionId: string): void;
   pendingHistoryDisclosure: PendingHistoryDisclosure | null;
   pendingCapabilityAuthorization: PendingCapabilityAuthorization | null;
   resolvingHistoryDisclosureRequestId: string | null;
@@ -89,10 +87,12 @@ export function createTaskStore(): StoreApi<TaskViewState> {
     phase: 'idle',
     messages: [],
     pendingAction: null,
+    pendingPermissions: [],
     pendingHistoryDisclosure: null,
     pendingCapabilityAuthorization: null,
     resolvingHistoryDisclosureRequestId: null,
     characterState: { stateId: 'idle', source: 'system' },
+    completeTaskPermission: actionId => set(state => ({ pendingPermissions: state.pendingPermissions.filter(item => item.actionId !== actionId) })),
     beginHistoryDisclosureResolution: requestId => {
       let began = false;
       set(state => {
@@ -254,6 +254,7 @@ export function createTaskStore(): StoreApi<TaskViewState> {
             capability: event.capability,
             requestSummary: event.requestSummary,
             targetProviderName: event.targetProviderName,
+            directory: event.directory, modelId: event.modelId, actions: event.actions, approvedCommands: event.approvedCommands,
             expiresAt: event.expiresAt
           })
         });
@@ -269,6 +270,7 @@ export function createTaskStore(): StoreApi<TaskViewState> {
           phase: 'idle',
           messages: [],
           pendingAction: null,
+    pendingPermissions: [],
           pendingHistoryDisclosure: null,
           pendingCapabilityAuthorization: null,
           resolvingHistoryDisclosureRequestId: null,
@@ -303,6 +305,16 @@ export function createTaskStore(): StoreApi<TaskViewState> {
               }
             : {})
         }));
+        return;
+      }
+      if (event.type === 'task_permission_required') {
+        const pending = get().pendingPermissions;
+        if (pending.some(item => item.actionId === event.actionId)) return;
+        if (pending.length >= 16) {
+          set({ phase: 'error', pendingPermissions: [] });
+          return;
+        }
+        set({ phase: 'awaiting_confirmation', pendingPermissions: [...pending, event] });
         return;
       }
       if (event.type === 'pending_action') {
@@ -345,7 +357,7 @@ export function createTaskStore(): StoreApi<TaskViewState> {
             }
           : {}),
         ...(terminalPhase(phase)
-          ? { pendingAction: null, pendingCapabilityAuthorization: null }
+          ? { pendingAction: null, pendingPermissions: [], pendingCapabilityAuthorization: null }
           : {})
       });
       if (phase === 'idle' && pendingEmotionRequest) {
@@ -379,6 +391,7 @@ export function createTaskStore(): StoreApi<TaskViewState> {
       set(state => ({
         phase: 'listening',
         pendingAction: null,
+    pendingPermissions: [],
         characterState: reduceCharacterState(state.characterState, {
           type: 'task',
           phase: 'listening'
