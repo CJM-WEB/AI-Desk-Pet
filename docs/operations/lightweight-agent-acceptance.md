@@ -1,5 +1,7 @@
 # 轻量本地能力验收
 
+> 后续验收入口（2026-09-05）：文件／命令任务正在按[新规格](../superpowers/specs/2026-09-05-ai-pet-coding-assistant-design.md)替换执行器与授权体验，当前结果统一见[DeepSeek／Qwen 编程任务验收](./2026-09-05-deepseek-qwen-coding-tasks.md)。本文旧链的命令、计数与结果保留为其日期和版本范围的历史证据，不能证明新链通过。角色、窗口及其他未被替代范围仍按各自记录判断。
+
 ## 现行验收补充
 
 - 当前意图编排、可见正文与隐藏控制解耦、真实工具调用、层级状态动作生命周期及三态运动的自动化证据，见 [`2026-08-27-ai-pet-intent-and-behavior-orchestration-acceptance.md`](./2026-08-27-ai-pet-intent-and-behavior-orchestration-acceptance.md)。

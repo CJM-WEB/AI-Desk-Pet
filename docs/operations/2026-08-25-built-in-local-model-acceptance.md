@@ -1,5 +1,7 @@
 # 2026-08-25 内置本地模型验收
 
+> 后续适用范围（2026-09-05）：Runtime／GGUF 和本记录注明版本的性能证据保留；文件／命令任务执行链与授权体验已由[新规格](../superpowers/specs/2026-09-05-ai-pet-coding-assistant-design.md)替代。以下旧链 CPU／Vulkan 结果不能证明新 Core 的正式入口通过，当前结果见[新链验收记录](./2026-09-05-deepseek-qwen-coding-tasks.md)。
+
 ## 验收环境
 
 - 系统：Windows 11 专业版，版本 `10.0.26200`，x64。

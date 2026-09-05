@@ -1,5 +1,7 @@
 # AI 桌宠内置本地模型设计
 
+> 后续替代（2026-09-05）：Qwen 文件／命令任务经旧 `AgentLoop`、`FileToolService` 和逐动作确认执行的部分，由[文件任务重构规格](./2026-09-05-ai-pet-coding-assistant-design.md)覆盖。本文模型资产、llama.cpp Runtime、禁思考、设置及凭据边界继续有效；新执行链的真实 Qwen 结果见[当前验收记录](../../operations/2026-09-05-deepseek-qwen-coding-tasks.md)。
+
 日期：2026-08-25
 
 状态：用户已批准总体路线，并预授权后续设计自审、实施与 Git 写操作

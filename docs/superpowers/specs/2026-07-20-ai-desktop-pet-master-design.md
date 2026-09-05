@@ -1,5 +1,7 @@
 # AI 桌宠产品全局设计与演进计划
 
+> 后续适用范围（2026-09-05）：DeepSeek／内置 Qwen 的文件与命令任务执行链、任务范围授权及例外许可由[文件任务重构规格](./2026-09-05-ai-pet-coding-assistant-design.md)覆盖；本地 Qwen 的独立设计进入条件已由[内置模型规格](./2026-08-25-ai-pet-built-in-local-model-design.md)满足。本文其余产品边界继续有效。新链是否通过以[当前验收记录](../../operations/2026-09-05-deepseek-qwen-coding-tasks.md)为准，不能从早期 MVP 架构推定。
+
 > 文档状态：已确认的全局粗设计  
 > 产品名称：`AI Pet`
 > 目标平台：Windows 10/11  
