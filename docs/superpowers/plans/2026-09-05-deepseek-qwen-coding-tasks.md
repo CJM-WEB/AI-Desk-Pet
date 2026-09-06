@@ -11,7 +11,7 @@
 ## 全局约束
 
 - 适用规格：[文件任务重构规格](../specs/2026-09-05-ai-pet-coding-assistant-design.md)，尤其第 1.1 节用户确认。
-- 2026-09-06已获批的补充范围见[任务入口与重复操作保护调整](../specs/2026-09-06-ai-pet-task-entry-and-loop-proposal.md)。任务5A先做隔离验证，任务6独立补原Core保护；原生入口的正式接线只在5A全部通过后形成精确的5B实施拆解并执行。5A失败时记录并讨论后续入口选择，任务6继续，不擅自改成第二分类调用或关键词兜底。
+- 2026-09-06已获批的补充范围见[任务入口与重复操作保护调整](../specs/2026-09-06-ai-pet-task-entry-and-loop-proposal.md)。任务5A已失败，原5B禁入；任务6已完成。用户随后批准[统一工具输出有限实验](../specs/2026-09-06-ai-pet-unified-tool-output-proposal.md)及门槛通过后的同边界开发，由任务7独立记录新协议和证据，不能倒改任务5A结果或擅自改成第二分类调用、显式任务入口、关键词兜底。
 - 上游为本地 `D:/AgentLearning`，固定提交 `2a6be0a03b93a6734070e10a6c3b56863475f214`；保留 MIT 许可证、源路径和本地修改清单。
 - 按任务授权明确范围，范围内连续执行；超出范围或高风险操作再确认。
 - 用户模型、Provider 设置、凭据来源、内置模型运行与分发、人设及角色功能保留。
@@ -310,7 +310,7 @@ try {
 
 2026-09-06 用户明确暂不打包：取消本轮 Windows `--dir`／安装包实际构建和产物验收，保留资源准备、许可证映射与配置测试。Main／Renderer 的开发编译和现有界面验证继续；本轮不新建一套界面，也不把未执行的实际分发验收计为通过。
 
-旧路径退役作为本任务的4C收口：以[准确退役清单](../../operations/2026-09-06-file-task-legacy-retirement.md)列出的17个旧文件及相关局部导出/旧票据事件为范围，新链验证与4B审查通过后取得用户大量删除二次批准，再移入回收站并验证剩余消费者。保留有效的新许可、角色任务阻塞和MCP泛型契约；按实际涉及范围完成共享类型、桌面与行为门禁。临时审查目录仅在整个分支最终审查结束、公开记录保存且用户批准后清理。
+旧路径退役作为本任务的4C收口：以[准确退役清单](../../operations/2026-09-06-file-task-legacy-retirement.md)列出的17个旧文件及相关局部导出/旧票据事件为范围。新链验证与4B审查已通过；用户在收到精确清单和回收站方案后明确“完全授权你进行接下来的完善与开发”，该批大量删除已获二次批准。独立移入回收站并验证剩余消费者，不以入口实验未通过为由保留已无消费者的旧执行器。保留有效的新许可、角色任务阻塞和MCP泛型契约；完成共享类型、`verify:desktop`和`verify:behavior`门禁。临时审查目录不在本次17文件批准范围，只在整个分支最终审查结束、公开记录保存且准确清理范围获准后处理。
 
 2026-09-06 旧契约收口：已确认 `preferredTool` 只被聊天能力 Schema／提示要求，没有新执行链消费者，并有真实枚举错误记录。任务4B在正式 UI 验证前，通过 `packages/agent-core/src/capability-control-plan.ts` 与 `apps/desktop/src/main/conversation/conversation-chat-adapter.ts` 及其直接测试移除该字段、旧工具偏好枚举与输出提示。先以只含 `kind: agent_task` 的合法请求取得 RED，再验证严格能力结构、坏表现不扩权、scope前零Core、确认后实际读取及聊天无任务；相关夹具改用同一新结构，不通过增加旧别名过渡。语义路由仍需的 `FilePlanningHint`／操作类型保留。此为替换旧执行器后的无消费者契约删除，不改 Core 工具集合或权限。完成后两款真实模型各运行一次完整既有场景，按新代码记录结果，仍保留旧失败与单项范围，不以新结果倒改历史。
 
@@ -321,12 +321,12 @@ try {
 - [ ] 分别用内置 Qwen 与 DeepSeek 在隔离临时项目执行自然表达读取、内容问答、改测修正、拒绝与取消；随机内容必须由实际文件读取，不能被预置到模型答案。
 - [ ] 真实 API 无可用配置时准备可执行验收入口，明确记录缺失条件，不把 HTTP fixture 结果写成真实 DeepSeek 通过。API 密钥只在 Main 内使用，不进入报告。
 - [ ] 运行新 package 测试与 typecheck，随后运行 `pnpm.cmd verify:desktop`；必要的新增 E2E 以实际界面最终正文与终态为断言。把 Core 的独立测试脚本纳入标准桌面验证命令，避免根 Vitest 的旧 project 白名单永久漏掉新核心；沿用该包资源准备入口，不另建第二套配置。阶段门禁超过时间盒时保留输出并缩小诊断，不绕过失败。
-- [ ] 准备未修改的 `vendor/opencode/LICENSE` 的 `extraResources` 映射，目标为任务资源内的来源子目录；配置测试核对源文件与目标契约。保留 helper／ripgrep 资源准备、哈希及原许可，实际分发产物的字节核对留待后续打包时执行。本轮不执行打包，不把准备完成等同安装包已携带。
+- [x] 准备未修改的 `vendor/opencode/LICENSE` 的 `extraResources` 映射，目标为任务资源内的来源子目录；配置测试核对源文件与目标契约。保留 helper／ripgrep 资源准备、哈希及原许可，实际分发产物的字节核对留待后续打包时执行。本轮不执行打包，不把准备完成等同安装包已携带。Task4B已验证该配置、固定来源与本地资源，见正式验收记录；本轮仍无分发产物。
 - [ ] 校验 `git diff --check`、中文文档、第三方来源和旧路径清理范围；更新实际运行记录。未观察的手工项写为“待用户人工确认”。
 
 **完成标准：** 两个目标模型各自有真实运行证据；相关自动化门禁通过；正式旧路径按批准范围退役；剩余限制明确，不以单元测试代替真实体验。
 
-2026-09-06 Task4B已独立复审并完成最终源码的`verify:desktop`，记录见正式验收文档；23个文件提交为`b114eda2bde14b4a2f7c0f45142cfe73bc237d83`，未push。该小任务完成不代表整个任务4完成：真实模型剩余失败由获批的任务5A及条件性5B处理，重复保护由任务6补齐，17个旧文件仍待大量删除二次批准后执行4C。
+2026-09-06 Task4B已独立复审并完成最终源码的`verify:desktop`，记录见正式验收文档；23个文件提交为`b114eda2bde14b4a2f7c0f45142cfe73bc237d83`，未push。该小任务完成不代表整个任务4完成：任务5A未达到门槛，重复保护已由任务6补齐；用户已批准4C退役清理和任务7统一工具输出实验，后续真实模型结果按新代码分别记录。
 
 ## 任务 5A：隔离验证原生任务申请与聊天表现共存
 
@@ -568,3 +568,195 @@ z.object({
 - 对 tool definitions 的已装配名称判定复用当前 materialization，不在产品两处维护不同工具目录。公开 DTO 固定八工具是外部白名单，新增工具必须显式更新消费者。
 
 以上均不需要新增用户决定；若不能保持批准的第三次前等待、一次放行、结束全任务、压缩不绕过及普通拒绝局部语义，则交回主控记录冲突，不能自行降级。
+
+## 任务 7：统一工具输出的有限验证
+
+**授权与依赖：**适用[统一工具输出规格](../specs/2026-09-06-ai-pet-unified-tool-output-proposal.md)。用户已批准该实验与通过后同边界开发。4C删除与独立审查已经完成，但完整门禁被未修改的原生拖拽用例阻断；2026-09-06将这项取证与私有协议实验按文件边界分开推进，不降低最终门禁。任务7以当前HEAD、4C审查指纹及13项实际来源建立未提交工作区的明确冻结基线，无须等待无关拖拽调查；同时只允许一名实施者，原生UI与真实模型运行仍串行。任务5A原协议已经失败，不再运行；任务7只替换私有实验中的输出协议，不启动正式Core，不修改产品源码。后续正式接线须以本任务全部门槛通过、4C门禁及提交完成为前提，再按当前接口形成可执行拆解。
+
+### 文件、接口与交付
+
+复用本计划的私有工作区`.superpowers/sdd/2026-09-05-deepseek-qwen-coding-tasks/`，不新增第二套运行器：
+
+- 修改`task-5a-native-probe-main.ts`：两工具声明、固定提示、`buildRequest`、`classifyResponse`、有限HTTP响应夹具及矩阵判定；保持现有`runLiveMatrix`、模型装配、受控生命周期和启动时序。
+- 修改`task-5a-native-probe.cjs`：将原私有Provider例外替换为精确两工具协议识别；保留codec与原HTTP解析，冻结新请求和源码指纹，更新父进程的封闭记录校验。
+- 修改`task-5a-native-probe.test.cjs`：替换只服务旧正文联合协议的用例，保留已修复的取消、owner、bootstrap、来源和清理回归。`task-5a-bootstrap-timing-fixture.mjs`无行为修改需求。
+- 新的证据使用`task-7-`前缀：实施brief/report、基线/最终源码SHA、RED/GREEN日志、HTTP请求快照、审查包/报告、两模型真实记录。旧`task-5a-*`冻结快照和日志只读保留；三个可编辑运行器的旧内容先保存在新的任务基线，不设置旧协议运行开关。
+- 主控维护本计划、规格和`docs/operations/2026-09-05-deepseek-qwen-coding-tasks.md`。实施者不修改公开文档、不运行真实模型、不提交Git；HTTP与独立审查通过后由主控串行实际运行。
+
+消费现有`ModelProvider.respond(request: ModelRequest, signal: AbortSignal): Promise<ModelResponse>`、`ToolChoicePolicy`的`required`、`characterChatResponseJsonSchema`、严格`characterChatResponseSchema`、`capabilityIntentRouter.route`、原SecretStore／Registry和`runAcceptanceLifecycle`。不新增共享公有类型。私有观察结果继续只输出闭合类别／布尔／计数／指纹，不保存响应正文或参数。
+
+### 7.1 固定实验输入与RED
+
+- [x] 记录当前HEAD、4C审查指纹、尚未提交的来源差异，以及三个私有运行器的完整内容和SHA；核对现有13项来源集合。仅对4C实际改动的来源重新计算并说明变更，新source-set仍使用仓库相对路径、正斜杠、按路径排序的JSON；旧快照不重写。来源更新属于建立基线，不算功能RED。
+- [x] 在现有`runHttpScenario`中先提供一个真实HTTP函数终答夹具，其载荷使用现有`validChatOutput`。新增测试要求观察为合法终答；同时将blocked请求断言改为仅终答工具、required、没有response_format。在旧协议上分别确认失败是工具未接纳和请求格式不同，不是哈希阻止构建。
+
+```js
+test('统一输出：函数终答经过真实 HTTP 后成为合法聊天', async () => {
+  const result = await probe.runHttpScenario('terminal_valid');
+  assert.equal(result.errorCode, 'NONE');
+  assert.equal(result.observation.application, 'none');
+  assert.equal(result.observation.behavior, 'valid');
+  assert.equal(result.observation.bodyValid, true);
+  assert.equal(result.request.responseFormat, 'absent');
+  assert.equal(result.request.toolChoice, 'required');
+  assert.equal(result.cleanup, true);
+});
+```
+
+- [x] 运行`node --test --test-name-pattern="统一输出" .superpowers/sdd/2026-09-05-deepseek-qwen-coding-tasks/task-5a-native-probe.test.cjs`，保留退出码和正确失败位置。只为RED增加有限响应输入，不先实现新的接纳路径。
+
+- [x] 4C提交后另外记录关联提交658d1427，不回写原冻结记录。
+
+### 7.2 两工具与一次输出协议
+
+申请函数保持现有名称、描述和严格空参数；终答函数直接复用基础Schema：
+
+```ts
+export const characterResponseTool = Object.freeze({
+  type: 'function' as const,
+  function: Object.freeze({
+    name: 'return_character_response',
+    description: '返回本轮聊天正文与角色表现建议；不申请任务权限，不操作文件或执行命令。',
+    parameters: characterChatResponseJsonSchema
+  })
+});
+
+const tools = route.modelEscalation === 'blocked'
+  ? [characterResponseTool]
+  : [authorizationTool, characterResponseTool];
+const request: ModelRequest = {
+  messages: [
+    { role: 'system', content: fixedSystemPrompt },
+    { role: 'user', content: selected.input }
+  ],
+  tools,
+  toolChoice: 'required',
+  reasoningMode: 'disabled'
+};
+```
+
+- [x] `buildRequest`按上述装配，不附`responseContract`。删除旧`nativeChatContract`及只供正文修复回合的提示／指纹；不增加第二次语义请求。保留原persona、behavior context和构造器裁剪，明确替换以下四处一次匹配；匹配失败直接停止构建。
+
+| 原提示位置 | 固定新文本 |
+| --- | --- |
+| 开头“只返回 json 对象……” | 每轮只调用一个已提供的函数，把结果放在函数参数中，不输出普通正文。申请任务时仅调用 request_task_authorization；其余情况调用 return_character_response，聊天正文放在 text 中，可用 Markdown。 |
+| capabilityPlan说明 | 当用户要求取得现有本地文件信息、实际修改文件或运行项目命令时，调用 request_task_authorization 申请当前输入的任务范围确认；普通聊天、操作讨论、引用、代码、示例和明确否定调用 return_character_response。 |
+| 宿主能力说明 | 桌宠宿主经用户确认 Main 范围后能读取、搜索、修改文件及运行已许可命令。本轮申请函数不读取文件、不执行命令、不表示任务已完成；缺定位可问文件名或位置，不能只让粘贴全文。 |
+| 原正文格式示例 | 函数参数示例：申请任务使用 request_task_authorization({})；聊天使用 return_character_response({"text":"我会陪着你。","activity":"安静陪伴","status":"idle","movementControl":{"kind":"keep"},"behaviorPlan":{"kind":"none","emotion":"calm"}})。 |
+
+- [x] 其余activity／status／movement／behavior说明仅作为终答函数参数要求。将原“每轮必填”三处最小限定为“return_character_response参数必填”，避免申请空参数与表现字段互相矛盾；不改变角色选择规则或加入新的分类关键词表。首轮system保持4800 UTF-8字节以内，完整工具Schema计入6400输入预算。
+- [x] `transformProvider`删除旧“工具＋正文responseContract”放行例外。保留原`assertResponseContractRequest`和正常非实验请求行为；新的私有识别只匹配required、无正文契约、精确工具表／名称／描述／Schema。参数不符不能进入私有放行分支。
+- [x] 原codec负责响应名称关联，原解析负责单function、非空ID、JSON对象。私有接缝仅让精确已知协议保留唯一调用并丢弃并存content，记录`tool_only`或`mixed`类别。不得先尝试从content中恢复聊天或任务建议。普通请求的原解析规则不变。
+- [x] `classifyResponse`根据本轮实际提供的工具表严格接纳：申请必须名称相等且参数空对象；终答以`characterChatResponseSchema.safeParse`成功为准，拒绝额外外层或嵌套字段。不对未知标准`tool_request`一律记申请。唯一合法申请的behavior为absent、bodyValid=false；唯一合法终答为application=none、behavior=valid、bodyValid=true。
+- [x] text_only即使包含完整旧JSON也记协议失败；未知名、多调用、畸形参数、数组／null、空ID、blocked伪造申请均拒绝。mixed中的普通content不影响已校验工具的判定，也不进入正文或表现。没有合法终答时不发布content。
+
+### 7.3 模型策略与有限回归
+
+- [x] DeepSeek原`deepSeekCharacterChat`策略条件在私有构建中扩展到精确统一工具请求，仍限定`providerId==='deepseek'`：`thinking:{type:'disabled'}`、`max_tokens:4096`、原真正空响应至多两次同请求尝试。response_format保持不存在；有效工具调用一次HTTP即返回。只修改该条件和必要工具解析接缝，不复制Provider实现或全局放开请求组合。
+- [x] 本地Provider沿原required策略发`temperature:0`；`reasoning_effort:'none'`、`chat_template_kwargs.enable_thinking:false`、`parallel_tool_calls:false`、`parse_tool_calls:true`、stream=false及原连接generation保持。不修改模型、GGUF、模板、llama.cpp版本、slot或上下文预算。
+- [x] 有限HTTP回归覆盖：合法申请、合法终答；两种合法mixed且content不会被使用；非法终答外层／嵌套额外字段、无text／坏behavior；两函数同时返回；unknown／nonfunction／emptyID／非JSON／非对象；blocked伪造申请；普通正文旧JSON；DeepSeek空响应后合法终答只发生两次且body一致；直接合法工具只有一次；原标准无契约工具与冲突请求仍按原规则。
+- [x] 保留并适配已有取消、迟到HTTP、host／local generation失效、整次deadline、owner未结算、启动／退出、预算及资源清理回归；不以手工拼装结果替代真实共享接缝。新协议不修改已审查的bootstrap和runAcceptanceLifecycle。
+- 本轮未新增以下可选诊断，仅保留既有有界错误观察。如增加Qwen HTTP400最小分类，范围只限`error.type`的`invalid_request_error`／`exceed_context_size_error`／`OTHER`／`MISSING`及固定上游sampler报错精确匹配三态。精确字符串为`Failed to initialize samplers: failed to parse grammar`，来源是固定`b95502ba9aa0eb73a2f4fc8878d7fbe6a847a0b9`的`tools/server/server-context.cpp`捕获前缀与`common/sampling.cpp`异常字面量；只记录true／false／null，不输出message。先在现有有限错误响应夹具验证精确值、不同字符串、缺失字段与自由message隔离。保留64KiB／5秒有界读取及owner结算；不新增泛化诊断模块。
+- [x] 运行`node --test .superpowers/sdd/2026-09-05-deepseek-qwen-coding-tasks/task-5a-native-probe.test.cjs`一次完整有限回归，记录替换／保留的用例范围和退出码；正式产品零差异，网站依赖图仍保持。保存新HTTP请求快照，使用夹具凭据；不保存真实认证头。
+- [x] 固定新提示、两工具Schema、模型分别的请求体、来源、运行器和bundle指纹，独立审查规格及质量；不把更新预期SHA本身当通过证据。审查发现经定向修复复核后才运行真实模型，不提前调用模型调提示。
+
+### 7.4 主控串行实际模型门槛
+
+- [x] 按现有入口先DeepSeek后Qwen：`node .superpowers/sdd/2026-09-05-deepseek-qwen-coding-tasks/task-5a-native-probe.cjs --model deepseek`，然后同命令`--model qwen`。每款模型只跑一次固定两轮矩阵，分别记录到`task-7-deepseek-live.*.log`和`task-7-qwen-live.*.log`；不覆盖旧记录。真实输入不携带期待答案、隐藏分类标签或预置文件内容。
+- [ ] 固定原11句、顺序与空历史，matrix SHA保持`5333a6d7e7d96b768bd0ef7a936bb455eec448f29650f1fa4f8cfbf156e0e924`；每模型12个任务正例都应严格申请，10个负例都应合法终答且无申请。任务正例不再要求正文／表现，负例必须完整合法。两模型共44项全部符合才过门。
+- [x] 逐行保留当前输入完整、输入预算、generation、HTTP次数与类别；两模型记录实际modelId/backend。源设置前后不变、DeepSeek凭据只在Main、Qwen实际Vulkan offload、owner及清理均须符合。15分钟原整次期限与30秒清理保持，单点没有判定时不能无限等待。
+- [x] 语义错误继续预定余行，模型传输／Runtime硬失败使该模型余行标记未运行；仍可运行另一模型的独立固定矩阵。任一门槛失败即收口本协议，不临时改提示、不重试择优、不进入正式接线。两模型结果分别完整记录。
+- [ ] 全部符合时主控更新公开证据并形成正式接线的精确任务；同边界授权已具备，不再重复询问是否继续。正式入口、原Main范围卡、权限和Core执行仍需独立实现／审查以及双模型真实读取、问答、改测、拒绝、取消验收，本实验不替代它们。
+
+**完成标准：**私有协议、有限回归与来源均可独立复核；实际44项门槛给出一个确定通过或失败结论；正式产品未切换，历史失败未覆盖。未达门槛不得把任务7写成正式入口已完成。
+
+任务7结论（2026-09-06）：有限回归57/57及独立复审通过；固定真实矩阵38/44，实验失败收口。全部符合的门槛未通过，因此正式接线条件不满足，不能把相应未勾选项记为完成。后续方案另行明确，不在本任务中循环调提示或自动启用备用路线。
+
+用户最新阶段要求：完成文件能力后结束并等待反馈与明确确认，再开始角色行为、状态和动作开发。本轮不继续扩展与文件逻辑无直接关系的拖拽专项诊断；既有门禁结果如实记录。
+
+## Task 8：全分支审查的两项文件边界修复
+
+适用已批准编程助手规格及 whole-branch-review-report.md 的 S1/Q1、Q2。两项都修复现有契约，不改变产品范围；用户持续授权开发。Task7实验已经失败收口，不重试。明确入口提案已于2026-09-06获批，另在Task9实施。本任务是全分支审查的一次合并修复派发，完成后只做定向复审。
+
+### 范围与约束
+
+- 仓库为当前隔离工作区，BASE由主控保存。保留全部已有修改，实施者不执行Git写操作、不修改公开文档、不运行真实模型或原生UI、不打包、不访问网站业务。
+- 网站、CloudBase、scanner、MCP启用、角色行为/状态/动作及拖拽均不在范围。不得修改 tests/e2e/desktop.spec.ts。当前原生拖拽门禁失败如实保留，不能为本任务继续诊断或放宽测试。
+- 只修改 apps/desktop/src/main/agent/coding-task-service.ts、apps/desktop/tests/coding-task-service.test.ts、vendor/opencode/packages/core/src/tool/apply-patch.ts、packages/coding-task-core/tests/session-cancel.test.ts；必要时最小扩展现有 packages/coding-task-core/tests/fixture.ts 以注入可控trash回调。来源更新限 vendor/opencode/local-patches.json、vendor/opencode/sources.json，源文件仅一条既有补丁记录，原固定提交/原始SHA不变。若必须扩大到其他产品文件先向主控说明具体依赖。
+- 使用当前Effect与已有FileMutation思想，不增加第二个生命周期框架。中文结构注释解释实际副作用与取消边界。新旧逻辑只保留一条正式路径。
+
+### 8.1 RED：实际超时与取消缺口
+
+- [ ] 阅读 whole-branch-review-report.md 两个发现与直接调用链。先新增Main定向测试：timeout:true、无exit、模型直接终答时，可信工具结果ok:false且最终phase:error；超时后实际命令成功重试可以恢复success，历史失败事实仍是false。保持原非零退出码后成功重试契约。
+- [ ] 在现有Core真实runner夹具注入延迟trash Promise，先等待回调确实开始，再取消/关闭；结算前run与close不得完成，兑现后才完成且无completed成功终态。覆盖宿主成功和拒绝兑现，以及许可等待阶段仍可取消且trash零调用。Main已有reset/active所有权测试若不能证明reset等待实际Core结算，最小扩展相应测试，不造独立模拟执行器。
+- [ ] 运行各自最小定向测试并记录正确失败，不以超时或装配错误代替RED。受控deferred与明确进入信号优先于固定sleep。
+
+### 8.2 GREEN：最小修复
+
+- [ ] Main工具事实投影纳入timeout，最近命令结果决定未恢复失败；不把任意历史失败永久锁成error，也不让模型口头成功改写工具事实。不扩大公开DTO保存原始工具参数。
+- [ ] 仅已经开始的单次不可取消trash副作用及必要结果登记等待结算；不得将权限等待、整个apply_patch或整个工具循环设成不可取消。取消后不继续下一次变更，不释放owner后继续本地副作用；失败结算不发布成功。
+- [ ] 更新已有apply-patch来源补丁，运行 node packages/coding-task-core/extract-upstream.cjs 核对可重放来源，不追加重复source条目或改变其他上游实现。
+
+### 8.3 验证与交接
+
+- [ ] Main定向测试、Core取消与相关权限定向测试、两个package typecheck、必要Electron Core wrapper运行；总门禁由主控在Task9后统一执行，不重复启动完整E2E。
+- [ ] 保存 task-8-red-*.log / task-8-green-*.log，记录命令、起止、退出码与新旧测试数量。git diff --check通过；用task-8-baseline.json核对修改集合。
+- [ ] 交付 task-8-report.md：DONE/有问题状态、修改与原因、RED/GREEN证据、取消成功与失败语义、来源记录、未验证项。最终清单task-8-final-manifest.json包含所有改动源码与日志SHA。返回主控简短状态，不提交代码。
+
+完成标准：两个审查缺陷有最小失败回归与修复证据，未扩大权限或改变其他模块；全分支审查由原审查者按精确差异定向复核，不重新审阅整个分支。
+
+## Task 9：接入已批准的明确任务入口
+
+适用[明确任务提交规格](../specs/2026-09-06-ai-pet-explicit-task-submit-proposal.md)，用户已明确选择“接受明确入口优先交付”。依赖Task8两项结算修复完成；Task5A/7失败保留，不接入其私有协议。此任务改变提交入口，不重建任务执行能力。
+
+### 文件和固定接口
+
+- 产品范围：apps/desktop/src/shared/myself-api.ts、src/preload/index.ts、src/main/ipc/register-ipc.ts、src/main/index.ts、src/main/conversation/conversation-coordinator.ts、src/renderer/src/chat/ChatPanel.tsx。路径前缀均为apps/desktop；样式仅在既有 src/renderer/src/styles.css 中按实际布局需要最小调整，不另加UI框架。
+- 桌面私有共享契约新增 ChatSubmissionIntent = 'auto' | 'task'；MyselfApi.submitMessage(text, intent?)、AgentIpcService.submit(text, intent?)、ConversationCoordinator.submit(text, intent?)缺省auto。IPC现有严格chatSubmitSchema增加intent严格枚举和auto缺省；不引入权限/模型/目录参数，不新增IPC通道或全局持久模式。它只由桌面消费，不修改packages/shared-types或网站。
+- 当前共享契约位于apps/desktop/src/shared，不是packages/shared-types；原提案的“共享IPC”不要求扩大跨应用包。常规调用可以保持单实参，以减少机械测试改写。
+- 主控维护规格/计划/验收和Git。实施者不运行真实模型、不打包、不push、不改MCP或角色逻辑，不修改任何拖拽代码和测试段落。tests/e2e/desktop.spec.ts只可在“正式Core任务UI”组增加与入口有关的一个有界旅程，其他组零变化。
+
+### 9.1 RED：先证明入口和信任边界
+
+- [ ] 在既有 apps/desktop/tests/conversation-coordinator.test.ts 用当前被自然入口漏判的内容问答发task提交，断言chatTurnFactory/聊天Provider零调用、原始规范化文本不变、Main现有范围卡出现，确认前capability submit/激活为零，确认后同一任务端口执行。拒绝范围时零执行。
+- [ ] 断言task是单次意图：下一次省略intent仍走auto；未知intent在IPC拒绝；busy/reset/关闭或配置generation变化后旧确认不能激活新任务。复用既有披露与范围生命周期回归，补针对新增分支的最小用例。
+- [ ] 在 apps/desktop/tests/agent-ipc.test.ts 与 preload-api.test.ts 证明只传text和intent，仍验证当前chat sender，额外目录/授权字段严格拒绝；原单参数调用兼容。
+- [ ] 在 apps/desktop/tests/chat-panel.test.tsx 通过真实按钮点击断言任务意图、普通发送缺省auto、两者共用空输入/忙碌/许可等待/本地模型加载禁用及停止；不保存模式或复制提交owner。先观察正确RED再改产品。
+
+### 9.2 GREEN：复用准备、披露和范围授权
+
+- [ ] ChatPanel保留“发送给 AI Pet”作为现有表单默认，增加type=button“作为任务发送”，调用同一提交函数并传task；保留文本框、输入长度、错误、停止、revision和owner处理。两个按钮可使用现有primary/quiet样式，无第二消息存储或任务页。
+- [ ] Main严格校验后传递单次意图。在Coordinator现有文本/空闲校验、同一context与事件生命周期中，task分支直接进入prepareCapabilityTask(context,'file')，不调用陪伴模型、不通过角色prepareUserPrompt改写任务文字或执行角色指令。当前'file'任务Kind已装配全部八工具与范围命令，不另造coding Kind。
+- [ ] 省略/auto保持原路由与陪伴行为。task不被“任务完成了吗”等普通快捷回复吞掉，也不能通过等待确认时的聊天回复绕过busy校验；原auto的等待提示行为保留。原明确后台运行请求拒绝规则保留，可复用已有本地route证据判断，不能用该路由重新决定task是否变聊天。
+- [ ] prepareCapabilityTask复用Main快照、跨Provider披露、范围卡、确认/拒绝与过期检查；scope之前零Core。目录/模型/能力/完整命令由Main决定。未知/额外输入不进入授权。不存在替代旧Core或放宽权限的代码。
+
+### 9.3 组合和真实界面回归
+
+- [ ] apps/desktop/tests/main-conversation-composition.test.ts 使用既有真实HTTP/Core夹具从task提交到Main范围卡，再批准并读取未知随机内容。断言范围前无模型请求、范围后真实read回注，最终正文包含内容，未调用聊天适配器。保留自然入口既有测试。
+- [ ] 既有“正式Core任务UI”组增加单个明确按钮读取旅程：输入内容问答、点击按钮、出现准确目录/模型卡且Provider请求0；批准后原Core读取随机文件并在既有聊天正文可见；结束后普通发送仍走原聊天。使用当前configureCodingApp/fixture/ProviderServer，不复制新夹具。运行新用例与原自然读取、许可拒绝/重复保护必要旅程，不跑无关拖拽专项。
+- [ ] 定向测试后Desktop typecheck/build、preload边界。完整verify:desktop及真实两模型由主控在审查后执行，实施者不重复总门禁。
+- [ ] 提供task-9-report.md、task-9-final-manifest.json及RED/GREEN日志；源码检查仅上述范围，git diff --check通过。主控生成冻结差异后独立规格与质量审查。
+
+完成标准：明确任务能从原界面可靠到达原授权与执行链，普通发送保持原体验；scope前不产生本地副作用；新增入口无持久权限；未改变其他业务。自动识别的已知误判不因本任务记为已修复。
+
+## Task 10：明确入口的双模型完整真实验收
+
+依据已批准明确入口规格，依赖Task8/9实现及定向审查通过。用户已配置DeepSeek并批准真实验收，本轮也使用现有内置Qwen，不更换模型、Provider、模型资源或预算。用户已接受自然入口残留误判单独列为后续项，不能将本任务通过宣传成自动分流通过。
+
+### 10.1 最小迁移现有验收器
+
+- [ ] 只修改 apps/desktop/scripts/local-model-acceptance-runner.ts、run-local-model-acceptance.mjs、run-local-model-acceptance.d.mts 和 apps/desktop/tests/local-model-acceptance.test.ts；不建立第二个执行或验收框架。主控维护公开文档和Git。实施者不运行真实模型或UI。
+- [ ] 现有runCodingModelAcceptance的六场景输入原文、顺序、磁盘随机内容、修复目标/测试断言、拒绝处理、完整命令allowlist、取消进程与心跳检查保持原样；唯一任务入口变化是每项文件场景调用正式coordinator.submit(text,'task')。首条中文聊天继续auto；不将源文案加文件内容、期望答案或分类暗示。
+- [ ] 先以现有正式HTTP/Core夹具覆盖一个问答场景：陪伴Provider只允许首条普通中文聊天，文件问答必须不调用陪伴模型而经原Main范围和真实Core读取未知随机值后通过。旧auto验收路径上应因漏入聊天而正确失败。复用既有runCodingModelAcceptance，不增加测试专用executor。
+- [ ] 公开验收记录增加闭合字段taskEntry:'auto'|'task'，真实新运行明确记task；缺失历史字段保留auto含义，不把旧记录标成task。schemaVersion更新为3，声明/失败记录/重建器同步。先补记录白名单失败测试，原隐私与嵌套字段剥离保持；不保存正文、路径、命令原文或凭据。
+- [ ] GREEN后运行local-model-acceptance定向与Desktop typecheck，保存 task-10-report.md、task-10-final-manifest.json、RED/GREEN日志和新旧源指纹；独立审查后由主控运行模型。现有15分钟整轮期限、30秒清理、owner/generation与原停止条件不扩大。
+
+### 10.2 主控真实运行及交付
+
+- [ ] 对当前已配置DeepSeek运行现有CLI整套all场景，随后内置Qwen使用vulkan运行相同all场景；与Electron UI门禁串行。源配置前后指纹不变，DeepSeek密钥仅Main读取；Qwen实际backend/offload、云调用隔离与进程清理均记录。不能更改模型或通过只跑成功子集获得整轮通过。
+- [ ] 新证据分别使用task-10-deepseek-live和task-10-qwen-live前缀，保留先前Task4/5/7失败；每款模型六场景须在同一完整轮次通过。必要失败诊断仅基于真实证据，精确记录原因为产品缺陷、许可需要人工选择或验收器限制，不能随意放宽allowlist。
+- [ ] 根package.json确认脚本后运行最终verify:desktop；涉及共享契约消费者按实际范围验证。保留无关原生拖拽门禁失败，不重新开展专项诊断。新代码引起失败则回到对应接缝修复。
+- [ ] 确认MCP继续禁用、网站源及依赖图隔离、git diff --check与精确修改清单；更新规格/计划/独立验收记录，仅提交已审查文件，不push、不打包，不纳入用户独立角色规格。恢复用户原桌宠dev启动方式。
+- [ ] 最终说明明确入口使用方法、实际双模型结果、未解决自然识别与原生窗口限制、提交。到此结束文件阶段，等待用户真实反馈与明确确认；不开始角色行为/状态/动作实现。
+
+完成标准：两模型真实文件任务在准确入口标记下得到完整可复查结论。若任一场景仍失败，不能把整个文件阶段记为完成；实际用户确认不由自动化替代。

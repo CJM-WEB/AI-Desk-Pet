@@ -4,7 +4,7 @@
 
 适用[现行文件任务规格](2026-09-05-ai-pet-coding-assistant-design.md)，实际结果见[验收记录](../../operations/2026-09-05-deepseek-qwen-coding-tasks.md)。本提案只处理已发现的入口与执行保护缺口；网站、角色状态设计、模型配置、文件工具和现有执行核心继续遵守原边界。本轮仍不打包。
 
-实验失败后的候选调整见[统一工具输出有限实验提案](2026-09-06-ai-pet-unified-tool-output-proposal.md)，该新提案尚未获批，不改变本文的正式切换禁入结论。
+实验失败后的调整见[统一工具输出有限实验提案](2026-09-06-ai-pet-unified-tool-output-proposal.md)。该新实验也已失败收口，实际38/44；两个实验均不切换正式入口。用户随后批准[明确任务提交规格](2026-09-06-ai-pet-explicit-task-submit-proposal.md)，通过单次“作为任务发送”进入原Main范围卡；该批准独立于两次实验，不改变失败记录与原5B禁入结论。
 
 ## 为什么需要调整
 
