@@ -419,8 +419,9 @@ export async function runCodingModelAcceptance(input: ModelAcceptanceEnvironment
     await removeAcceptanceRoot(input.temporaryRoot);
     result.cleanup = true;
   })();
-  const turn = (text: string, options: { permission?: (event: PermissionEvent) => Promise<void>; tick?: () => Promise<void>; before?: () => Promise<unknown> } = {}) => submitAcceptanceTurn({
-    events, signal: lifecycle.signal, submit: () => composition.coordinator.submit(text),
+  // 文件场景使用正式明确入口；首条普通中文聊天单独保留自动入口。
+  const turn = (text: string, options: { intent?: 'auto' | 'task'; permission?: (event: PermissionEvent) => Promise<void>; tick?: () => Promise<void>; before?: () => Promise<unknown> } = {}) => submitAcceptanceTurn({
+    events, signal: lifecycle.signal, submit: () => composition.coordinator.submit(text, options.intent ?? 'task'),
     resolveCapabilityAuthorization: (id, choice) => composition.coordinator.resolveCapabilityAuthorization(id, choice),
     assertNoSideEffect: options.before ?? (async () => undefined),
     validateScope: scope => {
@@ -465,7 +466,7 @@ export async function runCodingModelAcceptance(input: ModelAcceptanceEnvironment
         result.modelId = modelId;
         result.activeBackend = input.activeBackend();
         input.progress?.('CHAT');
-        const chat = requireSuccess(await turn('只用简短中文回答：你好。'));
+        const chat = requireSuccess(await turn('只用简短中文回答：你好。', { intent: 'auto' }));
         if (!containsChinese(chat) || /<\/?think>|reasoning_content/iu.test(chat)) throw acceptanceError('CHINESE_CHAT_FAILED');
         result.checks.chineseChat = true;
         if (input.abortProvider) await input.abortProvider();

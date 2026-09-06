@@ -739,24 +739,16 @@ const request: ModelRequest = {
 
 完成标准：明确任务能从原界面可靠到达原授权与执行链，普通发送保持原体验；scope前不产生本地副作用；新增入口无持久权限；未改变其他业务。自动识别的已知误判不因本任务记为已修复。
 
-## Task 10：明确入口的双模型完整真实验收
+## Task 10：按最新要求做基本可用性检查并交付
 
-依据已批准明确入口规格，依赖Task8/9实现及定向审查通过。用户已配置DeepSeek并批准真实验收，本轮也使用现有内置Qwen，不更换模型、Provider、模型资源或预算。用户已接受自然入口残留误判单独列为后续项，不能将本任务通过宣传成自动分流通过。
+2026-09-06用户明确要求：不再把时间与精力集中于细化验收，以基本正常、安全性和扩展性可靠为收口标准。此决定覆盖本任务此前的完整六场景交付门槛与新增精细验证计划；已运行证据保留，未运行项不标成通过。
 
-### 10.1 最小迁移现有验收器
+Task8结算修复已通过定向与独立复审，Task9入口已通过173项定向、三条Electron/Core界面旅程及独立复审。现有Main授权/Core职责不再改动。
 
-- [ ] 只修改 apps/desktop/scripts/local-model-acceptance-runner.ts、run-local-model-acceptance.mjs、run-local-model-acceptance.d.mts、deepseek-acceptance-main.ts 和 apps/desktop/tests/local-model-acceptance.test.ts；不建立第二个执行或验收框架。主控维护公开文档和Git。实施者不运行真实模型或UI。
-- [ ] 现有runCodingModelAcceptance的六场景输入原文、顺序、磁盘随机内容、修复目标/测试断言、拒绝处理、完整命令allowlist、取消进程与心跳检查保持原样；唯一任务入口变化是每项文件场景调用正式coordinator.submit(text,'task')。首条中文聊天继续auto；不将源文案加文件内容、期望答案或分类暗示。
-- [ ] 先以现有正式HTTP/Core夹具覆盖一个问答场景：陪伴Provider只允许首条普通中文聊天，文件问答必须不调用陪伴模型而经原Main范围和真实Core读取未知随机值后通过。旧auto验收路径上应因漏入聊天而正确失败。复用既有runCodingModelAcceptance，不增加测试专用executor。
-- [ ] 公开验收记录增加闭合字段taskEntry:'auto'|'task'，真实新运行明确记task；缺失历史字段保留auto含义，不把旧记录标成task。schemaVersion更新为3，声明/失败记录/重建器同步；deepseek-acceptance-main.ts仅同步失败记录入口字段，不改变凭据或生命周期。先补记录白名单失败测试，原隐私与嵌套字段剥离保持；不保存正文、路径、命令原文或凭据。
-- [ ] GREEN后运行local-model-acceptance定向与Desktop typecheck，保存 task-10-report.md、task-10-final-manifest.json、RED/GREEN日志和新旧源指纹；独立审查后由主控运行模型。现有15分钟整轮期限、30秒清理、owner/generation与原停止条件不扩大。
+- [x] 验收脚本只做最小迁移：local-model-acceptance-runner.ts的既有文件场景传task，首条中文聊天保持auto。原输入、断言、许可allowlist和生命周期保持；撤回本任务尚未提交的schemaVersion/taskEntry及新增精细测试。只撤回可确认属于本任务的变更，保留旧证据，不扩大夹具或新增验收框架。已有定向回归与typecheck各最多一次。
+- [x] DeepSeek及内置Qwen分别做read、repair两项实际快速检查，采用现有CLI单场景参数；读取必须返回磁盘真实随机内容，repair必须修改函数并实际运行测试，原测试文件不得被更改。不再跑全六场景或全量桌面门禁；发现阻断基本使用或安全的真实问题才定点修复，不反复择优重跑。
+- [x] 核对精确差异、MCP禁用、网站隔离、源码与记录一致，提交本轮代码、不push不打包。恢复原桌宠dev启动，交付实际通过范围与尚未覆盖项；结束文件阶段，等待用户反馈与确认，不开展角色行为/状态/动作。
 
-### 10.2 主控真实运行及交付
+本轮只声称上述基本检查实际观察到的结果，不声称所有场景、所有模型或原生Windows交互完全通过。此前原生拖拽失败与自然识别残留误判保留，不阻断已获批明确入口的阶段交付。
 
-- [ ] 对当前已配置DeepSeek运行现有CLI整套all场景，随后内置Qwen使用vulkan运行相同all场景；与Electron UI门禁串行。源配置前后指纹不变，DeepSeek密钥仅Main读取；Qwen实际backend/offload、云调用隔离与进程清理均记录。不能更改模型或通过只跑成功子集获得整轮通过。
-- [ ] 新证据分别使用task-10-deepseek-live和task-10-qwen-live前缀，保留先前Task4/5/7失败；每款模型六场景须在同一完整轮次通过。必要失败诊断仅基于真实证据，精确记录原因为产品缺陷、许可需要人工选择或验收器限制，不能随意放宽allowlist。
-- [ ] 根package.json确认脚本后运行最终verify:desktop；涉及共享契约消费者按实际范围验证。保留无关原生拖拽门禁失败，不重新开展专项诊断。新代码引起失败则回到对应接缝修复。
-- [ ] 确认MCP继续禁用、网站源及依赖图隔离、git diff --check与精确修改清单；更新规格/计划/独立验收记录，仅提交已审查文件，不push、不打包，不纳入用户独立角色规格。恢复用户原桌宠dev启动方式。
-- [ ] 最终说明明确入口使用方法、实际双模型结果、未解决自然识别与原生窗口限制、提交。到此结束文件阶段，等待用户真实反馈与明确确认；不开始角色行为/状态/动作实现。
-
-完成标准：两模型真实文件任务在准确入口标记下得到完整可复查结论。若任一场景仍失败，不能把整个文件阶段记为完成；实际用户确认不由自动化替代。
+基本检查结论：DeepSeek read通过、repair停在未预批命令许可且未计通过；Qwen read/repair通过（真实命令1→0）。一次只读许可分类确认当前停止点后结束，不再细化或重复。完整矩阵未通过的历史结论保留。
