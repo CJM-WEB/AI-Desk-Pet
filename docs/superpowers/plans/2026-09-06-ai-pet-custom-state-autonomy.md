@@ -36,10 +36,10 @@
 
 播放接口 `resolveCharacterPresentationV3(document, skinId, stateId, actionId)` 先检查归属，再取请求皮肤精确表现/默认皮肤相同动作；返回真实 stateId/actionId/表现/来源。单独 `createCharacterPlaybackView(manifest, skinId)` 与 `characterPlaybackViewSchema` 生成并验证严格只读 ID 视图：states 仅含播放身份/归属，presentations 按 actionId 唯一保存资源，idle 为真实目标对；共享动作不能按状态重复嵌入整份资源。素材回退不伪造逻辑动作，时间/暂停命令留给调度事件。此步不切正式 Main/Renderer。
 
-- [ ] RED：自定义中文名称仍按稳定 ID；旧字段被 V3 拒绝；非归属动作不能播放；V2 多皮肤/描述/锚点保留，复杂旧规则产生问题且输入不变。
-- [ ] GREEN：最小 Schema、转换、解析实现；有问题的迁移保留可编辑 document 与报告，不掩盖规则损失。
-- [ ] 验证：运行上述 3 个文件与 `pnpm.cmd --filter @myself/character-runtime typecheck`，检查 V2 原输入契约没有被改变。
-- [ ] 审查并提交：提供实际 RED/GREEN 结果及后续接线所需接口，不宣称桌面已经 V3。
+- [x] RED：自定义中文名称仍按稳定 ID；旧字段被 V3 拒绝；非归属动作不能播放；V2 多皮肤/描述/锚点保留，复杂旧规则产生问题且输入不变。
+- [x] GREEN：最小 Schema、转换、解析实现；有问题的迁移保留可编辑 document 与报告，不掩盖规则损失。
+- [x] 验证：运行上述 3 个文件与 `pnpm.cmd --filter @myself/character-runtime typecheck`，检查 V2 原输入契约没有被改变。
+- [x] 审查并提交：提供实际 RED/GREEN 结果及后续接线所需接口，不宣称桌面已经 V3。
 
 ### Task 2: 单状态调度、持续心情和表现计划
 
@@ -58,10 +58,10 @@
 - 模型计划时效、心情变化及明确停止表现能够结束持续循环；“until-interrupted”不允许过期计划永久续播。动态静止/循环/时长应由播放 effect 明确表达，后续 Renderer 依此执行；帧播放器不自行选择状态。
 - 本步原 Main/UI 尚未切换，新增 V3 引擎接线由 Task 3 完成；不得用临时 any/旧主修饰快照假装接口兼容。
 
-- [ ] RED：开心→弱开心→idle 无需下一条消息；同状态两个动作轮换；新心情丢弃旧计划；迟到反馈和非法 ID 无效；无可用候选稳定 idle。
-- [ ] GREEN：独立可复用引擎，解释计划与窗口位移无关。
-- [ ] 验证：相应定向测试与角色包 typecheck；不按真实分钟等待测试，不调用真实模型。
-- [ ] 审查并提交接口与事件定义，供正式接线使用。
+- [x] RED：开心→弱开心→idle 无需下一条消息；同状态两个动作轮换；新心情丢弃旧计划；迟到反馈和非法 ID 无效；无可用候选稳定 idle。
+- [x] GREEN：独立可复用引擎，解释计划与窗口位移无关。
+- [x] 验证：相应定向测试与角色包 typecheck；不按真实分钟等待测试，不调用真实模型。
+- [x] 审查并提交接口与事件定义，供正式接线使用。
 
 ### Task 3: 正式工作台、发布、播放器与 Main 切换 V3
 
