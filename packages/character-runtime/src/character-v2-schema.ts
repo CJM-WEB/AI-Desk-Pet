@@ -55,7 +55,7 @@ const stateConditionSchema = z.object({
   clauses: z.array(stateConditionClauseSchema).min(1).max(16)
 }).strict();
 
-const characterIdentitySchema = z.object({
+export const characterIdentitySchema = z.object({
   description: boundedText(2_000),
   background: boundedText(4_000),
   traits: boundedTextList(32, 120),
@@ -76,7 +76,7 @@ const stateSemanticSchema = z.union([
   }).strict()
 ]);
 
-const stateDefinitionSchema = z.object({
+export const stateDefinitionSchema = z.object({
   id: safeIdentifierSchema,
   name: boundedText(120),
   description: boundedText(2_000).optional(),
@@ -93,7 +93,7 @@ const stateDefinitionSchema = z.object({
   actionIds: z.array(safeIdentifierSchema).max(128)
 }).strict();
 
-const actionDefinitionSchema = z.object({
+export const actionDefinitionSchema = z.object({
   id: safeIdentifierSchema,
   name: boundedText(120),
   description: boundedText(2_000).optional(),
@@ -182,13 +182,13 @@ const legacyPresentationFramesSchema = z.array(actionFrameSchema)
   .max(CHARACTER_RESOURCE_LIMITS.maxFramesPerAction)
   .superRefine(validatePublishedFrameBudget);
 
-const actionPresentationSchema = z.object({
+export const actionPresentationSchema = z.object({
   ...actionPresentationFields,
   frames: draftPresentationFramesSchema,
   geometry: presentationGeometryV2Schema.optional()
 }).strict();
 
-const preparedActionPresentationSchema = z.object({
+export const preparedActionPresentationSchema = z.object({
   ...actionPresentationFields,
   frames: publishedPresentationFramesSchema,
   geometry: presentationGeometryV2Schema.optional()
@@ -200,7 +200,7 @@ const legacyActionPresentationSchema = z.object({
   geometry: presentationGeometryV2Schema.optional()
 }).strict();
 
-const publishedActionPresentationSchema = z.object({
+export const publishedActionPresentationSchema = z.object({
   ...actionPresentationFields,
   frames: publishedPresentationFramesSchema,
   geometry: presentationGeometryV2Schema
@@ -226,7 +226,7 @@ const skinFields = {
   semanticFallbacks: z.array(semanticFallbackSchema).max(STANDARD_CHARACTER_SEMANTICS.length)
 };
 
-const skinSchema = z.object({
+export const skinSchema = z.object({
   ...skinFields,
   presentations: z.array(actionPresentationSchema).max(512)
 }).strict();

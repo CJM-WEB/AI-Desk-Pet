@@ -30,11 +30,11 @@
 - 修改 `packages/character-runtime/src/character-v2-schema.ts`（仅导出复用 Schema，不改变 V2 含义）、`index.ts`。
 - 定向测试 `packages/character-runtime/tests/character-v3-schema.test.ts`、`character-v3-migration.test.ts`、`character-playback-view.test.ts`。
 
-**接口：** 导出 `CharacterDraftV3`、`PreparedCharacterManifestV3`、`CharacterManifestV3` 及严格对应 Schema。V3 为 `version: 3`、`idleStateId`、原 identity/skins/states/actionIds/actions；删除 kind/semantic/共存/主修饰约束。复用原人设、帧、几何、资源预算与动作播放字段，不复制整个 V2 文件。状态保留名称、描述、标签、intensity、建议时长、agentInferable、actionIds、可信事件进入/退出条件；事件名按规格 4.2。
+**接口：** 导出 `CharacterDraftV3`、`PreparedCharacterManifestV3`、`CharacterManifestV3` 及严格对应 Schema。V3 为 `version: 3`、`idleStateId`、原 identity/skins/states/actionIds/actions；删除 kind/semantic/共存/主修饰约束。复用原人设、帧、几何、资源预算与动作播放字段，不复制整个 V2 文件。状态保留名称、描述、标签、intensity、建议时长、agentInferable、actionIds、可信事件进入/退出条件；事件名按规格 4.2，条件为 `{mode:'all'|'any', clauses:[{kind:'event',event:事件名}]}`。迁移未选定 idle 的草稿保持键并用 null，Prepared/Published 必须有效非空引用；资源清单尚有迁移问题时可使用专用 `CharacterMigrationManifestV3` 类型承载，不能直接作为正式包。V2 实际 Schema 的 512 状态/每状态128引用上限保持，不在本轮收紧旧包输入。
 
 转换接口 `migrateCharacterDraftToV3(raw)` / `migrateCharacterManifestToV3(raw)` 返回 `{document, issues, sourceVersion}`；V1 沿用现有转换器进入 V2 输入。issue 为稳定 code、对象 ID、中文说明及原规则摘要，至少覆盖 idle 歧义、修饰状态/组合条件、无法表达的动作约束。严格合法 V3 原样解析，非法输入拒绝。V2 简单所有权可直接转换；语义回退按旧资源解析结果展开为相同逻辑动作的表现，不能丢皮肤或改逻辑 ID；不能无损解释的情况带 issue，不能作为发布就绪。
 
-播放接口 `resolveCharacterPresentationV3(document, skinId, stateId, actionId)` 先检查归属，再取请求皮肤精确表现/默认皮肤相同动作；返回真实 stateId/actionId/表现/来源。单独 `createCharacterPlaybackView(manifest, skinId)` 生成严格只读 ID 视图；素材回退不伪造逻辑动作，idle 兜底返回真实目标对。此步不切正式 Main/Renderer。
+播放接口 `resolveCharacterPresentationV3(document, skinId, stateId, actionId)` 先检查归属，再取请求皮肤精确表现/默认皮肤相同动作；返回真实 stateId/actionId/表现/来源。单独 `createCharacterPlaybackView(manifest, skinId)` 与 `characterPlaybackViewSchema` 生成并验证严格只读 ID 视图：states 仅含播放身份/归属，presentations 按 actionId 唯一保存资源，idle 为真实目标对；共享动作不能按状态重复嵌入整份资源。素材回退不伪造逻辑动作，时间/暂停命令留给调度事件。此步不切正式 Main/Renderer。
 
 - [ ] RED：自定义中文名称仍按稳定 ID；旧字段被 V3 拒绝；非归属动作不能播放；V2 多皮肤/描述/锚点保留，复杂旧规则产生问题且输入不变。
 - [ ] GREEN：最小 Schema、转换、解析实现；有问题的迁移保留可编辑 document 与报告，不掩盖规则损失。
@@ -56,7 +56,7 @@
 
 ### Task 3: 正式工作台、发布、播放器与 Main 切换 V3
 
-**文件：** `apps/desktop/src/shared/character-ipc.ts`、`apps/desktop/src/shared/api.ts`（以实际 API 声明为准）；Main `characters/character-migrations.ts`、`character-store.ts`、`character-package-service.ts`、`character-asset-service.ts`、`official-default-character.ts`、`pet-visual-geometry.ts`、`character-behavior-service.ts`；Renderer `characters/store/character-workshop-store.ts`、`characters/workshop/{StateList,StateInspector,ActionInspector,CharacterWorkshopView,DraftCharacterPreview}.tsx`、现有编译与播放器适配文件。只修改这些链路实际消费者，不重写事务/素材/布局。
+**文件：** `apps/desktop/src/shared/character-ipc.ts`、`apps/desktop/src/shared/myself-api.ts`、`apps/desktop/src/shared/character-motion-ipc.ts`；Main `characters/character-migrations.ts`、`character-store.ts`、`character-actions.ts`、`character-package-service.ts`、`character-asset-service.ts`、`official-default-character.ts`、`pet-visual-geometry.ts`、`character-behavior-service.ts`；Renderer `characters/store/character-workshop-store.ts`、`characters/workshop/{StateList,StateInspector,ActionInspector,CharacterWorkshopView,DraftCharacterPreview}.tsx`、现有编译与播放器适配文件。只修改这些链路实际消费者，不重写事务/素材/布局。
 
 **接口：** Main 的草稿、发布及活动清单输出 V3，运行快照使用 Task 1 ID 视图；character-behavior-service 接 Task 2 引擎并保持现有 token/反馈安全边界。工作台状态直接创建名称和描述；删除主/修饰和官方语义选择及组合控件，保留人设和所有素材/播放设置；锚点入口不动。动作以状态 actionIds 归属；按真实 ID 预览与播放。
 
