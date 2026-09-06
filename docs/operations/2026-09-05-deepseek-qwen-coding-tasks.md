@@ -158,6 +158,14 @@ ChatAdapter后续修复先得到两项确定性RED：首次合法任务建议被
 
 新入口实验与循环保护未包含在这次通过的源码中，后续实现仍须各自定向、审查与最终门禁。现有窗口中的授权、正文、终态和取消已取得自动化证据；用户真实Windows体验仍按下面人工范围单列。
 
+## 原生任务申请的隔离协议验证
+
+2026-09-06 按已批准的[入口调整](../superpowers/specs/2026-09-06-ai-pet-task-entry-and-loop-proposal.md)完成 Task5A 的有限 HTTP 阶段。最初正确 RED 在发送请求前被原 `PROVIDER_RESPONSE_CONTRACT_CONFLICT` 拒绝，HTTP 次数为0；只在私有 bundle 中对唯一 `request_task_authorization`、严格空参数与基础聊天契约作精确适配。正式产品源码、公共类型与用户配置均未修改。
+
+复用原聊天系统构造器、公开角色上下文和表现 Schema 后，初始／修复提示分别为2445／2582 UTF-8字节，保留4800字节预算。最终 `node --test .superpowers/sdd/2026-09-05-deepseek-qwen-coding-tasks/task-5a-native-probe.test.cjs` 退出0，15项通过；32个封闭场景包含5个零HTTP拒绝，其余共28次localhost请求，含一次原DeepSeek空正文的同请求重试。覆盖严格申请、普通聊天与表现、混合响应、畸形参数、其他请求组合拒绝、取消、迟到响应及宿主／本地连接generation。
+
+固定三文件差异经独立审查，规格符合、质量通过、无开放问题。该结论仅允许继续真实模型装配：此阶段没有读取真实凭据、启动Qwen或调用DeepSeek，没有文件／命令执行器，也未切换正式入口。两模型各两轮44项语义矩阵、真实Runtime清理及完整文件任务仍待后续验证，不能以这15项HTTP测试替代。
+
 ## 桌宠与网站隔离
 
 `apps/website`、`apps/cloudbase-api`、`apps/package-scanner` 的业务、配置与运行入口未修改。共享锁文件曾因依赖重算带动既有网站链记录变化，已恢复，并单独核对六个相关 importer 及其 317 个 package／snapshot，与 Git 基线一致。后续依赖操作仍须重查该图，不能仅以网站源码无改动认定隔离完成。
