@@ -42,3 +42,18 @@ test('情境条件严格校验且 condition 必须有真实活动条件', () => 
   expect(parse({ ...state, when: { arbitrary: true } })).toBe(false);
   expect(parse({ ...state, actions: [{ actionId: 'wave', score: 1, when: { carrying: 1 } }] })).toBe(false);
 });
+
+test('提交给固定 llama.cpp 的 wire 不含未支持的关联语法', () => {
+  // 检查实际导出的模型协议对象，防止上游静默忽略不支持的 Schema 约束。
+  const unsupported: string[] = [];
+  const inspect = (value: unknown, path = '$'): void => {
+    if (!value || typeof value !== 'object') return;
+    if (Array.isArray(value)) { value.forEach((item, index) => inspect(item, `${path}[${index}]`)); return; }
+    const node = value as Record<string, unknown>;
+    for (const keyword of ['if', 'then', 'else']) if (keyword in node) unsupported.push(`${path}.${keyword}`);
+    if ('properties' in node && ('anyOf' in node || 'oneOf' in node)) unsupported.push(path);
+    Object.entries(node).forEach(([key, child]) => inspect(child, `${path}.${key}`));
+  };
+  inspect(characterChatResponseJsonSchema);
+  expect(unsupported).toEqual([]);
+});

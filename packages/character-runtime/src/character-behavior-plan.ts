@@ -72,7 +72,7 @@ const score = { type: 'number', minimum: 0, maximum: 1 };
 const factNames = ['moving', 'dragging', 'carrying', 'chatting', 'taskRunning', 'awaitingConfirmation'] as const;
 const when = { type: 'object', additionalProperties: false,
   properties: Object.fromEntries(factNames.map(name => [name, { type: 'boolean' }])) };
-/** JSON 协议与执行 Schema 对应；生命周期修订和保留令牌不能由模型提供。 */
+/** wire 约束字段语法；condition 至少一项 true 等关联规则由 Main Zod 强制，避免固定 llama.cpp 不支持的条件 Schema。 */
 export const characterChatResponseJsonSchema = {
   type: 'object', additionalProperties: false, required: ['text', 'moodUpdate', 'expressionPlan', 'movementControl'],
   properties: {
@@ -84,8 +84,6 @@ export const characterChatResponseJsonSchema = {
       properties: { validForMs: { type: 'integer', minimum: 1, maximum: 1800000 },
         states: { type: 'array', maxItems: 8, items: { type: 'object', additionalProperties: false,
           required: ['stateId', 'score', 'minStrength', 'maxStrength', 'actions'],
-          allOf: [{ if: { required: ['lifetime'], properties: { lifetime: { const: 'condition' } } },
-            then: { required: ['when'], properties: { when: { anyOf: factNames.map(name => ({ required: [name], properties: { [name]: { const: true } } })) } } } }],
           properties: { stateId: identifier, score, minStrength: score, maxStrength: score,
             when, lifetime: { enum: ['episode', 'condition'] },
             actions: { type: 'array', maxItems: 32, items: { type: 'object', additionalProperties: false,
