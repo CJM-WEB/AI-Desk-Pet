@@ -57,8 +57,8 @@ const localBehaviorContext = {
       traits: [], languageStyle: '简洁', likes: [], behavioralTendencies: []
     },
     states: [{
-      name: '开心', semantic: 'celebrate', tags: [],
-      actions: [{ name: '挥手', semantic: 'celebrate', tags: [] }]
+      name: '开心', stateId: 'state-1829', tags: [],
+      actions: [{ name: '挥手', actionId: 'action-1893', tags: [] }]
     }]
   },
   runtime: { moving: false, dragging: false, carrying: false, movementMode: 2 as const },
@@ -214,7 +214,7 @@ describe('LocalModelProvider', () => {
     const adapter = new ConversationChatAdapter(new LocalModelProvider(readyPort(), fetchClient));
     const text = '甲'.repeat(4_000);
     const actions = Array.from({ length: 100 }, (_, index) => ({
-      name: `共享动作${index}`, semantic: 'move', description: '动'.repeat(2_000), tags: []
+      name: `共享动作${index}`, actionId: 'action-7391', description: '动'.repeat(2_000), tags: []
     }));
 
     await adapter.respond({
@@ -230,7 +230,7 @@ describe('LocalModelProvider', () => {
             background: '景'.repeat(4_000)
           },
           states: Array.from({ length: 100 }, (_, index) => ({
-            name: `共享状态${index}`, semantic: 'move', description: '态'.repeat(2_000),
+            name: `共享状态${index}`, stateId: 'action-7933', description: '态'.repeat(2_000),
             tags: [], actions
           }))
         }

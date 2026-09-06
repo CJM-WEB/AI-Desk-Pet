@@ -21,8 +21,7 @@ import {
 } from 'lucide-react';
 import { useStore } from 'zustand';
 import {
-  resolveCharacterPresentation,
-  STANDARD_CHARACTER_SEMANTICS,
+  resolveCharacterPresentationV3,
   type DraftActionClip
 } from '@myself/character-runtime';
 import type { MyselfApi } from '../../../../shared/myself-api';
@@ -129,9 +128,10 @@ function currentAction(state: CharacterWorkshopState): DraftActionClip | null {
   if (!state.draft || !state.selectedSkinId || !state.selectedActionId) {
     return null;
   }
-  const resolved = resolveCharacterPresentation(
+  const resolved = resolveCharacterPresentationV3(
     state.draft,
     state.selectedSkinId,
+    state.selectedStateId ?? '',
     state.selectedActionId
   );
   if (!resolved) return null;
@@ -328,9 +328,10 @@ export function CharacterWorkshopWorkspace(
   ]);
   const selectedPresentation = useMemo(() => {
     if (!state.draft || !state.selectedSkinId || !state.selectedActionId) return null;
-    return resolveCharacterPresentation(
+    return resolveCharacterPresentationV3(
       state.draft,
       state.selectedSkinId,
+      state.selectedStateId ?? '',
       state.selectedActionId
     )?.presentation ?? null;
   }, [state.draft, state.selectedSkinId, state.selectedActionId]);
@@ -617,7 +618,7 @@ export function CharacterWorkshopWorkspace(
         <button
           className="primary-command"
           type="button"
-          disabled={busy || !state.draft}
+          disabled={busy || !state.draft?.idleStateId || state.migrationReview.issues.some(issue => !state.migrationReview.resolutions.some(item => item.issueId === issue.issueId))}
           onClick={() => void state.compileAndPublish()}
         >
           <Play size={16} />编译并发布
@@ -747,10 +748,28 @@ export function CharacterWorkshopWorkspace(
                 <Plus size={16} aria-hidden="true" />
               </button>
             </div>
+            {state.draft ? <section aria-label="状态迁移审阅">
+              <label>兜底状态
+                <select value={state.draft.idleStateId ?? ''} disabled={busy} onChange={event => state.setIdleState(event.currentTarget.value)}>
+                  <option value="">请选择一个现有状态</option>
+                  {state.draft.states.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}
+                </select>
+              </label>
+              {state.migrationReview.issues.map(issue => <div key={issue.issueId}>
+                <p>{issue.message}（{issue.objectId}）</p>
+                <pre>{JSON.stringify(issue.originalRule, null, 2)}</pre>
+                <label>旧规则处置
+                  <select disabled={busy} value={state.migrationReview.resolutions.find(item => item.issueId === issue.issueId)?.decision ?? ''}
+                    onChange={event => { const decision = event.currentTarget.value; if (decision === 'revised' || decision === 'discarded') state.resolveMigrationIssue(issue.issueId, decision); }}>
+                    <option value="">请逐项审阅</option><option value="revised">已按新状态规则修订</option><option value="discarded">舍弃这条旧规则</option>
+                  </select>
+                </label>
+              </div>)}
+            </section> : null}
             <StateList
               states={state.draft?.states ?? []}
               actions={state.draft?.actions ?? []}
-              defaultStateId={state.draft?.defaultStateId ?? ''}
+              idleStateId={state.draft?.idleStateId ?? ''}
               selectedStateId={state.selectedStateId}
               selectedActionId={state.selectedActionId}
               disabled={busy}
@@ -1145,20 +1164,11 @@ export function CharacterWorkshopWorkspace(
               extensionNameInputRef.current?.focus();
               return;
             }
-            const kind = String(formData.get('stateKind') ?? 'modifier');
-            const semantic = String(formData.get('stateSemantic') ?? 'idle');
-            const normalizedSemantic = STANDARD_CHARACTER_SEMANTICS.find(
-              candidate => candidate === semantic
-            ) ?? 'idle';
-            state.addState({
-              name,
-              kind: kind === 'primary' ? 'primary' : 'modifier',
-              semantic: normalizedSemantic
-            });
+            state.addState({ name, description: String(formData.get('stateDescription') ?? '') });
             closeExtensionDialog();
           }}
         >
-          <h2 id="extension-state-title">新建扩展状态</h2>
+          <h2 id="extension-state-title">新建自定义状态</h2>
           <label>
             状态名称
             <input
@@ -1169,27 +1179,7 @@ export function CharacterWorkshopWorkspace(
               onChange={event => setExtensionName(event.currentTarget.value)}
             />
           </label>
-          <label>
-            状态类别
-            <select
-              name="stateKind"
-              defaultValue="modifier"
-            >
-              <option value="primary">主状态</option>
-              <option value="modifier">修饰状态</option>
-            </select>
-          </label>
-          <label>
-            标准语义
-            <select
-              name="stateSemantic"
-              defaultValue="idle"
-            >
-              {STANDARD_CHARACTER_SEMANTICS.map(semantic => (
-                <option key={semantic} value={semantic}>{semantic}</option>
-              ))}
-            </select>
-          </label>
+          <label>状态描述（可选）<textarea name="stateDescription" maxLength={2000} /></label>
           <div className="dialog-actions">
             <button type="button" onClick={closeExtensionDialog}>
               取消
@@ -1199,7 +1189,7 @@ export function CharacterWorkshopWorkspace(
               type="submit"
               disabled={!extensionName.trim()}
             >
-              创建扩展状态
+              创建自定义状态
             </button>
           </div>
         </form>

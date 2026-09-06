@@ -42,7 +42,7 @@ export const characterPlaybackViewSchema = z.object({
   defaultSkinId: safeIdentifierSchema, idleStateId: safeIdentifierSchema,
   resources: z.array(characterResourceSchema).max(4096),
   states: z.array(characterStateDefinitionV3Schema.pick({ id: true, name: true, actionIds: true }).strict()).min(1).max(512),
-  actions: z.array(characterActionDefinitionV3Schema.pick({ id: true, loopPolicy: true }).strict()).max(1024),
+  actions: z.array(characterActionDefinitionV3Schema.pick({ id: true, loopPolicy: true, direction: true }).strict()).max(1024),
   presentations: z.array(z.object({
     actionId: safeIdentifierSchema, skinId: safeIdentifierSchema,
     source: z.enum(['skin-action', 'default-action']), presentation: publishedCharacterActionPresentationV3Schema
@@ -107,6 +107,6 @@ export function createCharacterPlaybackView(manifest: CharacterManifestV3, skinI
   return characterPlaybackViewSchema.parse({ version: 3, id: document.id, skinId, defaultSkinId: document.defaultSkinId,
     idleStateId: document.idleStateId, resources: document.resources.filter(resource => usedAssets.has(resource.assetId)),
     states: document.states.map(({ id, name, actionIds }) => ({ id, name, actionIds })),
-    actions: document.actions.map(({ id, loopPolicy }) => ({ id, loopPolicy })), presentations,
+    actions: document.actions.map(({ id, loopPolicy, direction }) => ({ id, loopPolicy, direction })), presentations,
     idle: { stateId: document.idleStateId, actionId: idleActionId } });
 }

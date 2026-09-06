@@ -4,7 +4,7 @@ import {
   type PresentationAlphaGeometry
 } from '@myself/character-assets';
 import {
-  characterManifestV1Schema,
+  actionFrameSchema,
   type ActionFrame
 } from '@myself/character-runtime';
 import type {
@@ -176,39 +176,15 @@ function exportCanvas(
 
 function parseActionFrames(
   atlasAssetId: string,
-  mimeType: CharacterImageMimeType,
+  _mimeType: CharacterImageMimeType,
   frames: ActionFrame[]
 ): ActionFrame[] {
-  const parsed = characterManifestV1Schema.safeParse({
-    version: 1,
-    id: 'atlas-validation',
-    name: '图集结构验证',
-    thumbnailAssetId: atlasAssetId,
-    compilerVersion: 'character-atlas-compiler-v1',
-    resources: [{
-      assetId: atlasAssetId,
-      fileName: `${atlasAssetId}.${mimeType === 'image/png' ? 'png' : 'webp'}`,
-      sha256: '0'.repeat(64),
-      byteLength: 1
-    }],
-    states: [{
-      id: 'idle',
-      kind: 'core',
-      actions: [{
-        id: 'atlas-validation',
-        name: '图集结构验证',
-        fps: 1,
-        loop: false,
-        weight: 1,
-        anchors: { ground: { x: 0.5, y: 1 } },
-        frames
-      }]
-    }]
-  });
-  if (!parsed.success) {
+  const parsed = actionFrameSchema.array().min(1).safeParse(frames);
+  if (!parsed.success || parsed.data.some(frame => frame.assetId !== atlasAssetId)) {
     throw new Error('CHARACTER_ATLAS_FRAME_INVALID');
   }
-  return parsed.data.states[0]!.actions[0]!.frames;
+  return parsed.data;
+
 }
 
 export async function compileAtlas(

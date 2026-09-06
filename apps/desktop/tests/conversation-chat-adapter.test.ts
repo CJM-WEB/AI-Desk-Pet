@@ -17,8 +17,8 @@ const behaviorContext = {
       languageStyle: '简洁', likes: ['阳光'], behavioralTendencies: ['主动陪伴']
     },
     states: [{
-      name: '开心', semantic: 'celebrate', tags: ['friendly'],
-      actions: [{ name: '挥手', semantic: 'celebrate', tags: ['friendly'] }]
+      name: '开心', stateId: 'state-754', tags: ['friendly'],
+      actions: [{ name: '挥手', actionId: 'action-828', tags: ['friendly'] }]
     }]
   },
   runtime: {
@@ -34,7 +34,7 @@ const behaviorContext = {
 function 过大公开目录() {
   const actions = Array.from({ length: 100 }, (_, index) => ({
     name: `共享动作${index}`,
-    semantic: 'move',
+    actionId: 'action-1191',
     description: `动作说明${index}${'甲'.repeat(1_990)}`,
     tags: Array.from({ length: 32 }, (_, tagIndex) => `tag-${tagIndex}`)
   }));
@@ -45,7 +45,7 @@ function 过大公开目录() {
     },
     states: Array.from({ length: 100 }, (_, index) => ({
       name: `共享状态${index}`,
-      semantic: 'move',
+      stateId: 'action-1647',
       description: `状态说明${index}${'乙'.repeat(1_990)}`,
       tags: [],
       actions
@@ -483,8 +483,8 @@ describe('ConversationChatAdapter', () => {
     const provider = 响应为({ type: 'text', text: '好的' });
     const adapter = new ConversationChatAdapter(provider);
     const states = [{
-      name: '自定义待机', semantic: 'idle', tags: ['friendly'], actions: [{
-        name: '自定义巡游', semantic: 'move', description: '在桌面上巡游',
+      name: '自定义待机', stateId: 'state-17705', tags: ['friendly'], actions: [{
+        name: '自定义巡游', actionId: 'action-17779', description: '在桌面上巡游',
         tags: ['locomotion', 'friendly']
       }]
     }];

@@ -60,10 +60,8 @@ function workshopState(
     id: 'frame-a', assetId: 'idle-atlas', x: 0, y: 0, width: 64, height: 64
   };
   const actionDefinition = (id: string, name: string) => ({
-    id, name, semantic: 'idle' as const, tags: [], preference: 1, cooldownMs: 0,
-    repeatSuppressionMs: 0, loopPolicy: 'presentation' as const, interrupt: 'normal' as const,
-    allowedPrimaryStateIds: [], forbiddenPrimaryStateIds: [], requiredModifierStateIds: [],
-    forbiddenModifierStateIds: [], direction: 'any' as const
+    id, name, tags: [], preference: 1, cooldownMs: 0,
+    repeatSuppressionMs: 0, loopPolicy: 'presentation' as const, interrupt: 'normal' as const, direction: 'any' as const
   });
   return {
     characters: [{
@@ -71,7 +69,7 @@ function workshopState(
       completeness: 'complete', missingRequirements: [], migrationRecoveryAvailable: false
     }],
     draft: {
-      version: 2,
+      version: 3,
       id: 'nova',
       name: 'Nova',
       identity: {
@@ -80,9 +78,9 @@ function workshopState(
         behavioralTendencies: ['问候'], boundaries: ['尊重隐私'], exampleLines: ['你好。']
       },
       defaultSkinId: 'default',
-      defaultStateId: 'idle',
+      idleStateId: 'idle',
       skins: [{
-        id: 'default', name: '默认皮肤', semanticFallbacks: [], presentations: [{
+        id: 'default', name: '默认皮肤', presentations: [{
           actionId: 'idle-main', fps: 12, playbackRate: 1.5, mirrorX: true,
           anchors: { ground: { x: 0.5, y: 1 } }, frames: [frame]
         }, {
@@ -90,18 +88,20 @@ function workshopState(
           anchors: { ground: { x: 0.5, y: 1 } }, frames: [frame]
         }]
       }, {
-        id: 'winter', name: '冬装', semanticFallbacks: [], presentations: [{
+        id: 'winter', name: '冬装', presentations: [{
           actionId: 'idle-main', fps: 12, playbackRate: 0.75, mirrorX: false,
           anchors: { ground: { x: 0.5, y: 1 } }, frames: [frame]
         }]
       }],
       states: [{
-        id: 'idle', name: '待机', kind: 'primary', semantic: 'idle', tags: [], intensity: 20,
-        coexistWithStateIds: [], forbiddenStateIds: [], enterConditions: [], exitConditions: [],
+        id: 'idle', name: '待机', tags: [], intensity: 20, enterConditions: [], exitConditions: [],
         agentInferable: true, actionIds: ['idle-main', 'wave-main']
       }],
       actions: [actionDefinition('idle-main', '待机'), actionDefinition('wave-main', '挥手')]
     },
+    migrationReview: { issues: [], resolutions: [] },
+    resolveMigrationIssue: vi.fn(),
+    setIdleState: vi.fn(),
     selectedCharacterId: 'nova',
     selectedEntity: { kind: 'action', actionId: selectedActionId },
     selectedSkinId,
@@ -123,7 +123,6 @@ function workshopState(
     addAction: vi.fn(), updateAction: vi.fn(), setCurrentActionCommitFrame: vi.fn(),
     requestRemoveCurrentFrame: vi.fn(() => ({ safeReferencePaths: [], blockingReferencePaths: [] })),
     requestRemoveAction: vi.fn(() => ({ safeReferencePaths: [], blockingReferencePaths: [] })),
-    removeAction: vi.fn(), removeExtensionState: vi.fn(), addExtensionState: vi.fn(),
     applySpriteSheet: vi.fn(async () => undefined), compileAndPublish: vi.fn(async () => undefined),
     publishCharacter: vi.fn(async () => undefined), updateCurrentAction,
     prepareWindowClose: vi.fn(async () => true), resumeAfterClosePrompt: vi.fn(),

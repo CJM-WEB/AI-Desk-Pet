@@ -47,8 +47,8 @@ describe('官方默认角色安装', () => {
 
     const manifest = await store.getActive();
     const publishedManifest = await store.getPublishedManifest('builtin-default');
-    expect(manifest.version).toBe(1);
-    expect(publishedManifest.version).toBe(2);
+    expect(manifest.version).toBe(3);
+    expect(publishedManifest.version).toBe(3);
     expect(manifest.id).toBe('builtin-default');
     expect(manifest.states.map(state => state.id)).toEqual([
       'idle',
@@ -66,9 +66,9 @@ describe('官方默认角色安装', () => {
     expect(carrying?.commitFrameId).toBe('carrying-frame-3');
     expect(carrying?.frames.findIndex(frame => frame.id === carrying.commitFrameId))
       .toBe(2);
-    expect(publishedManifest.skins[0]?.semanticFallbacks).toEqual([]);
+    expect(publishedManifest.skins[0]).not.toHaveProperty('semanticFallbacks');
     expect(decodeAlpha).toHaveBeenCalledTimes(8);
-    expect(publishedManifest.actions.map(action => action.semantic)).not.toEqual(
+    expect(publishedManifest.actions.map(action => action.id)).not.toEqual(
       expect.arrayContaining(['hide', 'emerge'])
     );
   }, 15_000);

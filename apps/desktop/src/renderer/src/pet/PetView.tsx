@@ -15,9 +15,8 @@ import type {
   CharacterDesktopAnchors,
   CharacterMotionPresentation
 } from '../characters/player/CharacterPlayer';
-import type { ExtensionTriggerDefinition } from '../characters/player/extension-trigger-controller';
 import { presentationFor } from '../character/state-map';
-import { useTaskStore } from '../stores/task-store';
+import { taskStore, useTaskStore } from '../stores/task-store';
 import {
   PetInteractionController,
   createElementBoundsHitTestPort,
@@ -92,14 +91,12 @@ export function PetView({
   createInteractionController?: PetInteractionControllerFactory;
 } = {}) {
   const characterState = useTaskStore(state => state.characterState.stateId);
-  const fallbackState: CharacterState = characterState.startsWith('custom:')
-    ? 'idle'
-    : characterState as CharacterState;
+  const fallbackState: CharacterState = 'idle';
   const reducedMotion = useReducedMotion();
   const motionMode = motionModeFor(reducedMotion);
-  const configureExtensions = useTaskStore(state => state.configureCharacterExtensions);
-  const triggerIdle = useTaskStore(state => state.triggerCharacterIdle);
-  const applyCharacterMotion = useTaskStore(state => state.applyCharacterMotion);
+  useEffect(() => window.myself.subscribeCharacterMotion(event => {
+    if (event.type === 'behavior-action') taskStore.getState().applyCharacterPlayback(event.stateId);
+  }), []);
   const shellRef = useRef<HTMLElement>(null);
   const formalHitTestPortRef = useRef<CharacterHitTestPort | null>(null);
   const fallbackElementRef = useRef<HTMLSpanElement | null>(null);
@@ -127,9 +124,6 @@ export function PetView({
     : playerRuntimeError
       ? '当前角色无法加载，请打开角色工作室检查并修复。'
       : null;
-  const [extensionDefinitions, setExtensionDefinitions] = useState<
-    readonly ExtensionTriggerDefinition[]
-  >([]);
   useEffect(() => {
     let disposed = false;
     void window.myself.getCharacterRecoverySnapshot().then(
@@ -144,19 +138,9 @@ export function PetView({
       disposed = true;
     };
   }, []);
-  const handleExtensionDefinitions = useCallback((
-    definitions: readonly ExtensionTriggerDefinition[]
-  ): void => {
-    setExtensionDefinitions(definitions);
-    configureExtensions(definitions);
-  }, [configureExtensions]);
   const handleMotionChange = useCallback((next: CharacterMotionPresentation): void => {
     setMotion(next);
-    applyCharacterMotion({
-      moving: next.moving,
-      carrying: next.carrying
-    });
-  }, [applyCharacterMotion]);
+  }, []);
   const syncHitTestPort = useCallback((): void => {
     const formalPort = formalHitTestPortRef.current;
     const fallbackElement = fallbackElementRef.current;
@@ -199,7 +183,6 @@ export function PetView({
       data-seat-anchor={serializeAnchor(desktopAnchors.seat)}
       data-focus-anchor={serializeAnchor(desktopAnchors.focus)}
       data-character-state={characterState}
-      data-extension-states={extensionDefinitions.map(item => item.stateId).join(',')}
       onPointerDown={event => {
         if (event.button !== 0) return;
         const started = interactionControllerRef.current?.handlePointerDown({
@@ -250,9 +233,6 @@ export function PetView({
         <CharacterPlayer
           stateId={characterState}
           motionMode={motionMode}
-          behaviorAuthorityMode="main-v2"
-          onExtensionDefinitionsChange={handleExtensionDefinitions}
-          onIdleTrigger={triggerIdle}
           onHitTestPortChange={handleHitTestPortChange}
           onDesktopAnchors={setDesktopAnchors}
           onMotionChange={handleMotionChange}

@@ -29,8 +29,8 @@ const behaviorContext = {
       languageStyle: '简洁', likes: [], behavioralTendencies: []
     },
     states: [{
-      name: '移动', semantic: 'move', tags: [],
-      actions: [{ name: '散步', semantic: 'move', tags: [] }]
+      name: '移动', stateId: 'state-1355', tags: [],
+      actions: [{ name: '散步', actionId: 'action-1413', tags: [] }]
     }]
   },
   runtime: {

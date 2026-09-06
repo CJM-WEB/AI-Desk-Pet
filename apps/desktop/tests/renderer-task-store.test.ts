@@ -123,7 +123,7 @@ describe('Renderer 任务视图状态', () => {
       phase: 'idle',
       messages: [],
       pendingHistoryDisclosure: null,
-      characterState: { stateId: 'idle', source: 'system' }
+      characterState: { stateId: 'idle', source: 'main' }
     });
 
     store.getState().apply({ type: 'phase', phase: 'thinking' });
@@ -268,137 +268,13 @@ describe('Renderer 任务视图状态', () => {
     expect(store.getState().phase).toBe('listening');
   });
 
-  test('扩展请求由既有仲裁器处理，可信任务阶段立即抢占且文案不推导结果', () => {
+  test('Main 自定义状态不被聊天正文、旧情绪或任务阶段覆盖', () => {
     const store = createTaskStore();
-    store.getState().requestCharacterState({
-      type: 'extension',
-      stateId: 'custom:wave'
-    });
-    expect(store.getState().characterState).toEqual({
-      stateId: 'custom:wave',
-      source: 'extension'
-    });
-
-    store.getState().apply({
-      type: 'message',
-      role: 'assistant',
-      text: '这段可见文案声称成功，但不是可信状态事件'
-    });
-    expect(store.getState().characterState.stateId).toBe('custom:wave');
-
-    store.getState().apply({ type: 'phase', phase: 'acting' });
-    expect(store.getState().characterState).toEqual({
-      stateId: 'acting',
-      source: 'system'
-    });
-  });
-
-  test('运动经过仲裁且停止后恢复当前任务阶段或 idle', () => {
-    const store = createTaskStore();
-    store.getState().applyCharacterMotion({ moving: true, carrying: false });
-    expect(store.getState().characterState.stateId).toBe('moving');
-    store.getState().applyCharacterMotion({ moving: false, carrying: false });
-    expect(store.getState().characterState.stateId).toBe('idle');
-
-    store.getState().apply({ type: 'phase', phase: 'thinking' });
-    store.getState().applyCharacterMotion({ moving: true, carrying: false });
-    expect(store.getState().characterState.stateId).toBe('thinking');
-    store.getState().applyCharacterMotion({ moving: false, carrying: false });
-    expect(store.getState().characterState.stateId).toBe('thinking');
-
-    store.getState().applyCharacterMotion({ moving: true, carrying: true });
-    expect(store.getState().characterState.stateId).toBe('carrying');
-    store.getState().applyCharacterMotion({ moving: false, carrying: false });
-    expect(store.getState().characterState.stateId).toBe('thinking');
-  });
-
-  test('生产扩展规则统一处理关键词、指针、idle 和可信 LLM 标识', () => {
-    const store = createTaskStore();
-    store.getState().configureCharacterExtensions([{
-      stateId: 'custom:wave',
-      triggers: ['single_click', 'idle'],
-      keywords: ['你好'],
-      emotions: ['happy']
-    }]);
-    store.getState().apply({ type: 'message', role: 'user', text: '你好' });
-    expect(store.getState().characterState.stateId).toBe('custom:wave');
-    store.getState().requestCharacterState({ type: 'reset' });
-    store.getState().triggerCharacterPointer('single_click');
-    expect(store.getState().characterState.stateId).toBe('custom:wave');
-    store.getState().requestCharacterState({ type: 'reset' });
-    store.getState().triggerCharacterIdle();
-    expect(store.getState().characterState.stateId).toBe('custom:wave');
-    store.getState().requestCharacterState({ type: 'reset' });
-    store.getState().apply({
-      type: 'character_emotion',
-      label: 'calm'
-    });
-    expect(store.getState().characterState.stateId).toBe('idle');
-    store.getState().apply({
-      type: 'character_emotion',
-      label: 'happy'
-    });
-    expect(store.getState().characterState.stateId).toBe('custom:wave');
-  });
-
-  test('核心任务状态期间只排队最新有效情绪并在回到 idle 后重放', () => {
-    vi.useFakeTimers();
-    const store = createTaskStore();
-    store.getState().configureCharacterExtensions([
-      {
-        stateId: 'custom:wave',
-        triggers: [],
-        keywords: [],
-        emotions: ['happy']
-      },
-      {
-        stateId: 'custom:calm',
-        triggers: [],
-        keywords: [],
-        emotions: ['calm']
-      }
-    ]);
-
-    store.getState().apply({ type: 'phase', phase: 'thinking' });
+    store.getState().applyCharacterPlayback('quiet-afternoon');
+    store.getState().apply({ type: 'message', role: 'user', text: '挥手 开心 思考' });
     store.getState().apply({ type: 'character_emotion', label: 'happy' });
-    store.getState().apply({ type: 'character_emotion', label: 'calm' });
-    expect(store.getState().characterState.stateId).toBe('thinking');
-
-    store.getState().apply({ type: 'phase', phase: 'success' });
-    expect(store.getState().characterState.stateId).toBe('success');
-    vi.advanceTimersByTime(1_499);
-    expect(store.getState().characterState.stateId).toBe('success');
-    vi.advanceTimersByTime(1);
-    expect(store.getState().characterState).toEqual({
-      stateId: 'custom:calm',
-      source: 'extension'
-    });
-  });
-
-  test('未知情绪、新任务与角色扩展变更不会重放过期请求', () => {
-    vi.useFakeTimers();
-    const store = createTaskStore();
-    store.getState().configureCharacterExtensions([{
-      stateId: 'custom:wave',
-      triggers: [],
-      keywords: [],
-      emotions: ['happy']
-    }]);
     store.getState().apply({ type: 'phase', phase: 'thinking' });
-    store.getState().apply({ type: 'character_emotion', label: 'calm' });
-    store.getState().apply({ type: 'character_emotion', label: 'happy' });
-
-    store.getState().beginListening();
-    store.getState().apply({ type: 'phase', phase: 'success' });
-    vi.advanceTimersByTime(1_500);
-    expect(store.getState().characterState.stateId).toBe('idle');
-
-    store.getState().apply({ type: 'phase', phase: 'thinking' });
-    store.getState().apply({ type: 'character_emotion', label: 'happy' });
-    store.getState().configureCharacterExtensions([]);
-    store.getState().apply({ type: 'phase', phase: 'success' });
-    vi.advanceTimersByTime(1_500);
-    expect(store.getState().characterState.stateId).toBe('idle');
+    expect(store.getState().characterState).toEqual({ stateId: 'quiet-afternoon', source: 'main' });
   });
 
   test('事件订阅只建立一次并在最后一个使用者卸载时释放', () => {

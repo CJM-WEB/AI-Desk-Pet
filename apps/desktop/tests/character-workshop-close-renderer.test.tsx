@@ -3,12 +3,12 @@
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { StrictMode } from 'react';
-import type { CharacterDraftV2 } from '@myself/character-runtime';
+import type { CharacterDraftV3 } from '@myself/character-runtime';
 import type { CharacterSummaryDto } from '../src/shared/character-ipc';
 import { CharacterWorkshopView } from '../src/renderer/src/characters/workshop/CharacterWorkshopView';
 
-const draft: CharacterDraftV2 = {
-  version: 2,
+const draft: CharacterDraftV3 = {
+  version: 3,
   id: 'nova',
   name: 'Nova',
   identity: {
@@ -18,19 +18,16 @@ const draft: CharacterDraftV2 = {
     exampleLines: ['你好。']
   },
   defaultSkinId: 'default',
-  defaultStateId: 'idle',
-  skins: [{ id: 'default', name: '默认皮肤', presentations: [], semanticFallbacks: [] }],
+  idleStateId: 'idle',
+  skins: [{ id: 'default', name: '默认皮肤', presentations: [], }],
   states: [{
     id: 'idle',
-    name: '待机', kind: 'primary', semantic: 'idle', tags: [], intensity: 20,
-    coexistWithStateIds: [], forbiddenStateIds: [], enterConditions: [],
+    name: '待机', tags: [], intensity: 20, enterConditions: [],
     exitConditions: [], agentInferable: true, actionIds: ['idle-main']
   }],
   actions: [{
-    id: 'idle-main', name: '轻呼吸', semantic: 'idle', tags: [], preference: 1,
-    cooldownMs: 0, repeatSuppressionMs: 0, loopPolicy: 'presentation', interrupt: 'normal',
-    allowedPrimaryStateIds: [], forbiddenPrimaryStateIds: [], requiredModifierStateIds: [],
-    forbiddenModifierStateIds: [], direction: 'any'
+    id: 'idle-main', name: '轻呼吸', tags: [], preference: 1,
+    cooldownMs: 0, repeatSuppressionMs: 0, loopPolicy: 'presentation', interrupt: 'normal', direction: 'any'
   }]
 };
 
@@ -72,6 +69,7 @@ function workshopApi(
     listCharacters: vi.fn(async () => characters),
     createCharacter: vi.fn(),
     duplicateCharacter: vi.fn(),
+    getCharacterMigrationReview: vi.fn(async () => ({ issues: [], resolutions: [] })),
     getCharacterDraft: vi.fn(async () => draft),
     listCharacterSources: vi.fn(async () => []),
     saveCharacterDraft: vi.fn(),
@@ -113,7 +111,8 @@ describe('角色工作室恢复提示', () => {
     }];
     const api = workshopApi({
       listCharacters: vi.fn(async () => listedCharacters),
-      getCharacterDraft: vi.fn(async characterId => ({
+      getCharacterMigrationReview: vi.fn(async () => ({ issues: [], resolutions: [] })),
+    getCharacterDraft: vi.fn(async characterId => ({
         ...draft,
         id: characterId,
         name: characterId === 'luna' ? 'Luna' : 'Nova'
@@ -266,7 +265,7 @@ describe('角色工作室 Renderer 关闭刷新', () => {
   });
 
   test('已发布摘要不完整时不以当前草稿完整度绕过启用确认', async () => {
-    const completeDraft: CharacterDraftV2 = {
+    const completeDraft: CharacterDraftV3 = {
       ...draft,
       skins: [{
         ...draft.skins[0]!,
@@ -294,7 +293,8 @@ describe('角色工作室 Renderer 关闭刷新', () => {
     const activateCharacter = vi.fn(async () => undefined);
     const api = workshopApi({
       listCharacters: vi.fn(async () => staleCharacters),
-      getCharacterDraft: vi.fn(async () => completeDraft),
+      getCharacterMigrationReview: vi.fn(async () => ({ issues: [], resolutions: [] })),
+    getCharacterDraft: vi.fn(async () => completeDraft),
       activateCharacter,
     });
 

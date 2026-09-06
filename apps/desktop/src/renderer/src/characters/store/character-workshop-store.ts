@@ -1,20 +1,22 @@
 import type {
   ActionFrame,
-  CharacterActionDefinitionV2,
-  CharacterDraftV2,
+  CharacterActionDefinitionV3,
+  CharacterDraftV3,
   CharacterIdentityV2,
-  CharacterSkinV2,
-  CharacterStateDefinitionV2,
+  CharacterSkinV3,
+  CharacterStateDefinitionV3,
   DraftActionClip,
   PresentationGeometryV2
 } from '@myself/character-runtime';
 import {
-  characterManifestV2Schema,
-  resolveCharacterPresentation
+  characterManifestV3Schema,
+  resolveCharacterPresentationV3
 } from '@myself/character-runtime';
 import { createStore, type StoreApi } from 'zustand/vanilla';
 import type {
   CharacterEvent,
+  CharacterMigrationReview,
+  CharacterMigrationResolution,
   CharacterPublishInput,
   CharacterSummaryDto,
   CharacterWorkshopSourceDto
@@ -50,6 +52,7 @@ export type CharacterWorkshopApi = Pick<
   | 'createCharacter'
   | 'duplicateCharacter'
   | 'getCharacterDraft'
+  | 'getCharacterMigrationReview'
   | 'listCharacterSources'
   | 'saveCharacterDraft'
   | 'chooseCharacterSources'
@@ -79,7 +82,7 @@ export type CharacterReferenceImpact = {
   blockingReferencePaths: string[];
 };
 
-type LegacyWorkshopActionPatch = Partial<DraftActionClip>;
+type WorkshopPresentationPatch = Partial<DraftActionClip>;
 
 export interface CharacterWorkshopDependencies {
   /** 测试可注入稳定 ID；生产默认使用加密安全的 UUID。 */
@@ -105,7 +108,10 @@ export interface CharacterWorkshopDependencies {
 export interface CharacterWorkshopState {
   characters: CharacterSummaryDto[];
   selectedCharacterId: string | null;
-  draft: CharacterDraftV2 | null;
+  draft: CharacterDraftV3 | null;
+  migrationReview: CharacterMigrationReview;
+  resolveMigrationIssue(issueId: string, decision: CharacterMigrationResolution['decision']): void;
+  setIdleState(stateId: string): void;
   selectedEntity: CharacterWorkshopSelectedEntity;
   selectedSkinId: string | null;
   selectedStateId: string | null;
@@ -134,24 +140,20 @@ export interface CharacterWorkshopState {
   updateIdentity(patch: Partial<CharacterIdentityV2>): void;
   addSkin(name: string): void;
   duplicateSkin(skinId: string, name: string): void;
-  updateSkin(skinId: string, patch: Partial<CharacterSkinV2>): void;
+  updateSkin(skinId: string, patch: Partial<CharacterSkinV3>): void;
   setDefaultSkin(skinId: string): void;
   requestRemoveSkin(skinId: string, confirm?: boolean): CharacterReferenceImpact;
   addState(input: {
     name: string;
-    kind: 'primary' | 'modifier';
-    semantic: CharacterStateDefinitionV2['semantic'];
+    description?: string;
   }): void;
-  updateState(stateId: string, patch: Partial<CharacterStateDefinitionV2>): void;
+  updateState(stateId: string, patch: Partial<CharacterStateDefinitionV3>): void;
   requestRemoveState(stateId: string, confirm?: boolean): CharacterReferenceImpact;
   addAction(stateId?: string, name?: string): void;
-  updateAction(actionId: string, patch: Partial<CharacterActionDefinitionV2>): void;
+  updateAction(actionId: string, patch: Partial<CharacterActionDefinitionV3>): void;
   setCurrentActionCommitFrame(frameId: string | null): void;
   requestRemoveCurrentFrame(frameId: string, confirm?: boolean): CharacterReferenceImpact;
   requestRemoveAction(actionId: string, confirm?: boolean): CharacterReferenceImpact;
-  removeAction(stateId: string, actionId: string): void;
-  removeExtensionState(stateId: string): void;
-  addExtensionState(name: string, event: 'single_click' | 'double_click' | 'context_menu'): void;
   applySpriteSheet(input: {
     sourceAssetId: string;
     rows: number;
@@ -160,7 +162,7 @@ export interface CharacterWorkshopState {
   }, confirmCommitFrameRemoval?: boolean): Promise<CharacterReferenceImpact | void>;
   compileAndPublish(): Promise<void>;
   publishCharacter(input: CharacterPublishInput): Promise<void>;
-  updateCurrentAction(patch: LegacyWorkshopActionPatch): void;
+  updateCurrentAction(patch: WorkshopPresentationPatch): void;
   prepareWindowClose(): Promise<boolean>;
   resumeAfterClosePrompt(): void;
   discardUnsavedDraft(): Promise<void>;
@@ -179,7 +181,7 @@ function errorText(error: unknown): string {
   return characterOperationMessage(code);
 }
 
-function initialSelection(draft: CharacterDraftV2): {
+function initialSelection(draft: CharacterDraftV3): {
   skinId: string | null;
   stateId: string | null;
   actionId: string | null;
@@ -187,7 +189,7 @@ function initialSelection(draft: CharacterDraftV2): {
 } {
   const skin = draft.skins.find(candidate => candidate.id === draft.defaultSkinId)
     ?? draft.skins[0];
-  const state = draft.states.find(candidate => candidate.id === draft.defaultStateId)
+  const state = draft.states.find(candidate => candidate.id === draft.idleStateId)
     ?? draft.states[0];
   const actionId = state?.actionIds.find(id => draft.actions.some(action => action.id === id))
     ?? null;
@@ -205,7 +207,7 @@ function initialSelection(draft: CharacterDraftV2): {
   };
 }
 
-function cloneDraft(draft: CharacterDraftV2): CharacterDraftV2 {
+function cloneDraft(draft: CharacterDraftV3): CharacterDraftV3 {
   return structuredClone(draft);
 }
 
@@ -222,7 +224,7 @@ function sameSelectedEntity(
     && left.actionId === right.actionId;
 }
 
-/** 从可读名称生成有界、确定且碰撞安全的 V2 标识符。 */
+/** 从可读名称生成有界、确定且碰撞安全的 V3 标识符。 */
 function createEntityId(
   name: string,
   fallback: string,
@@ -348,6 +350,7 @@ export function createCharacterWorkshopStore(
       set({
         selectedCharacterId: characterId,
         draft: null,
+      migrationReview: { issues: [], resolutions: [] },
         selectedEntity: { kind: 'identity' },
         selectedSkinId: null,
         selectedStateId: null,
@@ -388,8 +391,9 @@ export function createCharacterWorkshopStore(
     }
 
     function setDraft(
-      draft: CharacterDraftV2,
-      sources: readonly CharacterWorkshopSourceDto[] = []
+      draft: CharacterDraftV3,
+      sources: readonly CharacterWorkshopSourceDto[] = [],
+      migrationReview: CharacterMigrationReview = { issues: [], resolutions: [] }
     ): void {
       if (saveTimer !== undefined) {
         clearTimeout(saveTimer);
@@ -404,6 +408,7 @@ export function createCharacterWorkshopStore(
       set({
         selectedCharacterId: draft.id,
         draft: cloneDraft(draft),
+        migrationReview: structuredClone(migrationReview),
         selectedEntity: selection.entity,
         selectedSkinId: selection.skinId,
         selectedStateId: selection.stateId,
@@ -430,12 +435,13 @@ export function createCharacterWorkshopStore(
       characterId: string,
       requestRevision: number
     ): Promise<void> {
-      const [loadedDraft, sources] = await Promise.all([
+      const [loadedDraft, sources, review] = await Promise.all([
         api.getCharacterDraft(characterId),
-        api.listCharacterSources(characterId)
+        api.listCharacterSources(characterId),
+        api.getCharacterMigrationReview(characterId)
       ]);
       if (requestRevision !== selectionRevision) return;
-      setDraft(loadedDraft, sources);
+      setDraft(loadedDraft, sources, review);
     }
 
     async function reportFailure(
@@ -511,7 +517,8 @@ export function createCharacterWorkshopStore(
             await api.saveCharacterDraft(
               characterId,
               pendingDraft,
-              persistenceRevision
+              persistenceRevision,
+              structuredClone(current.migrationReview.resolutions)
             );
           } catch (error) {
             const stillSelected = get().selectedCharacterId === characterId;
@@ -555,7 +562,7 @@ export function createCharacterWorkshopStore(
 
     /** 所有领域编辑统一经过深克隆，并在提交前收敛可能失效的选择。 */
     function updateDraft(
-      mutate: (draft: CharacterDraftV2) => void,
+      mutate: (draft: CharacterDraftV3) => void,
       requestedEntity?: CharacterWorkshopSelectedEntity
     ): void {
       const current = get();
@@ -567,7 +574,7 @@ export function createCharacterWorkshopStore(
         ?? next.skins.find(skin => skin.id === next.defaultSkinId)
         ?? next.skins[0];
       const selectedState = next.states.find(state => state.id === current.selectedStateId)
-        ?? next.states.find(state => state.id === next.defaultStateId)
+        ?? next.states.find(state => state.id === next.idleStateId)
         ?? next.states[0];
       const selectedActionId = selectedState?.actionIds.find(actionId => (
         next.actions.some(action => action.id === actionId)
@@ -687,6 +694,7 @@ export function createCharacterWorkshopStore(
             set({
               selectedCharacterId: null,
               draft: null,
+      migrationReview: { issues: [], resolutions: [] },
               selectedEntity: { kind: 'identity' },
               selectedSkinId: null,
               selectedStateId: null,
@@ -710,6 +718,7 @@ export function createCharacterWorkshopStore(
       characters: [],
       selectedCharacterId: null,
       draft: null,
+      migrationReview: { issues: [], resolutions: [] },
       selectedEntity: { kind: 'identity' },
       selectedSkinId: null,
       selectedStateId: null,
@@ -742,6 +751,7 @@ export function createCharacterWorkshopStore(
             set({
               selectedCharacterId: null,
               draft: null,
+      migrationReview: { issues: [], resolutions: [] },
               selectedEntity: { kind: 'identity' },
               selectedSkinId: null,
               selectedStateId: null,
@@ -901,6 +911,7 @@ export function createCharacterWorkshopStore(
               set({
                 selectedCharacterId: null,
                 draft: null,
+      migrationReview: { issues: [], resolutions: [] },
                 selectedEntity: { kind: 'identity' },
                 selectedSkinId: null,
                 selectedStateId: null,
@@ -995,6 +1006,20 @@ export function createCharacterWorkshopStore(
         });
       },
 
+      resolveMigrationIssue(issueId, decision) {
+        const review = get().migrationReview;
+        if (!review.issues.some(issue => issue.issueId === issueId)) return;
+        set({ migrationReview: { ...review, resolutions: [
+          ...review.resolutions.filter(item => item.issueId !== issueId), { issueId, decision }
+        ] } });
+        updateDraft(() => undefined);
+      },
+
+      setIdleState(stateId) {
+        if (!get().draft?.states.some(state => state.id === stateId)) return;
+        updateDraft(draft => { draft.idleStateId = stateId; });
+      },
+
       updateIdentity(patch) {
         const safePatch = structuredClone(patch);
         updateDraft(draft => Object.assign(draft.identity, safePatch));
@@ -1013,8 +1038,7 @@ export function createCharacterWorkshopStore(
           draft.skins.push({
             id,
             name: normalizedName,
-            presentations: [],
-            semanticFallbacks: []
+            presentations: []
           });
         }, { kind: 'skin', skinId: id });
         setWorkspaceTarget({ selectedSkinId: id });
@@ -1061,8 +1085,7 @@ export function createCharacterWorkshopStore(
         const skin = current.draft.skins[skinIndex]!;
         const impact: CharacterReferenceImpact = {
           safeReferencePaths: [
-            ...(skin.presentations.length > 0 ? [`skins.${skinIndex}.presentations`] : []),
-            ...(skin.semanticFallbacks.length > 0 ? [`skins.${skinIndex}.semanticFallbacks`] : [])
+            ...(skin.presentations.length > 0 ? [`skins.${skinIndex}.presentations`] : [])
           ],
           blockingReferencePaths: current.draft.defaultSkinId === skinId
             ? ['defaultSkinId']
@@ -1088,17 +1111,13 @@ export function createCharacterWorkshopStore(
           'state',
           new Set(current.draft.states.map(state => state.id))
         );
-        const safeSemantic = structuredClone(input.semantic);
         updateDraft(draft => {
           draft.states.push({
             id,
             name: normalizedName,
-            kind: input.kind,
-            semantic: safeSemantic,
+            ...(input.description?.trim() ? { description: input.description.trim() } : {}),
             tags: [],
             intensity: 50,
-            coexistWithStateIds: [],
-            forbiddenStateIds: [],
             enterConditions: [],
             exitConditions: [],
             agentInferable: false,
@@ -1123,51 +1142,16 @@ export function createCharacterWorkshopStore(
           return { safeReferencePaths: [], blockingReferencePaths: [] };
         }
         const safeReferencePaths: string[] = [];
-        current.draft.states.forEach((state, index) => {
-          if (state.coexistWithStateIds.includes(stateId)) safeReferencePaths.push(`states.${index}.coexistWithStateIds`);
-          if (state.forbiddenStateIds.includes(stateId)) safeReferencePaths.push(`states.${index}.forbiddenStateIds`);
-          if (state.enterConditions.some(condition => (
-            condition.clauses.some(clause => clause.kind === 'state' && clause.stateId === stateId)
-          ))) safeReferencePaths.push(`states.${index}.enterConditions`);
-          if (state.exitConditions.some(condition => (
-            condition.clauses.some(clause => clause.kind === 'state' && clause.stateId === stateId)
-          ))) safeReferencePaths.push(`states.${index}.exitConditions`);
-        });
-        current.draft.actions.forEach((action, index) => {
-          (['allowedPrimaryStateIds', 'forbiddenPrimaryStateIds', 'requiredModifierStateIds', 'forbiddenModifierStateIds'] as const)
-            .forEach(field => {
-              if (action[field].includes(stateId)) safeReferencePaths.push(`actions.${index}.${field}`);
-            });
-        });
         const impact: CharacterReferenceImpact = {
           safeReferencePaths,
-          blockingReferencePaths: current.draft.defaultStateId === stateId
-            ? ['defaultStateId']
+          blockingReferencePaths: current.draft.idleStateId === stateId
+            ? ['idleStateId']
             : []
         };
         if (impact.blockingReferencePaths.length === 0 && (safeReferencePaths.length === 0 || confirm)) {
           updateDraft(draft => {
             draft.states = draft.states.filter(state => state.id !== stateId);
-            draft.states.forEach(state => {
-              state.coexistWithStateIds = state.coexistWithStateIds.filter(id => id !== stateId);
-              state.forbiddenStateIds = state.forbiddenStateIds.filter(id => id !== stateId);
-              const cleanConditions = (conditions: typeof state.enterConditions) => conditions
-                .map(condition => ({
-                  ...condition,
-                  clauses: condition.clauses.filter(
-                    clause => clause.kind !== 'state' || clause.stateId !== stateId
-                  )
-                }))
-                .filter(condition => condition.clauses.length > 0);
-              state.enterConditions = cleanConditions(state.enterConditions);
-              state.exitConditions = cleanConditions(state.exitConditions);
-            });
-            draft.actions.forEach(action => {
-              action.allowedPrimaryStateIds = action.allowedPrimaryStateIds.filter(id => id !== stateId);
-              action.forbiddenPrimaryStateIds = action.forbiddenPrimaryStateIds.filter(id => id !== stateId);
-              action.requiredModifierStateIds = action.requiredModifierStateIds.filter(id => id !== stateId);
-              action.forbiddenModifierStateIds = action.forbiddenModifierStateIds.filter(id => id !== stateId);
-            });
+
           });
         }
         return impact;
@@ -1188,17 +1172,12 @@ export function createCharacterWorkshopStore(
           draft.actions.push({
             id,
             name: normalizedName,
-            semantic: typeof state.semantic === 'string' ? state.semantic : 'idle',
             tags: [],
             preference: 1,
             cooldownMs: 0,
             repeatSuppressionMs: 0,
             loopPolicy: 'presentation',
             interrupt: 'normal',
-            allowedPrimaryStateIds: [],
-            forbiddenPrimaryStateIds: [],
-            requiredModifierStateIds: [],
-            forbiddenModifierStateIds: [],
             direction: 'any'
           });
           draft.states.find(candidate => candidate.id === targetStateId)!.actionIds.push(id);
@@ -1216,19 +1195,7 @@ export function createCharacterWorkshopStore(
         updateDraft(draft => {
           const action = draft.actions.find(candidate => candidate.id === actionId)!;
           Object.assign(action, safePatch);
-          if (safePatch.semantic === undefined) return;
-          // 动作换语义后，原皮肤回退已不再是同语义安全引用。
-          draft.skins.forEach(skin => {
-            skin.semanticFallbacks = skin.semanticFallbacks.filter(fallback => (
-              fallback.actionId !== actionId || fallback.semantic === action.semantic
-            ));
-            // 提交帧是 carry 专属语义；离开 carry 时必须跨皮肤清除。
-            if (action.semantic !== 'carry') {
-              skin.presentations.forEach(presentation => {
-                if (presentation.actionId === actionId) delete presentation.commitFrameId;
-              });
-            }
-          });
+
         });
       },
 
@@ -1238,8 +1205,8 @@ export function createCharacterWorkshopStore(
         if (!draft || !actionId || !skinId) return;
         const action = draft.actions.find(candidate => candidate.id === actionId);
         const skin = draft.skins.find(candidate => candidate.id === skinId);
-        const resolved = resolveCharacterPresentation(draft, skinId, actionId);
-        if (!action || action.semantic !== 'carry' || !skin || !resolved) return;
+        const resolved = resolveCharacterPresentationV3(draft, skinId, current.selectedStateId ?? '', actionId);
+        if (!action || !skin || !resolved) return;
         if (frameId !== null && !resolved.presentation.frames.some(frame => frame.id === frameId)) {
           return;
         }
@@ -1247,7 +1214,7 @@ export function createCharacterWorkshopStore(
           const targetSkin = next.skins.find(candidate => candidate.id === skinId)!;
           let presentation = targetSkin.presentations.find(candidate => candidate.actionId === actionId);
           if (!presentation) {
-            const inherited = resolveCharacterPresentation(next, skinId, actionId);
+            const inherited = resolveCharacterPresentationV3(next, skinId, current.selectedStateId ?? '', actionId);
             if (!inherited) return;
             presentation = {
               ...structuredClone(inherited.presentation),
@@ -1267,7 +1234,7 @@ export function createCharacterWorkshopStore(
           return { safeReferencePaths: [], blockingReferencePaths: [] };
         }
         const skinIndex = draft.skins.findIndex(candidate => candidate.id === skinId);
-        const resolved = resolveCharacterPresentation(draft, skinId, actionId);
+        const resolved = resolveCharacterPresentationV3(draft, skinId, current.selectedStateId ?? '', actionId);
         const frameMatches = resolved?.presentation.frames.filter(frame => frame.id === frameId) ?? [];
         if (skinIndex < 0 || !resolved || frameMatches.length !== 1) {
           return { safeReferencePaths: [], blockingReferencePaths: [] };
@@ -1288,7 +1255,7 @@ export function createCharacterWorkshopStore(
           const targetSkin = next.skins.find(candidate => candidate.id === skinId)!;
           let presentation = targetSkin.presentations.find(candidate => candidate.actionId === actionId);
           if (!presentation) {
-            const inherited = resolveCharacterPresentation(next, skinId, actionId);
+            const inherited = resolveCharacterPresentationV3(next, skinId, current.selectedStateId ?? '', actionId);
             if (!inherited) return;
             presentation = {
               ...structuredClone(inherited.presentation),
@@ -1316,9 +1283,7 @@ export function createCharacterWorkshopStore(
           if (skin.presentations.some(presentation => presentation.actionId === actionId)) {
             safeReferencePaths.push(`skins.${index}.presentations`);
           }
-          if (skin.semanticFallbacks.some(fallback => fallback.actionId === actionId)) {
-            safeReferencePaths.push(`skins.${index}.semanticFallbacks`);
-          }
+
         });
         const blockingReferencePaths = current.draft.actions.flatMap((action, index) => [
           ...(action.failureFallbackActionId === actionId
@@ -1337,28 +1302,10 @@ export function createCharacterWorkshopStore(
             });
             draft.skins.forEach(skin => {
               skin.presentations = skin.presentations.filter(presentation => presentation.actionId !== actionId);
-              skin.semanticFallbacks = skin.semanticFallbacks.filter(fallback => fallback.actionId !== actionId);
             });
           });
         }
         return impact;
-      },
-
-      /** 旧组件在 Task 8 改造前继续通过确认入口删除。 */
-      removeAction(_stateId, actionId) {
-        get().requestRemoveAction(actionId, true);
-      },
-
-      removeExtensionState(stateId) {
-        get().requestRemoveState(stateId, true);
-      },
-
-      addExtensionState(name, _event) {
-        get().addState({
-          name,
-          kind: 'modifier',
-          semantic: { kind: 'custom', value: createEntityId(name, 'state', new Set()) }
-        });
       },
 
       async applySpriteSheet(input, confirmCommitFrameRemoval = false) {
@@ -1401,9 +1348,10 @@ export function createCharacterWorkshopStore(
         const currentCommitFrameId = (): string | undefined => {
           const latest = get();
           return latest.draft
-            ? resolveCharacterPresentation(
+            ? resolveCharacterPresentationV3(
               latest.draft,
               skinId,
+              latest.selectedStateId ?? '',
               actionId
             )?.presentation.commitFrameId
             : undefined;
@@ -1542,13 +1490,14 @@ export function createCharacterWorkshopStore(
               throw error;
             }
           };
-          const defaultState = latest.states.find(state => state.id === latest.defaultStateId);
-          const hasPlayableDefault = defaultState?.actionIds.some(actionId => (
-            resolveCharacterPresentation(latest, latest.defaultSkinId, actionId) !== null
-          ));
-          if (!hasPlayableDefault) {
-            throw new Error('CHARACTER_DEFAULT_PRESENTATION_UNAVAILABLE');
+          const review = get().migrationReview;
+          if (review.issues.some(issue => !review.resolutions.some(item => item.issueId === issue.issueId))) {
+            throw new Error('CHARACTER_MIGRATION_REVIEW_REQUIRED');
           }
+          const idleState = latest.states.find(state => state.id === latest.idleStateId);
+          if (!idleState || !latest.skins.every(skin => idleState.actionIds.some(actionId => (
+            resolveCharacterPresentationV3(latest, skin.id, idleState.id, actionId) !== null
+          )))) throw new Error('CHARACTER_DEFAULT_PRESENTATION_UNAVAILABLE');
           const sourceCache = new Map<string, Promise<Uint8Array>>();
           const readSource = (assetId: string): Promise<Uint8Array> => {
             let pending = sourceCache.get(assetId);
@@ -1654,7 +1603,7 @@ export function createCharacterWorkshopStore(
             });
           }
           cancelUnless(isCompileCurrent());
-          const manifest = characterManifestV2Schema.parse({
+          const manifest = characterManifestV3Schema.parse({
             ...latest,
             thumbnailAssetId: manifestResources[0]!.assetId,
             compilerVersion: 'character-atlas-compiler-v2',
@@ -1723,7 +1672,7 @@ export function createCharacterWorkshopStore(
           loop,
           weight
         } = safePatch;
-        const actionPatch: Partial<CharacterActionDefinitionV2> = {
+        const actionPatch: Partial<CharacterActionDefinitionV3> = {
           ...(name === undefined ? {} : { name }),
           ...(direction === undefined ? {} : { direction }),
           ...(loop === undefined ? {} : { loopPolicy: loop ? 'presentation' : 'never' }),
@@ -1749,7 +1698,7 @@ export function createCharacterWorkshopStore(
           let presentation = skin.presentations.find(candidate => candidate.actionId === actionId);
           if (!presentation) {
             // 回退表现首次被编辑时先克隆为当前皮肤的精确覆盖，避免改写来源。
-            const resolved = resolveCharacterPresentation(draft, skin.id, actionId);
+            const resolved = resolveCharacterPresentationV3(draft, skin.id, current.selectedStateId ?? '', actionId);
             presentation = {
               ...(resolved ? structuredClone(resolved.presentation) : {}),
               actionId,
@@ -1826,11 +1775,11 @@ export function createCharacterWorkshopStore(
           return;
         }
         try {
-          const persistedDraft = await api.getCharacterDraft(characterId);
+          const [persistedDraft, review] = await Promise.all([api.getCharacterDraft(characterId), api.getCharacterMigrationReview(characterId)]);
           if (get().selectedCharacterId !== characterId) {
             throw new Error('CHARACTER_OPERATION_FAILED');
           }
-          setDraft(persistedDraft, get().availableSources);
+          setDraft(persistedDraft, get().availableSources, review);
           closeRequestPending = false;
         } catch (error) {
           closeRequestPending = false;

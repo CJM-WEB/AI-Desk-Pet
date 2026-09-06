@@ -43,17 +43,12 @@ vi.mock('../src/renderer/src/characters/player/CharacterPlayer', async importOri
   };
 });
 
-const originalTaskStoreActions = {
-  triggerCharacterPointer: taskStore.getState().triggerCharacterPointer
-};
-
 afterEach(() => {
   cleanup();
   vi.useRealTimers();
   vi.unstubAllGlobals();
   playerDouble.ready = false;
   playerDouble.reportRuntimeError = undefined;
-  taskStore.setState(originalTaskStoreActions);
 });
 
 describe('桌宠锚点视觉消费者', () => {
@@ -176,6 +171,7 @@ test('原生拖拽表面保持原动画模式且所有备用动画不改变尺�
 
 function createPetViewApi(): MyselfApi {
   return {
+    subscribeCharacterMotion: vi.fn(() => vi.fn()),
     getCharacterRecoverySnapshot: vi.fn(async () => EMPTY_RECOVERY_SNAPSHOT),
     getCharacterRuntimeSnapshot: vi.fn(async () => null),
     subscribeCharacterEvents: vi.fn(() => vi.fn()),
@@ -350,8 +346,6 @@ describe('桌宠像素交互接线', () => {
     const api = createPetViewApi();
     installPetViewBrowserApi(api);
     vi.spyOn(console, 'error').mockImplementation(() => undefined);
-    const triggerCharacterPointer = vi.fn();
-    taskStore.setState({ triggerCharacterPointer });
     const result = render(
       <StrictMode>
         <PetView />
@@ -388,7 +382,6 @@ describe('桌宠像素交互接线', () => {
     expect(api.updatePetDrag).toHaveBeenCalledOnce();
     expect(api.endPetDrag).toHaveBeenCalledOnce();
     expect(api.openChat).not.toHaveBeenCalled();
-    expect(triggerCharacterPointer).not.toHaveBeenCalled();
   });
 
   test('卸载时释放命中控制器并恢复安全穿透', async () => {

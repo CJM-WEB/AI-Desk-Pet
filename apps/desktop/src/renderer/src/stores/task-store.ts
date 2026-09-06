@@ -1,9 +1,4 @@
-import {
-  CHARACTER_TRANSIENT_DURATION_MS,
-  reduceCharacterState,
-  type CharacterStateRequest,
-  type CharacterStateSnapshot
-} from '@myself/character-runtime';
+import { CHARACTER_TRANSIENT_DURATION_MS } from '@myself/character-runtime';
 import {
   ASSISTANT_STREAM_TEXT_MAX_CHARACTERS,
   ASSISTANT_STREAM_TURN_ID_MAX_CHARACTERS,
@@ -14,12 +9,6 @@ import {
 } from '@myself/shared-types';
 import { useStore } from 'zustand';
 import { createStore, type StoreApi } from 'zustand/vanilla';
-import {
-  ExtensionTriggerController,
-  type ExtensionPointerTrigger,
-  type ExtensionTriggerDefinition
-} from '../characters/player/extension-trigger-controller';
-
 const MAX_MESSAGES = 100;
 
 export type TaskViewMessage = {
@@ -48,18 +37,15 @@ export interface TaskViewState {
   pendingHistoryDisclosure: PendingHistoryDisclosure | null;
   pendingCapabilityAuthorization: PendingCapabilityAuthorization | null;
   resolvingHistoryDisclosureRequestId: string | null;
-  characterState: CharacterStateSnapshot;
+  characterState: { stateId: string; source: 'main' };
+  applyCharacterPlayback(stateId: string): void;
   apply(event: TaskEvent): void;
   beginHistoryDisclosureResolution(requestId: string): boolean;
   releaseHistoryDisclosureResolution(requestId: string): void;
   completeHistoryDisclosure(requestId: string): void;
   completeCapabilityAuthorization(requestId: string): void;
   beginListening(): void;
-  requestCharacterState(request: CharacterStateRequest): void;
-  configureCharacterExtensions(definitions: readonly ExtensionTriggerDefinition[]): void;
-  triggerCharacterPointer(trigger: ExtensionPointerTrigger): void;
-  triggerCharacterIdle(): void;
-  applyCharacterMotion(input: { moving: boolean; carrying: boolean }): void;
+
 }
 
 function terminalPhase(phase: TaskPhase): boolean {
@@ -69,8 +55,6 @@ function terminalPhase(phase: TaskPhase): boolean {
 export function createTaskStore(): StoreApi<TaskViewState> {
   let nextMessageId = 0;
   let transientTimer: ReturnType<typeof setTimeout> | null = null;
-  let extensionController = new ExtensionTriggerController([]);
-  let pendingEmotionRequest: CharacterStateRequest | null = null;
   let activeAssistantStreamTurnId: string | null = null;
 
   const streamMessageId = (turnId: string): string => `assistant-stream-${turnId}`;
@@ -88,7 +72,7 @@ export function createTaskStore(): StoreApi<TaskViewState> {
     pendingHistoryDisclosure: null,
     pendingCapabilityAuthorization: null,
     resolvingHistoryDisclosureRequestId: null,
-    characterState: { stateId: 'idle', source: 'system' },
+    characterState: { stateId: 'idle', source: 'main' },
     completeTaskPermission: actionId => set(state => ({ pendingPermissions: state.pendingPermissions.filter(item => item.actionId !== actionId) })),
     beginHistoryDisclosureResolution: requestId => {
       let began = false;
@@ -118,36 +102,7 @@ export function createTaskStore(): StoreApi<TaskViewState> {
         ? { pendingCapabilityAuthorization: null }
         : state);
     },
-    requestCharacterState: request => {
-      set(state => ({
-        characterState: reduceCharacterState(state.characterState, request)
-      }));
-    },
-    configureCharacterExtensions: definitions => {
-      extensionController = new ExtensionTriggerController(definitions);
-      pendingEmotionRequest = null;
-    },
-    triggerCharacterPointer: trigger => {
-      const request = extensionController.pointer(trigger);
-      if (request) get().requestCharacterState(request);
-    },
-    triggerCharacterIdle: () => {
-      const request = extensionController.idle();
-      if (request) get().requestCharacterState(request);
-    },
-    applyCharacterMotion: input => {
-      if (input.moving || input.carrying) {
-        get().requestCharacterState({
-          type: 'movement',
-          carrying: input.carrying
-        });
-        return;
-      }
-      get().requestCharacterState({
-        type: 'task',
-        phase: get().phase
-      });
-    },
+    applyCharacterPlayback: stateId => set({ characterState: { stateId, source: 'main' } }),
     apply: event => {
       if (event.type === 'assistant_message_start') {
         if (event.turnId.length > ASSISTANT_STREAM_TURN_ID_MAX_CHARACTERS) return;
@@ -209,23 +164,9 @@ export function createTaskStore(): StoreApi<TaskViewState> {
           text: event.text
         };
         set(state => ({ messages: [...state.messages, message].slice(-MAX_MESSAGES) }));
-        if (event.role === 'user') {
-          pendingEmotionRequest = null;
-          const request = extensionController.keyword(event.text);
-          if (request) get().requestCharacterState(request);
-        }
         return;
       }
-      if (event.type === 'character_emotion') {
-        const request = extensionController.emotion(event.label);
-        if (!request) return;
-        if (get().phase === 'idle') {
-          get().requestCharacterState(request);
-        } else {
-          pendingEmotionRequest = request;
-        }
-        return;
-      }
+      if (event.type === 'character_emotion') return;
       if (event.type === 'character_carrying') return;
       if (event.type === 'history_disclosure_required') {
         // 同一时刻只展示一个由 Main 签发的请求，后到事件不能替换用户正在决策的卡片。
@@ -260,7 +201,6 @@ export function createTaskStore(): StoreApi<TaskViewState> {
       if (event.type === 'conversation_reset') {
         // reset 事件是 Renderer 清空当前会话状态的唯一事实来源。
         clearTransientTimer();
-        pendingEmotionRequest = null;
         activeAssistantStreamTurnId = null;
         set(state => ({
           conversationRevision: state.conversationRevision + 1,
@@ -270,7 +210,7 @@ export function createTaskStore(): StoreApi<TaskViewState> {
           pendingHistoryDisclosure: null,
           pendingCapabilityAuthorization: null,
           resolvingHistoryDisclosureRequestId: null,
-          characterState: { stateId: 'idle', source: 'system' }
+          characterState: { stateId: 'idle', source: 'main' }
         }));
         return;
       }
@@ -319,7 +259,6 @@ export function createTaskStore(): StoreApi<TaskViewState> {
         ? streamMessageId(activeAssistantStreamTurnId)
         : null;
       if (terminalPhase(phase)) activeAssistantStreamTurnId = null;
-      if (phase === 'thinking') pendingEmotionRequest = null;
       const resolvingDisclosureFailed = phase === 'error'
         && get().resolvingHistoryDisclosureRequestId !== null
         && get().pendingHistoryDisclosure?.requestId
@@ -329,10 +268,6 @@ export function createTaskStore(): StoreApi<TaskViewState> {
         ...(activeStreamId === null
           ? {}
           : { messages: get().messages.filter(message => message.id !== activeStreamId) }),
-        characterState: reduceCharacterState(get().characterState, {
-          type: 'task',
-          phase
-        }),
         ...(resolvingDisclosureFailed
           ? {
               pendingHistoryDisclosure: null,
@@ -343,26 +278,10 @@ export function createTaskStore(): StoreApi<TaskViewState> {
           ? { pendingPermissions: [], pendingCapabilityAuthorization: null }
           : {})
       });
-      if (phase === 'idle' && pendingEmotionRequest) {
-        const request = pendingEmotionRequest;
-        pendingEmotionRequest = null;
-        get().requestCharacterState(request);
-      }
       if (phase === 'success' || phase === 'error') {
         transientTimer = setTimeout(() => {
           if (get().phase === phase) {
-            set(state => ({
-              phase: 'idle',
-              characterState: reduceCharacterState(state.characterState, {
-                type: 'task',
-                phase: 'idle'
-              })
-            }));
-            if (pendingEmotionRequest) {
-              const request = pendingEmotionRequest;
-              pendingEmotionRequest = null;
-              get().requestCharacterState(request);
-            }
+            set({ phase: 'idle' });
           }
           transientTimer = null;
         }, CHARACTER_TRANSIENT_DURATION_MS);
@@ -370,15 +289,7 @@ export function createTaskStore(): StoreApi<TaskViewState> {
     },
     beginListening: () => {
       clearTransientTimer();
-      pendingEmotionRequest = null;
-      set(state => ({
-        phase: 'listening',
-        pendingPermissions: [],
-        characterState: reduceCharacterState(state.characterState, {
-          type: 'task',
-          phase: 'listening'
-        })
-      }));
+      set({ phase: 'listening', pendingPermissions: [] });
     }
   }));
 

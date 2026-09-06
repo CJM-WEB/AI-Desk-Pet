@@ -1,3 +1,4 @@
+import { createCharacterPlaybackView, characterManifestV3Schema, migrateCharacterDraftToV3, migrateCharacterManifestToV3 } from '@myself/character-runtime';
 import type { IpcMain } from 'electron';
 import {
   characterManifestV2Schema,
@@ -252,13 +253,13 @@ describe('V2 角色 IPC 边界', () => {
       .toBeUndefined();
   });
 
-  test('草稿保存与发布只接受 V2，运行快照继续接受 V1', async () => {
+  test('草稿保存与发布只接受 V3，运行快照使用真实 ID 播放视图', async () => {
     const { handlers } = characterIpcHarness();
 
     await expect(handlers.get(channel('characterDraftSave'))?.({}, {
       characterId: 'demo',
       draftRevision: '11111111-1111-4111-8111-111111111111',
-      draft: createDraftV2()
+      draft: migrateCharacterDraftToV3(createDraftV2()).document
     })).resolves.toEqual({ ok: true });
     await expect(handlers.get(channel('characterDraftSave'))?.({}, {
       characterId: 'demo',
@@ -266,7 +267,7 @@ describe('V2 角色 IPC 边界', () => {
       draft: createDraftV1()
     })).rejects.toMatchObject({ code: 'CHARACTER_INPUT_INVALID' });
 
-    const manifest = createManifestV2();
+    const manifest = characterManifestV3Schema.parse(migrateCharacterManifestToV3(createManifestV2()).document);
     await expect(handlers.get(channel('characterPublish'))?.({}, {
       characterId: 'demo',
       draftRevision: '11111111-1111-4111-8111-111111111111',
@@ -290,8 +291,10 @@ describe('V2 角色 IPC 边界', () => {
 
     expect(characterRuntimeSnapshotSchema.parse({
       activeCharacterId: 'demo',
-      manifest: createLegacyManifestV1()
+      manifest: createCharacterPlaybackView(manifest, manifest.defaultSkinId)
     })).toBeTruthy();
+    await expect(handlers.get(channel('characterDraftSave'))?.({}, { characterId: 'demo', draftRevision: '11111111-1111-4111-8111-111111111111', draft: createDraftV2() })).rejects.toMatchObject({ code: 'CHARACTER_INPUT_INVALID' });
+    await expect(handlers.get(channel('characterPublish'))?.({}, { characterId: 'demo', draftRevision: '11111111-1111-4111-8111-111111111111', manifest: createManifestV2(), resources: [] })).rejects.toMatchObject({ code: 'CHARACTER_INPUT_INVALID' });
   });
 
   test('角色列表严格返回迁移恢复摘要', async () => {

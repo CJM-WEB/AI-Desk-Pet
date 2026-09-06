@@ -1,3 +1,4 @@
+import { testPlaybackView } from './fixtures/character-v3-playback';
 // @vitest-environment jsdom
 
 import type {
@@ -71,6 +72,40 @@ describe('共享 Pixi 角色动作场景', () => {
     };
     return { complete: () => complete?.(), scene, unsubscribeComplete };
   }
+
+  test('Main 的 once 命令覆盖素材 loop 并产生唯一自然终态', () => {
+    const fixture = lifecycleScene();
+    const player = new PixiCharacterPlayer(fixture.scene);
+    const listener = vi.fn();
+    player.subscribePlaybackLifecycle(listener);
+    player.play({ stateId: 'quiet-afternoon', action: { ...action, frames: action.frames as ActionClip['frames'] }, reason: 'matched', playback: { mode: 'once', durationMs: 1000 } }, 'animated');
+    expect(fixture.scene.showAction).toHaveBeenLastCalledWith(expect.any(Object), expect.objectContaining({ loop: false }));
+    fixture.complete();
+    expect(listener).toHaveBeenCalledWith(expect.objectContaining({ status: 'completed' }));
+    player.destroy();
+  });
+
+  test('有界 loop 到期静止且旧持续时间不能结束替换后的播放', () => {
+    vi.useFakeTimers();
+    try {
+      const fixture = lifecycleScene();
+      const player = new PixiCharacterPlayer(fixture.scene);
+      const listener = vi.fn();
+      player.subscribePlaybackLifecycle(listener);
+      const first = player.play({ stateId: 'rest', action, playback: { mode: 'loop', durationMs: 100 } }, 'animated');
+      vi.advanceTimersByTime(50);
+      const second = player.play({ stateId: 'rest', action, playback: { mode: 'loop', durationMs: 200 } }, 'animated');
+      vi.advanceTimersByTime(50);
+      expect(listener).not.toHaveBeenCalledWith(expect.objectContaining({ playbackId: second, status: 'completed' }));
+      vi.advanceTimersByTime(150);
+      expect(listener).toHaveBeenCalledWith(expect.objectContaining({ playbackId: first, status: 'interrupted' }));
+      expect(listener).toHaveBeenCalledWith(expect.objectContaining({ playbackId: second, status: 'completed' }));
+      expect(fixture.scene.showAction).toHaveBeenLastCalledWith(expect.any(Object), expect.objectContaining({ motionMode: 'static' }));
+      player.destroy();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 
   test('播放器 resize 复用正式 Pixi 场景并刷新命中区域', () => {
     const fixture = lifecycleScene();
@@ -250,7 +285,7 @@ describe('共享 Pixi 角色动作场景', () => {
       stateId: 'idle', action: currentManifest.states[0]!.actions[0]!, reason: 'matched'
     };
 
-    await player.load(currentManifest, { characterId: 'character-a', atlasUrls: new Map([['atlas', 'blob:atlas']]) });
+    await player.load(testPlaybackView(currentManifest), { characterId: 'character-a', atlasUrls: new Map([['atlas', 'blob:atlas']]) });
     expect(notify).toHaveBeenCalledTimes(1);
     player.play(selection, 'static');
     expect(notify).toHaveBeenCalledTimes(2);
@@ -284,7 +319,7 @@ describe('共享 Pixi 角色动作场景', () => {
       ])
     };
 
-    await player.load(currentManifest, assets);
+    await player.load(testPlaybackView(currentManifest), assets);
     player.play(selection, 'animated');
 
     expect(scene.loadAssets).toHaveBeenCalledWith(new Map([['atlas', 'blob:atlas']]));
@@ -378,9 +413,10 @@ describe('共享 Pixi 角色动作场景', () => {
       ...currentManifest.states[0]!.actions[0]!.frames,
       { assetId: 'missing', x: 0, y: 0, width: 16, height: 16 }
     ];
+    currentManifest.resources.push({ assetId: 'missing', fileName: 'missing.png', sha256: 'c'.repeat(64), byteLength: 1 });
     const player = new PixiCharacterPlayer(scene);
 
-    await expect(player.load(currentManifest, {
+    await expect(player.load(testPlaybackView(currentManifest), {
       characterId: 'character-a',
       atlasUrls: new Map([['atlas', 'blob:atlas']])
     })).rejects.toThrow('CHARACTER_RUNTIME_ASSET_MISSING');

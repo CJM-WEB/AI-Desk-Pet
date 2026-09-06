@@ -222,6 +222,7 @@ function viewApi(overrides: Partial<ViewApi> = {}): ViewApi {
     listCharacters: vi.fn(async () => []),
     createCharacter: vi.fn(),
     duplicateCharacter: vi.fn(),
+    getCharacterMigrationReview: vi.fn(async () => ({ issues: [], resolutions: [] })),
     getCharacterDraft: vi.fn(),
     listCharacterSources: vi.fn(async () => []),
     saveCharacterDraft: vi.fn(),

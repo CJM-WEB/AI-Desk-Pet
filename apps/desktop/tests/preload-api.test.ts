@@ -151,6 +151,7 @@ describe('preload 公开 API', () => {
       'createCharacter',
       'duplicateCharacter',
       'getCharacterDraft',
+      'getCharacterMigrationReview',
       'saveCharacterDraft',
       'chooseCharacterSources',
       'listCharacterSources',
@@ -333,8 +334,7 @@ describe('受限桌宠窗口交互 preload API', () => {
     expect(invoke).toHaveBeenNthCalledWith(3, ipcChannels.petInteractionProbeGet);
     expect(await exposedApi?.getCharacterBehaviorProbe?.()).toEqual({
       revision: 0,
-      primaryStateId: '',
-      modifierStateIds: [],
+      stateId: '',
       actionId: null,
       playbackStatus: null
     });
@@ -368,17 +368,16 @@ describe('受限桌宠窗口交互 preload API', () => {
     expect(removeListener).toHaveBeenCalledWith(ipcChannels.petGeometryRender, handler);
   });
 
-  test('行为探针保留修饰状态且不让旧令牌反馈污染新调度', async () => {
+  test('行为探针保留真实状态且不让旧令牌反馈污染新调度', async () => {
     const behaviorListener = on.mock.calls.find(
       ([channel]) => channel === ipcChannels.characterMotionEvent
     )?.[1] as ((event: unknown, payload: unknown) => void) | undefined;
     expect(behaviorListener).toBeTypeOf('function');
 
     behaviorListener?.({}, {
-      type: 'behavior-action',
+      type: 'behavior-action', playback: { mode: 'once', durationMs: 1000 },
       revision: 1,
       stateId: 'idle',
-      modifierStateIds: ['alert'],
       actionId: 'idle-main',
       playbackToken: 'behavior-token-old'
     });
@@ -392,10 +391,9 @@ describe('受限桌宠窗口交互 preload API', () => {
       status: 'completed'
     });
     behaviorListener?.({}, {
-      type: 'behavior-action',
+      type: 'behavior-action', playback: { mode: 'once', durationMs: 1000 },
       revision: 2,
       stateId: 'idle',
-      modifierStateIds: ['focused'],
       actionId: 'idle-main',
       playbackToken: 'behavior-token-new'
     });
@@ -404,8 +402,7 @@ describe('受限桌宠窗口交互 preload API', () => {
 
     expect(await exposedApi?.getCharacterBehaviorProbe?.()).toEqual({
       revision: 2,
-      primaryStateId: 'idle',
-      modifierStateIds: ['focused'],
+      stateId: 'idle',
       actionId: 'idle-main',
       playbackStatus: 'scheduled'
     });
@@ -445,10 +442,9 @@ describe('受限桌宠窗口交互 preload API', () => {
       ([channel]) => channel === ipcChannels.characterMotionEvent
     )?.[1] as ((event: unknown, payload: unknown) => void) | undefined;
     behaviorListener?.({}, {
-      type: 'behavior-action',
+      type: 'behavior-action', playback: { mode: 'once', durationMs: 1000 },
       revision: 3,
       stateId: 'thinking',
-      modifierStateIds: [],
       actionId: 'thinking-loop',
       playbackToken: 'behavior-token-current'
     });

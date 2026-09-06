@@ -37,7 +37,7 @@ test('共享动作在严格 IPC 视图只保留一份表现，拒绝伪造归属
     { id: 'rest', name: '中文自定义兜底', actionIds: ['breathe'] },
     { id: 'happy', name: '开心', actionIds: ['breathe'] }
   ]);
-  expect(view.actions).toEqual([{ id: 'breathe', loopPolicy: 'presentation' }]);
+  expect(view.actions).toEqual([{ id: 'breathe', loopPolicy: 'presentation', direction: 'any' }]);
   expect(runtime.characterPlaybackViewSchema.safeParse(view).success).toBe(true);
   for (const invalid of [
     { ...view, idle: { stateId: 'missing', actionId: 'breathe' } },
@@ -46,4 +46,12 @@ test('共享动作在严格 IPC 视图只保留一份表现，拒绝伪造归属
     { ...view, resources: [] },
     { ...view, secret: '非法字段' }
   ]) expect(runtime.characterPlaybackViewSchema.safeParse(invalid).success).toBe(false);
+});
+
+// 作者方向属于动作身份，皮肤回退不能抹掉方向约束。
+test('播放视图保留作者动作方向', () => {
+  const draft = v3Fixture();
+  draft.actions[0]!.direction = 'left';
+  const view = runtime.createCharacterPlaybackView(runtime.characterManifestV3Schema.parse({ ...draft, ...resourceFields }), 'base');
+  expect(view.actions[0]).toMatchObject({ id: 'breathe', direction: 'left' });
 });

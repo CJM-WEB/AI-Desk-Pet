@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
-import type { CharacterDraftV2 } from '@myself/character-runtime';
+import type { CharacterDraftV3 } from '@myself/character-runtime';
 import type { CharacterSummaryDto } from '../src/shared/character-ipc';
 import type { MyselfApi } from '../src/shared/myself-api';
 import { CharacterWorkshopView } from '../src/renderer/src/characters/workshop/CharacterWorkshopView';
@@ -39,8 +39,8 @@ const closeDialog = vi.fn(function (this: HTMLDialogElement): void {
   this.open = false;
 });
 
-const currentDraft: CharacterDraftV2 = {
-  version: 2,
+const currentDraft: CharacterDraftV3 = {
+  version: 3,
   id: 'nova',
   name: 'Nova',
   identity: {
@@ -50,7 +50,7 @@ const currentDraft: CharacterDraftV2 = {
     exampleLines: ['你好。']
   },
   defaultSkinId: 'default',
-  defaultStateId: 'idle',
+  idleStateId: 'idle',
   skins: [{
     id: 'default',
     name: '默认皮肤',
@@ -58,24 +58,19 @@ const currentDraft: CharacterDraftV2 = {
       actionId: 'idle-main', fps: 12, frames: [],
       anchors: { ground: { x: 0.5, y: 1 } }
     }],
-    semanticFallbacks: []
   }],
   states: [{
     id: 'idle',
-    name: '待机', kind: 'primary', semantic: 'idle', tags: [], intensity: 20,
-    coexistWithStateIds: [], forbiddenStateIds: [], enterConditions: [],
+    name: '待机', tags: [], intensity: 20, enterConditions: [],
     exitConditions: [], agentInferable: true, actionIds: ['idle-main']
   }, {
     id: 'thinking',
-    name: '思考', kind: 'primary', semantic: 'think', tags: [], intensity: 50,
-    coexistWithStateIds: [], forbiddenStateIds: [], enterConditions: [],
+    name: '思考', tags: [], intensity: 50, enterConditions: [],
     exitConditions: [], agentInferable: true, actionIds: []
   }],
   actions: [{
-    id: 'idle-main', name: '轻呼吸', semantic: 'idle', tags: [], preference: 1,
-    cooldownMs: 0, repeatSuppressionMs: 0, loopPolicy: 'presentation', interrupt: 'normal',
-    allowedPrimaryStateIds: [], forbiddenPrimaryStateIds: [], requiredModifierStateIds: [],
-    forbiddenModifierStateIds: [], direction: 'any'
+    id: 'idle-main', name: '轻呼吸', tags: [], preference: 1,
+    cooldownMs: 0, repeatSuppressionMs: 0, loopPolicy: 'presentation', interrupt: 'normal', direction: 'any'
   }]
 };
 
@@ -102,6 +97,7 @@ function apiDouble(): CharacterWorkshopViewApi {
     listCharacters: vi.fn(async () => []),
     createCharacter: vi.fn(),
     duplicateCharacter: vi.fn(),
+    getCharacterMigrationReview: vi.fn(async () => ({ issues: [], resolutions: [] })),
     getCharacterDraft: vi.fn(),
     listCharacterSources: vi.fn(async () => []),
     saveCharacterDraft: vi.fn(),
@@ -166,6 +162,9 @@ function state(
 ): CharacterWorkshopState {
   return {
     characters,
+    migrationReview: { issues: [], resolutions: [] },
+    resolveMigrationIssue: vi.fn(),
+    setIdleState: vi.fn(),
     selectedCharacterId: 'nova',
     draft: currentDraft,
     selectedEntity: { kind: 'action', actionId: 'idle-main' },
@@ -207,9 +206,6 @@ function state(
     setCurrentActionCommitFrame: vi.fn(),
     requestRemoveCurrentFrame: vi.fn(() => ({ safeReferencePaths: [], blockingReferencePaths: [] })),
     requestRemoveAction: vi.fn(() => ({ safeReferencePaths: [], blockingReferencePaths: [] })),
-    removeAction: vi.fn(),
-    addExtensionState: vi.fn(),
-    removeExtensionState: vi.fn(),
     applySpriteSheet: vi.fn(),
     compileAndPublish: vi.fn(),
     publishCharacter: vi.fn(),
@@ -335,13 +331,13 @@ describe('角色工作室 SSR 外壳', () => {
   });
 
   test('默认状态没有减号而非默认主状态和修饰状态均可删除', () => {
-    const extensionDraft: CharacterDraftV2 = {
+    const extensionDraft: CharacterDraftV3 = {
       ...currentDraft,
       states: [
         ...currentDraft.states,
         {
-          id: 'wave', name: '挥手', kind: 'modifier', semantic: 'speak', tags: [],
-          intensity: 70, coexistWithStateIds: [], forbiddenStateIds: [],
+          id: 'wave', name: '挥手', tags: [],
+          intensity: 70,
           enterConditions: [], exitConditions: [], agentInferable: true, actionIds: []
         }
       ]
@@ -389,7 +385,10 @@ describe('角色工作室 SSR 外壳', () => {
       <CharacterWorkshopWorkspace
         state={state({
           characters: [],
-          selectedCharacterId: null,
+          migrationReview: { issues: [], resolutions: [] },
+    resolveMigrationIssue: vi.fn(),
+    setIdleState: vi.fn(),
+    selectedCharacterId: null,
           draft: null,
           selectedStateId: null,
           selectedActionId: null,
@@ -406,7 +405,10 @@ describe('角色工作室 SSR 外壳', () => {
       <CharacterWorkshopWorkspace
         state={state({
           characters: [],
-          selectedCharacterId: null,
+          migrationReview: { issues: [], resolutions: [] },
+    resolveMigrationIssue: vi.fn(),
+    setIdleState: vi.fn(),
+    selectedCharacterId: null,
           draft: null,
           selectedStateId: null,
           selectedActionId: null
@@ -614,7 +616,6 @@ describe('V2 结构化 Inspector', () => {
       name: '冬装',
       description: '适合冬日桌面的保暖外观',
       presentations: [],
-      semanticFallbacks: []
     });
     renderWorkspace(state({
       draft: draftWithTwoSkins,
@@ -632,7 +633,7 @@ describe('V2 结构化 Inspector', () => {
   });
 
 
-  test('人设只提供 V2 结构化字段且复杂字段具有持续帮助文字', () => {
+  test('人设只提供 V3 结构化字段且复杂字段具有持续帮助文字', () => {
     const markup = renderToStaticMarkup(
       <CharacterIdentityInspector
         identity={{
@@ -658,19 +659,15 @@ describe('V2 结构化 Inspector', () => {
     expect(markup).not.toMatch(/系统 Prompt|JSON|脚本/u);
   });
 
-  test('状态属性只暴露可信 signal、标准语义和当前状态引用', () => {
+  test('状态属性仅编辑可信事件并保留描述', () => {
     const markup = renderToStaticMarkup(
       <StateInspector
         state={{
           id: 'calm',
           name: '平静',
           description: '在用户工作时保持安静陪伴。',
-          kind: 'modifier',
-          semantic: 'idle',
           tags: [],
           intensity: 50,
-          coexistWithStateIds: [],
-          forbiddenStateIds: [],
           enterConditions: [],
           exitConditions: [],
           agentInferable: false,
@@ -678,8 +675,8 @@ describe('V2 结构化 Inspector', () => {
         }}
         allStates={[
           {
-            id: 'idle', name: '待机', kind: 'primary', semantic: 'idle', tags: [],
-            intensity: 20, coexistWithStateIds: [], forbiddenStateIds: [],
+            id: 'idle', name: '待机', tags: [],
+            intensity: 20,
             enterConditions: [], exitConditions: [], agentInferable: false, actionIds: []
           }
         ]}
@@ -688,10 +685,9 @@ describe('V2 结构化 Inspector', () => {
       />
     );
 
-    expect(markup).toContain('进入条件类型');
-    expect(markup).toContain('user-interaction');
-    expect(markup).toContain('标准语义');
-    expect(markup).toContain('当前状态引用');
+    expect(markup).toContain('添加进入条件');
+    expect(markup).not.toContain('标准语义');
+    expect(markup).not.toContain('当前状态引用');
     expect(markup).toContain('状态标签');
     expect(markup).toContain('状态详细描述');
     expect(markup).toContain('在用户工作时保持安静陪伴。');
@@ -702,12 +698,11 @@ describe('V2 结构化 Inspector', () => {
 
   test('动作属性从合法动作生成回退选项且不再编辑表现帧率', () => {
     const action = {
-      id: 'wave', name: '挥手', description: '抬手向用户打招呼。', semantic: 'speak' as const, tags: [], preference: 1,
+      id: 'wave', name: '挥手', description: '抬手向用户打招呼。', tags: [], preference: 1,
       cooldownMs: 0, repeatSuppressionMs: 0, loopPolicy: 'presentation' as const,
-      interrupt: 'normal' as const, allowedPrimaryStateIds: [], forbiddenPrimaryStateIds: [],
-      requiredModifierStateIds: [], forbiddenModifierStateIds: [], direction: 'any' as const
+      interrupt: 'normal' as const, direction: 'any' as const
     };
-    const fallback = { ...action, id: 'idle-main', name: '待机', semantic: 'idle' as const };
+    const fallback = { ...action, id: 'idle-main', name: '待机', };
     const markup = renderToStaticMarkup(
       <ActionInspector
         action={action}
@@ -743,11 +738,11 @@ describe('V2 结构化 Inspector', () => {
 
     fireEvent.click(openButton);
 
-    const dialog = await screen.findByRole('dialog', { name: '新建扩展状态' });
+    const dialog = await screen.findByRole('dialog', { name: '新建自定义状态' });
     await waitFor(() => expect(showModal).toHaveBeenCalledOnce());
     expect(showModal.mock.instances[0]).toBe(dialog);
     const extensionNameInput = screen.getByLabelText('状态名称');
-    const createButton = screen.getByRole('button', { name: '创建扩展状态' });
+    const createButton = screen.getByRole('button', { name: '创建自定义状态' });
     await waitFor(() => expect(document.activeElement).toBe(extensionNameInput));
     expect((createButton as HTMLButtonElement).disabled).toBe(true);
 

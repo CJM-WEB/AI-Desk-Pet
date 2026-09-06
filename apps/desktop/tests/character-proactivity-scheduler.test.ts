@@ -13,8 +13,8 @@ const context: ConversationBehaviorContext = {
       languageStyle: '简洁', likes: [], behavioralTendencies: []
     },
     states: [{
-      name: '待机', semantic: 'idle', tags: [],
-      actions: [{ name: '眨眼', semantic: 'idle', tags: [] }]
+      stateId: 'idle-state', name: '待机', tags: [],
+      actions: [{ actionId: 'blink', name: '眨眼', tags: [] }]
     }]
   },
   runtime: { moving: false, dragging: false, carrying: false, movementMode: 2 },

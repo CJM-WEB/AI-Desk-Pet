@@ -1,7 +1,6 @@
 import {
-  selectCharacterAction,
   type CharacterMotionMode,
-  type CharacterStateId
+  type CharacterPlaybackView
 } from '@myself/character-runtime';
 import {
   useEffect,
@@ -30,10 +29,6 @@ import {
   CharacterMotionController,
   resolveDesktopAnchor
 } from './character-motion-controller';
-import {
-  extensionDefinitionsFromManifest,
-  type ExtensionTriggerDefinition
-} from './extension-trigger-controller';
 import type {
   CharacterHitTestPort
 } from '../../pet/pet-interaction-controller';
@@ -43,20 +38,14 @@ export type CharacterPlayerPortFactory = (
 ) => Promise<CharacterPlayerPort>;
 
 export interface CharacterPlayerProps {
-  stateId: CharacterStateId;
+  stateId: string;
   motionMode: CharacterMotionMode;
-  behaviorAuthorityMode?: CharacterBehaviorAuthorityMode;
   direction?: 'left' | 'right';
   fallback?: ReactNode;
   api?: MyselfApi;
   createPlayer?: CharacterPlayerPortFactory;
   loadBundle?: CharacterAssetLoader;
-  random?: () => number;
   onDesktopAnchors?: (anchors: CharacterDesktopAnchors) => void;
-  onExtensionDefinitionsChange?: (
-    definitions: readonly ExtensionTriggerDefinition[]
-  ) => void;
-  onIdleTrigger?: () => void;
   onHitTestPortChange?: (port: CharacterHitTestPort | null) => void;
   onMotionChange?: (motion: CharacterMotionPresentation) => void;
   onRuntimeError?: (errorCode: string | null) => void;
@@ -103,16 +92,12 @@ const createDefaultPlayer: CharacterPlayerPortFactory = container => (
 export function CharacterPlayer({
   stateId,
   motionMode,
-  behaviorAuthorityMode = 'legacy-v1',
   direction = 'right',
   fallback,
   api = window.myself,
   createPlayer = createDefaultPlayer,
   loadBundle,
-  random = Math.random,
   onDesktopAnchors,
-  onExtensionDefinitionsChange,
-  onIdleTrigger,
   onHitTestPortChange,
   onMotionChange,
   onRuntimeError
@@ -127,15 +112,11 @@ export function CharacterPlayer({
   const pendingPlaybackActionRef = useRef<PlaybackActionEvent | null>(null);
   const playbackActionConsumerRef = useRef<((event: PlaybackActionEvent) => void) | null>(null);
   const actionRevisionRef = useRef(-1);
-  const behaviorAuthorityModeRef = useRef<CharacterBehaviorAuthorityMode>(
-    behaviorAuthorityMode
-  );
-  const behaviorAuthorityCharacterIdRef = useRef<string | null>(null);
   const activeHitTestPortRef = useRef<CharacterHitTestPort | null>(null);
   const hitTestPortOwnerRef = useRef<
     CharacterPlayerProps['onHitTestPortChange']
   >(undefined);
-  const playbackRef = useRef({ stateId, motionMode, direction, random });
+  const playbackRef = useRef({ stateId, motionMode, direction });
   const [runtimeDirection, setRuntimeDirection] = useState(direction);
   const [status, setStatus] = useState<'loading' | 'ready' | 'error'>('loading');
   const [pageVisible, setPageVisible] = useState(
@@ -148,8 +129,7 @@ export function CharacterPlayer({
   playbackRef.current = {
     stateId,
     motionMode: effectiveMotionMode,
-    direction: runtimeDirection,
-    random
+    direction: runtimeDirection
   };
 
   const commitActiveViewport = (): void => {
@@ -245,6 +225,7 @@ export function CharacterPlayer({
           !playback
           || playback.player !== player
           || playback.playerPlaybackId !== event.playbackId
+          || playback.actionId !== event.actionId
         ) return;
         finishBehaviorPlayback(
           api,
@@ -313,22 +294,9 @@ export function CharacterPlayer({
 
         const playback = playbackRef.current;
         candidate.setDirection(playback.direction);
-        if (
-          behaviorAuthorityModeRef.current === 'legacy-v1'
-          && (
-            behaviorAuthorityCharacterIdRef.current === null
-            || behaviorAuthorityCharacterIdRef.current === snapshot.activeCharacterId
-          )
-          && pendingPlaybackActionRef.current === null
-        ) {
-          const selection = selectCharacterAction({
-            manifest: snapshot.manifest,
-            stateId: playback.stateId,
-            direction: playback.direction,
-            recentActionIds: [],
-            random: playback.random
-          });
-          candidate.play(selection, playback.motionMode);
+        if (pendingPlaybackActionRef.current === null) {
+          const idle = playbackSelection(snapshot.manifest, snapshot.manifest.idle.stateId, snapshot.manifest.idle.actionId);
+          if (idle) candidate.play({ ...idle, playback: { mode: 'static', durationMs: null } }, playback.motionMode);
         }
 
         const previous = activePlayerRef.current;
@@ -340,9 +308,6 @@ export function CharacterPlayer({
           projectionStatusRef,
           pendingPlaybackActionRef,
           playbackActionConsumerRef
-        );
-        onExtensionDefinitionsChange?.(
-          extensionDefinitionsFromManifest(snapshot.manifest)
         );
         candidates.delete(candidate);
         staging.classList.add('is-active');
@@ -390,8 +355,6 @@ export function CharacterPlayer({
 
     const unsubscribe = api.subscribeCharacterEvents(event => {
       if (event.type === 'active-character-changed') {
-        behaviorAuthorityModeRef.current = behaviorAuthorityMode;
-        behaviorAuthorityCharacterIdRef.current = null;
         settlePendingPlaybackAction(
           api,
           pendingPlaybackActionRef,
@@ -453,11 +416,9 @@ export function CharacterPlayer({
     };
   }, [
     api,
-    behaviorAuthorityMode,
     createPlayer,
     loadBundle,
-    onExtensionDefinitionsChange,
-    onRuntimeError
+      onRuntimeError
   ]);
 
   useEffect(() => {
@@ -472,20 +433,8 @@ export function CharacterPlayer({
       // 方向重建失败已由播放器收敛生命周期，本轮属性同步不再抢播。
       return;
     }
-    if (behaviorAuthorityMode !== 'legacy-v1') {
-      // Main-v2 既可能携带动作令牌，也可能只下发基础/循环权威动作；两者都必须冻结。
-      player.setMotionMode?.(effectiveMotionMode);
-      return;
-    }
-    const selection = selectCharacterAction({
-      manifest: snapshot.manifest,
-      stateId,
-      direction: runtimeDirection,
-      recentActionIds: [],
-      random
-    });
-    player.play(selection, effectiveMotionMode);
-  }, [behaviorAuthorityMode, effectiveMotionMode, random, runtimeDirection, stateId]);
+    player.setMotionMode?.(effectiveMotionMode);
+  }, [effectiveMotionMode, runtimeDirection]);
 
   useEffect(() => {
     if (
@@ -572,16 +521,8 @@ export function CharacterPlayer({
       const player = activePlayerRef.current;
       const snapshot = activeSnapshotRef.current;
       const playback = playbackRef.current;
-      // V2 状态 ID 可能在 V1 投影时按语义改名；始终以投影内 actionId 为播放权威。
-      const states = snapshot?.manifest.states ?? [];
-      const state = states.find(candidate => (
-        candidate.id === event.stateId
-        && candidate.actions.some(action => action.id === event.actionId)
-      )) ?? states.find(candidate => (
-        candidate.actions.some(action => action.id === event.actionId)
-      ));
-      const action = state?.actions.find(candidate => candidate.id === event.actionId);
-      if (!player || !snapshot || !state || !action) {
+      const selection = snapshot ? playbackSelection(snapshot.manifest, event.stateId, event.actionId) : null;
+      if (!player || !snapshot || !selection) {
         settleBehaviorPlaybackToken(api, behaviorPlaybackTokensRef, {
           playbackToken: event.playbackToken,
           actionId: event.actionId,
@@ -599,11 +540,7 @@ export function CharacterPlayer({
       };
       activeBehaviorPlaybackRef.current = current;
       try {
-        const playbackId = player.play({
-          stateId: state.id,
-          action,
-          reason: 'matched'
-        }, playback.motionMode);
+        const playbackId = player.play({ ...selection, playback: event.playback }, playback.motionMode);
         current.playerPlaybackId = typeof playbackId === 'number' ? playbackId : null;
         void reportActionFeedback(api, {
           playbackToken: current.playbackToken,
@@ -630,35 +567,22 @@ export function CharacterPlayer({
     );
 
     const unsubscribe = api.subscribeCharacterMotion(event => {
-      if (event.type === 'behavior-authority') {
-        behaviorAuthorityModeRef.current = event.mode;
-        behaviorAuthorityCharacterIdRef.current = event.characterId;
-        const player = activePlayerRef.current;
-        const snapshot = activeSnapshotRef.current;
-        const playback = playbackRef.current;
-        if (
-          projectionStatusRef.current !== 'ready'
-          || snapshot?.activeCharacterId !== event.characterId
-          || !player
-        ) return;
-        const selection = selectCharacterAction({
-          manifest: snapshot.manifest,
-          stateId: playback.stateId,
-          direction: playback.direction,
-          recentActionIds: [],
-          random: playback.random
-        });
-        player.play(selection, playback.motionMode);
-        return;
-      }
       if (event.type === 'snapshot') {
         acceptSnapshot(event.snapshot);
+        return;
+      }
+      if (event.type === 'behavior-interrupt') {
+        const pending = pendingPlaybackActionRef.current;
+        if (pending?.playbackToken === event.playbackToken) settlePendingPlaybackAction(api, pendingPlaybackActionRef, behaviorPlaybackTokensRef, 'interrupted');
+        if (activeBehaviorPlaybackRef.current?.playbackToken === event.playbackToken) {
+          activePlayerRef.current?.setMotionMode?.('static');
+          finishBehaviorPlayback(api, activeBehaviorPlaybackRef, behaviorPlaybackTokensRef, 'interrupted');
+        }
         return;
       }
       if (event.revision <= actionRevisionRef.current) return;
       actionRevisionRef.current = event.revision;
 
-      behaviorAuthorityCharacterIdRef.current = null;
       if (!beginBehaviorPlaybackToken(behaviorPlaybackTokensRef, event.playbackToken)) return;
       if (projectionStatusRef.current === 'unavailable') {
         if (event.type === 'behavior-action') {
@@ -703,7 +627,7 @@ export function CharacterPlayer({
       }
       unsubscribe();
     };
-  }, [api, onDesktopAnchors, onIdleTrigger, onMotionChange]);
+  }, [api, onDesktopAnchors, onMotionChange]);
 
   return (
     <span
@@ -790,7 +714,25 @@ function createPlayerHitTestPort(
   };
 }
 
-export type CharacterBehaviorAuthorityMode = 'main-v2' | 'legacy-v1';
+/** 只接受真实所属状态与动作；资源回退在 Main 投影时已经完成。 */
+export function playbackSelection(view: CharacterPlaybackView, stateId: string, actionId: string) {
+  if (!view.states.find(state => state.id === stateId)?.actionIds.includes(actionId)) return null;
+  const action = view.actions.find(action => action.id === actionId);
+  const item = view.presentations.find(item => item.actionId === actionId);
+  if (!action || !item) return null;
+  const presentation = item.presentation;
+  return {
+    stateId,
+    action: {
+      id: action.id, name: action.id, direction: action.direction,
+      loop: action.loopPolicy !== 'never', weight: 1,
+      ...presentation,
+      frames: presentation.frames.map(frame => ({ ...frame })),
+      anchors: { ...presentation.anchors }
+    },
+    reason: 'matched'
+  };
+}
 
 function reportActionFeedback(
   api: MyselfApi,
@@ -860,7 +802,7 @@ function flushPendingPlaybackAction(
   consumer(pending);
 }
 
-/** 投影结束当前装载阶段时，V2 排队令牌通过统一终态路径结算。 */
+/** 投影结束当前装载阶段时，V3 排队令牌通过统一终态路径结算。 */
 function settlePendingPlaybackAction(
   api: MyselfApi,
   pendingRef: { current: PlaybackActionEvent | null },
@@ -902,9 +844,7 @@ export function createRuntimeAssetLoader(api: MyselfApi): CharacterAssetLoader {
 
     const expectedFingerprint = runtimeSnapshotFingerprint(expected);
     const atlasAssetIds = new Set(
-      expected.manifest.states.flatMap(state => (
-        state.actions.flatMap(action => action.frames.map(frame => frame.assetId))
-      ))
+      expected.manifest.presentations.flatMap(item => item.presentation.frames.map(frame => frame.assetId))
     );
     const resources = expected.manifest.resources.filter(resource => (
       atlasAssetIds.has(resource.assetId)

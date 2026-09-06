@@ -1,5 +1,5 @@
 import { describe, expect, test, vi } from 'vitest';
-import { characterManifestV2Schema, type CharacterManifestV2 } from '@myself/character-runtime';
+import { characterManifestV3Schema, type CharacterManifestV3 } from '@myself/character-runtime';
 import { PetGeometryCoordinator } from '../src/main/windows/pet-geometry-coordinator';
 import type { CharacterGeometryBinding } from '../src/main/characters/character-behavior-service';
 import { PetVisualGeometryAuthority } from '../src/main/characters/pet-visual-geometry';
@@ -7,9 +7,9 @@ import { CharacterMotionService } from '../src/main/characters/character-motion-
 
 const RESOURCE_REVISION = 'a'.repeat(64);
 
-function realManifest(groundX = 0.5, characterId = 'pet-a'): CharacterManifestV2 {
-  return characterManifestV2Schema.parse({
-    version: 2,
+function realManifest(groundX = 0.5, characterId = 'pet-a'): CharacterManifestV3 {
+  return characterManifestV3Schema.parse({
+    version: 3,
     id: characterId,
     name: '视口收敛测试角色',
     thumbnailAssetId: 'thumbnail',
@@ -19,20 +19,17 @@ function realManifest(groundX = 0.5, characterId = 'pet-a'): CharacterManifestV2
       formsOfAddress: [], likes: [], dislikes: [], behavioralTendencies: [], boundaries: [], exampleLines: []
     },
     defaultSkinId: 'default-skin',
-    defaultStateId: 'idle-state',
+    idleStateId: 'idle-state',
     states: [{
-      id: 'idle-state', name: '待机', kind: 'primary', semantic: 'idle', tags: [], intensity: 1,
-      coexistWithStateIds: [], forbiddenStateIds: [], enterConditions: [], exitConditions: [],
+      id: 'idle-state', name: '待机', tags: [], intensity: 1, enterConditions: [], exitConditions: [],
       agentInferable: true, actionIds: ['idle-action']
     }],
     actions: [{
-      id: 'idle-action', name: '待机动作', semantic: 'idle', tags: [], preference: 1,
-      cooldownMs: 0, repeatSuppressionMs: 0, loopPolicy: 'presentation', interrupt: 'normal',
-      allowedPrimaryStateIds: [], forbiddenPrimaryStateIds: [], requiredModifierStateIds: [],
-      forbiddenModifierStateIds: [], direction: 'any'
+      id: 'idle-action', name: '待机动作', tags: [], preference: 1,
+      cooldownMs: 0, repeatSuppressionMs: 0, loopPolicy: 'presentation', interrupt: 'normal', direction: 'any'
     }],
     skins: [{
-      id: 'default-skin', name: '默认皮肤', semanticFallbacks: [],
+      id: 'default-skin', name: '默认皮肤',
       presentations: [{
         actionId: 'idle-action', fps: 12,
         frames: [{ assetId: 'idle-asset', x: 0, y: 0, width: 100, height: 100 }],

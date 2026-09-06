@@ -11,11 +11,11 @@ import {
 } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import type {
-  CharacterDraftV2,
+  CharacterDraftV3,
   CharacterStateId,
   DraftActionClip
 } from '@myself/character-runtime';
-import { resolveCharacterPresentation } from '@myself/character-runtime';
+import { resolveCharacterPresentationV3 } from '@myself/character-runtime';
 import type {
   CharacterWorkshopApi,
   CharacterWorkshopState
@@ -387,9 +387,9 @@ const actingAction: DraftActionClip = {
 function draftWith(
   idle: DraftActionClip = idleAction,
   acting: DraftActionClip = actingAction
-): CharacterDraftV2 {
+): CharacterDraftV3 {
   return {
-    version: 2,
+    version: 3,
     id: 'nova',
     name: 'Nova',
     identity: {
@@ -405,11 +405,10 @@ function draftWith(
       exampleLines: []
     },
     defaultSkinId: 'default',
-    defaultStateId: 'idle',
+    idleStateId: 'idle',
     skins: [{
       id: 'default',
       name: '默认皮肤',
-      semanticFallbacks: [],
       presentations: [idle, acting].map(action => ({
         actionId: action.id,
         fps: action.fps,
@@ -421,12 +420,8 @@ function draftWith(
     states: [{
       id: 'idle',
       name: '待机',
-      kind: 'primary',
-      semantic: 'idle',
       tags: [],
       intensity: 20,
-      coexistWithStateIds: [],
-      forbiddenStateIds: [],
       enterConditions: [],
       exitConditions: [],
       agentInferable: true,
@@ -434,12 +429,8 @@ function draftWith(
     }, {
       id: 'thinking',
       name: '思考',
-      kind: 'primary',
-      semantic: 'think',
       tags: [],
       intensity: 50,
-      coexistWithStateIds: [],
-      forbiddenStateIds: [],
       enterConditions: [],
       exitConditions: [],
       agentInferable: true,
@@ -447,12 +438,8 @@ function draftWith(
     }, {
       id: 'acting',
       name: '行动',
-      kind: 'primary',
-      semantic: 'move',
       tags: [],
       intensity: 60,
-      coexistWithStateIds: [],
-      forbiddenStateIds: [],
       enterConditions: [],
       exitConditions: [],
       agentInferable: true,
@@ -468,10 +455,6 @@ function draftWith(
       repeatSuppressionMs: 0,
       loopPolicy: action.loop ? 'presentation' : 'never',
       interrupt: 'normal',
-      allowedPrimaryStateIds: [],
-      forbiddenPrimaryStateIds: [],
-      requiredModifierStateIds: [],
-      forbiddenModifierStateIds: [],
       direction: action.direction ?? 'any'
     }))
   };
@@ -487,7 +470,7 @@ function previewState(
 }
 
 function previewProps(
-  draft: CharacterDraftV2 = draftWith(),
+  draft: CharacterDraftV3 = draftWith(),
   overrides: Partial<React.ComponentProps<typeof DraftCharacterPreview>> = {}
 ): React.ComponentProps<typeof DraftCharacterPreview> {
   return {
@@ -509,7 +492,7 @@ describe('解析表现到预览动作的转换', () => {
     const presentation = draft.skins[0]!.presentations[0]!;
     presentation.playbackRate = 1.5;
     presentation.mirrorX = true;
-    const resolved = resolveCharacterPresentation(draft, 'default', 'idle-main');
+    const resolved = resolveCharacterPresentationV3(draft, 'default', 'idle', 'idle-main');
 
     expect(draftActionFromResolvedPresentation(resolved!)).toMatchObject({
       playbackRate: 1.5,
@@ -562,7 +545,7 @@ function toPresentation(action: DraftActionClip) {
 /** 构造彼此独立的四级回退，期望值不复用解析器实现。 */
 function draftForSource(
   source: 'skin-action' | 'skin-semantic' | 'default-action' | 'default-state' | 'none'
-): CharacterDraftV2 {
+): CharacterDraftV3 {
   const base = draftWith();
   const winterFallback: DraftActionClip = {
     ...actingAction,
@@ -596,9 +579,6 @@ function draftForSource(
       id: 'winter',
       name: '冬装',
       presentations: winterPresentations,
-      semanticFallbacks: source === 'skin-semantic'
-        ? [{ semantic: 'move', actionId: winterFallback.id }]
-        : []
     }]
   };
 }
@@ -636,9 +616,7 @@ describe('真实草稿预览', () => {
 
   test.each([
     ['skin-action', '当前使用：当前皮肤精确表现', 'winter-acting-sheet'],
-    ['skin-semantic', '当前使用：当前皮肤语义回退', 'winter-working-sheet'],
-    ['default-action', '当前使用：默认皮肤动作', 'acting-sheet'],
-    ['default-state', '当前使用：默认状态回退', 'idle-sheet']
+    ['default-action', '当前使用：默认皮肤同一动作', 'acting-sheet'],
   ] as const)('%s 来源只加载解析后的候选并显示可访问说明', async (
     source,
     expectedMessage,
@@ -683,7 +661,7 @@ describe('真实草稿预览', () => {
   test('相同动作切换皮肤会先清屏、释放旧 bundle 并加载新候选', async () => {
     const current = sceneDouble();
     pixiFactory.mockResolvedValue(current.scene);
-    const draft = draftForSource('skin-semantic');
+    const draft = draftForSource('skin-action');
     const props = previewProps(draft, {
       stateId: 'acting',
       actionId: 'acting-main'
@@ -696,9 +674,9 @@ describe('真实草稿预览', () => {
 
     expect(current.scene.clear).toHaveBeenCalledOnce();
     expect(revokeObjectURL).toHaveBeenCalledWith('blob:draft-1');
-    expect(await screen.findByText('当前使用：当前皮肤语义回退')).not.toBeNull();
+    expect(await screen.findByText('当前使用：当前皮肤精确表现')).not.toBeNull();
     expect(current.scene.showAction).toHaveBeenLastCalledWith(
-      expect.objectContaining({ id: 'winter-working' }),
+      expect.objectContaining({ id: 'acting-main' }),
       expect.anything()
     );
   });
@@ -957,7 +935,10 @@ describe('真实草稿预览', () => {
           missingRequirements: [],
           migrationRecoveryAvailable: false
         }],
-        selectedCharacterId: 'nova',
+        migrationReview: { issues: [], resolutions: [] },
+    resolveMigrationIssue: vi.fn(),
+    setIdleState: vi.fn(),
+    selectedCharacterId: 'nova',
         draft,
         selectedEntity: { kind: 'action', actionId: 'idle-main' },
         selectedSkinId: 'default',
@@ -1013,9 +994,6 @@ describe('真实草稿预览', () => {
         requestRemoveAction: vi.fn(() => ({
           safeReferencePaths: [], blockingReferencePaths: []
         })),
-        removeAction: vi.fn(),
-        addExtensionState: vi.fn(),
-        removeExtensionState: vi.fn(),
         applySpriteSheet: vi.fn(async () => undefined),
         compileAndPublish: vi.fn(async () => undefined),
         publishCharacter: vi.fn(async () => undefined),
