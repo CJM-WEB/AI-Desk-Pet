@@ -83,7 +83,8 @@ export const characterChatResponseJsonSchema = {
     expressionPlan: { anyOf: [{ type: 'object', additionalProperties: false, required: ['states'],
       properties: { validForMs: { type: 'integer', minimum: 1, maximum: 1800000 },
         states: { type: 'array', maxItems: 8, items: { type: 'object', additionalProperties: false,
-          required: ['stateId', 'score', 'minStrength', 'maxStrength', 'actions'],
+          // 生成时禁止省略条件与寿命；Main Zod 仍兼容旧输入省略，并独立校验 condition 关联。
+          required: ['stateId', 'score', 'minStrength', 'maxStrength', 'when', 'lifetime', 'actions'],
           properties: { stateId: identifier, score, minStrength: score, maxStrength: score,
             when, lifetime: { enum: ['episode', 'condition'] },
             actions: { type: 'array', maxItems: 32, items: { type: 'object', additionalProperties: false,

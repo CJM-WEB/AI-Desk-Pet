@@ -18,6 +18,16 @@ test('正式 wire 必须评估心情和计划，null 解码为无更新', () => 
     expect(characterChatResponseSchema.safeParse(omitted).success).toBe(false);
   }
 });
+
+test('生成协议要求状态显式给出条件和寿命，Main仍兼容旧省略输入', () => {
+  const state = characterChatResponseJsonSchema.properties.expressionPlan.anyOf[0].properties.states.items;
+  expect(state.required).toEqual(expect.arrayContaining(['when', 'lifetime']));
+  expect(state.properties.actions.items.required).not.toContain('when');
+  expect(characterChatResponseSchema.safeParse(reply).success).toBe(true);
+  expect(characterChatResponseSchema.safeParse({ ...reply, expressionPlan: { states: [
+    { ...reply.expressionPlan.states[0], when: {}, lifetime: 'episode' }
+  ] } }).success).toBe(true);
+});
 test('旧正式选态字段、伪造宿主修订、重复状态和非法强度拒绝', () => {
   for (const field of ['activity', 'status', 'behaviorPlan', 'emotion', 'preserveExplicitPlaybackToken']) {
     expect(characterChatResponseSchema.safeParse({ ...reply, [field]: 'old' }).success).toBe(false);
