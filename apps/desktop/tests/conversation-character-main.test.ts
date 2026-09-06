@@ -3,11 +3,12 @@ import { characterManifestV3Schema } from '@myself/character-runtime';
 import { resourceFields, v3Fixture } from '../../../packages/character-runtime/tests/character-v3-fixture';
 import { CharacterBehaviorService } from '../src/main/characters/character-behavior-service';
 import { CharacterBehaviorDirector } from '../src/main/characters/character-behavior-director';
+import { ConversationChatAdapter } from '../src/main/conversation/conversation-chat-adapter';
 
-async function fixture() {
+async function fixture(stateOptions: { suggestedDurationMs?: number; agentInferable?: boolean } = {}) {
   let now = 0;
   const draft = v3Fixture();
-  draft.states.push({ ...draft.states[0]!, id: 'joy', name: '飞扬', agentInferable: true, actionIds: ['wave', 'jump'] });
+  draft.states.push({ ...draft.states[0]!, id: 'joy', name: '飞扬', agentInferable: true, actionIds: ['wave', 'jump'], ...stateOptions });
   for (const id of ['wave', 'jump']) {
     draft.actions.push({ ...draft.actions[0]!, id, name: id === 'wave' ? '挥手' : '跳跃' });
     draft.skins[0]!.presentations.push({ ...draft.skins[0]!.presentations[0]!, actionId: id });
@@ -19,6 +20,38 @@ async function fixture() {
   const director = new CharacterBehaviorDirector({ behavior: service, motion, initialGeneration: 'one', initialSettings: { movementMode: 0, proactivityMode: 'assistive' }, saveMovementMode });
   return { service, director, motion, saveMovementMode, time: (value: number) => { now = value; } };
 }
+it('明确状态经本地名称或模型描述直达，按作者时长或默认三秒驻留后回 idle', async () => {
+  // 同一真实 Main 生命周期覆盖精确名称与仅 stateId 的描述定位，均允许非推断状态。
+  for (const exact of [true, false]) {
+    const f = await fixture({ agentInferable: false, ...(exact ? { suggestedDurationMs: 1200 } : {}) });
+    const text = exact ? '播放飞扬状态' : '播放轻快喜悦状态';
+    const prepared = await f.director.prepareUserPrompt(text);
+    expect(prepared.explicitDirective).toMatchObject({ kind: 'play', target: { kind: 'state_name' } });
+    expect(!!prepared.explicitPlaybackToken).toBe(exact);
+    const context = f.director.captureExpressionContext();
+    const reply = exact ? {} : await new ConversationChatAdapter({ respond: async request => {
+      expect(request.tools).toEqual([]);
+      expect(request.toolChoice).toBe('none');
+      return { type: 'text', text: '轻快地陪你一会儿。', structured_output: {
+        explicitPlayback: { stateId: 'joy' }, movementControl: { kind: 'keep' }, capabilityPlan: { kind: 'chat' }
+      } };
+    } }).respond({ history: [], text, signal: new AbortController().signal, behaviorContext: f.director.getChatContext(),
+      explicitPlaybackRequested: prepared.explicitDirective?.kind === 'play' && prepared.explicitPlaybackToken === undefined });
+    await f.director.completeUserPrompt({ generation: 'one', eventId: 'state', context, explicitDirective: prepared.explicitDirective,
+      ...(prepared.explicitPlaybackToken ? { explicitPlaybackToken: prepared.explicitPlaybackToken } : {}), ...reply });
+    const current = f.service.snapshot()!.schedule.current!;
+    const duration = exact ? 1200 : 3000;
+    expect(f.service.snapshot()?.stateId).toBe('joy');
+    expect(current.durationMs).toBe(duration);
+    f.director.applyPlaybackFeedback({ playbackToken: current.playbackToken, actionId: current.actionId, status: 'started', occurredAtMs: 0 });
+    f.time(duration - 1); f.director.advance();
+    expect(f.service.snapshot()?.stateId).toBe('joy');
+    f.time(duration); f.director.advance();
+    expect(f.service.snapshot()?.stateId).toBe('rest');
+    expect(f.motion.requestIntent).not.toHaveBeenCalled();
+    expect(f.saveMovementMode).not.toHaveBeenCalled();
+  }
+});
 it('Main新互动只失效在途结果，持续心情保留且普通完成提供独立事实', async () => {
   const f = await fixture();
   f.service.applyDecision({ context: f.service.context()!, source: 'chat', eventId: 'mood', moodUpdate: { summary: '持续开心', strength: 1 } });

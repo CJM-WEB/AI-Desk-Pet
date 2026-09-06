@@ -113,6 +113,11 @@ describe('显式桌宠行为 Gate', () => {
   });
 
   test('组合指令只移除行为前缀并保留后续能力文本', () => {
+    expect(parseExplicitCharacterBehavior('播放飞扬状态然后读取 note.txt')).toEqual({
+      capabilityText: '读取 note.txt',
+      explicitDirective: { kind: 'play', target: { kind: 'state_name', name: '飞扬' } },
+      movementControl: { kind: 'keep' }
+    });
     expect(parseExplicitCharacterBehavior('停下并删除 old.txt')).toEqual({
       capabilityText: '删除 old.txt',
       explicitDirective: { kind: 'stop_movement' },
@@ -129,6 +134,18 @@ describe('显式桌宠行为 Gate', () => {
         kind: 'play',
         target: { kind: 'action_name', name: '挥手' }
       },
+      movementControl: { kind: 'keep' }
+    });
+  });
+
+  test.each([
+    ['播放飞扬状态', '飞扬'],
+    ['请播放 joy 状态', 'joy'],
+    ['please play floating state', 'floating']
+  ])('状态终止词限定的命令“%s”保留状态目标而不指定动作', (text, name) => {
+    expect(parseExplicitCharacterBehavior(text)).toEqual({
+      capabilityText: text,
+      explicitDirective: { kind: 'play', target: { kind: 'state_name', name } },
       movementControl: { kind: 'keep' }
     });
   });
@@ -162,6 +179,12 @@ describe('显式桌宠行为 Gate', () => {
 
   test.each([
     '请做一个动作',
+    '不要播放飞扬状态',
+    '我今天有点飞扬的感觉',
+    '> 播放飞扬状态',
+    '播放飞扬状态，是什么意思',
+    'please play floating state, why does it exist',
+    '请播放 C:/pet/joy 状态',
     '请做一个文件',
     '请做一个发布计划',
     '请播放 C:/pet/wave.png 动作',

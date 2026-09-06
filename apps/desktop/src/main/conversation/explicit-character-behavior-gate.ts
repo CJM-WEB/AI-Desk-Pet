@@ -126,14 +126,14 @@ function parseChinese(text: string): ParsedDirective | null {
     };
   }
 
-  const play = /^(?:请)?(?:做一个|播放|表演)\s*(.{1,120}?)\s*动作/u.exec(text);
-  const actionName = play?.[1] ? validExplicitActionName(play[1]) : null;
-  if (play && actionName) {
+  const play = /^(?:请)?(?:做一个|播放|表演)\s*(.{1,120}?)\s*(动作|状态)/u.exec(text);
+  const targetName = play?.[1] ? validExplicitTargetName(play[1]) : null;
+  if (play && targetName) {
     return {
       consumed: play[0].length,
       directive: {
         kind: 'play',
-        target: { kind: 'action_name', name: actionName }
+        target: { kind: play[2] === '状态' ? 'state_name' : 'action_name', name: targetName }
       }
     };
   }
@@ -193,14 +193,14 @@ function parseEnglish(text: string): ParsedDirective | null {
     };
   }
 
-  const play = /^(?:please\s+)?(?:(?:play|perform)\s+|do\s+(?:an?\s+)?)(.{1,120}?)\s+(?:animation|action)/iu.exec(text);
-  const actionName = play?.[1] ? validExplicitActionName(play[1]) : null;
-  if (play && actionName) {
+  const play = /^(?:please\s+)?(?:(?:play|perform)\s+|do\s+(?:an?\s+)?)(.{1,120}?)\s+(animation|action|state)/iu.exec(text);
+  const targetName = play?.[1] ? validExplicitTargetName(play[1]) : null;
+  if (play && targetName) {
     return {
       consumed: play[0].length,
       directive: {
         kind: 'play',
-        target: { kind: 'action_name', name: actionName }
+        target: { kind: play[2]?.toLowerCase() === 'state' ? 'state_name' : 'action_name', name: targetName }
       }
     };
   }
@@ -240,8 +240,8 @@ function movementControlForDirective(
   };
 }
 
-/** 动作命令只接收公开短名称，拒绝引用边界、代码和任何路径形态。 */
-function validExplicitActionName(value: string): string | null {
+/** 状态／动作命令只接收公开短名称，拒绝引用边界、代码和任何路径形态。 */
+function validExplicitTargetName(value: string): string | null {
   const name = value.trim();
   if (!name || Array.from(name).length > 120) return null;
   if (/[\\/`'"“”‘’「」『』<>]/u.test(name) || /^[a-z]:/iu.test(name)) return null;

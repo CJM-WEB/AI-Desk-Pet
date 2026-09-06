@@ -42,7 +42,7 @@ export type ExplicitBehaviorDirective =
   | Readonly<{ kind: 'continuous_movement' }>
   | Readonly<{
       kind: 'play';
-      target: Readonly<{ kind: 'action_name'; name: string }>;
+      target: Extract<BehaviorTarget, { kind: 'action_name' | 'state_name' }>;
     }>
   | Readonly<{
       kind: 'move';
@@ -336,10 +336,13 @@ export class CharacterBehaviorDirector {
     const current = this.options.behavior.context();
     if (input.context && current && input.context.instance === current.instance
       && input.context.contextRevision === current.contextRevision && input.context.moodRevision === current.moodRevision) {
-      // 明确请求某个动作时，缺 actionId 的状态建议不能随机抽一个动作来代替。
-      const explicit = input.explicitDirective?.kind === 'play' && !input.explicitPlaybackToken
-        && input.explicitPlayback?.actionId !== undefined
-        ? input.explicitPlayback : undefined;
+      // 状态请求复用作者驻留时长；动作请求仍需精确 actionId，不能随机替代。
+      let explicit: CharacterExplicitPlayback | undefined;
+      if (input.explicitDirective?.kind === 'play' && !input.explicitPlaybackToken && input.explicitPlayback) {
+        explicit = input.explicitDirective.target.kind === 'state_name'
+          ? { stateId: input.explicitPlayback.stateId }
+          : input.explicitPlayback.actionId !== undefined ? input.explicitPlayback : undefined;
+      }
       const authorization = this.options.behavior.applyDecision({
         context: input.context, eventId: input.eventId, source: 'chat',
         ...(input.moodUpdate === undefined ? {} : { moodUpdate: input.moodUpdate }),
