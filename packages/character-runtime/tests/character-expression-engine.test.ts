@@ -20,6 +20,23 @@ const plan = { states: [
 ] };
 
 describe('V3 心情与表现', () => {
+  it('同轮明确动作不中断或重播，结束后进入新心情计划', () => {
+    let now = 0;
+    const engine = new runtime.CharacterExpressionEngine({ manifest: fixture(), now: () => now });
+    const current = engine.playExplicit('soft', 'soft-a').snapshot.schedule.current!;
+    engine.applyFeedback({ playbackToken: current.playbackToken, actionId: current.actionId, status: 'started', occurredAtMs: now });
+    const started = engine.snapshot().schedule.current;
+    const decision = { context: engine.context(), eventId: 'news-and-wave', source: 'chat' as const,
+      moodUpdate: { summary: '开心的喜讯', strength: 1 }, expressionPlan: plan,
+      preserveExplicitPlaybackToken: current.playbackToken };
+    const updated = engine.applyDecision(decision);
+    expect(updated.effects).toEqual([]);
+    expect(updated.snapshot.schedule.current).toEqual(started);
+    expect(updated.snapshot.mood?.summary).toBe('开心的喜讯');
+    expect(engine.applyDecision(decision).effects).toEqual([]);
+    now = 100;
+    expect(engine.advance().snapshot.stateId).toBe('bright');
+  });
   it('明确动作覆盖作者无限循环并在完整周期后自主退出，状态请求有界驻留', () => {
     let now = 0;
     const manifest = fixture();

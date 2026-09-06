@@ -23,12 +23,12 @@ import { conversationIntentCases } from '../../../tests/fixtures/natural-intent-
 import { ProviderResponseError } from '../src/main/providers/provider-response-error';
 
 const behaviorContext = {
-  character: {
-    identity: {
+  character: { idleStateId: 'state-1355',
+    identity: { formsOfAddress: [], dislikes: [], boundaries: [], exampleLines: [],
       name: '测试角色', description: '测试角色', background: '测试环境', traits: [],
       languageStyle: '简洁', likes: [], behavioralTendencies: []
     },
-    states: [{
+    states: [{ agentInferable: true,
       name: '移动', stateId: 'state-1355', tags: [],
       actions: [{ name: '散步', actionId: 'action-1413', tags: [] }]
     }]
@@ -53,6 +53,8 @@ function behaviorPortDouble(
       explicitDirective: null
     })),
     getChatContext: vi.fn(() => behaviorContext),
+    captureExpressionContext: vi.fn(() => null),
+    handleChatResponseFinished: vi.fn(),
     completeUserPrompt: vi.fn(),
     handleTaskEvent: vi.fn(),
     applyPlaybackFeedback: vi.fn(),
@@ -196,10 +198,7 @@ function scriptedProvider(response: ModelResponse | Error, preservePlainText = f
 
 function 完整聊天控制(overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return {
-    activity: '安静陪伴',
-    status: 'idle',
     movementControl: { kind: 'keep' },
-    behaviorPlan: { kind: 'none' },
     capabilityPlan: { kind: 'chat' },
     ...overrides
   };
@@ -334,6 +333,23 @@ async function authorizeTask(harness: ReturnType<typeof createHarness>): Promise
 }
 
 describe('ConversationCoordinator', () => {
+  test('普通聊天传回请求前表达修订，接纳完成只发专用 response 事实', async () => {
+    const script = deferredProvider();
+    const original = { contextRevision: 1, moodRevision: 1, instance: Symbol('request') };
+    const captureExpressionContext = vi.fn(() => original);
+    const handleChatResponseFinished = vi.fn();
+    const behavior = behaviorPortDouble({ captureExpressionContext, handleChatResponseFinished });
+    const harness = createHarness([{ profileId: 'chat', providerIdentity: 'openai', providerName: '聊天', script }], { behavior });
+    const pending = harness.coordinator.submit('普通问候');
+    await vi.waitFor(() => expect(script.requests).toHaveLength(1));
+    captureExpressionContext.mockReturnValue({ ...original, contextRevision: 2 });
+    script.resolve({ type: 'text', text: '你好', structured_output: { movementControl: { kind: 'keep' }, capabilityPlan: { kind: 'chat' } } });
+    await pending;
+    expect(behavior.completeUserPrompt).toHaveBeenCalledWith(expect.objectContaining({ context: original, eventId: 'assistant-1' }));
+    expect(captureExpressionContext).toHaveBeenCalledOnce();
+    expect(handleChatResponseFinished).toHaveBeenCalledOnce();
+    expect(JSON.stringify(script.requests)).not.toContain('contextRevision');
+  });
   test('明确任务保留规范化正文并跳过聊天与角色改写，确认后才执行且意图不延续', async () => {
     const script = scriptedProvider({ type: 'text', text: '普通聊天回复' });
     const harness = createHarness([{ profileId: 'chat', providerIdentity: 'openai', providerName: 'Chat', script }]);
@@ -559,9 +575,6 @@ describe('ConversationCoordinator', () => {
       text: '开始散步',
       structured_output: 完整聊天控制({
         text: '开始散步',
-        activity: '轻快走动',
-        status: 'move',
-        behaviorPlan: { kind: 'play_state', state: '运动' },
         movementControl: { kind: 'move_once', target: 'right', distance: 'near' },
         capabilityPlan: { kind: 'chat' }
       })
@@ -589,18 +602,15 @@ describe('ConversationCoordinator', () => {
     mode = 'autonomous';
     await harness.coordinator.resolveHistoryDisclosure('request-2', 'share_once');
 
-    expect(second.requests[0]?.messages[0]?.content).toContain(
+    expect(second.requests[0]?.messages.map(message => message.content).join('')).toContain(
       '"proactivityMode":"autonomous"'
     );
     expect(behavior.getChatContext).toHaveBeenCalledTimes(2);
-    expect(behavior.completeUserPrompt).toHaveBeenLastCalledWith({
+    expect(behavior.completeUserPrompt).toHaveBeenLastCalledWith(expect.objectContaining({
       generation: 'generation-current',
       explicitDirective: null,
-      activity: '轻快走动',
-      status: 'move',
-      providerPlan: { kind: 'play_state', state: '运动' },
       movementControl: { kind: 'move_once', target: 'right', distance: 'near' }
-    });
+    }));
   });
 
   test.each(['你好', '你好呀', '聊天呀', '我想和你聊天', '帮我整理一下'])(
@@ -758,7 +768,7 @@ describe('ConversationCoordinator', () => {
       role: 'assistant',
       text: '  **我在这里。**\n'
     });
-    expect(events).toContainEqual({ type: 'character_emotion', label: 'calm' });
+    expect(events.some(event => event.type === 'character_emotion')).toBe(false);
     expect(history.turns()).toEqual([{
       userText: '今天有点累',
       assistantText: '  **我在这里。**\n',
@@ -1408,29 +1418,6 @@ describe('ConversationCoordinator', () => {
 
     expect(harness.history.turns()).toEqual([]);
     expect(JSON.stringify(harness.events)).not.toContain('renderer-send-private-error');
-  });
-
-  test('情绪公开失败时本回合不写历史并回到公开错误边界', async () => {
-    const rawError = new Error('emotion-send-private-error');
-    const harness = createHarness([{
-      profileId: 'profile-openai',
-      providerIdentity: 'openai',
-      providerName: 'OpenAI',
-      script: scriptedProvider({ type: 'text', text: '回复已公开', emotion: 'calm' })
-    }], {
-      onEmit: event => {
-        if (event.type === 'character_emotion') throw rawError;
-      }
-    });
-
-    await expect(harness.coordinator.submit('触发情绪公开失败')).rejects.toMatchObject({
-      code: 'AGENT_INTERNAL_ERROR',
-      message: '任务执行失败，请重试。'
-    });
-
-    expect(phases(harness.events)).toEqual(['listening', 'thinking', 'error']);
-    expect(harness.history.turns()).toEqual([]);
-    expect(JSON.stringify(harness.events)).not.toContain('emotion-send-private-error');
   });
 
   test('close 先封闭状态并在清理失败时继续全部清理', async () => {

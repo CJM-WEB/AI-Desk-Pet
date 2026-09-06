@@ -99,6 +99,7 @@ type ConversationState =
   | { kind: 'closed' };
 
 interface TurnContext {
+  explicitPlaybackToken?: string;
   text: string;
   capabilityText: string;
   explicitDirective: ExplicitBehaviorDirective | null;
@@ -237,6 +238,7 @@ export class ConversationCoordinator {
       if (!this.isRunning(context)) return;
       context.capabilityText = prepared.capabilityText;
       context.explicitDirective = prepared.explicitDirective;
+      if (prepared.explicitPlaybackToken !== undefined) context.explicitPlaybackToken = prepared.explicitPlaybackToken;
 
       const intent = capabilityIntentRouter.route(context.capabilityText);
       if (intent.kind === 'chat') context.modelEscalation = intent.modelEscalation;
@@ -607,10 +609,14 @@ export class ConversationCoordinator {
     if (!this.isRunning(context)) return;
     const turnId = `assistant-${++this.assistantTurnSequence}`;
     const bufferedDeltas: string[] = [];
+    // 同步捕获公开快照和宿主标记；后者绝不进入模型请求或 Renderer。
+    const expressionContext = this.options.behavior.captureExpressionContext();
+    const behaviorContext = this.options.behavior.getChatContext();
     const reply = await adapter.respond({
       history: visibleHistory,
       text: context.text,
-      behaviorContext: this.options.behavior.getChatContext(),
+      behaviorContext,
+      explicitPlaybackRequested: context.explicitDirective?.kind === 'play' && context.explicitPlaybackToken === undefined,
       signal: context.controller.signal,
       onTextDelta: delta => {
         if (delta.length === 0 || !this.isRunning(context)) return;
@@ -633,26 +639,27 @@ export class ConversationCoordinator {
     }
     await this.options.behavior.completeUserPrompt({
       generation: context.generation,
+      context: expressionContext,
+      eventId: turnId,
       explicitDirective: context.explicitDirective,
-      providerPlan: reply.behaviorPlan ?? null,
       movementControl: reply.movementControl ?? null,
-      ...(reply.activity === undefined ? {} : { activity: reply.activity }),
-      ...(reply.status === undefined ? {} : { status: reply.status })
+      ...(context.explicitPlaybackToken === undefined ? {} : { explicitPlaybackToken: context.explicitPlaybackToken }),
+      ...(reply.moodUpdate === undefined ? {} : { moodUpdate: reply.moodUpdate }),
+      ...(reply.expressionPlan === undefined ? {} : { expressionPlan: reply.expressionPlan }),
+      ...(reply.explicitPlayback === undefined ? {} : { explicitPlayback: reply.explicitPlayback })
     });
     if (!this.isRunning(context)) return;
     this.options.emit(streamStarted
       ? { type: 'assistant_message_commit', turnId, text: reply.text }
       : { type: 'message', role: 'assistant', text: reply.text });
     if (!this.isRunning(context)) return;
-    if (reply.emotion !== undefined) {
-      this.options.emit({ type: 'character_emotion', label: reply.emotion });
-      if (!this.isRunning(context)) return;
-    }
     this.options.history.append({
       userText: context.text,
       assistantText: reply.text,
       providerIdentity
     });
+    if (!this.isRunning(context)) return;
+    this.options.behavior.handleChatResponseFinished();
     if (!this.isRunning(context)) return;
     this.state = { kind: 'idle' };
     this.options.emit({ type: 'phase', phase: 'success' });

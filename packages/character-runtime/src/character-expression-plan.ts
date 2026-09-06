@@ -1,6 +1,10 @@
 import { z } from 'zod';
 import { safeIdentifierSchema } from './character-v2-schema';
 const score = z.number().finite().min(0).max(1);
+export const characterExplicitPlaybackSchema = z.object({
+  stateId: safeIdentifierSchema, actionId: safeIdentifierSchema.optional()
+}).strict();
+export type CharacterExplicitPlayback = z.infer<typeof characterExplicitPlaybackSchema>;
 export const characterExpressionPlanSchema = z.object({
   states: z.array(z.object({
     stateId: safeIdentifierSchema, score, minStrength: score, maxStrength: score,

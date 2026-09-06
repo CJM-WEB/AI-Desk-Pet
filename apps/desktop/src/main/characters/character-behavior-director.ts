@@ -1,4 +1,5 @@
 import type {
+  CharacterExpressionContext, CharacterMoodUpdate, CharacterExpressionPlanInput, CharacterExplicitPlayback,
   BehaviorTarget,
   CharacterBehaviorPlan,
   CharacterAgentBehaviorIntent,
@@ -10,7 +11,6 @@ import type {
   PublicBehaviorCatalog,
   ScreenRegion
 } from '@myself/character-runtime';
-import { isPublicBehaviorTarget, selectPublicBehaviorTarget } from '@myself/character-runtime';
 import type { TaskEvent } from '@myself/shared-types';
 import {
   characterTaskRuntimeBlock,
@@ -50,12 +50,15 @@ export type ExplicitBehaviorDirective =
     }>;
 
 export type PreparedBehaviorPrompt = Readonly<{
+  explicitPlaybackToken?: string;
   originalText: string;
   capabilityText: string;
   explicitDirective: ExplicitBehaviorDirective | null;
 }>;
 
 export type ConversationBehaviorContext = Readonly<{
+  candidateSequence?: number;
+  expression?: Readonly<{ stateId: string | null; actionId: string | null; mood: { summary: string; strength: number } | null }>;
   character: PublicBehaviorCatalog;
   runtime: Readonly<{
     moving: boolean;
@@ -78,17 +81,19 @@ export type CharacterActivityBlockers = Readonly<{
   closed: boolean;
 }>;
 
+export type CompletedCharacterPrompt = Readonly<{
+  generation: string; eventId: string; context: CharacterExpressionContext | null;
+  explicitDirective: ExplicitBehaviorDirective | null; explicitPlaybackToken?: string;
+  moodUpdate?: CharacterMoodUpdate; expressionPlan?: CharacterExpressionPlanInput; explicitPlayback?: CharacterExplicitPlayback;
+  movementControl?: MovementControlPlan | null;
+}>;
+
 export interface ConversationBehaviorPort {
   prepareUserPrompt(text: string): Promise<PreparedBehaviorPrompt>;
   getChatContext(): ConversationBehaviorContext;
-  completeUserPrompt(input: Readonly<{
-    generation: string;
-    explicitDirective: ExplicitBehaviorDirective | null;
-    providerPlan: CharacterBehaviorPlan | null;
-    movementControl?: MovementControlPlan | null;
-    activity?: string;
-    status?: string;
-  }>): Promise<void>;
+  captureExpressionContext(): CharacterExpressionContext | null;
+  completeUserPrompt(input: CompletedCharacterPrompt): Promise<void>;
+  handleChatResponseFinished(): void;
   handleTaskEvent(event: TaskEvent): void;
   applyPlaybackFeedback(feedback: CharacterPlaybackFeedback): void;
   cancelActive(): void;
@@ -113,6 +118,7 @@ export type BehaviorPlanSource = 'explicit' | 'chat' | 'local-idle';
 
 type BehaviorServicePort = Pick<
   CharacterBehaviorService,
+  | 'context' | 'snapshot' | 'applyDecision' | 'invalidateContext' | 'recordTrustedEvent' | 'handleUserInteraction'
   | 'getPublicBehaviorCatalog'
   | 'getRecentPublicActions'
   | 'resolveBehaviorTarget'
@@ -200,9 +206,9 @@ export class CharacterBehaviorDirector {
   private awaitingConfirmation = false;
   private dragging = false;
   private closed = false;
-  private pendingChatPlan: CharacterBehaviorPlan | null = null;
+  private readonly completedPrompts = new Set<string>();
+  private candidateSequence = 0;
   private pendingMovementControl: MovementControlPlan | null = null;
-  private pendingSuccessToken: string | null = null;
   private active: Readonly<{
     source: ActiveBehaviorSource;
     playbackToken: string;
@@ -222,22 +228,19 @@ export class CharacterBehaviorDirector {
   /** Gate 在能力路由与 Provider 前执行，本地明确移动仍须先通过动作授权。 */
   async prepareUserPrompt(text: string): Promise<PreparedBehaviorPrompt> {
     const turnEpoch = ++this.turnEpoch;
+    this.options.behavior.handleUserInteraction();
+    this.options.behavior.recordTrustedEvent('conversation-start');
     const originalText = text.trim();
     const parsed = parseExplicitCharacterBehavior(originalText);
-    const prepared: PreparedBehaviorPrompt = {
-      originalText,
-      capabilityText: parsed?.capabilityText ?? originalText,
-      explicitDirective: parsed?.explicitDirective ?? null
-    };
-    await this.applyMovementControl(
-      parsed?.movementControl ?? { kind: 'keep' }, 'explicit', turnEpoch
-    );
-    const directive = prepared.explicitDirective;
-    if (directive?.kind === 'play') {
-      this.requestBehaviorTarget(directive.target, 'explicit');
-    }
-    return prepared;
+    await this.applyMovementControl(parsed?.movementControl ?? { kind: 'keep' }, 'explicit', turnEpoch);
+    const directive = parsed?.explicitDirective ?? null;
+    const authorization = directive?.kind === 'play' ? this.requestBehaviorTarget(directive.target, 'explicit', false) : NONE;
+    return { originalText, capabilityText: parsed?.capabilityText ?? originalText, explicitDirective: directive,
+      ...(authorization.kind === 'play' ? { explicitPlaybackToken: authorization.playbackToken } : {}) };
   }
+
+  captureExpressionContext(): CharacterExpressionContext | null { return this.options.behavior.context(); }
+  handleChatResponseFinished(): void { this.options.behavior.recordTrustedEvent('response-finished'); }
 
   getChatContext(): ConversationBehaviorContext {
     const motion = this.options.motion.getSnapshot();
@@ -249,21 +252,26 @@ export class CharacterBehaviorDirector {
       if (!(error instanceof Error) || error.message !== 'CHARACTER_ACTION_UNAVAILABLE') throw error;
       // 角色切换与 V1 兼容态不得阻断普通聊天，也不向模型泄露旧私有清单。
       character = {
+        idleStateId: 'idle',
         identity: {
           name: '当前角色',
           description: '当前角色公开信息暂不可用。',
           background: '当前角色正在切换或兼容加载。',
           traits: [],
           languageStyle: '自然',
-          likes: [],
+          likes: [], formsOfAddress: [], dislikes: [], boundaries: [], exampleLines: [],
           behavioralTendencies: []
         },
         states: []
       };
       catalogAvailable = false;
     }
+    const snapshot = this.options.behavior.snapshot();
     return {
       character,
+      candidateSequence: this.candidateSequence++,
+      expression: { stateId: snapshot?.stateId ?? null, actionId: snapshot?.schedule.current?.actionId ?? null,
+        mood: snapshot?.mood ? { summary: snapshot.mood.summary, strength: snapshot.mood.strength } : null },
       runtime: {
         moving: motion.moving,
         dragging: this.dragging,
@@ -315,56 +323,42 @@ export class CharacterBehaviorDirector {
     this.publishActivityChanged();
   }
 
-  async completeUserPrompt(input: Readonly<{
-    generation: string;
-    explicitDirective: ExplicitBehaviorDirective | null;
-    providerPlan: CharacterBehaviorPlan | null;
-    movementControl?: MovementControlPlan | null;
-    activity?: string;
-    status?: string;
-  }>): Promise<void> {
-    if (this.closed || input.generation !== this.generation) return;
-    this.pendingSuccessToken = null;
-    let catalog: PublicBehaviorCatalog | null = null;
-    try {
-      catalog = this.options.behavior.getPublicBehaviorCatalog();
-    } catch {
-      // 普通文字聊天不因角色目录暂不可用而失败；目录目标在此状态下不得进入私有解析。
+  /** 请求前的原始修订只提交一次；模型分区已经由同一 Main Adapter 对照本轮目录校验。 */
+  async completeUserPrompt(input: CompletedCharacterPrompt): Promise<void> {
+    if (this.closed || input.generation !== this.generation || this.completedPrompts.has(input.eventId)) return;
+    if (!this.isExpressionContextCurrent(input.context)) return;
+    this.completedPrompts.add(input.eventId);
+    if (this.completedPrompts.size > 512) this.completedPrompts.delete(this.completedPrompts.values().next().value!);
+    const turnEpoch = this.turnEpoch;
+    const movementControl = input.explicitDirective === null ? input.movementControl ?? { kind: 'keep' } : { kind: 'keep' } as const;
+    if (movementControl.kind === 'set_mode') await this.applyMovementControl(movementControl, 'chat', turnEpoch);
+    if (!this.isTurnCurrent(turnEpoch) || input.generation !== this.generation || !this.isExpressionContextCurrent(input.context)) return;
+    const current = this.options.behavior.context();
+    if (input.context && current && input.context.instance === current.instance
+      && input.context.contextRevision === current.contextRevision && input.context.moodRevision === current.moodRevision) {
+      // 明确请求某个动作时，缺 actionId 的状态建议不能随机抽一个动作来代替。
+      const explicit = input.explicitDirective?.kind === 'play' && !input.explicitPlaybackToken
+        && input.explicitPlayback?.actionId !== undefined
+        ? input.explicitPlayback : undefined;
+      const authorization = this.options.behavior.applyDecision({
+        context: input.context, eventId: input.eventId, source: 'chat',
+        ...(input.moodUpdate === undefined ? {} : { moodUpdate: input.moodUpdate }),
+        ...(input.expressionPlan === undefined ? {} : { expressionPlan: input.expressionPlan }),
+        ...(explicit === undefined ? {} : { explicitPlayback: explicit }),
+        ...(input.explicitPlaybackToken === undefined ? {} : { preserveExplicitPlaybackToken: input.explicitPlaybackToken })
+      });
+      if (authorization.kind === 'play') this.active = { source: explicit ? 'explicit' : 'chat', playbackToken: authorization.playbackToken };
     }
-    const rejectedProviderTarget = input.providerPlan?.kind === 'play_state'
-      && (!catalog || !isPublicBehaviorTarget(catalog, input.providerPlan));
-    if (rejectedProviderTarget) this.publishUnavailableNotice();
-    const providerPlan = input.providerPlan?.kind !== 'play_state'
-      ? input.providerPlan
-      : catalog && isPublicBehaviorTarget(catalog, input.providerPlan)
-        ? input.providerPlan
-        : null;
-    const movementControl = input.explicitDirective === null
-      ? input.movementControl ?? { kind: 'keep' }
-      : { kind: 'keep' } as const;
-    const fallbackPlan = input.explicitDirective !== null
-      || !catalog
-      || (input.activity === undefined && input.status === undefined)
-      ? null
-      : selectPublicBehaviorTarget(
-          catalog, input.activity, input.status, movementControl
-        );
-    // none 只表示 Provider 没有精确目录目标，不能吞掉隐藏描述的最高相似匹配。
-    const candidatePlan = providerPlan?.kind === 'none' ? fallbackPlan : providerPlan ?? fallbackPlan;
-    // 持久运动策略只消费 MovementControlPlan；behaviorPlan 不具有写模式权限。
-    if (movementControl.kind === 'set_mode') {
-      const turnEpoch = this.turnEpoch;
-      await this.applyMovementControl(movementControl, 'chat', turnEpoch);
-      if (!this.isTurnCurrent(turnEpoch)) return;
-    }
-    // 持久化可能跨过 reset/close；旧轮完成后不得重新写入已清空的待提交槽。
-    if (this.closed || input.generation !== this.generation) return;
-    // mode 0/2 的移动动画只能伴随真实 Motion：静止时禁止，间歇时只由 Scheduler 发起。
-    this.pendingChatPlan = candidatePlan;
     this.pendingMovementControl = movementControl.kind === 'move_once' ? movementControl : null;
   }
 
-  /** 可信任务事件先占用身体动作；聊天计划只在 success 动作结算后提交。 */
+  private isExpressionContextCurrent(context: CharacterExpressionContext | null): boolean {
+    const current = this.options.behavior.context();
+    return context === null ? current === null : !!current && context.instance === current.instance
+      && context.contextRevision === current.contextRevision && context.moodRevision === current.moodRevision;
+  }
+
+  /** 真实任务只提供占用事实；普通聊天成功只提交独立的一次运动。 */
   handleTaskEvent(event: TaskEvent): void {
     if (this.closed) return;
     this.updateTrustedBlock(event);
@@ -386,25 +380,8 @@ export class CharacterBehaviorDirector {
     }
 
     if (event.type !== 'phase') return;
-    if (event.phase === 'error' || event.phase === 'cancelled') {
-      this.clearPendingChat();
-      return;
-    }
-    if (event.phase !== 'success') return;
-    if (!this.pendingChatPlan) {
-      this.commitPendingMovementControl();
-      return;
-    }
-    if (authorization.kind === 'play') {
-      this.pendingSuccessToken = authorization.playbackToken;
-      return;
-    }
-    if (this.active?.source === 'explicit') {
-      this.pendingSuccessToken = this.active.playbackToken;
-      return;
-    }
-    const chatAuthorization = this.commitPendingChatPlan();
-    this.commitPendingMovementControl(chatAuthorization);
+    if (event.phase === 'error' || event.phase === 'cancelled') this.clearPendingChat();
+    if (event.phase === 'success') this.commitPendingMovementControl();
   }
 
   /** 兼容能力任务的高层意图仍先经过显式优先级与停止锁，再生成唯一运动意图。 */
@@ -419,21 +396,11 @@ export class CharacterBehaviorDirector {
     return authorization;
   }
 
-  /** 只有 success 的真实终态令牌可以释放其后排队的聊天行为。 */
+  /** 播放反馈只推进同一 Engine，不再等待旧 success 动作队列。 */
   applyPlaybackFeedback(feedback: CharacterPlaybackFeedback): void {
     if (this.closed) return;
     this.options.behavior.applyPlaybackFeedback(feedback);
-    if (feedback.status === 'started') return;
-    const releasedActive = this.active?.playbackToken === feedback.playbackToken;
-    if (releasedActive) this.active = null;
-    if (this.pendingSuccessToken !== feedback.playbackToken) {
-      if (releasedActive) this.publishActivityChanged();
-      return;
-    }
-    this.pendingSuccessToken = null;
-    const chatAuthorization = this.commitPendingChatPlan();
-    this.commitPendingMovementControl(chatAuthorization);
-    this.publishActivityChanged();
+    if (feedback.status !== 'started') this.releasePlaybackToken(feedback.playbackToken);
   }
 
   /** 供明确指令、聊天和本地待机共用同一条已解析授权链。 */
@@ -467,7 +434,8 @@ export class CharacterBehaviorDirector {
   /** 本地明确动作仍使用公开动作名，但不恢复 Provider 的旧扁平计划。 */
   private requestBehaviorTarget(
     target: BehaviorTarget,
-    source: Extract<BehaviorPlanSource, 'explicit'>
+    source: Extract<BehaviorPlanSource, 'explicit'>,
+    reportUnavailable = true
   ): CharacterExpressionAuthorization {
     if (!this.canRequest(source)) return NONE;
     try {
@@ -482,12 +450,12 @@ export class CharacterBehaviorDirector {
           playbackToken: authorization.playbackToken,
         };
       } else {
-        this.publishUnavailableNotice();
+        if (reportUnavailable) this.publishUnavailableNotice();
       }
       return authorization;
     } catch (error) {
       if (!(error instanceof Error) || error.message !== 'CHARACTER_ACTION_UNAVAILABLE') throw error;
-      this.publishUnavailableNotice();
+      if (reportUnavailable) this.publishUnavailableNotice();
       return { kind: 'none', diagnosticCode: 'CHARACTER_ACTION_UNAVAILABLE' };
     }
   }
@@ -610,6 +578,7 @@ export class CharacterBehaviorDirector {
   reset(generation: string): void {
     if (this.closed) return;
     this.generation = generation;
+    this.completedPrompts.clear();
     this.turnEpoch += 1;
     this.cancelMovementModeTransition();
     this.behaviorLifecycleGeneration += 1;
@@ -641,7 +610,6 @@ export class CharacterBehaviorDirector {
   private canRequest(source: BehaviorPlanSource): boolean {
     if (this.closed) return false;
     if (source !== 'explicit' && (this.trustedRuntimeBlocked || this.dragging)) return false;
-    if (source === 'local-idle' && this.pendingChatPlan) return false;
     return !this.active || SOURCE_PRIORITY[source] > SOURCE_PRIORITY[this.active.source];
   }
 
@@ -650,7 +618,7 @@ export class CharacterBehaviorDirector {
     if (this.closed) return;
     this.turnEpoch += 1;
     this.cancelMovementModeTransition();
-    this.options.behavior.cancelStateLifecycle();
+    this.options.behavior.invalidateContext();
     this.clearPendingChat();
     this.publishActivityChanged();
   }
@@ -704,51 +672,32 @@ export class CharacterBehaviorDirector {
     }
   }
 
-  private commitPendingChatPlan(): CharacterExpressionAuthorization {
-    const plan = this.pendingChatPlan;
-    this.pendingChatPlan = null;
-    return plan ? this.requestBehaviorPlan(plan, 'chat') : NONE;
-  }
-
-  private commitPendingMovementControl(
-    chatAuthorization: CharacterExpressionAuthorization = NONE
-  ): void {
+  private commitPendingMovementControl(): void {
     const control = this.pendingMovementControl;
     this.pendingMovementControl = null;
     if (control?.kind === 'move_once') {
       this.requestMotion({
         mode: 'once', target: control.target, distance: control.distance
-      }, 'chat', chatAuthorization);
+      }, 'chat', true);
     }
   }
 
   private clearPendingChat(): void {
-    this.pendingChatPlan = null;
     this.pendingMovementControl = null;
-    this.pendingSuccessToken = null;
   }
 
   private releasePlaybackToken(playbackToken: string): void {
-    const releasedActive = this.active?.playbackToken === playbackToken;
-    if (releasedActive) this.active = null;
-    if (this.pendingSuccessToken !== playbackToken) {
-      if (releasedActive) this.publishActivityChanged();
-      return;
-    }
-    this.pendingSuccessToken = null;
-    const chatAuthorization = this.commitPendingChatPlan();
-    this.commitPendingMovementControl(chatAuthorization);
+    if (this.active?.playbackToken !== playbackToken) return;
+    this.active = null;
     this.publishActivityChanged();
   }
 
-  private publishUnavailableNotice(): void {
-    this.options.publishNotice?.(ACTION_UNAVAILABLE_NOTICE);
-  }
+  private publishUnavailableNotice(): void { this.options.publishNotice?.(ACTION_UNAVAILABLE_NOTICE); }
 
-  /** 运动与表达独立：保留同轮、停止锁、拖拽、任务及模式原子门禁。 */
-  private requestMotion(plan: MotionRequest, source: BehaviorPlanSource, chatAuthorization: CharacterExpressionAuthorization = NONE): void {
+  /** 运动与表达独立，保留同轮、拖拽、任务及模式原子门禁。 */
+  private requestMotion(plan: MotionRequest, source: BehaviorPlanSource, currentChat = false): void {
     if (source === 'local-idle' && this.movementMode === 0) return;
-    const sameTurn = chatAuthorization.kind === 'play' && this.active?.playbackToken === chatAuthorization.playbackToken;
+    const sameTurn = currentChat && this.active?.source === 'chat';
     if (sameTurn) {
       if (this.closed || this.trustedRuntimeBlocked || this.dragging || this.capabilityTask || this.awaitingConfirmation || this.movementModeTransitionPending) return;
     } else if (!this.canRequest(source)) return;

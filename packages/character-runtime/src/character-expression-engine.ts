@@ -3,7 +3,7 @@ import { resolveCharacterPresentationV3 } from './character-playback-view';
 import { characterPlaybackFeedbackSchema, type CharacterPlaybackFeedback } from './behavior-contracts';
 import { reduceCharacterActionSchedule, type CharacterBehaviorSchedule, type CharacterScheduleEffect } from './behavior-scheduler';
 import { characterMoodUpdateSchema, sampleMood, type CharacterMood, type CharacterMoodSnapshot } from './character-mood';
-import { characterExpressionPlanSchema, type CharacterExpressionPlan } from './character-expression-plan';
+import { characterExpressionPlanSchema, characterExplicitPlaybackSchema, type CharacterExpressionPlan } from './character-expression-plan';
 
 export type CharacterExpressionContext = Readonly<{ contextRevision: number; moodRevision: number; instance: symbol }>;
 export type CharacterExpressionEffect = Exclude<CharacterScheduleEffect, { type: 'play' } | { type: 'none' }>
@@ -16,6 +16,9 @@ export type CharacterExpressionResult = { snapshot: CharacterExpressionSnapshot;
 export type CharacterExpressionDecision = {
   context: CharacterExpressionContext; eventId: string; source: 'chat' | 'autonomous';
   moodUpdate?: unknown; expressionPlan?: unknown;
+  explicitPlayback?: unknown;
+  /** 仅宿主提供；同轮明确播放保留原 token 与截止时间，更新其后的心情计划。 */
+  preserveExplicitPlaybackToken?: string;
 };
 export type CharacterExpressionEvent = { id: string; type: TrustedCharacterEventV3; occurredAtMs: number };
 export type CharacterExpressionEngineOptions = {
@@ -84,18 +87,28 @@ export class CharacterExpressionEngine {
     this.decisions.add(decision.eventId);
     if (this.decisions.size > 1024) this.decisions.delete(this.decisions.values().next().value!);
     let effects: CharacterExpressionEffect[] = [];
+    const preserveExplicit = this.explicit && decision.preserveExplicitPlaybackToken !== undefined
+      && this.schedule.current?.playbackToken === decision.preserveExplicitPlaybackToken;
     if (mood?.success) {
       this.moodRevision++;
       this.mood = { summary: mood.data.summary, targetStrength: mood.data.strength, startedAtMs: this.now(),
         fadeInMs: mood.data.fadeInMs ?? (decision.source === 'chat' ? 0 : 60_000), halfLifeMs: mood.data.halfLifeMs,
         revision: this.moodRevision, sourceEventId: decision.eventId };
-      this.plan = null; this.explicit = false;
-      effects = this.stop();
+      this.plan = null;
+      if (!preserveExplicit) { this.explicit = false; effects = this.stop(); }
     }
     if (legal && parsed?.success) {
       this.plan = { ...parsed.data, contextRevision: this.contextRevision, moodRevision: this.moodRevision,
         expiresAtMs: this.now() + parsed.data.validForMs };
-      this.explicit = false;
+      if (!preserveExplicit) this.explicit = false;
+    }
+    if (preserveExplicit) return this.result();
+    if (decision.explicitPlayback !== undefined) {
+      const explicit = characterExplicitPlaybackSchema.safeParse(decision.explicitPlayback);
+      if (explicit.success) {
+        const result = this.playExplicit(explicit.data.stateId, explicit.data.actionId);
+        return { ...result, effects: [...effects, ...result.effects] };
+      }
     }
     return this.advanceWith(effects, !!mood?.success || !!(legal && parsed?.success && !parsed.data.states.length));
   }

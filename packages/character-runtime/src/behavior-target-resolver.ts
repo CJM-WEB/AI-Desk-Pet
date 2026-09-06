@@ -1,15 +1,6 @@
-import type {
-  BehaviorTarget,
-  CharacterChatBehaviorPlan,
-  CharacterBehaviorPlan,
-  MovementControlPlan,
-  PublicBehaviorAction,
-  PublicBehaviorCatalog
-} from './character-behavior-plan';
+import type { BehaviorTarget, CharacterBehaviorPlan, PublicBehaviorCatalog, PublicBehaviorState, PublicCharacterIdentity } from './character-behavior-plan';
 import type { CharacterStandardSemantic } from './behavior-contracts';
-import {
-  type CharacterManifestV3
-} from './character-v3-schema';
+import type { CharacterManifestV3 } from './character-v3-schema';
 import { resolveCharacterPresentationV3 } from './character-playback-view';
 
 export type ResolvedBehaviorTarget =
@@ -34,513 +25,127 @@ export type CharacterBehaviorAuthorization =
       diagnosticCode?: 'CHARACTER_ACTION_UNAVAILABLE';
     }>;
 
-const ACTION_UNAVAILABLE = 'CHARACTER_ACTION_UNAVAILABLE';
-const MINIMUM_PUBLIC_BEHAVIOR_SIMILARITY = 0.6;
-const HAN_CHARACTER_PATTERN = /\p{Script=Han}/gu;
 
-/**
- * 本地模型 6,400-token 输入按既有 3 UTF-8 bytes/token 保守折算为 19,200 bytes。
- * 扣除 4,000 字符用户正文最坏 12,000 bytes 与固定指令、Schema 后，公开目录只占 2,400 bytes。
- */
-export const PUBLIC_BEHAVIOR_CATALOG_UTF8_BYTE_BUDGET = 2_400;
-/** 每个层级条目预留约 100 bytes 的名称、语义和 JSON 结构开销。 */
-export const PUBLIC_BEHAVIOR_CATALOG_ENTRY_BUDGET = 24;
-
-function utf8ByteLength(value: unknown): number {
-  return new TextEncoder().encode(JSON.stringify(value)).byteLength;
+/** 完整目录只含作者公开文字及当前皮肤的合法 ID 对，预算留到每次请求。 */
+export function createPublicBehaviorCatalog(manifest: CharacterManifestV3, skinId: string): PublicBehaviorCatalog {
+  return {
+    idleStateId: manifest.idleStateId,
+    identity: { name: manifest.name, ...structuredClone(manifest.identity) },
+    states: manifest.states.flatMap(state => {
+      const actions = state.actionIds.flatMap(actionId => {
+        if (!resolveCharacterPresentationV3(manifest, skinId, state.id, actionId)) return [];
+        const action = manifest.actions.find(candidate => candidate.id === actionId)!;
+        return [{ actionId, name: action.name, ...(action.description === undefined ? {} : { description: action.description }), tags: [...action.tags] }];
+      });
+      return actions.length ? [{ stateId: state.id, name: state.name, agentInferable: state.agentInferable,
+        ...(state.description === undefined ? {} : { description: state.description }), tags: [...state.tags], actions }] : [];
+    })
+  };
 }
-
-function firstCharacter(value: string): string {
-  return Array.from(value)[0] ?? value;
+function normalized(value: string): string { return value.normalize('NFKC').trim().toLowerCase(); }
+function scoreText(query: string, text: string): number {
+  query = normalized(query); text = normalized(text);
+  if (!query || !text) return 0;
+  if (query.includes(text) || text.includes(query)) return 1;
+  const terms = (value: string) => new Set(value.match(/[\p{Script=Han}]|[a-z0-9_-]+/gu) ?? []);
+  const wanted = terms(query); const actual = terms(text);
+  return [...wanted].filter(term => actual.has(term)).length / Math.max(1, wanted.size);
 }
-
-type MutablePublicAction = {
-  actionId: string;
-  name: string;
-  description?: string;
-  tags: string[];
+function mentioned(text: string, candidate: { name: string }, id: string): boolean {
+  const query = normalized(text);
+  return query.includes(normalized(candidate.name))
+    || query.split(/[^\p{L}\p{N}_-]+/u).includes(normalized(id));
+}
+export type BehaviorCandidateContext = {
+  text: string; sequence: number; currentStateId?: string | null | undefined; mood?: string | undefined;
+  recentActions?: readonly string[] | undefined; explicitPlaybackRequested?: boolean | undefined;
 };
-
-type MutablePublicState = {
-  stateId: string;
-  name: string;
-  description?: string;
-  tags: string[];
-  actions: MutablePublicAction[];
-};
-
-type MutablePublicCatalog = {
-  identity: {
-    name: string;
-    description: string;
-    background: string;
-    traits: string[];
-    languageStyle: string;
-    likes: string[];
-    behavioralTendencies: string[];
+/** 描述仅排序候选；预留轮换位置，使大包末尾与同状态末尾动作都可被看见。 */
+export function selectBehaviorCandidates(catalog: PublicBehaviorCatalog, context: BehaviorCandidateContext): PublicBehaviorCatalog {
+  // 描述可能被多个状态共享；每次请求只算一次相关性，避免排序反复扫描长文本。
+  const relevance = new Map<string, number>();
+  const mentions = new Map<string, boolean>();
+  const isMentioned = (entry: { name: string }, id: string) => {
+    const key = `${entry.name}\0${id}`;
+    if (!mentions.has(key)) mentions.set(key, mentioned(context.text, entry, id));
+    return mentions.get(key)!;
   };
-  states: MutablePublicState[];
-};
-
-function publicCatalogEntryCount(catalog: PublicBehaviorCatalog): number {
-  return catalog.states.reduce((total, state) => total + 1 + state.actions.length, 0);
-}
-
-function expandTextWithinBudget(
-  catalog: MutablePublicCatalog,
-  current: string,
-  source: string,
-  setValue: (value: string) => void,
-  byteBudget: number
-): void {
-  if (current === source) return;
-  setValue(source);
-  if (utf8ByteLength(catalog) <= byteBudget) return;
-
-  const characters = Array.from(source);
-  let low = Math.max(1, Array.from(current).length);
-  let high = characters.length;
-  let accepted = current;
-  while (low <= high) {
-    const middle = Math.floor((low + high) / 2);
-    const candidate = characters.slice(0, middle).join('');
-    setValue(candidate);
-    if (utf8ByteLength(catalog) <= byteBudget) {
-      accepted = candidate;
-      low = middle + 1;
-    } else {
-      high = middle - 1;
-    }
+  const similarity = (text: string, mood = false) => {
+    const key = `${mood ? 'm:' : 't:'}${text}`;
+    if (!relevance.has(key)) relevance.set(key, scoreText(mood ? context.mood ?? '' : context.text, text));
+    return relevance.get(key)!;
+  };
+  const score = (entry: { name: string; description?: string | undefined; tags: readonly string[] }) =>
+    Math.max(...[entry.name, entry.description ?? '', ...entry.tags].map(text => similarity(text)))
+    + .2 * similarity(entry.description ?? entry.name, true);
+  const states = catalog.states.filter(state => state.agentInferable || context.explicitPlaybackRequested
+    || state.stateId === catalog.idleStateId || state.stateId === context.currentStateId);
+  const ranked = [...states].sort((a, b) => {
+    const rank = (state: PublicBehaviorState) => (state.stateId === catalog.idleStateId ? 100 : 0)
+      + (state.stateId === context.currentStateId ? 90 : 0)
+      + (isMentioned(state, state.stateId) || state.actions.some(action => isMentioned(action, action.actionId)) ? 80 : 0)
+      + Math.max(score(state), ...state.actions.map(score));
+    return rank(b) - rank(a);
+  });
+  const selected = ranked.slice(0, states.length > 24 ? 23 : 24);
+  if (ranked.length > selected.length) {
+    const exploration = ranked.slice(selected.length);
+    selected.push(exploration[Math.abs(context.sequence) % exploration.length]!);
   }
-  setValue(accepted);
-}
-
-function appendValuesWithinBudget(
-  catalog: MutablePublicCatalog,
-  target: string[],
-  source: readonly string[],
-  byteBudget: number
-): void {
-  for (const value of source) {
-    target.push(value);
-    if (utf8ByteLength(catalog) <= byteBudget) continue;
-    target.pop();
-    break;
-  }
-}
-
-/**
- * 只裁剪发送给模型的公开投影：小目录保持逐字段不变；超限时默认状态优先，
- * 其余状态按稳定顺序、动作按状态轮询收录，避免共享动作形成平方级重复。
- */
-export function boundPublicBehaviorCatalogForModel(
-  catalog: PublicBehaviorCatalog,
-  preferredStateName?: string,
-  byteBudget = PUBLIC_BEHAVIOR_CATALOG_UTF8_BYTE_BUDGET
-): PublicBehaviorCatalog {
-  if (
-    publicCatalogEntryCount(catalog) <= PUBLIC_BEHAVIOR_CATALOG_ENTRY_BUDGET
-    && utf8ByteLength(catalog) <= byteBudget
-  ) return catalog;
-
-  const identity = catalog.identity;
-  const bounded: MutablePublicCatalog = {
-    identity: {
-      name: identity.name,
-      description: firstCharacter(identity.description),
-      background: firstCharacter(identity.background),
-      traits: [],
-      languageStyle: firstCharacter(identity.languageStyle),
-      likes: [],
-      behavioralTendencies: []
-    },
-    states: []
-  };
-  const preferred = preferredStateName === undefined
-    ? null
-    : catalog.states.find(state => state.name === preferredStateName) ?? null;
-  const orderedStates = preferred === null
-    ? [...catalog.states]
-    : [preferred, ...catalog.states.filter(state => state !== preferred)];
-  const selected: Array<{
-    source: PublicBehaviorCatalog['states'][number];
-    projected: MutablePublicState;
-  }> = [];
-
-  const appendState = (source: PublicBehaviorCatalog['states'][number]): boolean => {
-    if (publicCatalogEntryCount(bounded) >= PUBLIC_BEHAVIOR_CATALOG_ENTRY_BUDGET) return false;
-    const projected: MutablePublicState = {
-      name: source.name,
-      stateId: source.stateId,
-      tags: [],
-      actions: []
-    };
-    bounded.states.push(projected);
-    if (utf8ByteLength(bounded) > byteBudget) {
-      bounded.states.pop();
-      return false;
+  const ordered = selected.map(state => {
+    const actions = [...state.actions].sort((a, b) =>
+      (Number(isMentioned(b, b.actionId)) * 10 + score(b) - Number(context.recentActions?.includes(b.name)) * .05)
+      - (Number(isMentioned(a, a.actionId)) * 10 + score(a) - Number(context.recentActions?.includes(a.name)) * .05));
+    // 每状态第二个位置用于探索，后续仍按相关性；不会让首个共享动作吞尽目录。
+    if (actions.length > 1) {
+      const index = 1 + Math.abs(context.sequence) % (actions.length - 1);
+      const [explore] = actions.splice(index, 1); actions.splice(1, 0, explore!);
     }
-    selected.push({ source, projected });
-    return true;
-  };
-  const appendNextAction = (pair: typeof selected[number]): boolean => {
-    const action = pair.source.actions[pair.projected.actions.length];
-    if (!action || publicCatalogEntryCount(bounded) >= PUBLIC_BEHAVIOR_CATALOG_ENTRY_BUDGET) {
-      return false;
-    }
-    const projected: MutablePublicAction = {
-      name: action.name,
-      actionId: action.actionId,
-      tags: []
-    };
-    pair.projected.actions.push(projected);
-    if (utf8ByteLength(bounded) <= byteBudget) return true;
-    pair.projected.actions.pop();
-    return false;
-  };
-
-  for (const source of orderedStates) {
-    if (!appendState(source)) break;
-    const pair = selected.at(-1)!;
-    // 收录的可播放状态至少携带一个真实动作，避免只保留空壳层级。
-    if (source.actions.length > 0 && !appendNextAction(pair)) {
-      selected.pop();
-      bounded.states.pop();
-      break;
-    }
-  }
-
-  // 每轮每状态最多追加一个动作，避免首个状态或共享动作副本独占目录。
-  while (publicCatalogEntryCount(bounded) < PUBLIC_BEHAVIOR_CATALOG_ENTRY_BUDGET) {
+    return { source: state, actions, selected: actions.slice(0, 1) };
+  });
+  let remaining = 32 - ordered.length;
+  for (let depth = 1; remaining > 0; depth++) {
     let added = false;
-    for (const pair of selected) {
-      if (appendNextAction(pair)) added = true;
-      if (publicCatalogEntryCount(bounded) >= PUBLIC_BEHAVIOR_CATALOG_ENTRY_BUDGET) break;
+    for (const item of ordered) {
+      if (remaining && item.actions[depth]) { item.selected.push(item.actions[depth]!); remaining--; added = true; }
     }
     if (!added) break;
   }
-
-  expandTextWithinBudget(
-    bounded, bounded.identity.description, identity.description,
-    value => { bounded.identity.description = value; }, byteBudget
-  );
-  expandTextWithinBudget(
-    bounded, bounded.identity.languageStyle, identity.languageStyle,
-    value => { bounded.identity.languageStyle = value; }, byteBudget
-  );
-  for (const pair of selected) {
-    if (pair.source.description !== undefined) {
-      pair.projected.description = firstCharacter(pair.source.description);
-      if (utf8ByteLength(bounded) > byteBudget) delete pair.projected.description;
-      else expandTextWithinBudget(
-        bounded, pair.projected.description, pair.source.description,
-        value => { pair.projected.description = value; }, byteBudget
-      );
-    }
-    appendValuesWithinBudget(bounded, pair.projected.tags, pair.source.tags, byteBudget);
-    pair.projected.actions.forEach((projectedAction, actionIndex) => {
-      const sourceAction = pair.source.actions[actionIndex];
-      if (!sourceAction) return;
-      if (sourceAction.description !== undefined) {
-        projectedAction.description = firstCharacter(sourceAction.description);
-        if (utf8ByteLength(bounded) > byteBudget) delete projectedAction.description;
-        else expandTextWithinBudget(
-          bounded, projectedAction.description, sourceAction.description,
-          value => { projectedAction.description = value; }, byteBudget
-        );
-      }
-      appendValuesWithinBudget(bounded, projectedAction.tags, sourceAction.tags, byteBudget);
-    });
-  }
-  expandTextWithinBudget(
-    bounded, bounded.identity.background, identity.background,
-    value => { bounded.identity.background = value; }, byteBudget
-  );
-  appendValuesWithinBudget(bounded, bounded.identity.traits, identity.traits, byteBudget);
-  appendValuesWithinBudget(bounded, bounded.identity.likes, identity.likes, byteBudget);
-  appendValuesWithinBudget(
-    bounded,
-    bounded.identity.behavioralTendencies,
-    identity.behavioralTendencies,
-    byteBudget
-  );
-  return bounded;
+  return { ...catalog, states: ordered.map(item => ({ ...item.source, actions: item.selected })) };
 }
-
-/** 公开名称匹配统一使用 NFKC 和大小写折叠，不把私有标识符作为候选。 */
-function normalizePublicValue(value: string): string {
-  return value.normalize('NFKC').trim().toLowerCase();
+/** 只保留完整 Unicode 字符，调用方按整个请求预算调整字段额度。 */
+export function boundCharacterText(text: string, limit: number): string {
+  const characters = Array.from(text); return characters.length <= limit ? text : characters.slice(0, limit).join('') + '…';
 }
-
-/** 公开描述只用名称、语义、描述和标签排序；目录非空时稳定选取最高分候选。 */
-function similarity(query: string, candidate: string): number {
-  if (!query || !candidate) return 0;
-  if (query === candidate) return 1;
-  if (query.includes(candidate) || candidate.includes(query)) return 0.8;
-  const queryCharacters = new Set(query.match(HAN_CHARACTER_PATTERN) ?? []);
-  const candidateCharacters = new Set(candidate.match(HAN_CHARACTER_PATTERN) ?? []);
-  if (queryCharacters.size === 0 || candidateCharacters.size === 0) return 0;
-  const shared = [...queryCharacters].filter(value => candidateCharacters.has(value)).length;
-  return shared / Math.max(queryCharacters.size, candidateCharacters.size);
+export function projectCharacterIdentity(identity: PublicCharacterIdentity, limit: number): PublicCharacterIdentity {
+  return Object.fromEntries(Object.entries(identity).map(([key, value]) => [
+    key, Array.isArray(value) ? value.map(text => boundCharacterText(text, limit)) : boundCharacterText(value, limit)
+  ])) as PublicCharacterIdentity;
 }
-
-function playableActionIds(manifest: CharacterManifestV3, skinId: string): Set<string> {
-  return new Set(manifest.states.flatMap(state => state.actionIds.filter(id => resolveCharacterPresentationV3(manifest, skinId, state.id, id))));
-}
-
-/** 生成仅含有界人设与可播放层级的模型清单，绝不包含私有标识或素材数据。 */
-export function createPublicBehaviorCatalog(
-  manifest: CharacterManifestV3,
-  skinId: string
-): PublicBehaviorCatalog {
-  const playable = playableActionIds(manifest, skinId);
-  const publicActionsById = new Map(manifest.actions.flatMap(action => (
-    playable.has(action.id)
-      ? [[action.id, {
-          name: action.name,
-          actionId: action.id,
-          ...(action.description === undefined ? {} : { description: action.description }),
-          tags: [...action.tags]
-        } satisfies PublicBehaviorAction] as const]
-      : []
-  )));
-  const states = manifest.states.filter(state => (
-    state.agentInferable && state.actionIds.some(actionId => playable.has(actionId))
-  ));
-
-  const catalog: PublicBehaviorCatalog = {
-    identity: {
-      name: manifest.name,
-      description: manifest.identity.description,
-      background: manifest.identity.background,
-      traits: [...manifest.identity.traits],
-      languageStyle: manifest.identity.languageStyle,
-      likes: [...manifest.identity.likes],
-      behavioralTendencies: [...manifest.identity.behavioralTendencies]
-    },
-    states: states.map(state => ({
-      name: state.name,
-      stateId: state.id,
-      ...(state.description === undefined ? {} : { description: state.description }),
-      tags: [...state.tags],
-      actions: state.actionIds.flatMap(actionId => {
-        const publicAction = publicActionsById.get(actionId);
-        return publicAction ? [publicAction] : [];
-      })
-    }))
-  };
-  const defaultState = manifest.states.find(state => state.id === manifest.idleStateId);
-  return boundPublicBehaviorCatalogForModel(catalog, defaultState?.name);
-}
-
-type PublicCatalogCandidate = Readonly<{
-  kind: 'state' | 'action';
-  stateName: string;
-  name: string;
-  description?: string;
-  tags: readonly string[];
-}>;
-
-/** 按目录顺序展开状态与动作，动作始终携带其公开父状态。 */
-function publicCatalogCandidates(catalog: PublicBehaviorCatalog): PublicCatalogCandidate[] {
-  return catalog.states.flatMap(state => {
-    const actions = state.actions.map(action => ({
-      kind: 'action' as const,
-      stateName: state.name,
-      name: action.name,
-      ...(action.description === undefined ? {} : { description: action.description }),
-      tags: action.tags
-    }));
-    return [{
-      kind: 'state' as const,
-      stateName: state.name,
-      name: state.name,
-      ...(state.description === undefined ? {} : { description: state.description }),
-      tags: state.tags
-    }, ...actions];
-  });
-}
-
-function scorePublicCandidate(candidate: PublicCatalogCandidate, inputs: readonly string[]): number {
-  if (inputs.length === 0) return 0;
-  const fields = [
-    candidate.name,
-    ...(candidate.description === undefined ? [] : [candidate.description]),
-    ...candidate.tags
-  ].map(normalizePublicValue);
-  return Math.max(...inputs.flatMap(query => fields.map(field => similarity(query, field))));
-}
-
-type SimilarityAction = Readonly<{
-  name: string;
-  description?: string | undefined;
-  tags: readonly string[];
-}>;
-
-/** 在指定状态内部按公开字段择优，平局保持清单顺序且低于阈值失败关闭。 */
-function selectStateActionBySimilarity<T extends SimilarityAction>(
-  actions: readonly T[],
-  query: string
-): T | null {
-  const normalizedQuery = normalizePublicValue(query);
-  let selected: T | null = null;
-  let selectedScore = MINIMUM_PUBLIC_BEHAVIOR_SIMILARITY;
-  for (const action of actions) {
-    const score = scorePublicCandidate({
-      kind: 'action',
-      stateName: '',
-      name: action.name,
-      ...(action.description === undefined ? {} : { description: action.description }),
-      tags: action.tags
-    }, [normalizedQuery]);
-    if (score < MINIMUM_PUBLIC_BEHAVIOR_SIMILARITY || (selected && score <= selectedScore)) continue;
-    selected = action;
-    selectedScore = score;
-  }
-  return selected;
-}
-
-/**
- * 模型隐藏 activity/status 只能命中当前角色、当前皮肤的公开候选。
- * 目录顺序负责稳定平局；选中后仍须经私有清单精确验证。
- */
-export function selectPublicBehaviorTarget(
-  catalog: PublicBehaviorCatalog,
-  activity: string | undefined,
-  status: string | undefined,
-  movementControl?: MovementControlPlan | null
-): CharacterChatBehaviorPlan {
-  const motionDescriptors = movementControl?.kind === 'set_mode' && movementControl.mode === 0
-    ? ['idle', '静止', '待机']
-    : movementControl?.kind === 'set_mode' && movementControl.mode > 0
-      ? ['move', 'run', 'walk', '移动', '运动', '跑步', '走动']
-      : movementControl?.kind === 'move_once'
-        ? [
-            'move', 'run', 'walk', '移动', '运动', '跑步', '走动',
-            movementControl.target, movementControl.distance
-          ]
-      : [];
-  const queries = [activity, status, ...motionDescriptors]
-    .filter((value): value is string => typeof value === 'string')
-    .map(normalizePublicValue);
-  const candidates = publicCatalogCandidates(catalog);
-  if (queries.length === 0 || candidates.length === 0) {
-    return { kind: 'none' };
-  }
-  const motionQueries = motionDescriptors.map(normalizePublicValue);
-  const behaviorQueries = [activity, status]
-    .filter((value): value is string => typeof value === 'string')
-    .map(normalizePublicValue);
-  const scored = candidates.map(candidate => ({
-    candidate,
-    confidence: Math.max(
-      scorePublicCandidate(candidate, motionQueries),
-      scorePublicCandidate(candidate, behaviorQueries)
-    ),
-    // 明确运动计划优先限定身体状态，activity/status 再负责同类候选间的细分。
-    score: scorePublicCandidate(candidate, motionQueries) * 2
-      + scorePublicCandidate(candidate, behaviorQueries)
-  })).sort((left, right) => right.score - left.score);
-  const best = scored[0];
-  if (!best || best.confidence < MINIMUM_PUBLIC_BEHAVIOR_SIMILARITY) {
-    return { kind: 'none' };
-  }
-  return best.candidate.kind === 'state'
-    ? { kind: 'play_state', state: best.candidate.stateName }
-    : {
-        kind: 'play_state',
-        state: best.candidate.stateName,
-        action: best.candidate.name
-      };
-}
-
-/** Main 只接受当前公开目录中已有的模型目标，目录外名称不能进入私有解析器。 */
-export function isPublicBehaviorTarget(
-  catalog: PublicBehaviorCatalog,
-  target: BehaviorTarget | Extract<CharacterBehaviorPlan, { kind: 'play_state' }>
-): boolean {
-  if (target.kind === 'play_state') {
-    const normalizedState = normalizePublicValue(target.state);
-    const states = catalog.states.filter(state => (
-      normalizePublicValue(state.name) === normalizedState
-    ));
-    if (states.length !== 1) return false;
-    if (target.action === undefined) return true;
-    return selectStateActionBySimilarity(states[0]!.actions, target.action) !== null;
-  }
-  const candidates = publicCatalogCandidates(catalog);
-  if (target.kind === 'tag') {
-    const normalizedTag = normalizePublicValue(target.tag);
-    // 标签可能被用户同时分配给多个动作；只有唯一命中才可作为精确 Provider 计划。
-    return candidates.filter(candidate => (
-      candidate.tags.some(tag => normalizePublicValue(tag) === normalizedTag)
-    )).length === 1;
-  }
-  return candidates.filter(candidate => (
-    candidate.kind === (target.kind === 'state_name' ? 'state' : 'action')
-      && normalizePublicValue(candidate.name) === normalizePublicValue(target.name)
-  )).length === 1;
-}
-
-/** 解析唯一公开目标；未知、歧义和当前皮肤不可播放统一返回稳定能力错误。 */
+/** 明确目标只接受唯一名称或 ID；描述理解留给模型，不做相似度补偿。 */
 export function resolveBehaviorTarget(
-  manifest: CharacterManifestV3,
-  skinId: string,
+  manifest: CharacterManifestV3, skinId: string,
   target: BehaviorTarget | Extract<CharacterBehaviorPlan, { kind: 'play_state' }>
 ): CharacterExpressionTarget {
-  const playable = playableActionIds(manifest, skinId);
-  const actions = manifest.actions.filter(action => playable.has(action.id));
-  const states = manifest.states.filter(state => (
-    state.agentInferable && state.actionIds.some(actionId => playable.has(actionId))
-  ));
-
+  const catalog = createPublicBehaviorCatalog(manifest, skinId);
+  const equal = (value: string, name: string, id: string) => normalized(value) === normalized(name) || normalized(value) === normalized(id);
+  let targets: CharacterExpressionTarget[];
   if (target.kind === 'play_state') {
-    const normalizedState = normalizePublicValue(target.state);
-    const matchingStates = states.filter(state => (
-      normalizePublicValue(state.name) === normalizedState
-    ));
-    if (matchingStates.length !== 1) throw new Error(ACTION_UNAVAILABLE);
-    const state = matchingStates[0]!;
-    if (target.action === undefined) return { kind: 'state', stateId: state.id };
-    const selectedAction = selectStateActionBySimilarity(
-      state.actionIds.flatMap(actionId => {
-        const action = actions.find(candidate => candidate.id === actionId);
-        return action ? [action] : [];
-      }),
-      target.action
-    );
-    if (!selectedAction) throw new Error(ACTION_UNAVAILABLE);
-    return {
-      kind: 'state_action',
-      stateId: state.id,
-      actionId: selectedAction.id
-    };
+    const states = catalog.states.filter(state => equal(target.state, state.name, state.stateId));
+    targets = states.flatMap<CharacterExpressionTarget>(state => target.action === undefined
+      ? [{ kind: 'state' as const, stateId: state.stateId }]
+      : state.actions.filter(action => equal(target.action!, action.name, action.actionId))
+        .map(action => ({ kind: 'state_action' as const, stateId: state.stateId, actionId: action.actionId })));
+  } else if (target.kind === 'state_name') {
+    targets = catalog.states.filter(state => equal(target.name, state.name, state.stateId))
+      .map(state => ({ kind: 'state' as const, stateId: state.stateId }));
+  } else {
+    targets = catalog.states.flatMap(state => [
+      ...(target.kind === 'tag' && state.tags.includes(target.tag) ? [{ kind: 'state' as const, stateId: state.stateId }] : []),
+      ...state.actions.filter(action => target.kind === 'tag' ? action.tags.includes(target.tag) : equal(target.name, action.name, action.actionId))
+        .map(action => ({ kind: 'state_action' as const, stateId: state.stateId, actionId: action.actionId }))
+    ]);
   }
-
-  const normalizedTarget = normalizePublicValue(
-    target.kind === 'tag' ? target.tag : target.name
-  );
-  const candidates: CharacterExpressionTarget[] = target.kind === 'state_name'
-    ? states.flatMap(state => (
-      normalizePublicValue(state.name) === normalizedTarget
-        ? [{ kind: 'state' as const, stateId: state.id }]
-        : []
-    ))
-    : target.kind === 'action_name'
-      ? states.flatMap(state => actions.filter(action => state.actionIds.includes(action.id) && normalizePublicValue(action.name) === normalizedTarget).map(action => ({ kind: 'state_action' as const, stateId: state.id, actionId: action.id })))
-      : [
-          ...states.flatMap(state => (
-            state.tags.some(tag => normalizePublicValue(tag) === normalizedTarget)
-              ? [{ kind: 'state' as const, stateId: state.id }]
-              : []
-          )),
-          ...states.flatMap(state => actions.filter(action => state.actionIds.includes(action.id) && action.tags.some(tag => normalizePublicValue(tag) === normalizedTarget)).map(action => ({ kind: 'state_action' as const, stateId: state.id, actionId: action.id })))
-        ];
-
-  const uniqueCandidates = new Map(candidates.map(candidate => [
-    candidate.kind === 'state' ? `state:${candidate.stateId}` : `action:${'stateId' in candidate ? candidate.stateId : ''}:${candidate.actionId}`,
-    candidate
-  ]));
-  if (uniqueCandidates.size !== 1) throw new Error(ACTION_UNAVAILABLE);
-  return [...uniqueCandidates.values()][0]!;
+  if (targets.length !== 1) throw new Error('CHARACTER_ACTION_UNAVAILABLE');
+  return targets[0]!;
 }

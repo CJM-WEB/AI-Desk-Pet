@@ -51,14 +51,14 @@ const characterResponseSchema = Object.freeze({
 });
 
 const localBehaviorContext = {
-  character: {
-    identity: {
+  character: { idleStateId: 'protocol-state',
+    identity: { formsOfAddress: [], dislikes: [], boundaries: [], exampleLines: [],
       name: '本地测试角色', description: '本地测试角色', background: '测试环境',
       traits: [], languageStyle: '简洁', likes: [], behavioralTendencies: []
     },
-    states: [{
-      name: '开心', stateId: 'state-1829', tags: [],
-      actions: [{ name: '挥手', actionId: 'action-1893', tags: [] }]
+    states: [{ agentInferable: true,
+      name: '开心', stateId: 'protocol-state', tags: [],
+      actions: [{ name: '挥手', actionId: 'protocol-action', tags: [] }]
     }]
   },
   runtime: { moving: false, dragging: false, carrying: false, movementMode: 2 as const },
@@ -167,7 +167,7 @@ describe('LocalModelProvider', () => {
         response_format: { type: 'json_object' }
       });
       expect(requestBody.response_format.schema.required).toEqual(expect.arrayContaining([
-        'text', 'activity', 'status', 'movementControl', 'behaviorPlan', 'capabilityPlan'
+        'text', 'movementControl', 'capabilityPlan'
       ]));
     }
   );
@@ -175,10 +175,7 @@ describe('LocalModelProvider', () => {
   test('真实本地 Provider 接受包含 capabilityPlan 的完整桌宠组合契约', async () => {
     const payload = JSON.stringify({
       text: '需要进入本地任务。',
-      activity: '准备任务',
-      status: 'thinking',
       movementControl: { kind: 'keep' },
-      behaviorPlan: { kind: 'none' },
       capabilityPlan: { kind: 'agent_task' }
     });
     const fetchClient = vi.fn<FetchLike>(async () => sseResponse([payload]));
@@ -188,8 +185,8 @@ describe('LocalModelProvider', () => {
       history: [],
       text: '请整理当前目录并生成摘要',
       behaviorContext: {
-        character: {
-          identity: {
+        character: { idleStateId: 'idle',
+          identity: { formsOfAddress: [], dislikes: [], boundaries: [], exampleLines: [],
             name: '小橘', description: '测试角色', background: '测试环境', traits: [],
             languageStyle: '简洁', likes: [], behavioralTendencies: []
           },
@@ -211,7 +208,7 @@ describe('LocalModelProvider', () => {
     const fetchClient = vi.fn<FetchLike>(async () => jsonResponse({
       choices: [{ message: { content: JSON.stringify({ text: '收到。' }) } }]
     }));
-    const adapter = new ConversationChatAdapter(new LocalModelProvider(readyPort(), fetchClient));
+    const adapter = new ConversationChatAdapter(new LocalModelProvider(readyPort(), fetchClient), () => undefined, { inputByteBudget: 19_200 });
     const text = '甲'.repeat(4_000);
     const actions = Array.from({ length: 100 }, (_, index) => ({
       name: `共享动作${index}`, actionId: 'action-7391', description: '动'.repeat(2_000), tags: []
@@ -230,6 +227,7 @@ describe('LocalModelProvider', () => {
             background: '景'.repeat(4_000)
           },
           states: Array.from({ length: 100 }, (_, index) => ({
+            agentInferable: true,
             name: `共享状态${index}`, stateId: 'action-7933', description: '态'.repeat(2_000),
             tags: [], actions
           }))
@@ -815,10 +813,7 @@ describe('LocalModelProvider', () => {
   test('本地模型非法隐藏字段由聊天 Adapter 逐项丢弃且保留正文', async () => {
     const payload = JSON.stringify({
       text: '正文仍然有效。',
-      activity: 42,
-      status: null,
       movementControl: { kind: 'move_once', target: { x: 1, y: 2 } },
-      behaviorPlan: { kind: 'unknown' },
       capabilityPlan: { kind: 'agent_task', preferredTool: 'unknown' }
     });
     const adapter = new ConversationChatAdapter(new LocalModelProvider(
@@ -831,8 +826,8 @@ describe('LocalModelProvider', () => {
       history: [],
       text: '普通聊天',
       behaviorContext: {
-        character: {
-          identity: {
+        character: { idleStateId: 'idle',
+          identity: { formsOfAddress: [], dislikes: [], boundaries: [], exampleLines: [],
             name: '小橘', description: '测试角色', background: '测试环境', traits: [],
             languageStyle: '简洁', likes: [], behavioralTendencies: []
           },

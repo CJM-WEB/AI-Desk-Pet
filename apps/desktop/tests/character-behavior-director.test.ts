@@ -21,6 +21,7 @@ import {
   transientBehaviorIntentCases
 } from '../../../tests/fixtures/natural-intent-matrix';
 
+let completionSequence = 0;
 const NONE: CharacterBehaviorAuthorization = { kind: 'none' };
 
 /** 构造只记录 Director 边界调用的同步行为服务端口。 */
@@ -53,12 +54,14 @@ function createFixture(initialSettings: Readonly<{
     ['移动', { kind: 'state_action', stateId: 'move-state', actionId: 'move-action' }]
   ]);
   const behavior = {
-    getPublicBehaviorCatalog: vi.fn((): PublicBehaviorCatalog => ({
-      identity: {
+    context: vi.fn(() => null), snapshot: vi.fn(() => null), applyDecision: vi.fn(() => directedAuthorization),
+    invalidateContext: vi.fn(), recordTrustedEvent: vi.fn(), handleUserInteraction: vi.fn(),
+    getPublicBehaviorCatalog: vi.fn((): PublicBehaviorCatalog => ({ idleStateId: 'state-2241',
+      identity: { formsOfAddress: [], dislikes: [], boundaries: [], exampleLines: [],
         name: '测试角色', description: '测试角色', background: '测试环境', traits: [],
         languageStyle: '简洁', likes: [], behavioralTendencies: []
       },
-      states: [{
+      states: [{ agentInferable: true,
         name: '开心', stateId: 'state-2241', tags: [], actions: [
           { name: '挥手', actionId: 'action-2309', tags: [] },
           { name: '庆祝', actionId: 'action-2368', tags: ['dance'] }
@@ -290,34 +293,6 @@ describe('Main 角色行为 Director', () => {
     expect(fixture.director.getDiagnosticSnapshot().movementMode).toBe(2);
   });
 
-  test('“挥手一会儿”的模型计划命中层级动作且不改写持久三态', async () => {
-    const fixture = createFixture({ movementMode: 2, proactivityMode: 'assistive' });
-    fixture.setDirectedAuthorization({
-      kind: 'play', actionId: 'wave-action', playbackToken: 'wave-token', stateId: 'celebrate' + '-state'
-    });
-    const prepared = await fixture.director.prepareUserPrompt(
-      transientBehaviorIntentCases.waveTemporarily.prompt
-    );
-
-    await fixture.director.completeUserPrompt({
-      generation: 'generation-1',
-      explicitDirective: prepared.explicitDirective,
-      providerPlan: transientBehaviorIntentCases.waveTemporarily.providerPlan,
-      movementControl: { kind: 'keep' }
-    });
-    fixture.director.handleTaskEvent({ type: 'phase', phase: 'success' });
-
-    expect(fixture.behavior.resolveBehaviorStatePlan).toHaveBeenLastCalledWith({
-      kind: 'play_state', state: '开心', action: '挥手'
-    });
-    expect(fixture.behavior.requestDirectedBehavior).toHaveBeenCalledExactlyOnceWith(
-      { kind: 'state_action', stateId: 'happy-state', actionId: 'wave-action' },
-      { urgency: 80, systemForced: true }
-    );
-    expect(fixture.saveMovementMode).not.toHaveBeenCalled();
-    expect(fixture.director.getDiagnosticSnapshot().movementMode).toBe(2);
-  });
-
   test.each([
     [{ kind: 'set_mode', mode: 0 } as const, 0],
     [{ kind: 'set_mode', mode: 1 } as const, 1],
@@ -423,10 +398,7 @@ describe('Main 角色行为 Director', () => {
     if (source === 'gate') {
       await fixture.director.prepareUserPrompt('去右下角');
     } else {
-      await fixture.director.completeUserPrompt({
-        generation: 'generation-1', explicitDirective: null, providerPlan: null,
-        movementControl: { kind: 'move_once', target: 'bottom_right', distance: 'far' }
-      });
+      await fixture.director.completeUserPrompt({ generation: 'generation-1', explicitDirective: null, movementControl: { kind: 'move_once', target: 'bottom_right', distance: 'far' }, eventId: String(++completionSequence), context: fixture.director.captureExpressionContext() });
       fixture.director.handleTaskEvent({ type: 'phase', phase: 'success' });
     }
     fixture.director.handleMotionSnapshot({ ...fixture.motion.getSnapshot(), moving: true });
@@ -451,10 +423,7 @@ describe('Main 角色行为 Director', () => {
         }
       });
 
-      const pending = fixture.director.completeUserPrompt({
-        generation: 'generation-1', explicitDirective: null, providerPlan: null,
-        movementControl: { kind: 'set_mode', mode: 1 }
-      });
+      const pending = fixture.director.completeUserPrompt({ generation: 'generation-1', explicitDirective: null, movementControl: { kind: 'set_mode', mode: 1 }, eventId: String(++completionSequence), context: fixture.director.captureExpressionContext() });
       if (operation === 'cancel') fixture.director.cancelActive();
       else fixture.director.reset('generation-2');
       release();
@@ -530,10 +499,7 @@ describe('Main 角色行为 Director', () => {
     fixture.setDirectedAuthorization({
       kind: 'play', actionId: 'move-action', playbackToken: 'move-token', stateId: 'move' + '-state'
     });
-    await fixture.director.completeUserPrompt({
-      generation: 'generation-1', explicitDirective: null, providerPlan: null,
-      movementControl: { kind: 'set_mode', mode: 1 }
-    });
+    await fixture.director.completeUserPrompt({ generation: 'generation-1', explicitDirective: null, movementControl: { kind: 'set_mode', mode: 1 }, eventId: String(++completionSequence), context: fixture.director.captureExpressionContext() });
     fixture.director.requestPersistentMovement();
     fixture.director.handleTaskEvent({ type: 'phase', phase: 'success' });
     await fixture.director.prepareUserPrompt('静止不动');
@@ -633,12 +599,7 @@ describe('Main 角色行为 Director', () => {
       kind: 'play', actionId: 'move-action', playbackToken: 'move-token', stateId: 'move' + '-state'
     });
 
-    await fixture.director.completeUserPrompt({
-      generation: 'generation-1',
-      explicitDirective: null,
-      providerPlan: null,
-      movementControl
-    });
+    await fixture.director.completeUserPrompt({ generation: 'generation-1', explicitDirective: null, movementControl, eventId: String(++completionSequence), context: fixture.director.captureExpressionContext() });
     fixture.director.handleTaskEvent({ type: 'phase', phase: 'success' });
 
     if (persistedMode === null) expect(fixture.saveMovementMode).not.toHaveBeenCalled();
@@ -653,11 +614,7 @@ describe('Main 角色行为 Director', () => {
   test('Schema none 与纯行为候选不解除停止锁', async () => {
     const fixture = createFixture({ movementMode: 0, proactivityMode: 'autonomous' });
 
-    await fixture.director.completeUserPrompt({
-      generation: 'generation-1',
-      explicitDirective: null,
-      providerPlan: { kind: 'none' }
-    });
+    await fixture.director.completeUserPrompt({ generation: 'generation-1', explicitDirective: null, eventId: String(++completionSequence), context: fixture.director.captureExpressionContext() });
     fixture.director.handleTaskEvent({ type: 'phase', phase: 'success' });
 
     expect(fixture.saveMovementMode).not.toHaveBeenCalled();
@@ -702,10 +659,7 @@ describe('Main 角色行为 Director', () => {
     fixture.setDirectedAuthorization({
       kind: 'play', actionId: 'move-action', playbackToken: 'move-token', stateId: 'move' + '-state'
     });
-    await fixture.director.completeUserPrompt({
-      generation: 'generation-1', explicitDirective: null, providerPlan: null,
-      movementControl: { kind: 'set_mode', mode: 1 }
-    });
+    await fixture.director.completeUserPrompt({ generation: 'generation-1', explicitDirective: null, movementControl: { kind: 'set_mode', mode: 1 }, eventId: String(++completionSequence), context: fixture.director.captureExpressionContext() });
     fixture.director.requestPersistentMovement();
     fixture.director.handleTaskEvent({ type: 'phase', phase: 'success' });
     fixture.director.handleMotionSnapshot({ ...fixture.motion.getSnapshot(), moving: true });
@@ -745,10 +699,7 @@ describe('Main 角色行为 Director', () => {
     once.setDirectedAuthorization({
       kind: 'play', actionId: 'move-action', playbackToken: 'once-token', stateId: 'move' + '-state'
     });
-    await once.director.completeUserPrompt({
-      generation: 'generation-1', explicitDirective: null, providerPlan: null,
-      movementControl: { kind: 'move_once', target: 'bottom_right', distance: 'far' }
-    });
+    await once.director.completeUserPrompt({ generation: 'generation-1', explicitDirective: null, movementControl: { kind: 'move_once', target: 'bottom_right', distance: 'far' }, eventId: String(++completionSequence), context: once.director.captureExpressionContext() });
     once.director.handleTaskEvent({ type: 'phase', phase: 'success' });
     once.director.applyBehaviorSettings({ movementMode: 2, proactivityMode: 'assistive' });
 
@@ -904,12 +855,12 @@ describe('Main 角色行为 Director', () => {
     '模式 %i 不提交模型附带的移动动画，运动只由三态调度器发起',
     async mode => {
       const fixture = createFixture({ movementMode: 1, proactivityMode: 'assistive' });
-      fixture.behavior.getPublicBehaviorCatalog.mockReturnValue({
-        identity: {
+      fixture.behavior.getPublicBehaviorCatalog.mockReturnValue({ idleStateId: 'state-37285',
+        identity: { formsOfAddress: [], dislikes: [], boundaries: [], exampleLines: [],
           name: '测试角色', description: '测试角色', background: '测试环境', traits: [],
           languageStyle: '简洁', likes: [], behavioralTendencies: []
         },
-        states: [{
+        states: [{ agentInferable: true,
           name: '运动', stateId: 'state-37285', tags: [],
           actions: [{ name: '移动', actionId: 'action-37347', tags: [] }]
         }]
@@ -918,28 +869,23 @@ describe('Main 角色行为 Director', () => {
         kind: 'play', actionId: 'move-action', playbackToken: 'move-token', stateId: 'move' + '-state'
       });
 
-      await fixture.director.completeUserPrompt({
-        generation: 'generation-1',
-        explicitDirective: null,
-        providerPlan: play('移动'),
-        movementControl: { kind: 'set_mode', mode }
-      });
+      await fixture.director.completeUserPrompt({ generation: 'generation-1', explicitDirective: null, movementControl: { kind: 'set_mode', mode }, eventId: String(++completionSequence), context: fixture.director.captureExpressionContext() });
       fixture.director.handleTaskEvent({ type: 'phase', phase: 'success' });
 
       expect(fixture.director.getDiagnosticSnapshot().movementMode).toBe(mode);
-      expect(fixture.behavior.requestDirectedBehavior).toHaveBeenCalledOnce();
+      expect(fixture.behavior.requestDirectedBehavior).not.toHaveBeenCalled();
       expect(fixture.motion.requestIntent).not.toHaveBeenCalled();
     }
   );
 
   test('模式切换不禁止自定义状态动作，且表现不派生位移', async () => {
     const fixture = createFixture({ movementMode: 1, proactivityMode: 'assistive' });
-    fixture.behavior.getPublicBehaviorCatalog.mockReturnValue({
-      identity: {
+    fixture.behavior.getPublicBehaviorCatalog.mockReturnValue({ idleStateId: 'state-38496',
+      identity: { formsOfAddress: [], dislikes: [], boundaries: [], exampleLines: [],
         name: '测试角色', description: '测试角色', background: '测试环境', traits: [],
         languageStyle: '简洁', likes: [], behavioralTendencies: []
       },
-      states: [{
+      states: [{ agentInferable: true,
         name: '混合状态', stateId: 'state-38496', tags: [], actions: [
           { name: '安静等待', actionId: 'action-38561', tags: [] },
           { name: '突然跑动', actionId: 'action-38617', tags: [] }
@@ -953,14 +899,10 @@ describe('Main 角色行为 Director', () => {
     ));
 
 
-    await fixture.director.completeUserPrompt({
-      generation: 'generation-1', explicitDirective: null,
-      providerPlan: { kind: 'play_state', state: '混合状态', action: '安静等待' },
-      movementControl: { kind: 'set_mode', mode: 2 }
-    });
+    await fixture.director.completeUserPrompt({ generation: 'generation-1', explicitDirective: null, movementControl: { kind: 'set_mode', mode: 2 }, eventId: String(++completionSequence), context: fixture.director.captureExpressionContext() });
     fixture.director.handleTaskEvent({ type: 'phase', phase: 'success' });
 
-    expect(fixture.behavior.requestDirectedBehavior).toHaveBeenCalledOnce();
+    expect(fixture.behavior.requestDirectedBehavior).not.toHaveBeenCalled();
     expect(fixture.motion.requestIntent).not.toHaveBeenCalled();
   });
 
@@ -1011,10 +953,7 @@ describe('Main 角色行为 Director', () => {
         kind: 'play', actionId: 'move-action', playbackToken: 'move-token', stateId: 'move' + '-state'
       });
 
-      await fixture.director.completeUserPrompt({
-        generation: 'generation-1', explicitDirective: null, providerPlan: null,
-        movementControl: { kind: 'set_mode', mode: 1 }
-      });
+      await fixture.director.completeUserPrompt({ generation: 'generation-1', explicitDirective: null, movementControl: { kind: 'set_mode', mode: 1 }, eventId: String(++completionSequence), context: fixture.director.captureExpressionContext() });
       fixture.director.requestPersistentMovement();
       fixture.director.handleTaskEvent({ type: 'phase', phase: 'success' });
 
@@ -1035,10 +974,7 @@ describe('Main 角色行为 Director', () => {
       kind: 'play', actionId: 'move-action', playbackToken: 'move-token', stateId: 'move' + '-state'
     });
 
-    await fixture.director.completeUserPrompt({
-      generation: 'generation-1', explicitDirective: null, providerPlan: null,
-      movementControl: { kind: 'set_mode', mode: 1 }
-    });
+    await fixture.director.completeUserPrompt({ generation: 'generation-1', explicitDirective: null, movementControl: { kind: 'set_mode', mode: 1 }, eventId: String(++completionSequence), context: fixture.director.captureExpressionContext() });
     fixture.director.requestPersistentMovement();
     fixture.director.handleTaskEvent({ type: 'phase', phase: 'success' });
     const arrived = fixture.tick(10_000);
@@ -1068,10 +1004,7 @@ describe('Main 角色行为 Director', () => {
     fixture.setDirectedAuthorization({
       kind: 'play', actionId: 'move-action', playbackToken: 'move-token', stateId: 'move' + '-state'
     });
-    await fixture.director.completeUserPrompt({
-      generation: 'generation-1', explicitDirective: null, providerPlan: null,
-      movementControl: { kind: 'set_mode', mode: 1 }
-    });
+    await fixture.director.completeUserPrompt({ generation: 'generation-1', explicitDirective: null, movementControl: { kind: 'set_mode', mode: 1 }, eventId: String(++completionSequence), context: fixture.director.captureExpressionContext() });
     fixture.director.requestPersistentMovement();
     fixture.director.handleTaskEvent({ type: 'phase', phase: 'success' });
     const moving = fixture.tick(1);
@@ -1098,10 +1031,7 @@ describe('Main 角色行为 Director', () => {
     fixture.setDirectedAuthorization({
       kind: 'play', actionId: 'move-action', playbackToken: 'move-token', stateId: 'move' + '-state'
     });
-    await fixture.director.completeUserPrompt({
-      generation: 'generation-1', explicitDirective: null, providerPlan: null,
-      movementControl: { kind: 'set_mode', mode: 1 }
-    });
+    await fixture.director.completeUserPrompt({ generation: 'generation-1', explicitDirective: null, movementControl: { kind: 'set_mode', mode: 1 }, eventId: String(++completionSequence), context: fixture.director.captureExpressionContext() });
     fixture.director.requestPersistentMovement();
     fixture.director.handleTaskEvent({ type: 'phase', phase: 'success' });
     expect(fixture.tick(1).moving).toBe(true);
@@ -1127,10 +1057,7 @@ describe('Main 角色行为 Director', () => {
     fixture.setDirectedAuthorization({
       kind: 'play', actionId: 'move-action', playbackToken: 'move-token', stateId: 'move' + '-state'
     });
-    await fixture.director.completeUserPrompt({
-      generation: 'generation-1', explicitDirective: null, providerPlan: null,
-      movementControl: { kind: 'set_mode', mode: 1 }
-    });
+    await fixture.director.completeUserPrompt({ generation: 'generation-1', explicitDirective: null, movementControl: { kind: 'set_mode', mode: 1 }, eventId: String(++completionSequence), context: fixture.director.captureExpressionContext() });
     fixture.director.requestPersistentMovement();
     fixture.director.handleTaskEvent({ type: 'phase', phase: 'success' });
     const firstTarget = { x: 40, y: 30 };
@@ -1155,10 +1082,7 @@ describe('Main 角色行为 Director', () => {
     fixture.setDirectedAuthorization({
       kind: 'play', actionId: 'move-action', playbackToken: 'move-token', stateId: 'move' + '-state'
     });
-    await fixture.director.completeUserPrompt({
-      generation: 'generation-1', explicitDirective: null, providerPlan: null,
-      movementControl: { kind: 'set_mode', mode: 1 }
-    });
+    await fixture.director.completeUserPrompt({ generation: 'generation-1', explicitDirective: null, movementControl: { kind: 'set_mode', mode: 1 }, eventId: String(++completionSequence), context: fixture.director.captureExpressionContext() });
     fixture.director.requestPersistentMovement();
     fixture.director.handleTaskEvent({ type: 'phase', phase: 'success' });
     fixture.director.handleMotionSnapshot({ ...fixture.motion.getSnapshot(), moving: true });
@@ -1182,10 +1106,7 @@ describe('Main 角色行为 Director', () => {
     fixture.setDirectedAuthorization({
       kind: 'play', actionId: 'move-action', playbackToken: 'move-token', stateId: 'move' + '-state'
     });
-    await fixture.director.completeUserPrompt({
-      generation: 'generation-1', explicitDirective: null, providerPlan: null,
-      movementControl: { kind: 'set_mode', mode: 1 }
-    });
+    await fixture.director.completeUserPrompt({ generation: 'generation-1', explicitDirective: null, movementControl: { kind: 'set_mode', mode: 1 }, eventId: String(++completionSequence), context: fixture.director.captureExpressionContext() });
     fixture.director.requestPersistentMovement();
     fixture.director.handleTaskEvent({ type: 'phase', phase: 'success' });
     fixture.director.handleMotionSnapshot({ ...fixture.motion.getSnapshot(), moving: true });
@@ -1227,10 +1148,7 @@ describe('Main 角色行为 Director', () => {
       kind: 'play', actionId: 'move-action', playbackToken: 'move-token', stateId: 'move' + '-state'
     });
 
-    await persistent.director.completeUserPrompt({
-      generation: 'generation-1', explicitDirective: null, providerPlan: null,
-      movementControl: { kind: 'set_mode', mode: 1 }
-    });
+    await persistent.director.completeUserPrompt({ generation: 'generation-1', explicitDirective: null, movementControl: { kind: 'set_mode', mode: 1 }, eventId: String(++completionSequence), context: persistent.director.captureExpressionContext() });
 
     expect(persistent.saveMovementMode).toHaveBeenCalledExactlyOnceWith(1, expect.any(Function));
     expect(persistent.director.getChatContext().runtime.movementMode).toBe(1);
@@ -1242,10 +1160,7 @@ describe('Main 角色行为 Director', () => {
     const fixture = createFixture();
     fixture.saveMovementMode.mockRejectedValueOnce(new Error('WRITE_FAILED'));
 
-    await expect(fixture.director.completeUserPrompt({
-      generation: 'generation-1', explicitDirective: null, providerPlan: null,
-      movementControl: { kind: 'set_mode', mode: 1 }
-    })).rejects.toThrow('WRITE_FAILED');
+    await expect(fixture.director.completeUserPrompt({ generation: 'generation-1', explicitDirective: null, movementControl: { kind: 'set_mode', mode: 1 }, eventId: String(++completionSequence), context: fixture.director.captureExpressionContext() })).rejects.toThrow('WRITE_FAILED');
 
     expect(fixture.director.getChatContext().runtime.movementMode).toBe(2);
     expect(fixture.motion.requestIntent).not.toHaveBeenCalled();
@@ -1256,10 +1171,7 @@ describe('Main 角色行为 Director', () => {
     fixture.setDirectedAuthorization({
       kind: 'play', actionId: 'move-action', playbackToken: 'move-token', stateId: 'move' + '-state'
     });
-    await fixture.director.completeUserPrompt({
-      generation: 'generation-1', explicitDirective: null, providerPlan: null,
-      movementControl: { kind: 'move_once', target: 'bottom_right', distance: 'far' }
-    });
+    await fixture.director.completeUserPrompt({ generation: 'generation-1', explicitDirective: null, movementControl: { kind: 'move_once', target: 'bottom_right', distance: 'far' }, eventId: String(++completionSequence), context: fixture.director.captureExpressionContext() });
     fixture.director.handleTaskEvent({ type: 'phase', phase: 'success' });
     expect(fixture.director.getDiagnosticSnapshot()).toMatchObject({
       continuousTargetType: null,
@@ -1290,10 +1202,7 @@ describe('Main 角色行为 Director', () => {
   test('Provider set_mode(0) 等待成功落盘后锁住自主移动', async () => {
     const fixture = createFixture();
 
-    await fixture.director.completeUserPrompt({
-      generation: 'generation-1', explicitDirective: null, providerPlan: null,
-      movementControl: { kind: 'set_mode', mode: 0 }
-    });
+    await fixture.director.completeUserPrompt({ generation: 'generation-1', explicitDirective: null, movementControl: { kind: 'set_mode', mode: 0 }, eventId: String(++completionSequence), context: fixture.director.captureExpressionContext() });
 
     expect(fixture.saveMovementMode).toHaveBeenCalledExactlyOnceWith(0, expect.any(Function));
     expect(fixture.director.getDiagnosticSnapshot()).toMatchObject({
@@ -1306,10 +1215,7 @@ describe('Main 角色行为 Director', () => {
     const fixture = createFixture();
     fixture.saveMovementMode.mockRejectedValueOnce(new Error('WRITE_FAILED'));
 
-    await expect(fixture.director.completeUserPrompt({
-      generation: 'generation-1', explicitDirective: null, providerPlan: null,
-      movementControl: { kind: 'set_mode', mode: 0 }
-    })).rejects.toThrow('WRITE_FAILED');
+    await expect(fixture.director.completeUserPrompt({ generation: 'generation-1', explicitDirective: null, movementControl: { kind: 'set_mode', mode: 0 }, eventId: String(++completionSequence), context: fixture.director.captureExpressionContext() })).rejects.toThrow('WRITE_FAILED');
 
     expect(fixture.director.getDiagnosticSnapshot()).toMatchObject({
       movementMode: 2,
@@ -1384,6 +1290,7 @@ describe('Main 角色行为 Director', () => {
     await expect(fixture.director.prepareUserPrompt('请播放挥手动作')).resolves.toEqual({
       originalText: '请播放挥手动作',
       capabilityText: '请播放挥手动作',
+      explicitPlaybackToken: 'wave-token',
       explicitDirective: {
         kind: 'play',
         target: { kind: 'action_name', name: '挥手' }
@@ -1400,17 +1307,11 @@ describe('Main 角色行为 Director', () => {
     expect(fixture.motion.requestIntent).not.toHaveBeenCalled();
   });
 
-  test('明确动作不存在时在 Provider 前发布稳定提示且不播放待机冒充', async () => {
+  test('明确动作未能本地匹配时留给模型描述候选，不播放待机冒充', async () => {
     const fixture = createFixture();
 
     const prepared = await fixture.director.prepareUserPrompt('请做一个后空翻动作');
-    await fixture.director.completeUserPrompt({
-      generation: 'generation-1',
-      explicitDirective: prepared.explicitDirective,
-      providerPlan: { kind: 'none' },
-      activity: '来一段 dance',
-      status: '欢快 dance'
-    });
+    await fixture.director.completeUserPrompt({ generation: 'generation-1', explicitDirective: prepared.explicitDirective, eventId: String(++completionSequence), context: fixture.director.captureExpressionContext() });
     fixture.director.handleTaskEvent({ type: 'phase', phase: 'success' });
 
     expect(fixture.behavior.resolveBehaviorTarget).toHaveBeenCalledExactlyOnceWith({
@@ -1419,10 +1320,7 @@ describe('Main 角色行为 Director', () => {
     expect(fixture.behavior.resolveBehaviorStatePlan).not.toHaveBeenCalled();
     expect(fixture.behavior.requestDirectedBehavior).not.toHaveBeenCalled();
     expect(fixture.motion.requestIntent).not.toHaveBeenCalled();
-    expect(fixture.notices).toEqual([{
-      code: 'CHARACTER_ACTION_UNAVAILABLE',
-      message: '当前角色没有可播放的对应动作。'
-    }]);
+    expect(fixture.notices).toEqual([]);
   });
 
   test('停止立即撤销运动且 500ms poll 始终只推进令牌清理', async () => {
@@ -1478,207 +1376,18 @@ describe('Main 角色行为 Director', () => {
     expect(explicit.behavior.handleAgentIntent).not.toHaveBeenCalled();
   });
 
-  test('聊天移动计划只有在 move 动作授权后才请求对应运动且不重复 wander', () => {
-    const fixture = createFixture();
-    fixture.setDirectedAuthorization({
-      kind: 'play', actionId: 'move-action', playbackToken: 'move-token', stateId: 'move' + '-state'
-    });
-    fixture.director.completeUserPrompt({
-      generation: 'generation-1',
-      explicitDirective: null,
-      providerPlan: { kind: 'move_region', region: 'bottom_right' }
-    });
-
-    fixture.director.handleTaskEvent({ type: 'phase', phase: 'success' });
-
-    expect(fixture.motion.requestIntent).toHaveBeenCalledExactlyOnceWith({
-      kind: 'region', region: 'bottom_right'
-    });
-  });
-
-  test('聊天隐藏描述只选择当前公开目录中最高相似的状态动作组合', () => {
-    const fixture = createFixture();
-    fixture.setDirectedAuthorization({
-      kind: 'play', actionId: 'celebrate-action', playbackToken: 'dance-token', stateId: 'celebrate' + '-state'
-    });
-    fixture.director.completeUserPrompt({
-      generation: 'generation-1',
-      explicitDirective: null,
-      providerPlan: { kind: 'play_state', state: '开心', action: '目录外动作' },
-      activity: '来一段 dance',
-      status: 'dance'
-    });
-    fixture.director.handleTaskEvent({ type: 'phase', phase: 'success' });
-
-    expect(fixture.behavior.resolveBehaviorStatePlan).toHaveBeenCalledWith({
-      kind: 'play_state', state: '开心', action: '庆祝'
-    });
-  });
-
-  test('Provider 返回 none 时仍按隐藏描述与运动计划选择最高相似动作', () => {
-    const fixture = createFixture();
-    fixture.setDirectedAuthorization({
-      kind: 'play', actionId: 'celebrate-action', playbackToken: 'dance-token', stateId: 'celebrate' + '-state'
-    });
-    fixture.director.completeUserPrompt({
-      generation: 'generation-1',
-      explicitDirective: null,
-      providerPlan: { kind: 'none' },
-      activity: '来一段 dance',
-      status: '欢快 dance'
-    });
-    fixture.director.handleTaskEvent({ type: 'phase', phase: 'success' });
-
-    expect(fixture.behavior.resolveBehaviorStatePlan).toHaveBeenCalledWith({
-      kind: 'play_state', state: '开心', action: '庆祝'
-    });
-  });
-
-  test('Provider 只指定状态时把动作随机选择留给 Service 与 Engine', () => {
-    const fixture = createFixture();
-    fixture.setDirectedAuthorization({
-      kind: 'play', actionId: 'wave-action', playbackToken: 'state-token', stateId: 'celebrate' + '-state'
-    });
-    fixture.director.completeUserPrompt({
-      generation: 'generation-1', explicitDirective: null,
-      providerPlan: { kind: 'play_state', state: '开心' }
-    });
-    fixture.director.handleTaskEvent({ type: 'phase', phase: 'success' });
-
-    expect(fixture.behavior.resolveBehaviorStatePlan).toHaveBeenCalledWith({
-      kind: 'play_state', state: '开心'
-    });
-    expect(fixture.behavior.requestDirectedBehavior).toHaveBeenCalledExactlyOnceWith(
-      { kind: 'state', stateId: 'happy-state' },
-      { urgency: 80, systemForced: true }
-    );
-  });
-
-  test('Provider 跨状态动作组合失败关闭且不退回目录首项', () => {
-    const fixture = createFixture();
-    fixture.behavior.getPublicBehaviorCatalog.mockReturnValue({
-      ...fixture.behavior.getPublicBehaviorCatalog(),
-      states: [
-        ...fixture.behavior.getPublicBehaviorCatalog().states,
-        {
-          name: '运动', stateId: 'state-63968', tags: [],
-          actions: [{ name: '移动', actionId: 'action-64030', tags: ['locomotion'] }]
-        }
-      ]
-    });
-    fixture.director.completeUserPrompt({
-      generation: 'generation-1', explicitDirective: null,
-      providerPlan: { kind: 'play_state', state: '开心', action: '移动' }
-    });
-    fixture.director.handleTaskEvent({ type: 'phase', phase: 'success' });
-
-    expect(fixture.behavior.resolveBehaviorStatePlan).not.toHaveBeenCalled();
-    expect(fixture.behavior.requestDirectedBehavior).not.toHaveBeenCalled();
-    expect(fixture.notices).toEqual([{
-      code: 'CHARACTER_ACTION_UNAVAILABLE', message: '当前角色没有可播放的对应动作。'
-    }]);
-  });
-
-  test(
-    'Provider set_mode(1) 即使描述泛化也为自定义角色选择最相似移动动画',
-    async () => {
-      const fixture = createFixture();
-      fixture.behavior.getPublicBehaviorCatalog.mockReturnValue({
-        identity: {
-          name: '测试角色', description: '测试角色', background: '测试环境', traits: [],
-          languageStyle: '简洁', likes: [], behavioralTendencies: []
-        },
-        states: [{
-          name: '运动状态', stateId: 'state-65034', tags: [], actions: [
-            { name: '安静等待', actionId: 'action-65101', tags: ['still'] },
-            { name: '巡游四方', actionId: 'action-65166', tags: ['locomotion'] }
-          ]
-        }]
-      });
-      fixture.behavior.resolveBehaviorStatePlan.mockReturnValue({
-        kind: 'state_action', stateId: 'move-state', actionId: 'move-action'
-      });
-      fixture.setDirectedAuthorization({
-        kind: 'play', actionId: 'move-action', playbackToken: 'move-token', stateId: 'move' + '-state'
-      });
-
-      await fixture.director.completeUserPrompt({
-        generation: 'generation-1', explicitDirective: null, providerPlan: { kind: 'none' },
-        movementControl: { kind: 'set_mode', mode: 1 }, activity: '开始行动', status: '保持活跃'
-      });
-      fixture.director.handleTaskEvent({ type: 'phase', phase: 'success' });
-
-      expect(fixture.behavior.resolveBehaviorStatePlan).toHaveBeenCalledWith({
-        kind: 'play_state', state: '运动状态'
-      });
-    }
-  );
-
-  test('同轮自定义移动动作与 move_once 共用一次授权并实际提交运动', async () => {
-    const fixture = createFixture();
-    fixture.behavior.getPublicBehaviorCatalog.mockReturnValue({
-      identity: {
-        name: '测试角色', description: '测试角色', background: '测试环境', traits: [],
-        languageStyle: '简洁', likes: [], behavioralTendencies: []
-      },
-      states: [{
-        name: '运动状态', stateId: 'state-66383', tags: [],
-        actions: [{ name: '巡游四方', actionId: 'action-66445', tags: ['locomotion'] }]
-      }]
-    });
-    fixture.behavior.resolveBehaviorStatePlan.mockReturnValue({
-      kind: 'state_action', stateId: 'move-state', actionId: 'move-action'
-    });
-    fixture.setDirectedAuthorization({
-      kind: 'play', actionId: 'move-action', playbackToken: 'move-token', stateId: 'move' + '-state'
-    });
-    await fixture.director.completeUserPrompt({
-      generation: 'generation-1', explicitDirective: null, providerPlan: { kind: 'none' },
-      movementControl: { kind: 'move_once', target: 'bottom_right', distance: 'far' },
-      activity: '开始巡游', status: '保持运动'
-    });
-
-    fixture.director.handleTaskEvent({ type: 'phase', phase: 'success' });
-
-    expect(fixture.behavior.resolveBehaviorStatePlan).toHaveBeenCalledExactlyOnceWith({
-      kind: 'play_state', state: '运动状态'
-    });
-    expect(fixture.behavior.requestDirectedBehavior).toHaveBeenCalledOnce();
-    expect(fixture.motion.requestIntent).toHaveBeenCalledExactlyOnceWith({
-      kind: 'region', region: 'bottom_right'
-    });
-    expect(fixture.director.getDiagnosticSnapshot().continuousTargetType).toBeNull();
-  });
-
-  test('Provider 精确命中当前自定义动作时优先于隐藏描述的相似回退', () => {
-    const fixture = createFixture();
-    fixture.setDirectedAuthorization({
-      kind: 'play', actionId: 'wave-action', playbackToken: 'wave-token', stateId: 'celebrate' + '-state'
-    });
-    fixture.director.completeUserPrompt({
-      generation: 'generation-1',
-      explicitDirective: null,
-      providerPlan: { kind: 'play_state', state: '开心', action: '挥手' },
-      activity: '来一段 dance',
-      status: 'dance'
-    });
-    fixture.director.handleTaskEvent({ type: 'phase', phase: 'success' });
-
-    expect(fixture.behavior.resolveBehaviorStatePlan).toHaveBeenCalledWith({
-      kind: 'play_state', state: '开心', action: '挥手'
-    });
-  });
-
   test('公开聊天上下文只包含清单、运行布尔、档位和公开近期动作', () => {
     const fixture = createFixture();
 
     expect(fixture.director.getChatContext()).toEqual({
-      character: {
-        identity: {
+      candidateSequence: 0,
+      expression: { stateId: null, actionId: null, mood: null },
+      character: { idleStateId: 'state-2241',
+        identity: { formsOfAddress: [], dislikes: [], boundaries: [], exampleLines: [],
           name: '测试角色', description: '测试角色', background: '测试环境', traits: [],
           languageStyle: '简洁', likes: [], behavioralTendencies: []
         },
-        states: [{
+        states: [{ agentInferable: true,
           name: '开心', stateId: 'state-2241', tags: [], actions: [
             { name: '挥手', actionId: 'action-2309', tags: [] },
             { name: '庆祝', actionId: 'action-2368', tags: ['dance'] }
@@ -1742,7 +1451,7 @@ describe('Main 角色行为 Director', () => {
     });
 
     expect(fixture.director.getChatContext()).toMatchObject({
-      character: {
+      character: { idleStateId: 'idle',
         identity: { name: '当前角色' },
         states: []
       },
@@ -1757,12 +1466,7 @@ describe('Main 角色行为 Director', () => {
       kind: 'play', actionId: 'move-action', playbackToken: 'move-token', stateId: 'move' + '-state'
     });
     const prepared = await fixture.director.prepareUserPrompt('停下');
-    fixture.director.completeUserPrompt({
-      generation: 'generation-1',
-      explicitDirective: prepared.explicitDirective,
-      providerPlan: null,
-      movementControl: { kind: 'set_mode', mode: 2 }
-    });
+    fixture.director.completeUserPrompt({ generation: 'generation-1', explicitDirective: prepared.explicitDirective, movementControl: { kind: 'set_mode', mode: 2 }, eventId: String(++completionSequence), context: fixture.director.captureExpressionContext() });
     fixture.director.handleTaskEvent({ type: 'phase', phase: 'success' });
 
     await fixture.director.prepareUserPrompt('动');
@@ -1847,12 +1551,7 @@ describe('Main 角色行为 Director', () => {
   ) => {
     const fixture = createFixture(initialSettings);
 
-    await fixture.director.completeUserPrompt({
-      generation: 'generation-1',
-      explicitDirective: null,
-      providerPlan: null,
-      movementControl
-    });
+    await fixture.director.completeUserPrompt({ generation: 'generation-1', explicitDirective: null, movementControl, eventId: String(++completionSequence), context: fixture.director.captureExpressionContext() });
     fixture.director.handleTaskEvent({ type: 'phase', phase: 'success' });
 
     expect(fixture.saveMovementMode).toHaveBeenCalledExactlyOnceWith(
@@ -1867,12 +1566,7 @@ describe('Main 角色行为 Director', () => {
     { kind: 'set_mode', mode: 2 } as const
   ])('MovementControl %j 不能留在待提交槽阻塞低优先级候选', async movementControl => {
     const fixture = createFixture();
-    await fixture.director.completeUserPrompt({
-      generation: 'generation-1',
-      explicitDirective: null,
-      providerPlan: null,
-      movementControl
-    });
+    await fixture.director.completeUserPrompt({ generation: 'generation-1', explicitDirective: null, movementControl, eventId: String(++completionSequence), context: fixture.director.captureExpressionContext() });
     fixture.director.handleTaskEvent({ type: 'phase', phase: 'success' });
 
     // 显式动作抢占迟到的 success 令牌，终态后只剩待提交槽可能阻塞候选。
@@ -1940,11 +1634,7 @@ describe('Main 角色行为 Director', () => {
       kind: 'play', actionId: 'wave-action', playbackToken: 'explicit-token', stateId: 'celebrate' + '-state'
     });
 
-    fixture.director.completeUserPrompt({
-      generation: 'generation-1',
-      explicitDirective: { kind: 'stop_movement' },
-      providerPlan: { kind: 'move', direction: 'right', distance: 'near' }
-    });
+    fixture.director.completeUserPrompt({ generation: 'generation-1', explicitDirective: { kind: 'stop_movement' }, eventId: String(++completionSequence), context: fixture.director.captureExpressionContext() });
     fixture.director.handleTaskEvent({ type: 'phase', phase: 'thinking' });
     expect(fixture.director.requestBehaviorPlan(play('挥手'), 'local-idle')).toEqual(NONE);
 
@@ -1959,62 +1649,6 @@ describe('Main 角色行为 Director', () => {
     await fixture.director.close();
     expect(fixture.director.requestBehaviorPlan(play('挥手'), 'explicit')).toEqual(NONE);
   });
-
-  test('聊天计划等待可信 success 动作的终态反馈后才提交', () => {
-    const fixture = createFixture();
-    fixture.setTaskAuthorization({
-      kind: 'play', actionId: 'celebrate-action', playbackToken: 'success-token', stateId: 'celebrate' + '-state'
-    });
-    fixture.setDirectedAuthorization({
-      kind: 'play', actionId: 'wave-action', playbackToken: 'chat-token', stateId: 'celebrate' + '-state'
-    });
-    fixture.director.completeUserPrompt({
-      generation: 'generation-1', explicitDirective: null, providerPlan: play('挥手')
-    });
-
-    fixture.director.handleTaskEvent({ type: 'phase', phase: 'success' });
-    expect(fixture.behavior.requestDirectedBehavior).not.toHaveBeenCalled();
-    fixture.director.applyPlaybackFeedback({
-      playbackToken: 'success-token', actionId: 'celebrate-action', status: 'started', occurredAtMs: 1
-    });
-    expect(fixture.behavior.requestDirectedBehavior).not.toHaveBeenCalled();
-    fixture.director.applyPlaybackFeedback({
-      playbackToken: 'success-token', actionId: 'celebrate-action', status: 'completed', occurredAtMs: 2
-    });
-
-    expect(fixture.behavior.requestDirectedBehavior).toHaveBeenCalledExactlyOnceWith(
-      { kind: 'state_action', stateId: 'happy-state', actionId: 'wave-action' },
-      { urgency: 80, systemForced: true }
-    );
-  });
-
-  test.each([0, 2] as const)(
-    'mode 1 等待旧 success 终态时切到 mode %i 会作废旧动画和 move_once',
-    mode => {
-      const fixture = createFixture({ movementMode: 1, proactivityMode: 'assistive' });
-      fixture.setTaskAuthorization({
-        kind: 'play', actionId: 'celebrate-action', playbackToken: 'success-token', stateId: 'celebrate' + '-state'
-      });
-      fixture.setDirectedAuthorization({
-        kind: 'play', actionId: 'wave-action', playbackToken: 'chat-token', stateId: 'celebrate' + '-state'
-      });
-      fixture.director.completeUserPrompt({
-        generation: 'generation-1', explicitDirective: null, providerPlan: play('挥手'),
-        movementControl: { kind: 'move_once', target: 'bottom_right', distance: 'far' }
-      });
-      fixture.director.handleTaskEvent({ type: 'phase', phase: 'success' });
-
-      fixture.director.applyBehaviorSettings({ movementMode: mode, proactivityMode: 'assistive' });
-      fixture.director.applyPlaybackFeedback({
-        playbackToken: 'success-token', actionId: 'celebrate-action',
-        status: 'completed', occurredAtMs: 2
-      });
-
-      expect(fixture.behavior.requestDirectedBehavior).not.toHaveBeenCalled();
-      expect(fixture.motion.requestIntent).not.toHaveBeenCalled();
-      expect(fixture.director.getDiagnosticSnapshot().movementMode).toBe(mode);
-    }
-  );
 
   test.each(['completed', 'interrupted', 'failed'] as const)(
     '显式播放以 %s 释放后通知 Scheduler 恢复模式 1',
@@ -2070,28 +1704,6 @@ describe('Main 角色行为 Director', () => {
     await scheduler.close();
   });
 
-  test('success 动作无 Renderer 反馈时由轮询过期令牌并释放待提交计划', () => {
-    const fixture = createFixture();
-    fixture.setTaskAuthorization({
-      kind: 'play', actionId: 'celebrate-action', playbackToken: 'success-token', stateId: 'celebrate' + '-state'
-    });
-    fixture.setDirectedAuthorization({
-      kind: 'play', actionId: 'wave-action', playbackToken: 'chat-token', stateId: 'celebrate' + '-state'
-    });
-    fixture.director.completeUserPrompt({
-      generation: 'generation-1', explicitDirective: null, providerPlan: play('挥手')
-    });
-    fixture.director.handleTaskEvent({ type: 'phase', phase: 'success' });
-    fixture.setReleasedTokens(['success-token']);
-
-    fixture.director.advance();
-
-    expect(fixture.behavior.requestDirectedBehavior).toHaveBeenCalledExactlyOnceWith(
-      { kind: 'state_action', stateId: 'happy-state', actionId: 'wave-action' },
-      { urgency: 80, systemForced: true }
-    );
-  });
-
   test('停止后轮询仍释放过期显式动作，恢复后可接受新动作', async () => {
     const fixture = createFixture();
     fixture.setDirectedAuthorization({
@@ -2111,82 +1723,16 @@ describe('Main 角色行为 Director', () => {
     });
   });
 
-  test('success 没有排出可播放动作时立即提交聊天计划', () => {
-    const fixture = createFixture();
-    fixture.setDirectedAuthorization({
-      kind: 'play', actionId: 'wave-action', playbackToken: 'chat-token', stateId: 'celebrate' + '-state'
-    });
-    fixture.director.completeUserPrompt({
-      generation: 'generation-1', explicitDirective: null, providerPlan: play('挥手')
-    });
-
-    fixture.director.handleTaskEvent({ type: 'phase', phase: 'success' });
-
-    expect(fixture.behavior.requestDirectedBehavior).toHaveBeenCalledExactlyOnceWith(
-      { kind: 'state_action', stateId: 'happy-state', actionId: 'wave-action' },
-      { urgency: 80, systemForced: true }
-    );
-  });
-
-  test('success 无动作时清除旧 thinking 来源并立即提交聊天计划', () => {
-    const fixture = createFixture();
-    fixture.setTaskAuthorization({
-      kind: 'play', actionId: 'think-action', playbackToken: 'thinking-token', stateId: 'think' + '-state'
-    });
-    fixture.director.handleTaskEvent({ type: 'phase', phase: 'thinking' });
-    fixture.director.completeUserPrompt({
-      generation: 'generation-1', explicitDirective: null, providerPlan: play('挥手')
-    });
-    fixture.setTaskAuthorization(NONE);
-    fixture.setDirectedAuthorization({
-      kind: 'play', actionId: 'wave-action', playbackToken: 'chat-token', stateId: 'celebrate' + '-state'
-    });
-
-    fixture.director.handleTaskEvent({ type: 'phase', phase: 'success' });
-
-    expect(fixture.behavior.requestDirectedBehavior).toHaveBeenCalledExactlyOnceWith(
-      { kind: 'state_action', stateId: 'happy-state', actionId: 'wave-action' },
-      { urgency: 80, systemForced: true }
-    );
-  });
-
-  test.each(['completed', 'interrupted', 'failed'] as const)(
-    'success 动作以 %s 结束都会释放等待中的聊天计划',
-    status => {
-      const fixture = createFixture();
-      fixture.setTaskAuthorization({
-        kind: 'play', actionId: 'celebrate-action', playbackToken: 'success-token', stateId: 'celebrate' + '-state'
-      });
-      fixture.setDirectedAuthorization({
-        kind: 'play', actionId: 'wave-action', playbackToken: 'chat-token', stateId: 'celebrate' + '-state'
-      });
-      fixture.director.completeUserPrompt({
-        generation: 'generation-1', explicitDirective: null, providerPlan: play('挥手')
-      });
-      fixture.director.handleTaskEvent({ type: 'phase', phase: 'success' });
-
-      fixture.director.applyPlaybackFeedback({
-        playbackToken: 'success-token', actionId: 'celebrate-action', status, occurredAtMs: 2
-      });
-
-      expect(fixture.behavior.requestDirectedBehavior).toHaveBeenCalledTimes(1);
-    }
-  );
-
   test('旧 generation、角色切换、reset 与 close 都丢弃待提交计划', async () => {
     const fixture = createFixture();
     fixture.setTaskAuthorization({
       kind: 'play', actionId: 'celebrate-action', playbackToken: 'success-token', stateId: 'celebrate' + '-state'
     });
-    fixture.director.completeUserPrompt({
-      generation: 'old-generation', explicitDirective: null, providerPlan: play('挥手')
-    });
+    fixture.director.completeUserPrompt({ generation: 'old-generation', explicitDirective: null, eventId: String(++completionSequence), context: fixture.director.captureExpressionContext() });
     fixture.director.handleTaskEvent({ type: 'phase', phase: 'success' });
     expect(fixture.behavior.requestDirectedBehavior).not.toHaveBeenCalled();
 
-    fixture.director.completeUserPrompt({
-      generation: 'generation-1', explicitDirective: null, providerPlan: play('挥手')
-    });
+    fixture.director.completeUserPrompt({ generation: 'generation-1', explicitDirective: null, eventId: String(++completionSequence), context: fixture.director.captureExpressionContext() });
     fixture.director.handleTaskEvent({ type: 'phase', phase: 'success' });
     await fixture.director.handleActiveCharacterChanged();
     fixture.director.applyPlaybackFeedback({
@@ -2194,9 +1740,7 @@ describe('Main 角色行为 Director', () => {
     });
     expect(fixture.behavior.requestDirectedBehavior).not.toHaveBeenCalled();
 
-    fixture.director.completeUserPrompt({
-      generation: 'generation-1', explicitDirective: null, providerPlan: play('挥手')
-    });
+    fixture.director.completeUserPrompt({ generation: 'generation-1', explicitDirective: null, eventId: String(++completionSequence), context: fixture.director.captureExpressionContext() });
     fixture.director.handleTaskEvent({ type: 'phase', phase: 'success' });
     fixture.director.reset('generation-2');
     fixture.director.applyPlaybackFeedback({
@@ -2231,14 +1775,7 @@ describe('Main 角色行为 Director', () => {
       const fixture = createFixture();
       const plan = play('不存在');
 
-      if (source === 'chat') {
-        fixture.director.completeUserPrompt({
-          generation: 'generation-1', explicitDirective: null, providerPlan: plan
-        });
-        fixture.director.handleTaskEvent({ type: 'phase', phase: 'success' });
-      } else {
-        fixture.director.requestBehaviorPlan(plan, source);
-      }
+      fixture.director.requestBehaviorPlan(plan, source);
 
       expect(fixture.notices).toEqual([{
         code: 'CHARACTER_ACTION_UNAVAILABLE',

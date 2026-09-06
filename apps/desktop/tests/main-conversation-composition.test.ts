@@ -39,8 +39,8 @@ function behaviorDouble(): ConversationBehaviorPort {
       explicitDirective: null
     })),
     getChatContext: vi.fn(() => ({
-      character: {
-        identity: {
+      character: { idleStateId: 'idle',
+        identity: { formsOfAddress: [], dislikes: [], boundaries: [], exampleLines: [],
           name: '测试角色', description: '测试角色', background: '测试环境', traits: [],
           languageStyle: '简洁', likes: [], behavioralTendencies: []
         },
@@ -53,6 +53,8 @@ function behaviorDouble(): ConversationBehaviorPort {
       recentActions: []
     })),
     completeUserPrompt: vi.fn(),
+    captureExpressionContext: vi.fn(() => null),
+    handleChatResponseFinished: vi.fn(),
     handleTaskEvent: vi.fn(),
     applyPlaybackFeedback: vi.fn(),
     cancelActive: vi.fn(),
@@ -208,7 +210,11 @@ describe('Main 会话组合模块', () => {
     const nonce = randomUUID();
     let forward: (event: CodingSessionEvent) => void = () => undefined;
     const f = await fixture([[{ name: 'read', args: { path: 'note.txt' } }], nonce], { onEvent: event => forward(event) });
-    const base = baseOptions({ chatResponse: { type: 'text', text: '申请任务', structured_output: { text: '申请任务', activity: '等待授权', status: 'idle', behaviorPlan: { kind: 'none', emotion: 'neutral' }, movementControl: { kind: 'keep' }, capabilityPlan: { kind: 'agent_task' } } } });
+    const base = baseOptions({
+      chatResponse: { type: 'text', text: '申请任务', structured_output: {text: '申请任务',
+movementControl: { kind: 'keep' },
+capabilityPlan: { kind: 'agent_task' }} }
+    });
     await base.composition.close();
     const events: TaskEvent[] = [];
     let creates = 0;
@@ -295,8 +301,7 @@ describe('Main 会话组合模块', () => {
     expect(harness.behavior.completeUserPrompt).toHaveBeenCalledExactlyOnceWith({
       generation: expect.any(String),
       explicitDirective: null,
-      movementControl: null,
-      providerPlan: null
+      eventId: expect.any(String), context: null, movementControl: null
     });
     await harness.composition.close();
     expect(harness.behavior.close).toHaveBeenCalledOnce();

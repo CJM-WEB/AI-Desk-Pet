@@ -40,10 +40,6 @@ export const transientBehaviorIntentCases = {
       kind: 'move', motion: { kind: 'wander', scope: 'work_area', distance: 'far' }
     }
   },
-  waveTemporarily: {
-    prompt: '挥手一会儿',
-    providerPlan: { kind: 'play_state', state: '开心', action: '挥手' }
-  }
 } as const;
 
 /**
@@ -51,41 +47,20 @@ export const transientBehaviorIntentCases = {
  * 这里验证 codec 保真，不宣称脚本模型理解了自然语言。
  */
 export const characterChatProtocolCases = [
-  {
-    name: '普通聊天计划',
-    wireJson: '{"text":"你好，我在。","activity":"安静陪伴","status":"idle","movementControl":{"kind":"keep"},"behaviorPlan":{"kind":"none"},"capabilityPlan":{"kind":"chat"}}',
-    decoded: {
-      text: '你好，我在。', activity: '安静陪伴', status: 'idle',
-      movementControl: { kind: 'keep' }, behaviorPlan: { kind: 'none' },
-      capabilityPlan: { kind: 'chat' }
-    }
+  { name: "普通聊天计划",
+    wireJson: "{\"text\":\"你好，我在。\",\"movementControl\":{\"kind\":\"keep\"},\"capabilityPlan\":{\"kind\":\"chat\"}}",
+    decoded: {"text":"你好，我在。","movementControl":{"kind":"keep"},"capabilityPlan":{"kind":"chat"}}
   },
-  {
-    name: '持久运动模式计划',
-    wireJson: '{"text":"已切换模式。","activity":"持续运动","status":"moving","movementControl":{"kind":"set_mode","mode":1},"behaviorPlan":{"kind":"none"},"capabilityPlan":{"kind":"chat"}}',
-    decoded: {
-      text: '已切换模式。', activity: '持续运动', status: 'moving',
-      movementControl: { kind: 'set_mode', mode: 1 }, behaviorPlan: { kind: 'none' },
-      capabilityPlan: { kind: 'chat' }
-    }
+  { name: "持久运动模式计划",
+    wireJson: "{\"text\":\"已切换模式。\",\"movementControl\":{\"kind\":\"set_mode\",\"mode\":1},\"capabilityPlan\":{\"kind\":\"chat\"}}",
+    decoded: {"text":"已切换模式。","movementControl":{"kind":"set_mode","mode":1},"capabilityPlan":{"kind":"chat"}}
   },
-  {
-    name: '单次远距离运动计划',
-    wireJson: '{"text":"开始移动。","activity":"远距离跑动","status":"moving","movementControl":{"kind":"move_once","target":"random_work_area","distance":"far"},"behaviorPlan":{"kind":"none"},"capabilityPlan":{"kind":"chat"}}',
-    decoded: {
-      text: '开始移动。', activity: '远距离跑动', status: 'moving',
-      movementControl: { kind: 'move_once', target: 'random_work_area', distance: 'far' },
-      behaviorPlan: { kind: 'none' }, capabilityPlan: { kind: 'chat' }
-    }
+  { name: "单次远距离运动计划",
+    wireJson: "{\"text\":\"开始移动。\",\"movementControl\":{\"kind\":\"move_once\",\"target\":\"random_work_area\",\"distance\":\"far\"},\"capabilityPlan\":{\"kind\":\"chat\"}}",
+    decoded: {"text":"开始移动。","movementControl":{"kind":"move_once","target":"random_work_area","distance":"far"},"capabilityPlan":{"kind":"chat"}}
   },
-  {
-    name: '层级状态动作计划',
-    wireJson: '{"text":"开始挥手。","activity":"挥手问候","status":"开心","movementControl":{"kind":"keep"},"behaviorPlan":{"kind":"play_state","state":"开心","action":"挥手"},"capabilityPlan":{"kind":"chat"}}',
-    decoded: {
-      text: '开始挥手。', activity: '挥手问候', status: '开心',
-      movementControl: { kind: 'keep' },
-      behaviorPlan: { kind: 'play_state', state: '开心', action: '挥手' },
-      capabilityPlan: { kind: 'chat' }
-    }
+  { name: "两级状态动作计划",
+    wireJson: "{\"text\":\"开始挥手。\",\"movementControl\":{\"kind\":\"keep\"},\"moodUpdate\":{\"summary\":\"开心\",\"strength\":0.8},\"expressionPlan\":{\"states\":[{\"stateId\":\"protocol-state\",\"score\":1,\"minStrength\":0,\"maxStrength\":1,\"actions\":[{\"actionId\":\"protocol-action\",\"score\":1}]}]},\"capabilityPlan\":{\"kind\":\"chat\"}}",
+    decoded: {"text":"开始挥手。","movementControl":{"kind":"keep"},"moodUpdate":{"summary":"开心","strength":0.8,"halfLifeMs":300000},"expressionPlan":{"validForMs":1200000,"states":[{"stateId":"protocol-state","score":1,"minStrength":0,"maxStrength":1,"actions":[{"actionId":"protocol-action","score":1}]}]},"capabilityPlan":{"kind":"chat"}}
   }
 ] as const;

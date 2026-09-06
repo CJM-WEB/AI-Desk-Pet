@@ -73,14 +73,14 @@ const tools: ToolDefinition[] = [{
 }];
 
 const providerBehaviorContext = {
-  character: {
-    identity: {
+  character: { idleStateId: 'protocol-state',
+    identity: { formsOfAddress: [], dislikes: [], boundaries: [], exampleLines: [],
       name: '契约测试角色', description: '契约测试角色', background: '测试环境', traits: [],
       languageStyle: '简洁', likes: [], behavioralTendencies: []
     },
-    states: [{
-      name: '移动', stateId: 'state-2525', tags: [],
-      actions: [{ name: '散步', actionId: 'action-2584', tags: [] }]
+    states: [{ agentInferable: true,
+      name: '移动', stateId: 'protocol-state', tags: [],
+      actions: [{ name: '散步', actionId: 'protocol-action', tags: [] }]
     }]
   },
   runtime: {
@@ -153,10 +153,7 @@ function characterChatJson(
 ): string {
   return JSON.stringify({
     text,
-    activity: '安静陪伴',
-    status: 'idle',
     movementControl: { kind: 'keep' },
-    behaviorPlan: { kind: 'none' },
     capabilityPlan
   });
 }
@@ -962,10 +959,7 @@ describe('ConversationChatAdapter 三类 Provider 协议契约', () => {
         signal: new AbortController().signal
       })).resolves.toEqual({
         text: visibleText,
-        activity: '安静陪伴',
-        status: 'idle',
         movementControl: { kind: 'keep' },
-        behaviorPlan: { kind: 'none' },
         capabilityPlan: { kind: 'chat' }
       });
 
@@ -982,11 +976,9 @@ describe('ConversationChatAdapter 三类 Provider 协议契约', () => {
     async contract => {
       const raw = JSON.stringify({
         text: '我向左走一点。',
-        activity: '向左移动',
-        status: 'moving',
         movementControl: { kind: 'move_once', target: 'left', distance: 'near' },
-        behaviorPlan: { kind: 'none', emotion: 'calm' },
-        capabilityPlan: { kind: 'chat' }
+        capabilityPlan: { kind: 'chat' },
+        moodUpdate: { summary: '平静', strength: 0.5, halfLifeMs: 300_000 }
       });
       const adapter = new ConversationChatAdapter(contract.createProvider(
         vi.fn(async () => jsonResponse(contract.textResponse(raw)))
@@ -999,12 +991,9 @@ describe('ConversationChatAdapter 三类 Provider 协议契约', () => {
         signal: new AbortController().signal
       })).resolves.toEqual({
         text: '我向左走一点。',
-        activity: '向左移动',
-        status: 'moving',
         movementControl: { kind: 'move_once', target: 'left', distance: 'near' },
-        emotion: 'calm',
-        behaviorPlan: { kind: 'none', emotion: 'calm' },
-        capabilityPlan: { kind: 'chat' }
+        capabilityPlan: { kind: 'chat' },
+        moodUpdate: { summary: '平静', strength: 0.5, halfLifeMs: 300_000 }
       });
     }
   );
@@ -2538,6 +2527,7 @@ describe('ProviderRegistry', () => {
           type: 'text',
           text: '首次正文。',
           structured_output: {
+            expressionPlan: { states: 'bad' },
             rawResponse: [
               'sk-private-control-key',
               'C:\\Users\\Alice\\Documents\\control.txt',
@@ -2549,13 +2539,8 @@ describe('ProviderRegistry', () => {
         .mockResolvedValueOnce({
           type: 'text',
           text: '修复正文不得替换首次正文。',
-          structured_output: {
-            activity: '安静陪伴',
-            status: 'idle',
-            movementControl: { kind: 'keep' },
-            behaviorPlan: { kind: 'none' },
-            capabilityPlan: { kind: 'chat' }
-          }
+          structured_output: {movementControl: { kind: 'keep' },
+capabilityPlan: { kind: 'chat' }}
         })
     };
     const sink = vi.fn();
@@ -2580,7 +2565,7 @@ describe('ProviderRegistry', () => {
     await expect(adapter.respond({
       history: [], text: '普通聊天', behaviorContext: providerBehaviorContext,
       signal: new AbortController().signal
-    })).resolves.toMatchObject({ text: '首次正文。', activity: '安静陪伴' });
+    })).resolves.toMatchObject({ text: '首次正文。' });
 
     expect(createCorrelationId).toHaveBeenCalledTimes(2);
     expect(sink).toHaveBeenCalledOnce();
@@ -2803,10 +2788,7 @@ describe('ProviderRegistry', () => {
       signal: new AbortController().signal
     })).resolves.toEqual({
       text: visibleText,
-      activity: '安静陪伴',
-      status: 'idle',
       movementControl: { kind: 'keep' },
-      behaviorPlan: { kind: 'none' },
       capabilityPlan: { kind: 'chat' }
     });
 
@@ -2819,12 +2801,14 @@ describe('ProviderRegistry', () => {
       tools: [],
       messages: [
         { role: 'system', content: expect.any(String) },
+        { role: 'system', content: expect.any(String) },
+        { role: 'system', content: expect.any(String) },
         { role: 'user', content: '给出 Markdown 示例' }
       ]
     });
   });
 
-  test('DeepSeek 空 content 在 Provider 重试后仅允许一次无工具控制修复', async () => {
+  test('DeepSeek 空 content 经 Provider 重试得到合法正文后结束，不修复省略的表现', async () => {
     const profile: ProviderProfileV2 = {
       id: 'deepseek-empty-chat-profile',
       displayName: 'DeepSeek',
@@ -2856,7 +2840,7 @@ describe('ProviderRegistry', () => {
       onTextDelta: vi.fn()
     })).resolves.toEqual({ text: '重试后正文' });
 
-    expect(fetchClient).toHaveBeenCalledTimes(3);
+    expect(fetchClient).toHaveBeenCalledTimes(2);
     const firstBody = JSON.parse(String(fetchClient.mock.calls[0]?.[1]?.body));
     const secondBody = JSON.parse(String(fetchClient.mock.calls[1]?.[1]?.body));
     expect(secondBody).toEqual(firstBody);

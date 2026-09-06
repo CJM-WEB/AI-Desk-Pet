@@ -1,6 +1,6 @@
 import { createCodingSession } from '@myself/coding-task-core';
 import { capabilityControlPlanSchema } from '@myself/agent-core';
-import { characterChatBehaviorPlanSchema, characterBehaviorDescriptorSchema, movementControlPlanSchema } from '@myself/character-runtime';
+import { characterMoodUpdateSchema, characterExpressionPlanSchema, characterExplicitPlaybackSchema, movementControlPlanSchema } from '@myself/character-runtime';
 import { randomUUID } from 'node:crypto';
 import { runInNewContext } from 'node:vm';
 import assert from 'node:assert/strict';
@@ -136,8 +136,8 @@ function behaviorPort(): ConversationBehaviorPort {
   return {
     prepareUserPrompt: async text => ({ originalText: text, capabilityText: text, explicitDirective: null }),
     getChatContext: () => ({
-      character: {
-        identity: {
+      character: { idleStateId: 'idle',
+        identity: { formsOfAddress: [], dislikes: [], boundaries: [], exampleLines: [],
           name: '验收角色', description: '验收角色', background: '验收环境', traits: [],
           languageStyle: '简洁', likes: [], behavioralTendencies: []
         },
@@ -148,6 +148,8 @@ function behaviorPort(): ConversationBehaviorPort {
       recentActions: []
     }),
     completeUserPrompt: async () => undefined,
+    captureExpressionContext: () => null,
+    handleChatResponseFinished: () => undefined,
     handleTaskEvent: () => undefined,
     applyPlaybackFeedback: () => undefined,
     cancelActive: () => undefined,
@@ -373,12 +375,12 @@ export async function runCodingModelAcceptance(input: ModelAcceptanceEnvironment
         const plan = response.type === 'text' ? response.structured_output?.capabilityPlan : undefined;
         const kind = plan && typeof plan === 'object' ? Reflect.get(plan, 'kind') : undefined;
         if (response.type === 'text' && response.structured_output) {
-          for (const [field, schema] of Object.entries({ capabilityPlan: capabilityControlPlanSchema, behaviorPlan: characterChatBehaviorPlanSchema, activity: characterBehaviorDescriptorSchema, status: characterBehaviorDescriptorSchema, movementControl: movementControlPlanSchema })) {
+          for (const [field, schema] of Object.entries({ capabilityPlan: capabilityControlPlanSchema, moodUpdate: characterMoodUpdateSchema.optional(), expressionPlan: characterExpressionPlanSchema.optional(), explicitPlayback: characterExplicitPlaybackSchema.optional(), movementControl: movementControlPlanSchema })) {
             const validation = schema.safeParse(response.structured_output[field]);
             if (!validation.success) {
               input.progress?.(`INVALID_${field.toUpperCase()}`);
               for (const issue of validation.error.issues) {
-                const part = issue.path.filter(value => ['kind', 'emotion', 'state', 'action', 'duration', 'preferredTool'].includes(String(value))).join('_').toUpperCase();
+                const part = issue.path.filter(value => ['kind', 'summary', 'strength', 'states', 'stateId', 'actions', 'actionId', 'score', 'minStrength', 'maxStrength', 'validForMs'].includes(String(value))).join('_').toUpperCase();
                 input.progress?.(`SCHEMA_${issue.code.toUpperCase()}_${part}`);
               }
             }

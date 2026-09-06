@@ -1,245 +1,93 @@
 import { z } from 'zod';
-import { characterEmotionLabelSchema } from '@myself/shared-types';
-import { safeIdentifierSchema } from './character-v2-schema';
-import type { CharacterEmotionLabel } from '@myself/shared-types';
+import { characterIdentitySchema, safeIdentifierSchema } from './character-v2-schema';
+import { characterMoodUpdateSchema } from './character-mood';
+import { characterExpressionPlanSchema, characterExplicitPlaybackSchema } from './character-expression-plan';
 
 export type BehaviorTarget =
   | Readonly<{ kind: 'state_name'; name: string }>
   | Readonly<{ kind: 'action_name'; name: string }>
   | Readonly<{ kind: 'tag'; tag: string }>;
-
 export type MoveDirection = 'left' | 'right' | 'up' | 'down';
 export type MoveDistance = 'near' | 'medium' | 'far';
-export type ScreenRegion =
-  | 'left' | 'right' | 'top' | 'bottom'
-  | 'top_left' | 'top_right' | 'bottom_left' | 'bottom_right';
+export type ScreenRegion = 'left' | 'right' | 'top' | 'bottom' | 'top_left' | 'top_right' | 'bottom_left' | 'bottom_right';
 export type PublicMotionTarget = 'random_work_area' | ScreenRegion;
-
 export type MovementControlPlan =
   | Readonly<{ kind: 'keep' }>
   | Readonly<{ kind: 'set_mode'; mode: 0 | 1 | 2 }>
-  | Readonly<{
-      kind: 'move_once';
-      target: PublicMotionTarget;
-      distance: MoveDistance;
-    }>;
+  | Readonly<{ kind: 'move_once'; target: PublicMotionTarget; distance: MoveDistance }>;
 
+/** 仅供 Main 已有明确目标/运动入口；不是模型输出协议。 */
 export type CharacterBehaviorDuration = 'brief' | 'normal' | 'extended';
-
-export type CharacterChatBehaviorPlan =
-  | Readonly<{ kind: 'none'; emotion?: CharacterEmotionLabel }>
-  | Readonly<{
-      kind: 'play_state';
-      state: string;
-      action?: string;
-      duration?: CharacterBehaviorDuration;
-      emotion?: CharacterEmotionLabel;
-    }>;
-
 export type CharacterBehaviorPlan =
-  | CharacterChatBehaviorPlan
+  | Readonly<{ kind: 'none' }>
+  | Readonly<{ kind: 'play_state'; state: string; action?: string; duration?: CharacterBehaviorDuration }>
   | Readonly<{ kind: 'move'; direction: MoveDirection; distance: MoveDistance }>
   | Readonly<{ kind: 'move_region'; region: ScreenRegion }>;
-
-export type PublicCharacterIdentity = Readonly<{
-  name: string;
-  description: string;
-  background: string;
-  traits: readonly string[];
-  languageStyle: string;
-  likes: readonly string[];
-  behavioralTendencies: readonly string[];
-}>;
-
-export type PublicBehaviorAction = Readonly<{
-  actionId: string;
-  name: string;
-  description?: string;
-  tags: readonly string[];
-}>;
-
-export type PublicBehaviorState = Readonly<{
-  stateId: string;
-  name: string;
-  description?: string;
-  tags: readonly string[];
-  actions: readonly PublicBehaviorAction[];
-}>;
-
-/** 发送给模型的角色清单只保留有界人设与“状态 → 动作”公开层级。 */
-export type PublicBehaviorCatalog = Readonly<{
-  identity: PublicCharacterIdentity;
-  states: readonly PublicBehaviorState[];
-}>;
-
-const publicNameSchema = z.string().trim().min(1).max(120).refine(
-  value => !/[\\/]/u.test(value) && !/^(?:[a-z]:|\\\\|\\\\[?.]\\)/iu.test(value),
-  'PUBLIC_BEHAVIOR_NAME_INVALID'
-);
-/** 模型的隐藏活动与状态只承载短语义，不得携带无界正文。 */
-export const characterBehaviorDescriptorSchema = z.string().trim().min(1).max(120);
-const noneBehaviorPlanSchema = z.object({
-  kind: z.literal('none'), emotion: characterEmotionLabelSchema.optional()
-}).strict();
-const playStateBehaviorPlanSchema = z.object({
-  kind: z.literal('play_state'),
-  state: publicNameSchema,
-  action: publicNameSchema.optional(),
-  duration: z.enum(['brief', 'normal', 'extended']).optional(),
-  emotion: characterEmotionLabelSchema.optional()
-}).strict();
-
-/** 模型的 behaviorPlan 只选择动画候选，运动策略由 movementControl 独占。 */
-export const characterChatBehaviorPlanSchema = z.discriminatedUnion('kind', [
-  noneBehaviorPlanSchema,
-  playStateBehaviorPlanSchema
-]);
-
-export const characterBehaviorPlanSchema = z.discriminatedUnion('kind', [
-  noneBehaviorPlanSchema,
-  playStateBehaviorPlanSchema,
-  z.object({
-    kind: z.literal('move'),
-    direction: z.enum(['left', 'right', 'up', 'down']),
-    distance: z.enum(['near', 'medium', 'far'])
-  }).strict(),
-  z.object({
-    kind: z.literal('move_region'),
-    region: z.enum([
-      'left', 'right', 'top', 'bottom',
-      'top_left', 'top_right', 'bottom_left', 'bottom_right'
-    ])
-  }).strict()
-]);
-
-const publicMotionTargetSchema = z.enum([
-  'random_work_area',
-  'left', 'right', 'top', 'bottom',
-  'top_left', 'top_right', 'bottom_left', 'bottom_right'
-]);
-
-/** 持久模式和一次移动共享严格联合，禁止模型注入坐标或私有资源标识。 */
+const publicNameSchema = z.string().trim().min(1).max(120);
 export const movementControlPlanSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('keep') }).strict(),
-  z.object({ kind: z.literal('set_mode'), mode: z.union([
-    z.literal(0), z.literal(1), z.literal(2)
-  ]) }).strict(),
-  z.object({
-    kind: z.literal('move_once'),
-    target: publicMotionTargetSchema,
-    distance: z.enum(['near', 'medium', 'far'])
-  }).strict()
+  z.object({ kind: z.literal('set_mode'), mode: z.union([z.literal(0), z.literal(1), z.literal(2)]) }).strict(),
+  z.object({ kind: z.literal('move_once'), target: z.enum(['random_work_area', 'left', 'right', 'top', 'bottom', 'top_left', 'top_right', 'bottom_left', 'bottom_right']),
+    distance: z.enum(['near', 'medium', 'far']) }).strict()
 ]);
-
-const publicIdentitySchema = z.object({
-  name: publicNameSchema,
-  description: z.string().trim().min(1).max(2_000),
-  background: z.string().trim().min(1).max(4_000),
-  traits: z.array(z.string().trim().min(1).max(120)).max(32),
-  languageStyle: z.string().trim().min(1).max(500),
-  likes: z.array(z.string().trim().min(1).max(240)).max(32),
-  behavioralTendencies: z.array(z.string().trim().min(1).max(240)).max(32)
-}).strict();
-
+export const characterBehaviorPlanSchema = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('none') }).strict(),
+  z.object({ kind: z.literal('play_state'), state: publicNameSchema, action: publicNameSchema.optional(),
+    duration: z.enum(['brief', 'normal', 'extended']).optional() }).strict(),
+  z.object({ kind: z.literal('move'), direction: z.enum(['left', 'right', 'up', 'down']), distance: z.enum(['near', 'medium', 'far']) }).strict(),
+  z.object({ kind: z.literal('move_region'), region: z.enum(['left', 'right', 'top', 'bottom', 'top_left', 'top_right', 'bottom_left', 'bottom_right']) }).strict()
+]);
+const publicIdentitySchema = characterIdentitySchema.extend({ name: publicNameSchema });
 const publicBehaviorActionSchema = z.object({
-  actionId: safeIdentifierSchema,
-  name: publicNameSchema,
-  description: z.string().trim().min(1).max(2_000).optional(),
+  actionId: safeIdentifierSchema, name: publicNameSchema, description: z.string().max(2000).optional(),
   tags: z.array(safeIdentifierSchema).max(32)
 }).strict();
-
 const publicBehaviorStateSchema = z.object({
-  stateId: safeIdentifierSchema,
-  name: publicNameSchema,
-  description: z.string().trim().min(1).max(2_000).optional(),
-  tags: z.array(safeIdentifierSchema).max(32),
+  stateId: safeIdentifierSchema, name: publicNameSchema, description: z.string().max(2000).optional(),
+  agentInferable: z.boolean(), tags: z.array(safeIdentifierSchema).max(32),
   actions: z.array(publicBehaviorActionSchema).max(128)
 }).strict();
-
+/** Main 保留完整公开作者资料；请求的候选覆盖范围由每次投影决定。 */
 export const publicBehaviorCatalogSchema = z.object({
-  identity: publicIdentitySchema,
+  idleStateId: safeIdentifierSchema, identity: publicIdentitySchema,
   states: z.array(publicBehaviorStateSchema).max(512)
 }).strict();
+export type PublicCharacterIdentity = Readonly<z.infer<typeof publicIdentitySchema>>;
+export type PublicBehaviorAction = Readonly<z.infer<typeof publicBehaviorActionSchema>>;
+export type PublicBehaviorState = Readonly<Omit<z.infer<typeof publicBehaviorStateSchema>, 'actions'>> & { readonly actions: readonly PublicBehaviorAction[] };
+export type PublicBehaviorCatalog = Readonly<{ idleStateId: string; identity: PublicCharacterIdentity; states: readonly PublicBehaviorState[] }>;
 
-/** 可执行契约与发送给模型的 JSON Schema 成对维护，Main 以它复核模型真实输出。 */
+/** 表现引用由 Main 对照实际发送目录复核；没有更新不等于强制平静。 */
 export const characterChatResponseSchema = z.object({
-  text: z.string().min(1).max(4_000),
-  activity: characterBehaviorDescriptorSchema,
-  status: characterBehaviorDescriptorSchema,
-  movementControl: movementControlPlanSchema,
-  behaviorPlan: characterChatBehaviorPlanSchema
+  text: z.string().min(1).max(4000), moodUpdate: characterMoodUpdateSchema.optional(),
+  expressionPlan: characterExpressionPlanSchema.optional(), explicitPlayback: characterExplicitPlaybackSchema.optional(),
+  movementControl: movementControlPlanSchema
 }).strict();
-
-function deepFreeze<T>(value: T): Readonly<T> {
-  if (typeof value !== 'object' || value === null || Object.isFrozen(value)) return value;
-  for (const child of Object.values(value)) deepFreeze(child);
-  return Object.freeze(value);
-}
-
-/** 该常量只声明聊天输出形状，不能被解释为工具或本地权限。 */
-export const characterChatResponseJsonSchema = deepFreeze({
-  type: 'object',
-  additionalProperties: false,
-  required: ['text', 'activity', 'status', 'movementControl', 'behaviorPlan'],
+const identifier = { type: 'string', pattern: '^[a-z0-9][a-z0-9_-]{0,119}$' };
+const score = { type: 'number', minimum: 0, maximum: 1 };
+/** JSON 协议与执行 Schema 对应；生命周期修订和保留令牌不能由模型提供。 */
+export const characterChatResponseJsonSchema = {
+  type: 'object', additionalProperties: false, required: ['text', 'movementControl'],
   properties: {
-    text: { type: 'string', minLength: 1, maxLength: 4_000 },
-    activity: { type: 'string', minLength: 1, maxLength: 120 },
-    status: { type: 'string', minLength: 1, maxLength: 120 },
-    movementControl: {
-      oneOf: [
-        {
-          type: 'object', additionalProperties: false, required: ['kind'],
-          properties: { kind: { const: 'keep' } }
-        },
-        {
-          type: 'object', additionalProperties: false, required: ['kind', 'mode'],
-          properties: { kind: { const: 'set_mode' }, mode: { enum: [0, 1, 2] } }
-        },
-        {
-          type: 'object', additionalProperties: false,
-          required: ['kind', 'target', 'distance'],
-          properties: {
-            kind: { const: 'move_once' },
-            target: { enum: [
-              'random_work_area',
-              'left', 'right', 'top', 'bottom',
-              'top_left', 'top_right', 'bottom_left', 'bottom_right'
-            ] },
-            distance: { enum: ['near', 'medium', 'far'] }
-          }
-        }
-      ]
-    },
-    behaviorPlan: {
-      oneOf: [
-        {
-          type: 'object',
-          additionalProperties: false,
-          required: ['kind'],
-          properties: {
-            kind: { const: 'none' },
-            emotion: { enum: ['happy', 'sad', 'angry', 'surprised', 'calm'] }
-          }
-        },
-        {
-          type: 'object',
-          additionalProperties: false,
-          required: ['kind', 'state'],
-          properties: {
-            kind: { const: 'play_state' },
-            emotion: { enum: ['happy', 'sad', 'angry', 'surprised', 'calm'] },
-            state: {
-              type: 'string', minLength: 1, maxLength: 120,
-              pattern: '^(?!\\s*$)(?!.*[\\\\/])(?![A-Za-z]:).+$'
-            },
-            action: {
-              type: 'string', minLength: 1, maxLength: 120,
-              pattern: '^(?!\\s*$)(?!.*[\\\\/])(?![A-Za-z]:).+$'
-            },
-            duration: { enum: ['brief', 'normal', 'extended'] }
-          }
-        }
-      ]
-    }
+    text: { type: 'string', minLength: 1, maxLength: 4000 },
+    moodUpdate: { type: 'object', additionalProperties: false, required: ['summary', 'strength'],
+      properties: { summary: { type: 'string', minLength: 1, maxLength: 240 }, strength: score,
+        fadeInMs: { type: 'integer', minimum: 0, maximum: 300000 }, halfLifeMs: { type: 'integer', minimum: 30000, maximum: 1800000 } } },
+    expressionPlan: { type: 'object', additionalProperties: false, required: ['states'],
+      properties: { validForMs: { type: 'integer', minimum: 1, maximum: 1800000 },
+        states: { type: 'array', maxItems: 8, items: { type: 'object', additionalProperties: false,
+          required: ['stateId', 'score', 'minStrength', 'maxStrength', 'actions'],
+          properties: { stateId: identifier, score, minStrength: score, maxStrength: score,
+            actions: { type: 'array', maxItems: 32, items: { type: 'object', additionalProperties: false,
+              required: ['actionId', 'score'], properties: { actionId: identifier, score } } } } } } } },
+    explicitPlayback: { type: 'object', additionalProperties: false, required: ['stateId'],
+      properties: { stateId: identifier, actionId: identifier } },
+    movementControl: { oneOf: [
+      { type: 'object', additionalProperties: false, required: ['kind'], properties: { kind: { const: 'keep' } } },
+      { type: 'object', additionalProperties: false, required: ['kind', 'mode'], properties: { kind: { const: 'set_mode' }, mode: { enum: [0, 1, 2] } } },
+      { type: 'object', additionalProperties: false, required: ['kind', 'target', 'distance'],
+        properties: { kind: { const: 'move_once' }, target: { enum: ['random_work_area', 'left', 'right', 'top', 'bottom', 'top_left', 'top_right', 'bottom_left', 'bottom_right'] },
+          distance: { enum: ['near', 'medium', 'far'] } } }
+    ] }
   }
-});
+} as const;

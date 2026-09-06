@@ -116,7 +116,9 @@ export class CharacterBehaviorService {
     this.moving = snapshot.moving;
     this.recordTrustedEvent(snapshot.moving ? 'move-start' : 'move-stop');
   }
-  handleUserInteraction(): void { this.recordTrustedEvent('user-interaction'); }
+  /** 新互动撤销在途推断，保留已经接纳的心情与有限播放。 */
+  invalidateContext(): void { if (!this.closed && !this.transitioning && this.engine) this.engine.invalidateContext(); }
+  handleUserInteraction(): void { this.invalidateContext(); this.recordTrustedEvent('user-interaction'); }
   recordTrustedEvent(type: TrustedCharacterEventV3): void {
     if (!this.closed && !this.transitioning && this.engine) this.publish(this.engine.recordEvent({ id: `host-${this.loadRevision}-${++this.serial}`, type, occurredAtMs: this.now() }));
   }

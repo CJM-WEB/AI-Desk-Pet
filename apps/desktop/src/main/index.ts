@@ -103,7 +103,7 @@ import { LocalModelProvider } from './providers/local-model-provider';
 import { ProviderRegistry } from './providers/provider-registry';
 import { LocalModelRuntime } from './local-model/local-model-runtime';
 import { LocalModelService } from './local-model/local-model-service';
-import { BUILTIN_LOCAL_PROVIDER_CATALOG_ENTRY } from './local-model/local-model-route';
+import { BUILTIN_LOCAL_PROVIDER_CATALOG_ENTRY, isBuiltinLocalProviderProfile } from './local-model/local-model-route';
 import type { ChatSubmissionIntent } from '../shared/myself-api';
 import { ipcChannels } from '../shared/ipc-channels';
 import {
@@ -1011,7 +1011,8 @@ async function createApplicationWindows(
         profile,
         error,
         correlationId
-      )
+      ),
+      { inputByteBudget: isBuiltinLocalProviderProfile(profile) ? 19_200 : 64 * 1024 }
     ),
     createCodingTaskService: ({ snapshot, primaryProfile, emit, emitTrustedToolResult }) => new CodingTaskService({
       sessionOptions: async () => {

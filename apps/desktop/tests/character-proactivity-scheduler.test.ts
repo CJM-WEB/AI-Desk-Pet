@@ -7,12 +7,12 @@ import type {
 } from '../src/main/characters/character-behavior-director';
 
 const context: ConversationBehaviorContext = {
-  character: {
-    identity: {
+  character: { idleStateId: 'idle-state',
+    identity: { formsOfAddress: [], dislikes: [], boundaries: [], exampleLines: [],
       name: '测试角色', description: '测试角色', background: '测试环境', traits: [],
       languageStyle: '简洁', likes: [], behavioralTendencies: []
     },
-    states: [{
+    states: [{ agentInferable: true,
       stateId: 'idle-state', name: '待机', tags: [],
       actions: [{ actionId: 'blink', name: '眨眼', tags: [] }]
     }]
