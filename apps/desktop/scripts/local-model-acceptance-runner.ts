@@ -390,7 +390,7 @@ export async function runCodingModelAcceptance(input: ModelAcceptanceEnvironment
         return response;
       } }, error => input.progress?.(`CHAT_${error.code}`));
     },
-    createAgentService: ({ snapshot, primaryProfile, emit, emitTrustedToolResult }) => new CodingTaskService({
+    createCodingTaskService: ({ snapshot, primaryProfile, emit, emitTrustedToolResult }) => new CodingTaskService({
       createSession: async options => {
         const session = await createCodingSession(options);
         return { ...session, close: async () => {

@@ -403,7 +403,7 @@ describe('Main E2E 安全边界', () => {
 
   test('新 Core 工厂复用既有 E2E 隔离回收站宿主端口，正常运行仍使用系统回收站', async () => {
     const main = await readFile(new URL('../src/main/index.ts', import.meta.url), 'utf8');
-    const factory = main.slice(main.indexOf('createAgentService: ({ snapshot'), main.indexOf('const conversationCoordinator'));
+    const factory = main.slice(main.indexOf('createCodingTaskService: ({ snapshot'), main.indexOf('const conversationCoordinator'));
     expect(factory).toContain('new CodingTaskService(');
     expect(factory).toMatch(/trashFile:\s*absolutePath\s*=>\s*e2eBoundary\s*\?\s*moveToE2eRecycleBin\(absolutePath\)\s*:\s*shell\.trashItem\(absolutePath\)/u);
     expect(main).toContain("'.force-failure'");

@@ -7,7 +7,6 @@ import {
 import {
   ASSISTANT_STREAM_TEXT_MAX_CHARACTERS,
   ASSISTANT_STREAM_TURN_ID_MAX_CHARACTERS,
-  type PendingAction,
   type TaskPermissionRequiredEvent,
   type CapabilityAuthorizationRequiredEvent,
   type TaskEvent,
@@ -44,7 +43,6 @@ export interface TaskViewState {
   conversationRevision: number;
   phase: TaskPhase;
   messages: TaskViewMessage[];
-  pendingAction: PendingAction | null;
   pendingPermissions: TaskPermissionRequiredEvent[];
   completeTaskPermission(actionId: string): void;
   pendingHistoryDisclosure: PendingHistoryDisclosure | null;
@@ -86,7 +84,6 @@ export function createTaskStore(): StoreApi<TaskViewState> {
     conversationRevision: 0,
     phase: 'idle',
     messages: [],
-    pendingAction: null,
     pendingPermissions: [],
     pendingHistoryDisclosure: null,
     pendingCapabilityAuthorization: null,
@@ -269,8 +266,7 @@ export function createTaskStore(): StoreApi<TaskViewState> {
           conversationRevision: state.conversationRevision + 1,
           phase: 'idle',
           messages: [],
-          pendingAction: null,
-    pendingPermissions: [],
+          pendingPermissions: [],
           pendingHistoryDisclosure: null,
           pendingCapabilityAuthorization: null,
           resolvingHistoryDisclosureRequestId: null,
@@ -317,19 +313,6 @@ export function createTaskStore(): StoreApi<TaskViewState> {
         set({ phase: 'awaiting_confirmation', pendingPermissions: [...pending, event] });
         return;
       }
-      if (event.type === 'pending_action') {
-        clearTransientTimer();
-        set(state => ({
-          phase: 'awaiting_confirmation',
-          pendingAction: event.action,
-          characterState: reduceCharacterState(state.characterState, {
-            type: 'task',
-            phase: 'awaiting_confirmation'
-          })
-        }));
-        return;
-      }
-
       clearTransientTimer();
       const phase = event.phase;
       const activeStreamId = terminalPhase(phase) && activeAssistantStreamTurnId !== null
@@ -357,7 +340,7 @@ export function createTaskStore(): StoreApi<TaskViewState> {
             }
           : {}),
         ...(terminalPhase(phase)
-          ? { pendingAction: null, pendingPermissions: [], pendingCapabilityAuthorization: null }
+          ? { pendingPermissions: [], pendingCapabilityAuthorization: null }
           : {})
       });
       if (phase === 'idle' && pendingEmotionRequest) {
@@ -390,8 +373,7 @@ export function createTaskStore(): StoreApi<TaskViewState> {
       pendingEmotionRequest = null;
       set(state => ({
         phase: 'listening',
-        pendingAction: null,
-    pendingPermissions: [],
+        pendingPermissions: [],
         characterState: reduceCharacterState(state.characterState, {
           type: 'task',
           phase: 'listening'

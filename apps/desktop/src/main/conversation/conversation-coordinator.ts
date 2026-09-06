@@ -11,7 +11,7 @@ import type {
   ConversationBehaviorPort,
   ExplicitBehaviorDirective
 } from '../characters/character-behavior-director';
-import type { CodingTaskOutcome as AgentFileTaskOutcome, CodingTaskToolResult as AgentTrustedToolResult } from '../agent/coding-task-service';
+import type { CodingTaskOutcome, CodingTaskToolResult } from '../agent/coding-task-service';
 import { capabilityIntentRouter } from './capability-intent-router';
 import {
   isPublicFileTaskErrorCode,
@@ -47,7 +47,7 @@ export type PreparedCapabilityTarget = Readonly<{
 export interface ConversationCapabilityTaskPort {
   onEvent(listener: (event: TaskEvent, generation: string) => void): () => void;
   onTrustedToolResult(listener: (
-    result: AgentTrustedToolResult,
+    result: CodingTaskToolResult,
     generation: string,
     target: PreparedCapabilityTarget
   ) => void): () => void;
@@ -69,7 +69,7 @@ export interface ConversationCapabilityTaskPort {
     visibleHistory: readonly ModelMessage[];
     generation: string;
     taskKind: CapabilityTaskKind;
-  }): Promise<AgentFileTaskOutcome>;
+  }): Promise<CodingTaskOutcome>;
   cancelActive(): void | Promise<void>;
   resolveAction(actionId: string, decision: 'confirm' | 'cancel'): Promise<void>;
   resetForNewConversation(): Promise<void>;
@@ -795,7 +795,7 @@ export class ConversationCoordinator {
   }
 
   private handleTrustedToolResult(
-    result: AgentTrustedToolResult,
+    result: CodingTaskToolResult,
     generation: string,
     target: PreparedCapabilityTarget
   ): void {

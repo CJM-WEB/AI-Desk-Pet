@@ -120,7 +120,7 @@ function conversationSecurityHarness(input: {
   const readAuthorizedRootPath = vi.fn(async () => input.authorizedRootPath ?? null);
   const readPrivacySettings = vi.fn(async () => ({ dataCategories: { file: true } }));
   const createPathPolicy = vi.fn(() => ({ kind: 'path-policy' }));
-  const createAgentService = vi.fn(() => {
+  const createCodingTaskService = vi.fn(() => {
     createPathPolicy();
     throw new Error('SECURITY_AGENT_FACTORY_MUST_NOT_RUN');
   });
@@ -153,13 +153,13 @@ function conversationSecurityHarness(input: {
         );
       }
     }),
-    createAgentService,
+    createCodingTaskService,
     behavior: input.behavior ?? securityBehaviorDouble(),
     emit: event => events.push(event)
   });
   return {
     composition,
-    createAgentService,
+    createCodingTaskService,
     createPathPolicy,
     events,
     modelRequests,
@@ -568,7 +568,7 @@ describe('权限边界安全回归', () => {
     }]);
     expect(harness.readAuthorizedRootPath).not.toHaveBeenCalled();
     expect(harness.readPrivacySettings).not.toHaveBeenCalled();
-    expect(harness.createAgentService).not.toHaveBeenCalled();
+    expect(harness.createCodingTaskService).not.toHaveBeenCalled();
     expect(harness.createPathPolicy).not.toHaveBeenCalled();
     await harness.composition.close();
   });
@@ -609,7 +609,7 @@ describe('权限边界安全回归', () => {
 
     expect(harness.readAuthorizedRootPath).toHaveBeenCalledOnce();
     expect(harness.readPrivacySettings).toHaveBeenCalledOnce();
-    expect(harness.createAgentService).not.toHaveBeenCalled();
+    expect(harness.createCodingTaskService).not.toHaveBeenCalled();
     expect(harness.createPathPolicy).not.toHaveBeenCalled();
     expect(harness.modelRequests).toEqual([]);
     expect(harness.events).toContainEqual(expect.objectContaining({

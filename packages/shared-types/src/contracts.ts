@@ -97,116 +97,6 @@ export const toolRequestSchema = z.object({
 }).strict();
 export type ToolRequest = z.infer<typeof toolRequestSchema>;
 
-type PendingFileActionBase = Readonly<{
-  category: 'file';
-  actionId: string;
-  conversationId: string;
-  risk: 'write';
-  summary: string;
-  targetRelativePath: string;
-  createdAt: string;
-  expiresAt: string;
-}>;
-
-/** Renderer 仅接收经 Main 过滤后的文件写入摘要，不承载私有执行能力。 */
-export type PendingAction =
-  | Readonly<PendingFileActionBase & {
-      operation: 'create_file';
-      contentCharacters: number;
-      contentPreview: string | null;
-      contentPreviewSuppressedReason: 'sensitive' | 'too_long' | null;
-      previewTruncated: boolean;
-    }>
-  | Readonly<PendingFileActionBase & {
-      operation: 'create_directory';
-    }>
-  | Readonly<PendingFileActionBase & {
-      operation: 'apply_patch';
-      addedLines: number;
-      removedLines: number;
-      diffPreview: string;
-      previewTruncated: boolean;
-    }>
-  | Readonly<PendingFileActionBase & {
-      operation: 'delete_file';
-      targetType: 'file' | 'empty_directory';
-    }>
-  | Readonly<PendingFileActionBase & {
-      operation: 'move_file';
-      sourceRelativePath: string;
-    }>
-  | Readonly<{
-      category: 'powershell';
-      actionId: string;
-      conversationId: string;
-      risk: 'shell';
-      operation: 'powershell';
-      summary: string;
-      command: string;
-      workingDirectoryLabel: string;
-      runMode: 'foreground';
-      createdAt: string;
-      expiresAt: string;
-    }>;
-
-const pendingFileActionBaseSchema = z.object({
-  category: z.literal('file'),
-  actionId: z.string().min(1),
-  conversationId: z.string().min(1),
-  risk: z.literal('write'),
-  summary: z.string().min(1),
-  targetRelativePath: z.string().min(1),
-  createdAt: z.string().datetime(),
-  expiresAt: z.string().datetime()
-});
-
-/** 确认卡只展示受控目录名称，绝不承载本机绝对、UNC 或设备路径。 */
-const workingDirectoryLabelSchema = z.string().min(1).max(128).refine(
-  value => !/^(?:[a-z]:[\\/]|[\\/]{1,2}|[\\/]{2}[?.][\\/])/iu.test(value),
-  'WORKING_DIRECTORY_LABEL_INVALID'
-);
-
-export const pendingActionSchema: z.ZodType<PendingAction> = z.union([
-  pendingFileActionBaseSchema.extend({
-    operation: z.literal('create_file'),
-    contentCharacters: z.number().int().min(0),
-    contentPreview: z.string().nullable(),
-    contentPreviewSuppressedReason: z.enum(['sensitive', 'too_long']).nullable(),
-    previewTruncated: z.boolean()
-  }).strict(),
-  pendingFileActionBaseSchema.extend({
-    operation: z.literal('create_directory')
-  }).strict(),
-  pendingFileActionBaseSchema.extend({
-    operation: z.literal('apply_patch'),
-    addedLines: z.number().int().min(0),
-    removedLines: z.number().int().min(0),
-    diffPreview: z.string(),
-    previewTruncated: z.boolean()
-  }).strict(),
-  pendingFileActionBaseSchema.extend({
-    operation: z.literal('delete_file'),
-    targetType: z.enum(['file', 'empty_directory'])
-  }).strict(),
-  pendingFileActionBaseSchema.extend({
-    operation: z.literal('move_file'),
-    sourceRelativePath: z.string().min(1)
-  }).strict(),
-  z.object({
-    category: z.literal('powershell'),
-    actionId: z.string().min(1),
-    conversationId: z.string().min(1),
-    risk: z.literal('shell'),
-    operation: z.literal('powershell'),
-    summary: z.string().min(1),
-    command: z.string().min(1).max(16_384),
-    workingDirectoryLabel: workingDirectoryLabelSchema,
-    runMode: z.literal('foreground'),
-    createdAt: z.string().datetime(),
-    expiresAt: z.string().datetime()
-  }).strict()
-]);
-
 export const providerProfileSchema = z.object({
   id: z.string().min(1),
   displayName: z.string().min(1),
@@ -323,10 +213,6 @@ export const taskEventSchema = z.discriminatedUnion('type', [
     type: z.literal('assistant_message_commit'),
     turnId: z.string().min(1).max(ASSISTANT_STREAM_TURN_ID_MAX_CHARACTERS),
     text: z.string().max(ASSISTANT_STREAM_TEXT_MAX_CHARACTERS)
-  }).strict(),
-  z.object({
-    type: z.literal('pending_action'),
-    action: pendingActionSchema
   }).strict(),
   z.object({
     type: z.literal('error'),

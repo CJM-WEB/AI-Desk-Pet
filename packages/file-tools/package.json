@@ -8,8 +8,6 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@myself/shared-types": "workspace:*",
-    "diff": "8.0.2",
     "zod": "^3.25.76"
   }
 }

@@ -20,11 +20,11 @@ import { CharacterBehaviorDirector } from '../../apps/desktop/src/main/character
 import { CharacterBehaviorService } from '../../apps/desktop/src/main/characters/character-behavior-service';
 import { CharacterMotionService } from '../../apps/desktop/src/main/characters/character-motion-service';
 import { CharacterProactivityScheduler } from '../../apps/desktop/src/main/characters/character-proactivity-scheduler';
-import type { CapabilityTaskAgentPort } from '../../apps/desktop/src/main/conversation/capability-task-adapter';
+import type { CapabilityTaskServicePort } from '../../apps/desktop/src/main/conversation/capability-task-adapter';
 import { ConversationChatAdapter } from '../../apps/desktop/src/main/conversation/conversation-chat-adapter';
 import {
 createMainConversationComposition,
-type MainConversationAgentFactoryInput
+type MainConversationCodingTaskFactoryInput
 } from '../../apps/desktop/src/main/conversation/main-conversation-composition';
 import { OpenAICompatibleProvider } from '../../apps/desktop/src/main/providers/openai-provider';
 import type { ProviderSettingsSnapshot } from '../../apps/desktop/src/main/storage/settings-store';
@@ -367,9 +367,9 @@ function conversationIntegrationHarness(input: {
   incognito?: boolean;
   behavior?: ConversationBehaviorPort;
   createChatAdapter?: () => ConversationChatAdapter;
-  createAgentService?: (
-    factoryInput: MainConversationAgentFactoryInput<{ dataCategories: { memory: boolean } }>
-  ) => CapabilityTaskAgentPort;
+  createCodingTaskService?: (
+    factoryInput: MainConversationCodingTaskFactoryInput<{ dataCategories: { memory: boolean } }>
+  ) => CapabilityTaskServicePort;
 }) {
   const privacySessions = new PrivacySessionRegistry();
   privacySessions.register('integration-conversation', {
@@ -394,18 +394,18 @@ function conversationIntegrationHarness(input: {
     text: string;
     visibleHistory: readonly unknown[];
   }> = [];
-  const agentFactoryInputs: Array<MainConversationAgentFactoryInput<
+  const codingTaskFactoryInputs: Array<MainConversationCodingTaskFactoryInput<
     { dataCategories: { memory: boolean } }
   >> = [];
   const readAuthorizedRootPath = vi.fn(async () => input.authorizedRootPath ?? null);
   const readPrivacySettings = vi.fn(async () => ({
     dataCategories: { memory: false }
   }));
-  const createAgentService = vi.fn((factoryInput: MainConversationAgentFactoryInput<
+  const createCodingTaskService = vi.fn((factoryInput: MainConversationCodingTaskFactoryInput<
     { dataCategories: { memory: boolean } }
   >) => {
-    agentFactoryInputs.push(factoryInput);
-    if (input.createAgentService) return input.createAgentService(factoryInput);
+    codingTaskFactoryInputs.push(factoryInput);
+    if (input.createCodingTaskService) return input.createCodingTaskService(factoryInput);
     throw new Error('普通聊天不应创建任务服务');
   });
   const composition = createMainConversationComposition({
@@ -429,7 +429,7 @@ function conversationIntegrationHarness(input: {
         );
       }
     }),
-    createAgentService,
+    createCodingTaskService,
     behavior: input.behavior ?? conversationBehaviorDouble(),
     emit: event => {
       input.behavior?.handleTaskEvent(event);
@@ -437,10 +437,10 @@ function conversationIntegrationHarness(input: {
     }
   });
   return {
-    agentFactoryInputs,
+    codingTaskFactoryInputs,
     chatRequests,
     composition,
-    createAgentService,
+    createCodingTaskService,
     events,
     fileSubmissions,
     readAuthorizedRootPath,
@@ -760,7 +760,7 @@ describe('桌面会话分流纵向集成', () => {
     ]);
     expect(fixture.readAuthorizedRootPath).not.toHaveBeenCalled();
     expect(fixture.readPrivacySettings).not.toHaveBeenCalled();
-    expect(fixture.createAgentService).not.toHaveBeenCalled();
+    expect(fixture.createCodingTaskService).not.toHaveBeenCalled();
     await fixture.composition.close();
   });
 
@@ -782,7 +782,7 @@ describe('桌面会话分流纵向集成', () => {
     });
     await expect(readdir(authorized.root, { recursive: true })).resolves.toEqual(before);
     expect(fixture.readAuthorizedRootPath).not.toHaveBeenCalled();
-    expect(fixture.createAgentService).not.toHaveBeenCalled();
+    expect(fixture.createCodingTaskService).not.toHaveBeenCalled();
     await fixture.composition.close();
   });
 
@@ -794,7 +794,7 @@ describe('桌面会话分流纵向集成', () => {
     await expect(fixture.composition.coordinator.submit('读取 docs/note.txt'))
       .rejects.toMatchObject({ code: 'FILE_AUTHORIZATION_REQUIRED' });
     expect(fixture.readAuthorizedRootPath).toHaveBeenCalledOnce();
-    expect(fixture.createAgentService).not.toHaveBeenCalled();
+    expect(fixture.createCodingTaskService).not.toHaveBeenCalled();
     expect(fixture.chatRequests).toEqual([]);
     await fixture.composition.close();
   });
@@ -805,7 +805,7 @@ describe('桌面会话分流纵向集成', () => {
     await expect(fixture.composition.coordinator.submit('后台运行构建'))
       .rejects.toMatchObject({ code: 'POWERSHELL_BACKGROUND_UNSUPPORTED' });
 
-    expect(fixture.createAgentService).not.toHaveBeenCalled();
+    expect(fixture.createCodingTaskService).not.toHaveBeenCalled();
     expect(fixture.chatRequests).toEqual([]);
     await fixture.composition.close();
   });

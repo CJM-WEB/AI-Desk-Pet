@@ -73,7 +73,6 @@ const NO_BEHAVIOR_AUTHORIZATION: CharacterBehaviorAuthorization = { kind: 'none'
 
 /** 统一给 Service 与 Director 派生可信任务是否阻塞低优先级行为。 */
 export function characterTaskRuntimeBlock(event: TaskEvent): boolean | null {
-  if (event.type === 'pending_action') return true;
   if (event.type !== 'phase') return null;
   return event.phase === 'listening'
     || event.phase === 'thinking'
@@ -323,9 +322,6 @@ export class CharacterBehaviorService {
       this.captureTaskContext(event, now);
       return NO_BEHAVIOR_AUTHORIZATION;
     }
-    if (event.type === 'pending_action') {
-      return NO_BEHAVIOR_AUTHORIZATION;
-    }
     if (event.type !== 'phase') return NO_BEHAVIOR_AUTHORIZATION;
 
     if (event.phase === 'idle' || event.phase === 'cancelled') {
@@ -535,7 +531,6 @@ export class CharacterBehaviorService {
 
   /** 切换窗口内只记录最新可信任务事实，不允许旧引擎消费任何边沿。 */
   private captureTaskContext(event: TaskEvent, occurredAtMs: number): void {
-    if (event.type === 'pending_action') return;
     if (event.type !== 'phase') return;
     if (event.phase === 'idle' || event.phase === 'cancelled') {
       this.activeTaskSignal = null;

@@ -196,22 +196,13 @@ describe('preload 公开 API', () => {
 });
 
 describe('TaskEvent preload 运行时边界', () => {
-  const validPendingActionEvent = {
-    type: 'pending_action',
-    action: {
-      category: 'file',
-      actionId: 'action-file-1',
-      conversationId: 'conversation-1',
-      risk: 'write',
-      operation: 'create_file',
-      summary: '创建测试文件',
-      targetRelativePath: 'safe.txt',
-      contentCharacters: 4,
-      contentPreview: 'safe',
-      contentPreviewSuppressedReason: null,
-      previewTruncated: false,
-      createdAt: '2026-08-15T00:00:00.000Z',
-      expiresAt: '2026-08-15T00:05:00.000Z'
+  const validTaskPermissionEvent = {
+    type: 'task_permission_required',
+    actionId: 'permission-file-1',
+    summary: '删除 safe.txt',
+    request: {
+      action: 'delete',
+      resources: ['safe.txt']
     }
   } as const;
 
@@ -228,7 +219,7 @@ describe('TaskEvent preload 运行时边界', () => {
     { type: 'assistant_message_start', turnId: 'turn-1' },
     { type: 'assistant_message_delta', turnId: 'turn-1', delta: '你好' },
     { type: 'assistant_message_commit', turnId: 'turn-1', text: '你好' },
-    validPendingActionEvent
+    validTaskPermissionEvent
   ])('合法 TaskEvent 解析后只通知一次监听者', event => {
     const listener = vi.fn();
     exposedApi!.onTaskEvent(listener);
@@ -249,10 +240,10 @@ describe('TaskEvent preload 运行时边界', () => {
     { type: 'assistant_message_commit', turnId: 'turn-1', text: 'x'.repeat(4_001) },
     { type: 'assistant_message_commit', turnId: 'turn-1', text: '你好', secret: true },
     { type: 'phase', phase: 'thinking', unexpected: true },
-    { type: 'pending_action', action: { category: 'file' } },
+    { type: 'task_permission_required', actionId: '', summary: '无效许可', request: { action: 'delete', resources: ['safe.txt'] } },
     {
-      type: 'pending_action',
-      action: { ...validPendingActionEvent.action, absolutePath: 'C:\\private' }
+      ...validTaskPermissionEvent,
+      request: { ...validTaskPermissionEvent.request, absolutePath: 'C:\\private' }
     }
   ])('畸形 TaskEvent 静默丢弃且不进入 Renderer listener', payload => {
     const listener = vi.fn();

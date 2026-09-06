@@ -144,6 +144,7 @@ test('同一会话新 run 以及取消后新实例均不继承旧窗口', async 
   await writeFile(join(cancelled.directory, 'note.txt'), '正文');
   await runBounded(cancelled, async (execution, controller) => {
     await expect.poll(() => loops(cancelled.events).length).toBe(1);
+    await expect.poll(() => completed(cancelled.events).length).toBe(2);
     controller.abort(); await execution.catch(() => undefined);
     expect(completed(cancelled.events)).toHaveLength(2);
   });

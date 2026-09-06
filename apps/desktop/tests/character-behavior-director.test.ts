@@ -1753,24 +1753,7 @@ describe('Main 角色行为 Director', () => {
       moving: true
     });
     fixture.director.refreshActivityBlockers();
-    fixture.director.handleTaskEvent({
-      type: 'pending_action',
-      action: {
-        category: 'file',
-        actionId: 'pending-1',
-        conversationId: 'conversation-1',
-        risk: 'write',
-        operation: 'create_file',
-        summary: '等待确认',
-        targetRelativePath: 'safe.txt',
-        contentCharacters: 0,
-        contentPreview: null,
-        contentPreviewSuppressedReason: null,
-        previewTruncated: false,
-        createdAt: '2026-08-23T00:00:00.000Z',
-        expiresAt: '2026-08-23T00:05:00.000Z'
-      }
-    });
+    fixture.director.handleTaskEvent({ type: 'phase', phase: 'awaiting_confirmation' });
     await fixture.director.close();
 
     expect(observed).toEqual(expect.arrayContaining([

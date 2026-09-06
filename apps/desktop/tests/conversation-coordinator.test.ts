@@ -16,8 +16,8 @@ import { ConversationChatAdapter } from '../src/main/conversation/conversation-c
 import type { ConversationBehaviorPort } from
   '../src/main/characters/character-behavior-director';
 import type {
-  CodingTaskOutcome as AgentFileTaskOutcome,
-  CodingTaskToolResult as AgentTrustedToolResult
+  CodingTaskOutcome,
+  CodingTaskToolResult
 } from '../src/main/agent/coding-task-service';
 import { conversationIntentCases } from '../../../tests/fixtures/natural-intent-matrix';
 import { ProviderResponseError } from '../src/main/providers/provider-response-error';
@@ -83,7 +83,7 @@ class CapturingCapabilityTasks implements ConversationCapabilityTaskPort {
   prepareBarrier: Promise<void> | null = null;
   cancelCalls = 0;
   activationCalls = 0;
-  nextOutcome: AgentFileTaskOutcome = { kind: 'completed', acted: false };
+  nextOutcome: CodingTaskOutcome = { kind: 'completed', acted: false };
   target: {
     profileId: string;
     providerIdentity: string;
@@ -120,7 +120,7 @@ class CapturingCapabilityTasks implements ConversationCapabilityTaskPort {
     };
   }
 
-  async submit(input: Parameters<ConversationCapabilityTaskPort['submit']>[0]): Promise<AgentFileTaskOutcome> {
+  async submit(input: Parameters<ConversationCapabilityTaskPort['submit']>[0]): Promise<CodingTaskOutcome> {
     this.submissions.push(input);
     return this.nextOutcome;
   }
@@ -162,7 +162,7 @@ class CapturingCapabilityTasks implements ConversationCapabilityTaskPort {
   }
 
   publishTrustedToolResult(
-    result: AgentTrustedToolResult,
+    result: CodingTaskToolResult,
     generation: string,
     target = this.target
   ): void {
@@ -1671,25 +1671,10 @@ describe('ConversationCoordinator', () => {
     });
   });
 
-  test('等待文件确认时 reset 委托文件清理并使旧 actionId 失效', async () => {
+  test('等待具体许可时 reset 委托文件清理并使旧 actionId 失效', async () => {
     const fileTasks = new CapturingCapabilityTasks();
     fileTasks.submit = async input => {
       fileTasks.submissions.push(input);
-      fileTasks.publish({
-        type: 'pending_action',
-        action: {
-          category: 'file',
-          actionId: 'old-action',
-          conversationId: 'conversation-old',
-          risk: 'write',
-          operation: 'create_file',
-          summary: '创建文件',
-          targetRelativePath: 'result.txt',
-          contentCharacters: 0, contentPreview: null, contentPreviewSuppressedReason: null, previewTruncated: false,
-          createdAt: '2026-08-10T00:00:00.000Z',
-          expiresAt: '2026-08-10T00:02:00.000Z'
-        }
-      }, input.generation);
       fileTasks.publish({ type: 'phase', phase: 'awaiting_confirmation' }, input.generation);
       return { kind: 'completed', acted: true };
     };

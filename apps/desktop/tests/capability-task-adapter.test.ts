@@ -2,14 +2,14 @@ import { describe, expect, test, vi } from 'vitest';
 import type { ModelMessage } from '@myself/agent-core';
 import type { TaskEvent } from '@myself/shared-types';
 import type {
-  CodingTaskSubmission as AgentFileTaskSubmission,
-  CodingTaskToolResult as AgentTrustedToolResult
+  CodingTaskSubmission,
+  CodingTaskToolResult
 } from '../src/main/agent/coding-task-service';
 import { CapabilityTaskAdapter } from '../src/main/conversation/capability-task-adapter';
 import { CodingTaskService } from '../src/main/agent/coding-task-service';
-import type { CapabilityTaskAgentPort as AgentService, CapabilityTaskAdapterOptions } from '../src/main/conversation/capability-task-adapter';
+import type { CapabilityTaskServicePort, CapabilityTaskAdapterOptions } from '../src/main/conversation/capability-task-adapter';
 
-type AgentDouble = {
+type CodingTaskServiceDouble = {
   submitFileTask: ReturnType<typeof vi.fn>;
   cancelActive: ReturnType<typeof vi.fn>;
   confirm: ReturnType<typeof vi.fn>;
@@ -38,9 +38,9 @@ async function flushMicrotasks(): Promise<void> {
   for (let index = 0; index < 5; index += 1) await Promise.resolve();
 }
 
-function createAgentDouble(
-  submitFileTask: (input: AgentFileTaskSubmission) => Promise<void> = async () => undefined
-): AgentDouble {
+function createCodingTaskServiceDouble(
+  submitFileTask: (input: CodingTaskSubmission) => Promise<void> = async () => undefined
+): CodingTaskServiceDouble {
   return {
     submitFileTask: vi.fn(submitFileTask),
     cancelActive: vi.fn(),
@@ -51,8 +51,8 @@ function createAgentDouble(
   };
 }
 
-function asAgentService(agent: AgentDouble): AgentService {
-  return agent as unknown as AgentService;
+function asCodingTaskService(agent: CodingTaskServiceDouble): CapabilityTaskServicePort {
+  return agent as unknown as CapabilityTaskServicePort;
 }
 
 type 类型完全一致<Left, Right> = [Left] extends [Right]
@@ -81,8 +81,8 @@ type 提交参数契约 = 断言类型<类型完全一致<
 void (null as unknown as 准备参数契约);
 void (null as unknown as 提交参数契约);
 
-function preparedAgent(
-  agent: AgentDouble,
+function preparedCodingTask(
+  agent: CodingTaskServiceDouble,
   target: {
     profileId: string;
     providerIdentity: string;
@@ -96,7 +96,7 @@ function preparedAgent(
     capabilityRevision: 'revision-agent', directory: 'D:\\authorized', modelId: 'model-test', approvedCommands: []
   }
 ) {
-  return { service: asAgentService(agent), ...target };
+  return { service: asCodingTaskService(agent), ...target };
 }
 
 const defaultTargetSnapshot = Object.freeze({
@@ -136,7 +136,7 @@ describe('CapabilityTaskAdapter', () => {
     const permissionReply = deferred();
     const finishRun = deferred();
     let emit!: (event: TaskEvent) => void;
-    const agent = createAgentDouble(async () => {
+    const agent = createCodingTaskServiceDouble(async () => {
       emit({ type: 'phase', phase: 'awaiting_confirmation' });
       permissionShown.resolve();
       await permissionReply.promise;
@@ -147,7 +147,7 @@ describe('CapabilityTaskAdapter', () => {
     agent.cancelAction.mockImplementation(async () => permissionReply.resolve());
     const adapter = createAdapter({
       getAuthorizedRootPath: async () => 'D:\\authorized',
-      createAgentTarget: input => { emit = input.emit; return preparedAgent(agent); }
+      createCodingTaskTarget: input => { emit = input.emit; return preparedCodingTask(agent); }
     });
     const events: TaskEvent[] = [];
     adapter.onEvent(event => events.push(event));
@@ -165,14 +165,14 @@ describe('CapabilityTaskAdapter', () => {
   test('取消保持 owner 直到服务清理完成，期间拒绝新任务', async () => {
     const cleanup = deferred();
     let emit!: (event: TaskEvent) => void;
-    const agent = createAgentDouble();
+    const agent = createCodingTaskServiceDouble();
     agent.cancelActive.mockImplementation(async () => {
       await cleanup.promise;
       emit({ type: 'phase', phase: 'cancelled' });
     });
     const adapter = createAdapter({
       getAuthorizedRootPath: async () => 'D:\\authorized',
-      createAgentTarget: input => { emit = input.emit; return preparedAgent(agent); }
+      createCodingTaskTarget: input => { emit = input.emit; return preparedCodingTask(agent); }
     });
     await adapter.prepareTarget({ generation: 'g1', taskKind: 'file' });
     const cancelling = adapter.cancelActive();
@@ -183,9 +183,9 @@ describe('CapabilityTaskAdapter', () => {
   });
 
   test('私有工具结果只在当前 owner 内绑定 generation 与目标转发并丢弃迟到结果', async () => {
-    let emitTrustedToolResult!: (result: AgentTrustedToolResult) => void;
+    let emitTrustedToolResult!: (result: CodingTaskToolResult) => void;
     let submissionOwner: symbol | undefined;
-    const agent = createAgentDouble(async input => {
+    const agent = createCodingTaskServiceDouble(async input => {
       if (input.submissionOwner === undefined) throw new Error('缺少 submission owner');
       submissionOwner = input.submissionOwner;
       emitTrustedToolResult({
@@ -197,13 +197,13 @@ describe('CapabilityTaskAdapter', () => {
     });
     const adapter = createAdapter({
       getAuthorizedRootPath: async () => 'C:\\workspace',
-      createAgentTarget: input => {
+      createCodingTaskTarget: input => {
         emitTrustedToolResult = input.emitTrustedToolResult;
-        return preparedAgent(agent);
+        return preparedCodingTask(agent);
       }
     });
     const forwarded: Array<{
-      result: AgentTrustedToolResult;
+      result: CodingTaskToolResult;
       generation: string;
       target: Parameters<CapabilityTaskAdapter['activateTarget']>[0]['target'];
     }> = [];
@@ -241,9 +241,9 @@ describe('CapabilityTaskAdapter', () => {
     const firstSubmission = deferred();
     const secondSubmission = deferred();
     const delayedRead = deferred();
-    let emitTrustedToolResult!: (result: AgentTrustedToolResult) => void;
+    let emitTrustedToolResult!: (result: CodingTaskToolResult) => void;
     let callCount = 0;
-    const agent = createAgentDouble(async input => {
+    const agent = createCodingTaskServiceDouble(async input => {
       callCount += 1;
       if (callCount === 1) {
         if (input.submissionOwner === undefined) throw new Error('缺少 submission owner');
@@ -263,12 +263,12 @@ describe('CapabilityTaskAdapter', () => {
     });
     const adapter = createAdapter({
       getAuthorizedRootPath: async () => 'C:\\workspace',
-      createAgentTarget: input => {
+      createCodingTaskTarget: input => {
         emitTrustedToolResult = input.emitTrustedToolResult;
-        return preparedAgent(agent);
+        return preparedCodingTask(agent);
       }
     });
-    const forwarded: AgentTrustedToolResult[] = [];
+    const forwarded: CodingTaskToolResult[] = [];
     adapter.onTrustedToolResult(result => forwarded.push(result));
 
     const target = await adapter.prepareTarget({ generation: 'g1', taskKind: 'file' });
@@ -304,50 +304,50 @@ describe('CapabilityTaskAdapter', () => {
   });
 
   test('能力快照不创建 Agent，只有显式激活后才构造执行端口', async () => {
-    const agent = createAgentDouble();
-    const target = preparedAgent(agent);
-    const createAgentTarget = vi.fn(() => target);
+    const agent = createCodingTaskServiceDouble();
+    const target = preparedCodingTask(agent);
+    const createCodingTaskTarget = vi.fn(() => target);
     const adapter = createAdapter({
       getAuthorizedRootPath: vi.fn(async () => 'D:\\authorized'),
       createTargetSnapshot: vi.fn(() => {
         const { service: _service, ...snapshot } = target;
         return snapshot;
       }),
-      createAgentTarget
+      createCodingTaskTarget
     });
 
     const snapshot = await adapter.prepareSnapshot({ generation: 'g1', taskKind: 'file' });
-    expect(createAgentTarget).not.toHaveBeenCalled();
+    expect(createCodingTaskTarget).not.toHaveBeenCalled();
 
     await adapter.activateTarget({ generation: 'g1', taskKind: 'file', target: snapshot });
-    expect(createAgentTarget).toHaveBeenCalledOnce();
+    expect(createCodingTaskTarget).toHaveBeenCalledOnce();
   });
 
   test('没有授权根时抛出稳定错误且不创建 Agent', async () => {
-    const createAgentTarget = vi.fn();
+    const createCodingTaskTarget = vi.fn();
     const adapter = createAdapter({
       getAuthorizedRootPath: vi.fn(async () => null),
-      createAgentTarget
+      createCodingTaskTarget
     });
 
     await expect(adapter.prepareTarget({ generation: 'g1', taskKind: 'file' })).rejects
       .toMatchObject({ code: 'FILE_AUTHORIZATION_REQUIRED' });
 
-    expect(createAgentTarget).not.toHaveBeenCalled();
+    expect(createCodingTaskTarget).not.toHaveBeenCalled();
   });
 
   test('取消进行中的目标准备会立即释放 owner，旧授权返回后不得覆盖新目标', async () => {
     const authorization = deferred();
     let authorizationCalls = 0;
-    const agent = createAgentDouble();
-    const createAgentTarget = vi.fn(() => preparedAgent(agent));
+    const agent = createCodingTaskServiceDouble();
+    const createCodingTaskTarget = vi.fn(() => preparedCodingTask(agent));
     const adapter = createAdapter({
       getAuthorizedRootPath: vi.fn(async () => {
         authorizationCalls += 1;
         if (authorizationCalls === 1) await authorization.promise;
         return 'D:\\authorized';
       }),
-      createAgentTarget
+      createCodingTaskTarget
     });
     const oldPrepare = adapter.prepareTarget({ generation: 'g-old', taskKind: 'file' });
     await vi.waitFor(() => expect(authorizationCalls).toBe(1));
@@ -365,19 +365,19 @@ describe('CapabilityTaskAdapter', () => {
       generation: 'g-new',
       taskKind: 'file'
     })).resolves.toBeUndefined();
-    expect(createAgentTarget).toHaveBeenCalledOnce();
+    expect(createCodingTaskTarget).toHaveBeenCalledOnce();
   });
 
   test('取消旧 Agent 清理中的准备会释放 owner，但下一准备仍等待清理屏障', async () => {
     const cleanup = deferred();
-    const oldAgent = createAgentDouble();
+    const oldAgent = createCodingTaskServiceDouble();
     oldAgent.resetForNewConversation.mockImplementation(() => cleanup.promise);
-    const newAgent = createAgentDouble();
+    const newAgent = createCodingTaskServiceDouble();
     const agents = [oldAgent, newAgent];
-    const createAgentTarget = vi.fn(() => preparedAgent(agents.shift()!));
+    const createCodingTaskTarget = vi.fn(() => preparedCodingTask(agents.shift()!));
     const adapter = createAdapter({
       getAuthorizedRootPath: vi.fn(async () => 'D:\\authorized'),
-      createAgentTarget
+      createCodingTaskTarget
     });
     await adapter.prepareTarget({ generation: 'g-old', taskKind: 'file' });
     await adapter.cancelActive();
@@ -399,18 +399,18 @@ describe('CapabilityTaskAdapter', () => {
 
     expect(settledBeforeCleanup).toBe(false);
     expect(oldAgent.close).toHaveBeenCalledOnce();
-    expect(createAgentTarget).toHaveBeenCalledTimes(2);
+    expect(createCodingTaskTarget).toHaveBeenCalledTimes(2);
   });
 
   test.each(['reset', 'close'] as const)(
     '%s 会等待准备阶段已开始的旧 Agent 清理并完成 reset/close',
     async action => {
       const cleanup = deferred();
-      const oldAgent = createAgentDouble();
+      const oldAgent = createCodingTaskServiceDouble();
       oldAgent.resetForNewConversation.mockImplementation(() => cleanup.promise);
     const adapter = createAdapter({
         getAuthorizedRootPath: vi.fn(async () => 'D:\\authorized'),
-        createAgentTarget: () => preparedAgent(oldAgent)
+        createCodingTaskTarget: () => preparedCodingTask(oldAgent)
       });
       await adapter.prepareTarget({ generation: 'g-old', taskKind: 'file' });
       await adapter.cancelActive();
@@ -440,17 +440,17 @@ describe('CapabilityTaskAdapter', () => {
   );
 
   test('只透传获准可见历史，并给 Agent 事件绑定当前 generation', async () => {
-    let emitAgentEvent!: (event: TaskEvent) => void;
-    const agent = createAgentDouble(async () => {
-      emitAgentEvent({ type: 'phase', phase: 'thinking' });
-      emitAgentEvent({ type: 'message', role: 'assistant', text: '目录为空' });
-      emitAgentEvent({ type: 'phase', phase: 'success' });
+    let emitCodingTaskEvent!: (event: TaskEvent) => void;
+    const agent = createCodingTaskServiceDouble(async () => {
+      emitCodingTaskEvent({ type: 'phase', phase: 'thinking' });
+      emitCodingTaskEvent({ type: 'message', role: 'assistant', text: '目录为空' });
+      emitCodingTaskEvent({ type: 'phase', phase: 'success' });
     });
     const adapter = createAdapter({
       getAuthorizedRootPath: vi.fn(async () => 'D:\\authorized'),
-      createAgentTarget: ({ emit }) => {
-        emitAgentEvent = emit;
-        return preparedAgent(agent);
+      createCodingTaskTarget: ({ emit }) => {
+        emitCodingTaskEvent = emit;
+        return preparedCodingTask(agent);
       }
     });
     const visibleHistory = Object.freeze([
@@ -482,21 +482,21 @@ describe('CapabilityTaskAdapter', () => {
     ]);
     expect(JSON.stringify(agent.submitFileTask.mock.calls)).not.toContain('任务私有数据');
 
-    emitAgentEvent({ type: 'message', role: 'assistant', text: '迟到事件' });
+    emitCodingTaskEvent({ type: 'message', role: 'assistant', text: '迟到事件' });
     expect(received).toHaveLength(3);
   });
 
   test('预检后授权被撤销时由真实会话二次检查拒绝且不遗留活动代次', async () => {
     const roots: Array<string | null> = ['D:\\authorized', null];
     const getAuthorizedRootPath = vi.fn(async () => roots.shift() ?? null);
-    const agent = createAgentDouble(async () => {
+    const agent = createCodingTaskServiceDouble(async () => {
       if (await getAuthorizedRootPath() === null) {
         throw codedError('FILE_AUTHORIZATION_REQUIRED');
       }
     });
     const adapter = createAdapter({
       getAuthorizedRootPath,
-      createAgentTarget: () => preparedAgent(agent)
+      createCodingTaskTarget: () => preparedCodingTask(agent)
     });
 
     await adapter.prepareTarget({ generation: 'g-revoked', taskKind: 'file' });
@@ -513,13 +513,13 @@ describe('CapabilityTaskAdapter', () => {
 
   test('活动任务拒绝并发，reset 清理 Agent、订阅和迟到事件', async () => {
     const pending = deferred();
-    let emitAgentEvent!: (event: TaskEvent) => void;
-    const agent = createAgentDouble(() => pending.promise);
+    let emitCodingTaskEvent!: (event: TaskEvent) => void;
+    const agent = createCodingTaskServiceDouble(() => pending.promise);
     const adapter = createAdapter({
       getAuthorizedRootPath: vi.fn(async () => 'D:\\authorized'),
-      createAgentTarget: ({ emit }) => {
-        emitAgentEvent = emit;
-        return preparedAgent(agent);
+      createCodingTaskTarget: ({ emit }) => {
+        emitCodingTaskEvent = emit;
+        return preparedCodingTask(agent);
       }
     });
     const listener = vi.fn();
@@ -539,7 +539,7 @@ describe('CapabilityTaskAdapter', () => {
     await adapter.resetForNewConversation();
     expect(agent.resetForNewConversation).toHaveBeenCalledOnce();
     expect(agent.close).toHaveBeenCalledOnce();
-    emitAgentEvent({ type: 'phase', phase: 'success' });
+    emitCodingTaskEvent({ type: 'phase', phase: 'success' });
     expect(listener).not.toHaveBeenCalled();
 
     pending.resolve();
@@ -549,13 +549,13 @@ describe('CapabilityTaskAdapter', () => {
   test('取消后仍等待旧提交收敛，防止旧 Agent 事件被标成新 generation', async () => {
     const pending = deferred();
     let attempts = 0;
-    const agent = createAgentDouble(async () => {
+    const agent = createCodingTaskServiceDouble(async () => {
       attempts += 1;
       if (attempts === 1) await pending.promise;
     });
     const adapter = createAdapter({
       getAuthorizedRootPath: vi.fn(async () => 'D:\\authorized'),
-      createAgentTarget: () => preparedAgent(agent)
+      createCodingTaskTarget: () => preparedCodingTask(agent)
     });
 
     await adapter.prepareTarget({ generation: 'g-old', taskKind: 'file' });
@@ -583,16 +583,16 @@ describe('CapabilityTaskAdapter', () => {
 
   test('确认进行中取消只清活动代次，旧确认收敛前拒绝新提交', async () => {
     const confirmation = deferred();
-    let emitAgentEvent!: (event: TaskEvent) => void;
-    const agent = createAgentDouble(async () => {
-      emitAgentEvent({ type: 'phase', phase: 'awaiting_confirmation' });
+    let emitCodingTaskEvent!: (event: TaskEvent) => void;
+    const agent = createCodingTaskServiceDouble(async () => {
+      emitCodingTaskEvent({ type: 'phase', phase: 'awaiting_confirmation' });
     });
     agent.confirm.mockImplementation(() => confirmation.promise);
     const adapter = createAdapter({
       getAuthorizedRootPath: vi.fn(async () => 'D:\\authorized'),
-      createAgentTarget: ({ emit }) => {
-        emitAgentEvent = emit;
-        return preparedAgent(agent);
+      createCodingTaskTarget: ({ emit }) => {
+        emitCodingTaskEvent = emit;
+        return preparedCodingTask(agent);
       }
     });
     const listener = vi.fn();
@@ -607,7 +607,7 @@ describe('CapabilityTaskAdapter', () => {
     const confirming = adapter.resolveAction('pending-action', 'confirm');
     await vi.waitFor(() => expect(agent.confirm).toHaveBeenCalledOnce());
     await adapter.cancelActive();
-    emitAgentEvent({ type: 'phase', phase: 'cancelled' });
+    emitCodingTaskEvent({ type: 'phase', phase: 'cancelled' });
 
     await expect(adapter.prepareTarget({ generation: 'g-too-early', taskKind: 'file' })).rejects
       .toMatchObject({ code: 'TASK_ALREADY_ACTIVE' });
@@ -627,15 +627,15 @@ describe('CapabilityTaskAdapter', () => {
   });
 
   test('确认与取消只转交给当前 Adapter 持有的 Agent', async () => {
-    let emitAgentEvent!: (event: TaskEvent) => void;
-    const agent = createAgentDouble(async () => {
-      emitAgentEvent({ type: 'phase', phase: 'awaiting_confirmation' });
+    let emitCodingTaskEvent!: (event: TaskEvent) => void;
+    const agent = createCodingTaskServiceDouble(async () => {
+      emitCodingTaskEvent({ type: 'phase', phase: 'awaiting_confirmation' });
     });
     const adapter = createAdapter({
       getAuthorizedRootPath: vi.fn(async () => 'D:\\authorized'),
-      createAgentTarget: ({ emit }) => {
-        emitAgentEvent = emit;
-        return preparedAgent(agent);
+      createCodingTaskTarget: ({ emit }) => {
+        emitCodingTaskEvent = emit;
+        return preparedCodingTask(agent);
       }
     });
     await submitPrepared(adapter, {
@@ -659,22 +659,22 @@ describe('CapabilityTaskAdapter', () => {
   });
 
   test('首次确认内发布第二张确认卡时保留同一任务所有权', async () => {
-    let emitAgentEvent!: (event: TaskEvent) => void;
-    const agent = createAgentDouble(async () => {
-      emitAgentEvent({ type: 'phase', phase: 'awaiting_confirmation' });
+    let emitCodingTaskEvent!: (event: TaskEvent) => void;
+    const agent = createCodingTaskServiceDouble(async () => {
+      emitCodingTaskEvent({ type: 'phase', phase: 'awaiting_confirmation' });
     });
     agent.confirm.mockImplementation(async actionId => {
       if (actionId === 'first-action') {
-        emitAgentEvent({ type: 'phase', phase: 'awaiting_confirmation' });
+        emitCodingTaskEvent({ type: 'phase', phase: 'awaiting_confirmation' });
       } else {
-        emitAgentEvent({ type: 'phase', phase: 'success' });
+        emitCodingTaskEvent({ type: 'phase', phase: 'success' });
       }
     });
     const adapter = createAdapter({
       getAuthorizedRootPath: vi.fn(async () => 'D:\\authorized'),
-      createAgentTarget: ({ emit }) => {
-        emitAgentEvent = emit;
-        return preparedAgent(agent);
+      createCodingTaskTarget: ({ emit }) => {
+        emitCodingTaskEvent = emit;
+        return preparedCodingTask(agent);
       }
     });
     await submitPrepared(adapter, {
@@ -691,21 +691,21 @@ describe('CapabilityTaskAdapter', () => {
   });
 
   test('第二张确认卡取消后立即清理任务且旧 action 不得重放', async () => {
-    let emitAgentEvent!: (event: TaskEvent) => void;
-    const agent = createAgentDouble(async () => {
-      emitAgentEvent({ type: 'phase', phase: 'awaiting_confirmation' });
+    let emitCodingTaskEvent!: (event: TaskEvent) => void;
+    const agent = createCodingTaskServiceDouble(async () => {
+      emitCodingTaskEvent({ type: 'phase', phase: 'awaiting_confirmation' });
     });
     agent.confirm.mockImplementation(async () => {
-      emitAgentEvent({ type: 'phase', phase: 'awaiting_confirmation' });
+      emitCodingTaskEvent({ type: 'phase', phase: 'awaiting_confirmation' });
     });
     agent.cancelAction.mockImplementation(() => {
-      emitAgentEvent({ type: 'phase', phase: 'cancelled' });
+      emitCodingTaskEvent({ type: 'phase', phase: 'cancelled' });
     });
     const adapter = createAdapter({
       getAuthorizedRootPath: vi.fn(async () => 'D:\\authorized'),
-      createAgentTarget: ({ emit }) => {
-        emitAgentEvent = emit;
-        return preparedAgent(agent);
+      createCodingTaskTarget: ({ emit }) => {
+        emitCodingTaskEvent = emit;
+        return preparedCodingTask(agent);
       }
     });
     await submitPrepared(adapter, {
@@ -722,7 +722,7 @@ describe('CapabilityTaskAdapter', () => {
   });
 
   test('工厂同步 reset 后不安装或提交刚创建的 Agent，且清理异常不覆盖主错误', async () => {
-    const agent = createAgentDouble();
+    const agent = createCodingTaskServiceDouble();
     agent.cancelActive.mockImplementation(() => {
       throw new Error('cancel cleanup failed');
     });
@@ -732,9 +732,9 @@ describe('CapabilityTaskAdapter', () => {
     let adapter!: CapabilityTaskAdapter;
     adapter = createAdapter({
       getAuthorizedRootPath: vi.fn(async () => 'D:\\authorized'),
-      createAgentTarget: () => {
+      createCodingTaskTarget: () => {
         void adapter.resetForNewConversation();
-        return preparedAgent(agent);
+        return preparedCodingTask(agent);
       }
     });
 
@@ -747,13 +747,13 @@ describe('CapabilityTaskAdapter', () => {
   });
 
   test('工厂同步 close 后不安装或提交刚创建的 Agent', async () => {
-    const agent = createAgentDouble();
+    const agent = createCodingTaskServiceDouble();
     let adapter!: CapabilityTaskAdapter;
     adapter = createAdapter({
       getAuthorizedRootPath: vi.fn(async () => 'D:\\authorized'),
-      createAgentTarget: () => {
+      createCodingTaskTarget: () => {
         adapter.close();
-        return preparedAgent(agent);
+        return preparedCodingTask(agent);
       }
     });
 
@@ -769,7 +769,7 @@ describe('CapabilityTaskAdapter', () => {
     let factories = 0;
     const adapter = createAdapter({
       getAuthorizedRootPath: vi.fn(async () => 'D:\\authorized'),
-      createAgentTarget: ({ emit, emitTrustedToolResult }) => {
+      createCodingTaskTarget: ({ emit, emitTrustedToolResult }) => {
         factories += 1;
         return { ...defaultTargetSnapshot, service: new CodingTaskService({
           sessionOptions: async () => ({ directory: 'D:\\authorized', dataDirectory: 'D:\\data', approvedCommands: [], model: { baseUrl: '', modelId: 'fixture', contextWindow: 8192, outputTokens: 2048, readCredential: async () => 'fixture' } }),
@@ -793,13 +793,13 @@ describe('CapabilityTaskAdapter', () => {
   });
 
   test('close 后拒绝新任务并隔离旧 Agent 事件', async () => {
-    let emitAgentEvent!: (event: TaskEvent) => void;
-    const agent = createAgentDouble();
+    let emitCodingTaskEvent!: (event: TaskEvent) => void;
+    const agent = createCodingTaskServiceDouble();
     const adapter = createAdapter({
       getAuthorizedRootPath: vi.fn(async () => 'D:\\authorized'),
-      createAgentTarget: ({ emit }) => {
-        emitAgentEvent = emit;
-        return preparedAgent(agent);
+      createCodingTaskTarget: ({ emit }) => {
+        emitCodingTaskEvent = emit;
+        return preparedCodingTask(agent);
       }
     });
     const listener = vi.fn();
@@ -812,7 +812,7 @@ describe('CapabilityTaskAdapter', () => {
     });
 
     await adapter.close();
-    emitAgentEvent({ type: 'phase', phase: 'thinking' });
+    emitCodingTaskEvent({ type: 'phase', phase: 'thinking' });
 
     expect(agent.close).toHaveBeenCalledOnce();
     expect(listener).not.toHaveBeenCalled();
@@ -826,11 +826,11 @@ describe('CapabilityTaskAdapter', () => {
 
   test('close 先等待 Agent 不可逆执行屏障，再关闭实例且并发调用保持幂等', async () => {
     const barrier = deferred();
-    const agent = createAgentDouble();
+    const agent = createCodingTaskServiceDouble();
     agent.resetForNewConversation.mockImplementation(() => barrier.promise);
     const adapter = createAdapter({
       getAuthorizedRootPath: vi.fn(async () => 'D:\\authorized'),
-      createAgentTarget: () => preparedAgent(agent)
+      createCodingTaskTarget: () => preparedCodingTask(agent)
     });
     await adapter.prepareTarget({ generation: 'g-irreversible', taskKind: 'file' });
     let settled = false;
@@ -849,10 +849,10 @@ describe('CapabilityTaskAdapter', () => {
 
   test('close 不等待仅悬挂的可撤销 Provider 请求', async () => {
     const provider = deferred();
-    const agent = createAgentDouble(() => provider.promise);
+    const agent = createCodingTaskServiceDouble(() => provider.promise);
     const adapter = createAdapter({
       getAuthorizedRootPath: vi.fn(async () => 'D:\\authorized'),
-      createAgentTarget: () => preparedAgent(agent)
+      createCodingTaskTarget: () => preparedCodingTask(agent)
     });
     await adapter.prepareTarget({ generation: 'g-provider', taskKind: 'file' });
     const submission = adapter.submit({
@@ -869,16 +869,16 @@ describe('CapabilityTaskAdapter', () => {
   });
 
   test('准备目标时原子绑定 Agent 快照，提交前设置变化不能替换已披露目标', async () => {
-    const agentA = createAgentDouble();
-    const agentB = createAgentDouble();
+    const agentA = createCodingTaskServiceDouble();
+    const agentB = createCodingTaskServiceDouble();
     const targets = [
-      preparedAgent(agentA, {
+      preparedCodingTask(agentA, {
         profileId: 'profile-a',
         providerIdentity: 'provider-a',
         providerName: 'Provider A',
         capabilityRevision: 'revision-a', directory: 'D:\\authorized', modelId: 'model-test', approvedCommands: []
       }),
-      preparedAgent(agentB, {
+      preparedCodingTask(agentB, {
         profileId: 'profile-b',
         providerIdentity: 'provider-b',
         providerName: 'Provider B',
@@ -891,7 +891,7 @@ describe('CapabilityTaskAdapter', () => {
         const { service: _service, ...snapshot } = targets[0]!;
         return snapshot;
       }),
-      createAgentTarget: vi.fn(() => targets.shift()!)
+      createCodingTaskTarget: vi.fn(() => targets.shift()!)
     });
 
     const target = await adapter.prepareTarget({ generation: 'g-bound', taskKind: 'file' });
@@ -916,23 +916,23 @@ describe('CapabilityTaskAdapter', () => {
     const oldReset = deferred();
     let oldEmit!: (event: TaskEvent) => void;
     let newEmit!: (event: TaskEvent) => void;
-    const oldAgent = createAgentDouble();
+    const oldAgent = createCodingTaskServiceDouble();
     oldAgent.resetForNewConversation.mockImplementation(() => oldReset.promise);
-    const newAgent = createAgentDouble(async () => {
+    const newAgent = createCodingTaskServiceDouble(async () => {
       newEmit({ type: 'message', role: 'assistant', text: '新会话事件' });
       newEmit({ type: 'phase', phase: 'success' });
     });
     let created = 0;
     const adapter = createAdapter({
       getAuthorizedRootPath: vi.fn(async () => 'D:\\authorized'),
-      createAgentTarget: vi.fn(({ emit }: { emit: (event: TaskEvent) => void }) => {
+      createCodingTaskTarget: vi.fn(({ emit }: { emit: (event: TaskEvent) => void }) => {
         created += 1;
         if (created === 1) {
           oldEmit = emit;
-          return preparedAgent(oldAgent);
+          return preparedCodingTask(oldAgent);
         }
         newEmit = emit;
-        return preparedAgent(newAgent);
+        return preparedCodingTask(newAgent);
       })
     } as never);
     const listener = vi.fn();

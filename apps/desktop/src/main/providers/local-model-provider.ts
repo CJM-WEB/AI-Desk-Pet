@@ -55,7 +55,7 @@ function boundLocalReadResult(content: string): Readonly<{ content: string; line
   return { content: retained.join('\n'), lineCount: retained.length };
 }
 
-/** 仅本地请求压缩当前读取结果；云 Provider 与 FileToolService 的公开上限保持不变。 */
+/** 仅本地请求压缩当前读取结果；云 Provider 的公开上限保持不变。 */
 function applyLocalToolResultBudget(messages: ModelRequest['messages']): ModelRequest['messages'] {
   let changed = false;
   const bounded = messages.map(message => {

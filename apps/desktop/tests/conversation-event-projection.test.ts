@@ -10,25 +10,6 @@ function target(destroyed = false) {
   };
 }
 
-const validPendingFileActionEvent = {
-  type: 'pending_action',
-  action: {
-    category: 'file',
-    actionId: 'action-file-1',
-    conversationId: 'conversation-1',
-    risk: 'write',
-    operation: 'create_file',
-    summary: '创建测试文件',
-    targetRelativePath: 'safe.txt',
-    contentCharacters: 4,
-    contentPreview: 'safe',
-    contentPreviewSuppressedReason: null,
-    previewTruncated: false,
-    createdAt: '2026-08-15T00:00:00.000Z',
-    expiresAt: '2026-08-15T00:05:00.000Z'
-  }
-} as const;
-
 describe('ConversationEventProjection', () => {
   test('新任务许可的准确命令和目录只进入聊天，pet 仍只接收阶段', () => {
     const chat = target();
@@ -41,22 +22,6 @@ describe('ConversationEventProjection', () => {
     projection.publish({ type: 'phase', phase: 'awaiting_confirmation' });
     expect(pet.send).toHaveBeenCalledExactlyOnceWith(ipcChannels.taskEvent, { type: 'phase', phase: 'awaiting_confirmation' });
   });
-  test('pending_action 完整进入聊天窗口与主进程行为，且不投递给宠物窗口', () => {
-    const chat = target();
-    const pet = target();
-    const behavior = { handleTaskEvent: vi.fn() };
-    const projection = new ConversationEventProjection({
-      getChatTarget: () => chat,
-      getPetTarget: () => pet,
-      behavior
-    });
-
-    expect(projection.publish(validPendingFileActionEvent)).toEqual(validPendingFileActionEvent);
-    expect(chat.send).toHaveBeenCalledWith(ipcChannels.taskEvent, validPendingFileActionEvent);
-    expect(behavior.handleTaskEvent).toHaveBeenCalledWith(validPendingFileActionEvent);
-    expect(pet.send).not.toHaveBeenCalled();
-  });
-
   test('同一 Director 先更新 blockers 再向窗口投影事件', () => {
     const order: string[] = [];
     const chat = target();
@@ -76,7 +41,7 @@ describe('ConversationEventProjection', () => {
     expect(order).toEqual(['blockers', 'chat', 'pet']);
   });
 
-  test('pet 只接收严格 phase，且不接收票据、命令、正文或披露请求', () => {
+  test('pet 只接收严格 phase 投影', () => {
     const chat = target();
     const pet = target();
     const behavior = { handleTaskEvent: vi.fn() };
@@ -94,11 +59,6 @@ describe('ConversationEventProjection', () => {
       phase: 'awaiting_confirmation'
     });
 
-    pet.send.mockClear();
-    projection.publish(validPendingFileActionEvent);
-
-    expect(pet.send).not.toHaveBeenCalled();
-    expect(behavior.handleTaskEvent).toHaveBeenCalledWith(validPendingFileActionEvent);
   });
 
   test('无效事件会在任何副作用前失败', () => {
@@ -113,10 +73,6 @@ describe('ConversationEventProjection', () => {
 
     expect(() => projection.publish({ type: 'phase', phase: 'thinking', actionId: 'leak' }))
       .toThrow();
-    expect(() => projection.publish({
-      type: 'pending_action',
-      action: { category: 'file', operation: 'create_file' }
-    })).toThrow();
     expect(behavior.handleTaskEvent).not.toHaveBeenCalled();
     expect(chat.send).not.toHaveBeenCalled();
     expect(pet.send).not.toHaveBeenCalled();

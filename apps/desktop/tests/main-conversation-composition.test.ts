@@ -12,7 +12,7 @@ import { ConversationChatAdapter } from
   '../src/main/conversation/conversation-chat-adapter';
 import {
   createMainConversationComposition,
-  type MainConversationAgentFactoryInput
+  type MainConversationCodingTaskFactoryInput
 } from '../src/main/conversation/main-conversation-composition';
 import type { ConversationBehaviorPort } from
   '../src/main/characters/character-behavior-director';
@@ -105,7 +105,7 @@ function deferred(): { promise: Promise<void>; resolve(): void } {
   return { promise, resolve };
 }
 
-function agentDouble(overrides: Record<string, unknown> = {}) {
+function codingTaskServiceDouble(overrides: Record<string, unknown> = {}) {
   return {
     submitFileTask: vi.fn(async () => ({ kind: 'completed', acted: false } as const)),
     cancelActive: vi.fn(),
@@ -121,9 +121,9 @@ function baseOptions(input: {
   chatResponse?: ModelResponse | Promise<ModelResponse>;
   assertProviderReady?: (profile: ProviderProfileV2) => void;
   catalog?: typeof providerCatalog;
-  createAgent?: (factory: MainConversationAgentFactoryInput<
+  createCodingTaskService?: (factory: MainConversationCodingTaskFactoryInput<
     { dataCategories: { memory: boolean } }
-  >) => ReturnType<typeof agentDouble>;
+  >) => ReturnType<typeof codingTaskServiceDouble>;
 } = {}) {
   const privacySessions = new PrivacySessionRegistry();
   privacySessions.register('desktop-session', { incognito: false });
@@ -142,17 +142,17 @@ function baseOptions(input: {
   const readAuthorizedRootPath = vi.fn(async () => testRoot);
   const privacySettings = { dataCategories: { memory: false } };
   const readPrivacySettings = vi.fn(async () => privacySettings);
-  const factoryInputs: Array<MainConversationAgentFactoryInput<
+  const factoryInputs: Array<MainConversationCodingTaskFactoryInput<
     typeof privacySettings
   >> = [];
-  const createdAgentProfiles: string[] = [];
-  const createAgentService = vi.fn((factoryInput: MainConversationAgentFactoryInput<
+  const createdCodingTaskProfiles: string[] = [];
+  const createCodingTaskService = vi.fn((factoryInput: MainConversationCodingTaskFactoryInput<
     typeof privacySettings
   >) => {
     factoryInputs.push(factoryInput);
-    createdAgentProfiles.push(factoryInput.primaryProfile.id);
-    createdAgentProfiles.push(...factoryInput.fallbackProfiles.map(item => item.id));
-    return input.createAgent?.(factoryInput) ?? agentDouble();
+    createdCodingTaskProfiles.push(factoryInput.primaryProfile.id);
+    createdCodingTaskProfiles.push(...factoryInput.fallbackProfiles.map(item => item.id));
+    return input.createCodingTaskService?.(factoryInput) ?? codingTaskServiceDouble();
   });
   const events: TaskEvent[] = [];
   const behavior = behaviorDouble();
@@ -174,7 +174,7 @@ function baseOptions(input: {
         text: '你好'
       }
     )),
-    createAgentService,
+    createCodingTaskService,
     behavior,
     emit: (event: TaskEvent) => events.push(event)
   };
@@ -182,7 +182,7 @@ function baseOptions(input: {
   return {
     composition,
     behavior,
-    createdAgentProfiles,
+    createdCodingTaskProfiles,
     events,
     factoryInputs,
     options,
@@ -215,7 +215,7 @@ describe('Main 会话组合模块', () => {
     const execution = deferred();
     const composition = createMainConversationComposition({ ...base.options,
       readAuthorizedRootPath: async () => f.directory,
-      createAgentService: input => {
+      createCodingTaskService: input => {
         creates += 1;
         return new CodingTaskService({
           sessionOptions: async () => ({ directory: input.snapshot.authorizedRootPath, dataDirectory: f.dataDirectory, approvedCommands: [], model: { baseUrl: '', modelId: primary.modelId, contextWindow: 8192, outputTokens: 2048, readCredential: async () => 'fixture' } }),
@@ -257,7 +257,7 @@ describe('Main 会话组合模块', () => {
     const events: TaskEvent[] = [];
     const composition = createMainConversationComposition({ ...base.options,
       readAuthorizedRootPath: async () => f.directory,
-      createAgentService: input => new CodingTaskService({
+      createCodingTaskService: input => new CodingTaskService({
         sessionOptions: async () => ({ ...resources, directory: input.snapshot.authorizedRootPath, dataDirectory: f.dataDirectory, approvedCommands: input.snapshot.approvedCommands, model: { baseUrl: '', modelId: primary.modelId, contextWindow: 8192, outputTokens: 2048, readCredential: async () => 'fixture' } }),
         createSession: async options => { forward = options.onEvent; return f.session; },
         emit: input.emit, emitTrustedToolResult: input.emitTrustedToolResult
@@ -312,8 +312,8 @@ describe('Main 会话组合模块', () => {
       directory: testRoot, modelId: 'model-test', approvedCommands: [],
       capabilityRevision: expect.any(String)
     });
-    expect(harness.createdAgentProfiles).toEqual(['primary']);
-    expect(harness.createdAgentProfiles).not.toContain('cross-fallback');
+    expect(harness.createdCodingTaskProfiles).toEqual(['primary']);
+    expect(harness.createdCodingTaskProfiles).not.toContain('cross-fallback');
     expect(harness.factoryInputs[0]?.snapshot).toEqual({
       providerSettings: harness.providerSettings,
       authorizedRootPath: testRoot,
@@ -435,10 +435,10 @@ describe('Main 会话组合模块', () => {
 
   test('关闭等待文件不可逆屏障，但不等待不服从取消的普通聊天 Provider', async () => {
     const writeBarrier = deferred();
-    const agent = agentDouble({
+    const agent = codingTaskServiceDouble({
       resetForNewConversation: vi.fn(() => writeBarrier.promise)
     });
-    const fileHarness = baseOptions({ createAgent: () => agent });
+    const fileHarness = baseOptions({ createCodingTaskService: () => agent });
     await fileHarness.composition.capabilityTasks.prepareTarget({ generation: 'generation-write', taskKind: 'file' });
     let fileClosed = false;
     const fileClose = fileHarness.composition.close().then(() => { fileClosed = true; });

@@ -832,7 +832,7 @@ describe('Main 角色行为权威服务', () => {
     expect(events).toHaveLength(1);
   });
 
-  test('pending_action 和 acting 期间的轮询只推进引擎且不产生候选', async () => {
+  test('awaiting_confirmation 和 acting 期间的轮询只推进引擎且不产生候选', async () => {
     const fixture = createFixture();
     const service = new Constructor(fixture.options);
     const events: BehaviorPlaybackEvent[] = [];
@@ -840,21 +840,7 @@ describe('Main 角色行为权威服务', () => {
     await service.initialize();
     events.splice(0);
 
-    service.handleTaskEvent({
-      type: 'pending_action',
-      action: {
-        category: 'file',
-        actionId: 'action-1',
-        conversationId: 'conversation-1',
-        risk: 'write',
-        operation: 'create_file',
-        summary: '写入文件',
-        targetRelativePath: 'note.txt',
-        contentCharacters: 0, contentPreview: null, contentPreviewSuppressedReason: null, previewTruncated: false,
-        createdAt: '2026-08-06T00:00:00.000Z',
-        expiresAt: '2026-08-06T00:10:00.000Z'
-      }
-    });
+    service.handleTaskEvent({ type: 'phase', phase: 'awaiting_confirmation' });
     fixture.setNow(10_000);
     service.advance();
     service.handleTaskEvent({ type: 'phase', phase: 'acting' });
@@ -901,21 +887,7 @@ describe('Main 角色行为权威服务', () => {
       playbackStartTimeoutMs: 100
     });
     await service.initialize();
-    service.handleTaskEvent({
-      type: 'pending_action',
-      action: {
-        category: 'file',
-        actionId: 'action-timeout',
-        conversationId: 'conversation-timeout',
-        risk: 'write',
-        operation: 'create_file',
-        summary: '等待确认期间仍需推进播放令牌',
-        targetRelativePath: 'note.txt',
-        contentCharacters: 0, contentPreview: null, contentPreviewSuppressedReason: null, previewTruncated: false,
-        createdAt: '2026-08-06T00:00:00.000Z',
-        expiresAt: '2026-08-06T00:10:00.000Z'
-      }
-    });
+    service.handleTaskEvent({ type: 'phase', phase: 'awaiting_confirmation' });
 
     fixture.setNow(100);
     const expiredTokens = service.advance();
@@ -940,21 +912,7 @@ describe('Main 角色行为权威服务', () => {
       status: 'started',
       occurredAtMs: 0
     });
-    service.handleTaskEvent({
-      type: 'pending_action',
-      action: {
-        category: 'file',
-        actionId: 'action-terminal-timeout',
-        conversationId: 'conversation-terminal-timeout',
-        risk: 'write',
-        operation: 'create_file',
-        summary: '等待确认期间仍需推进已开始动作',
-        targetRelativePath: 'note.txt',
-        contentCharacters: 0, contentPreview: null, contentPreviewSuppressedReason: null, previewTruncated: false,
-        createdAt: '2026-08-06T00:00:00.000Z',
-        expiresAt: '2026-08-06T00:10:00.000Z'
-      }
-    });
+    service.handleTaskEvent({ type: 'phase', phase: 'awaiting_confirmation' });
 
     fixture.setNow(50);
     const expiredTokens = service.advance();

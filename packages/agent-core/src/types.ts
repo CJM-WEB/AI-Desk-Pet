@@ -24,7 +24,7 @@ export interface ModelSelection {
   fallbackProfiles: ProviderProfileV2[];
 }
 
-/** Provider 历史需要保留已被本地拒绝的原始工具调用，因此不能收窄为已通过 ToolRuntime 的 ToolRequest。 */
+/** Provider 历史需要保留已被本地拒绝的原始工具调用，因此不能收窄为已通过本地执行边界的 ToolRequest。 */
 export type ModelToolRequest = Readonly<{
   requestId: string;
   toolName: string;
@@ -68,9 +68,6 @@ export type ModelResponse =
     }
   | { type: 'tool_request'; request: unknown };
 
-/** 控制单次运行对模型文本响应施加的协议，默认保留聊天兼容语义。 */
-export type AgentRunProtocol = 'default' | 'capability_planner';
-
 export type FilePlanningOperation =
   | 'list_files'
   | 'read_file'
@@ -90,14 +87,6 @@ export type FilePlanningHint = Readonly<{
   targetNameQuery?: string;
 }>;
 
-type CapabilityPlanningState = Readonly<{
-  allowClarification: boolean;
-  /** 只收窄首个能力规划轮次；真实工具结果后恢复 RunContext.tools。 */
-  planningTools?: readonly ToolDefinition[];
-  /** 当前回合期望完成的受控操作；不允许用其他成功结果口头冒充完成。 */
-  expectedOperation?: FilePlanningOperation | 'powershell';
-}>;
-
 export interface ModelProvider {
   respond(request: ModelRequest, signal: AbortSignal): Promise<ModelResponse>;
 }
@@ -112,38 +101,3 @@ export interface PreparedToolRequest {
   decision: ToolDecision;
   auditSummary: string;
 }
-
-export interface ToolRuntime {
-  prepare(raw: unknown): PreparedToolRequest;
-  executeRead(request: ToolRequest): Promise<unknown>;
-}
-
-export interface RunContext {
-  messages: ModelMessage[];
-  provider: ModelProvider;
-  tools: ToolDefinition[];
-  toolRuntime: ToolRuntime;
-  signal: AbortSignal;
-  protocol?: AgentRunProtocol;
-  capabilityPlanning?: CapabilityPlanningState | undefined;
-}
-
-/** 仅 Main 消费的运行终态，不作为 Renderer 事件公开。 */
-export type AgentRunOutcome = Readonly<{
-  kind: 'clarification';
-  missingField: import('./capability-clarification-tool').CapabilityClarificationMissingField;
-}> | undefined;
-
-export type AgentEvent =
-  | { type: 'phase'; phase: 'thinking' | 'acting' | 'awaiting_confirmation' | 'success' | 'error' | 'cancelled' }
-  | { type: 'message'; text: string }
-  | { type: 'emotion'; label: CharacterEmotionLabel }
-  | { type: 'behavior_intent'; intent: CharacterAgentBehaviorIntent }
-  | {
-      type: 'write_request';
-      request: ToolRequest;
-      executionRequest: ToolRequest;
-      risk: ToolRisk;
-      auditSummary: string;
-      continuationToken: string;
-    };

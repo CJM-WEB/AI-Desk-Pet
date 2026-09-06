@@ -1,6 +1,5 @@
 import { describe, expect, it } from 'vitest';
 import {
-  pendingActionSchema,
   publicSettingsSchema,
   providerProfileV2Schema,
   taskEventSchema,
@@ -88,142 +87,8 @@ describe('toolRequestSchema', () => {
   });
 });
 
-describe('PendingAction 契约', () => {
-  it('以文件类别严格判别三种公开确认动作', () => {
-    const create = pendingActionSchema.parse({
-      category: 'file',
-      actionId: 'act-1',
-      conversationId: 'conv-1',
-      risk: 'write',
-      operation: 'create_file',
-      summary: '新建 notes.md',
-      targetRelativePath: 'notes.md',
-      contentCharacters: 3,
-      contentPreview: 'abc',
-      contentPreviewSuppressedReason: null,
-      previewTruncated: false,
-      createdAt: '2026-07-20T00:00:00.000Z',
-      expiresAt: '2026-07-20T00:02:00.000Z'
-    });
-
-    expect(create).toMatchObject({ category: 'file', operation: 'create_file' });
-    expect(pendingActionSchema.parse({
-      category: 'file',
-      actionId: 'act-dir',
-      conversationId: 'conv-1',
-      risk: 'write',
-      operation: 'create_directory',
-      summary: '创建目录 abc',
-      targetRelativePath: 'abc',
-      createdAt: '2026-07-20T00:00:00.000Z',
-      expiresAt: '2026-07-20T00:02:00.000Z'
-    })).toMatchObject({ operation: 'create_directory', targetRelativePath: 'abc' });
-    expect(pendingActionSchema.parse({
-      category: 'file',
-      actionId: 'act-2',
-      conversationId: 'conv-1',
-      risk: 'write',
-      operation: 'apply_patch',
-      summary: '修改 notes.md',
-      targetRelativePath: 'notes.md',
-      addedLines: 2,
-      removedLines: 1,
-      diffPreview: '@@ -1 +1 @@',
-      previewTruncated: false,
-      createdAt: '2026-07-20T00:00:00.000Z',
-      expiresAt: '2026-07-20T00:02:00.000Z'
-    })).toMatchObject({ operation: 'apply_patch', addedLines: 2, removedLines: 1 });
-    expect(pendingActionSchema.parse({
-      category: 'file',
-      actionId: 'act-3',
-      conversationId: 'conv-1',
-      risk: 'write',
-      operation: 'delete_file',
-      summary: '删除 notes.md',
-      targetRelativePath: 'notes.md',
-      targetType: 'file',
-      createdAt: '2026-07-20T00:00:00.000Z',
-      expiresAt: '2026-07-20T00:02:00.000Z'
-    })).toMatchObject({ operation: 'delete_file', targetType: 'file' });
-    expect(pendingActionSchema.parse({
-      category: 'file',
-      actionId: 'act-move',
-      conversationId: 'conv-1',
-      risk: 'write',
-      operation: 'move_file',
-      summary: '移动 docs/source.txt 到 archive/source.txt',
-      sourceRelativePath: 'docs/source.txt',
-      targetRelativePath: 'archive/source.txt',
-      createdAt: '2026-07-20T00:00:00.000Z',
-      expiresAt: '2026-07-20T00:02:00.000Z'
-    })).toMatchObject({
-      operation: 'move_file',
-      sourceRelativePath: 'docs/source.txt',
-      targetRelativePath: 'archive/source.txt'
-    });
-    expect(pendingActionSchema.parse({
-      category: 'powershell',
-      actionId: 'act-4',
-      conversationId: 'conv-1',
-      risk: 'shell',
-      operation: 'powershell',
-      summary: '运行 PowerShell 命令',
-      command: 'Get-ChildItem',
-      workingDirectoryLabel: '项目目录',
-      runMode: 'foreground',
-      createdAt: '2026-07-20T00:00:00.000Z',
-      expiresAt: '2026-07-20T00:02:00.000Z'
-    })).toMatchObject({ category: 'powershell', operation: 'powershell' });
-  });
-
-  it('拒绝旧分支、跨分支字段和多余字段', () => {
-    const base = {
-      category: 'file',
-      actionId: 'act-1',
-      conversationId: 'conv-1',
-      risk: 'write',
-      operation: 'create_file',
-      summary: '新建 notes.md',
-      targetRelativePath: 'notes.md',
-      contentCharacters: 3,
-      contentPreview: 'abc',
-      contentPreviewSuppressedReason: null,
-      previewTruncated: false,
-      createdAt: '2026-07-20T00:00:00.000Z',
-      expiresAt: '2026-07-20T00:02:00.000Z'
-    };
-
-    expect(() => pendingActionSchema.parse(({ ...base, contentPreview: undefined }))).toThrow();
-    expect(() => pendingActionSchema.parse(({ ...base, contentPreviewSuppressedReason: undefined }))).toThrow();
-    expect(() => pendingActionSchema.parse({ ...base, operation: 'create_directory' })).toThrow();
-    expect(() => pendingActionSchema.parse({ ...base, targetType: 'file' })).toThrow();
-    expect(() => pendingActionSchema.parse({ ...base, command: 'rm notes.md' })).toThrow();
-  });
-
-  it.each([
-    'C:\\Users\\Administrator\\workspace',
-    '\\\\server\\share',
-    '\\\\?\\C:\\workspace',
-    '/workspace'
-  ])('拒绝向 Renderer 发布绝对工作目录：%s', workingDirectoryLabel => {
-    expect(() => pendingActionSchema.parse({
-      category: 'powershell',
-      actionId: 'act-shell',
-      conversationId: 'conv-1',
-      risk: 'shell',
-      operation: 'powershell',
-      summary: '运行 PowerShell 命令',
-      command: 'Get-ChildItem',
-      workingDirectoryLabel,
-      runMode: 'foreground',
-      createdAt: '2026-07-20T00:00:00.000Z',
-      expiresAt: '2026-07-20T00:02:00.000Z'
-    })).toThrow();
-  });
-});
-
 describe('任务级授权协议', () => {
-  it('使用独立事件且不接受 PendingAction 字段', () => {
+  it('使用独立事件且不接受旧动作票据字段', () => {
     const event = {
       type: 'capability_authorization_required',
       directory: 'D:\\authorized', modelId: 'model-test', actions: ['read', 'create', 'edit'], approvedCommands: [],
@@ -263,12 +128,6 @@ describe('taskEventSchema', () => {
   it.each([
     ['phase', { type: 'phase', phase: 'thinking' }],
     ['message', { type: 'message', role: 'assistant', text: '已完成' }],
-    ['pending_action', { type: 'pending_action', action: {
-      category: 'file', actionId: 'act-1', conversationId: 'conv-1', risk: 'write',
-      operation: 'delete_file', summary: '删除 notes.md', targetRelativePath: 'notes.md',
-      targetType: 'file', createdAt: '2026-07-20T00:00:00.000Z',
-      expiresAt: '2026-07-20T00:02:00.000Z'
-    } }],
     ['error', { type: 'error', code: 'ACTION_FAILED', message: '执行失败' }],
     ['character_emotion', { type: 'character_emotion', label: 'happy' }],
     ['character_carrying', { type: 'character_carrying', carrying: true }],

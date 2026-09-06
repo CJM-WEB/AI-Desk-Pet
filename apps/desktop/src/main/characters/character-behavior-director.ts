@@ -758,13 +758,6 @@ export class CharacterBehaviorDirector {
   }
 
   private updateActivityFromTaskEvent(event: TaskEvent): void {
-    if (event.type === 'pending_action') {
-      this.chatting = false;
-      this.capabilityTask = true;
-      this.awaitingConfirmation = true;
-      this.publishActivityChanged();
-      return;
-    }
     if (event.type !== 'phase') return;
     this.chatting = event.phase === 'listening' || event.phase === 'thinking';
     this.awaitingConfirmation = event.phase === 'awaiting_confirmation';

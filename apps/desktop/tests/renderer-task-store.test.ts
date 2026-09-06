@@ -115,21 +115,6 @@ describe('Renderer 任务视图状态', () => {
       messageCount: 1,
       characterCount: 3
     });
-    store.getState().apply({
-      type: 'pending_action',
-      action: {
-        category: 'file',
-        actionId: 'action-reset',
-        conversationId: 'conversation-1',
-        risk: 'write',
-        operation: 'create_file',
-        summary: '创建文件',
-        targetRelativePath: 'notes.md',
-        contentCharacters: 0, contentPreview: null, contentPreviewSuppressedReason: null, previewTruncated: false,
-        createdAt: '2026-08-10T12:00:00.000Z',
-        expiresAt: '2026-08-10T12:02:00.000Z'
-      }
-    });
     store.getState().apply({ type: 'phase', phase: 'success' });
 
     store.getState().apply({ type: 'conversation_reset', generation: 'generation-2' });
@@ -137,7 +122,6 @@ describe('Renderer 任务视图状态', () => {
       conversationRevision: 1,
       phase: 'idle',
       messages: [],
-      pendingAction: null,
       pendingHistoryDisclosure: null,
       characterState: { stateId: 'idle', source: 'system' }
     });
@@ -238,31 +222,6 @@ describe('Renderer 任务视图状态', () => {
     expect(store.getState().messages).toEqual([]);
   });
 
-  test('待确认动作在成功、错误或取消终止阶段被清除', () => {
-    const action = {
-      category: 'file' as const,
-      actionId: 'action-1',
-      conversationId: 'conversation-1',
-      risk: 'write' as const,
-      operation: 'create_file' as const,
-      summary: '创建文件 notes.md',
-      targetRelativePath: 'notes.md',
-      contentCharacters: 0, contentPreview: null, contentPreviewSuppressedReason: null, previewTruncated: false,
-      createdAt: '2026-07-20T12:00:00.000Z',
-      expiresAt: '2026-07-20T12:02:00.000Z'
-    };
-
-    for (const phase of ['success', 'error', 'cancelled'] as const) {
-      const store = createTaskStore();
-      store.getState().apply({ type: 'pending_action', action });
-      expect(store.getState().pendingAction).toEqual(action);
-
-      store.getState().apply({ type: 'phase', phase });
-
-      expect(store.getState().pendingAction).toBeNull();
-    }
-  });
-
   test('任务级授权卡保存有效期并在所有终止阶段清除', () => {
     for (const phase of ['success', 'error', 'cancelled', 'idle'] as const) {
       const store = createTaskStore();
@@ -351,29 +310,6 @@ describe('Renderer 任务视图状态', () => {
     expect(store.getState().characterState.stateId).toBe('carrying');
     store.getState().applyCharacterMotion({ moving: false, carrying: false });
     expect(store.getState().characterState.stateId).toBe('thinking');
-  });
-
-  test('pending_action 通过仲裁器进入 listening 状态', () => {
-    const store = createTaskStore();
-    store.getState().apply({
-      type: 'pending_action',
-      action: {
-        category: 'file',
-        actionId: 'a',
-        conversationId: 'c',
-        risk: 'write',
-        operation: 'create_file',
-        summary: '确认',
-        targetRelativePath: 'a.txt',
-        contentCharacters: 0, contentPreview: null, contentPreviewSuppressedReason: null, previewTruncated: false,
-        createdAt: '2026-01-01T00:00:00.000Z',
-        expiresAt: '2026-01-01T00:01:00.000Z'
-      }
-    });
-    expect(store.getState().characterState).toEqual({
-      stateId: 'listening',
-      source: 'system'
-    });
   });
 
   test('生产扩展规则统一处理关键词、指针、idle 和可信 LLM 标识', () => {

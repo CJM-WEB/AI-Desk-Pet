@@ -25,14 +25,14 @@ import { ConversationDisclosureAdapter } from './conversation-disclosure-adapter
 import { ConversationHistory } from './conversation-history';
 import {
   CapabilityTaskAdapter,
-  type CapabilityTaskAgentPort
+  type CapabilityTaskServicePort
 } from './capability-task-adapter';
 import type { CapabilityTaskKind } from './conversation-coordinator';
-import type { CodingTaskToolResult as AgentTrustedToolResult } from '../agent/coding-task-service';
+import type { CodingTaskToolResult } from '../agent/coding-task-service';
 import type { ConversationBehaviorPort } from
   '../characters/character-behavior-director';
 
-export type MainConversationAgentSnapshot<TPrivacy> = Readonly<{
+export type MainConversationCodingTaskSnapshot<TPrivacy> = Readonly<{
   taskKind: CapabilityTaskKind;
   providerSettings: ProviderSettingsSnapshot;
   authorizedRootPath: string;
@@ -40,14 +40,14 @@ export type MainConversationAgentSnapshot<TPrivacy> = Readonly<{
   approvedCommands: readonly string[];
 }>;
 
-export interface MainConversationAgentFactoryInput<TPrivacy> {
-  snapshot: MainConversationAgentSnapshot<TPrivacy>;
+export interface MainConversationCodingTaskFactoryInput<TPrivacy> {
+  snapshot: MainConversationCodingTaskSnapshot<TPrivacy>;
   generation: string;
   selection: ModelSelection;
   primaryProfile: ProviderProfileV2;
   fallbackProfiles: readonly ProviderProfileV2[];
   emit(event: TaskEvent): void;
-  emitTrustedToolResult(result: AgentTrustedToolResult): void;
+  emitTrustedToolResult(result: CodingTaskToolResult): void;
 }
 
 export interface MainConversationCompositionOptions<TPrivacy> {
@@ -59,9 +59,9 @@ export interface MainConversationCompositionOptions<TPrivacy> {
   readAuthorizedRootPath(): Promise<string | null>;
   readPrivacySettings(): Promise<TPrivacy>;
   createChatAdapter(profile: ProviderProfileV2): ConversationChatAdapter;
-  createAgentService(
-    input: MainConversationAgentFactoryInput<TPrivacy>
-  ): CapabilityTaskAgentPort;
+  createCodingTaskService(
+    input: MainConversationCodingTaskFactoryInput<TPrivacy>
+  ): CapabilityTaskServicePort;
   behavior: ConversationBehaviorPort;
   emit(event: TaskEvent): void;
 }
@@ -75,7 +75,7 @@ export interface MainConversationComposition {
 
 /**
  * Main 会话深模块统一持有路由、披露、文件目标快照和关闭所有权。
- * Electron 平台层只需提供设置读取与 Provider/File Agent 构造适配器。
+ * Electron 平台层只需提供设置读取与 Provider/CodingTaskService 构造适配器。
  */
 export function createMainConversationComposition<TPrivacy>(
   options: MainConversationCompositionOptions<TPrivacy>
@@ -86,8 +86,8 @@ export function createMainConversationComposition<TPrivacy>(
     resolveProfileProvider: profileId => disclosureTargets.get(profileId) ?? null,
     resolveCurrentSourceProvider: () => null
   });
-  let preparedAgentSnapshot: MainConversationAgentSnapshot<TPrivacy> | null = null;
-  let preparedAgentTarget: Readonly<{
+  let preparedCodingTaskSnapshot: MainConversationCodingTaskSnapshot<TPrivacy> | null = null;
+  let preparedCodingTaskTarget: Readonly<{
     generation: string;
     taskKind: CapabilityTaskKind;
     selection: ModelSelection;
@@ -95,7 +95,7 @@ export function createMainConversationComposition<TPrivacy>(
     fallbackProfiles: readonly ProviderProfileV2[];
     capabilityRevision: string;
   }> | null = null;
-  let activeAgentRootPath: string | null = null;
+  let activeCodingTaskRootPath: string | null = null;
   let closePromise: Promise<void> | null = null;
   const assertProviderReady = options.assertProviderReady ?? (profile => {
     if (!profile.hasStoredSecret) throw settingsIncompleteError();
@@ -144,7 +144,7 @@ export function createMainConversationComposition<TPrivacy>(
       ]);
     const authorizedRootPath = rootPath === null ? null : await realpath(rootPath);
     const approvedCommands = authorizedRootPath === null ? [] : await projectCommands(authorizedRootPath);
-    preparedAgentSnapshot = authorizedRootPath === null
+    preparedCodingTaskSnapshot = authorizedRootPath === null
       ? null
       : Object.freeze({
           providerSettings,
@@ -153,27 +153,27 @@ export function createMainConversationComposition<TPrivacy>(
           privacySettings,
           approvedCommands
         });
-    if (activeAgentRootPath !== null && activeAgentRootPath !== authorizedRootPath) return null;
+    if (activeCodingTaskRootPath !== null && activeCodingTaskRootPath !== authorizedRootPath) return null;
     return authorizedRootPath;
   };
 
-  const createAgentTarget = (input: {
+  const createCodingTaskTarget = (input: {
     generation: string;
     taskKind: CapabilityTaskKind;
     emit: (event: TaskEvent) => void;
-    emitTrustedToolResult: (result: AgentTrustedToolResult) => void;
+    emitTrustedToolResult: (result: CodingTaskToolResult) => void;
   }) => {
-    const snapshot = preparedAgentSnapshot;
-    const descriptor = preparedAgentTarget;
-    preparedAgentSnapshot = null;
-    preparedAgentTarget = null;
+    const snapshot = preparedCodingTaskSnapshot;
+    const descriptor = preparedCodingTaskTarget;
+    preparedCodingTaskSnapshot = null;
+    preparedCodingTaskTarget = null;
     if (!snapshot || !descriptor || descriptor.generation !== input.generation
       || descriptor.taskKind !== input.taskKind) throw settingsIncompleteError();
     const { selection, primaryProfile, fallbackProfiles, capabilityRevision } = descriptor;
-    activeAgentRootPath = snapshot.authorizedRootPath;
+    activeCodingTaskRootPath = snapshot.authorizedRootPath;
     rememberTarget(selection);
     return {
-      service: options.createAgentService({
+      service: options.createCodingTaskService({
         snapshot,
         generation: input.generation,
         selection,
@@ -196,7 +196,7 @@ export function createMainConversationComposition<TPrivacy>(
     generation: string;
     taskKind: CapabilityTaskKind;
   }) => {
-    const snapshot = preparedAgentSnapshot;
+    const snapshot = preparedCodingTaskSnapshot;
     if (!snapshot || snapshot.taskKind !== input.taskKind) throw settingsIncompleteError();
     const selection = select(snapshot.providerSettings, 'agent');
     const primaryProfile = selection.profile;
@@ -212,7 +212,7 @@ export function createMainConversationComposition<TPrivacy>(
       approvedCommands: snapshot.approvedCommands,
       providerSettings: snapshot.providerSettings
     })).digest('hex');
-    preparedAgentTarget = Object.freeze({
+    preparedCodingTaskTarget = Object.freeze({
       generation: input.generation,
       taskKind: input.taskKind,
       selection,
@@ -235,7 +235,7 @@ export function createMainConversationComposition<TPrivacy>(
   const capabilityTasks = new CapabilityTaskAdapter({
     getAuthorizedRootPath,
     createTargetSnapshot,
-    createAgentTarget
+    createCodingTaskTarget
   });
   const coordinator = new ConversationCoordinator({
     history: new ConversationHistory(),
@@ -254,9 +254,9 @@ export function createMainConversationComposition<TPrivacy>(
     coordinator,
     capabilityTasks,
     async resetForConfigurationChange(): Promise<void> {
-      preparedAgentSnapshot = null;
-      preparedAgentTarget = null;
-      activeAgentRootPath = null;
+      preparedCodingTaskSnapshot = null;
+      preparedCodingTaskTarget = null;
+      activeCodingTaskRootPath = null;
       await coordinator.resetConversation();
     },
     close(): Promise<void> {

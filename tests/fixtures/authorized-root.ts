@@ -11,14 +11,10 @@ import { createCodingModelConnection } from '../../apps/desktop/src/main/provide
 import { OpenAICompatibleProvider } from '../../apps/desktop/src/main/providers/openai-provider';
 import { resolveCodingTaskResources } from '../../apps/desktop/src/main/agent/coding-task-resources';
 import { startProviderServer, type ProviderScript } from './provider-server';
-import type { FileToolService, PathPolicy } from '@myself/file-tools';
-import { FileToolService as RealFileToolService, PathPolicy as RealPathPolicy } from '@myself/file-tools';
 
 export interface AuthorizedRootFixture {
   base: string;
   root: string;
-  policy: PathPolicy;
-  fileTools: FileToolService;
   cleanup(): Promise<void>;
 }
 
@@ -40,7 +36,7 @@ export async function createCodingConversation(steps: ProviderScript, options: {
     readAuthorizedRootPath: async () => authorized.root,
     readPrivacySettings: async () => ({ dataCategories: { memory: false } }),
     createChatAdapter: () => new ConversationChatAdapter(new OpenAICompatibleProvider({ id: profile.id, displayName: profile.displayName, baseUrl: provider.baseUrl, model: profile.modelId, hasStoredSecret: true }, async () => provider.apiKey)),
-    createAgentService: input => {
+    createCodingTaskService: input => {
       creates += 1;
       return new CodingTaskService({
         sessionOptions: async () => ({ ...resources, directory: input.snapshot.authorizedRootPath, dataDirectory: authorized.base, approvedCommands: input.snapshot.approvedCommands,
@@ -76,12 +72,9 @@ export async function createAuthorizedRoot(): Promise<AuthorizedRootFixture> {
   const base = await realpath(await mkdtemp(join(tmpdir(), 'myself-task-9a-')));
   const root = join(base, 'authorized');
   await mkdir(join(root, 'docs'), { recursive: true });
-  const policy = await RealPathPolicy.create(root);
   return {
     base,
     root,
-    policy,
-    fileTools: new RealFileToolService(policy),
     async cleanup() {
       await rm(base, { recursive: true, force: true });
     }

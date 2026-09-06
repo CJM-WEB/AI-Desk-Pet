@@ -1012,7 +1012,7 @@ async function createApplicationWindows(
         correlationId
       )
     ),
-    createAgentService: ({ snapshot, primaryProfile, emit, emitTrustedToolResult }) => new CodingTaskService({
+    createCodingTaskService: ({ snapshot, primaryProfile, emit, emitTrustedToolResult }) => new CodingTaskService({
       sessionOptions: async () => {
         const dataDirectory = join(app.getPath('userData'), 'coding-tasks');
         await mkdir(dataDirectory, { recursive: true });
