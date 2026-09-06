@@ -2,7 +2,7 @@
 
 日期：2026-09-06。依据[角色规格](../superpowers/specs/2026-09-05-ai-pet-custom-state-autonomy-design.md)与[实施计划](../superpowers/plans/2026-09-06-ai-pet-custom-state-autonomy.md)。状态：开发中，不能据此宣称整套角色能力已完成。
 
-当前进度：Task 1–3、Task 5 已完成；Task 4 人设、描述决策和明确播放已实现并经限定复审通过，真实 DeepSeek 场景通过，Qwen 场景正在收口结构化字段与当次请求约束。Task 6 清理交付尚未完成。下表按证据产生时点保留中间失败及其后续修复，不以中间状态覆盖当前结论。
+当前进度：Task 1–5 已完成，真实 DeepSeek／Qwen 代表场景均通过；限定审查发现的“修复回复覆盖首次计划无更新”已修复并复核通过。Task 6 清理交付尚未完成。下表按证据产生时点保留中间失败及其后续修复，不以中间状态覆盖当前结论。
 
 用户已确认文件能力实际验收并授权本阶段；工作台锚点与区域保留现有入口，本轮不扩展。保留三态运动，重点接通人设系统提示词、描述决策、自定义状态及随时间变化的心情。MCP 继续禁用，官网链不进入本轮，暂不打包、不 push。
 
@@ -30,6 +30,9 @@
 | 真实 DeepSeek 代表场景 | 用户已配置的 `deepseek-v4-flash`，一次HTTP请求通过：喜讯产生心情与喜悦计划，同轮明确动作令牌保留，虚拟时间推进后回idle | 临时隔离Electron，无真实窗口；不是视觉观感验收，也不证明所有模型或任意语言输入 |
 | Task 5 自主心情、时间与真实交互接线 | 提交 `10543a7d`；代表性协议／调度／开关5项 RED 后，原组27项通过；三包 typecheck 通过，固定差异审查 Approved | 首次未互动5分钟、后续至少15分钟、小时最多4次；只输出心情与计划；未运行真实自主模型或 Windows 休眠观察 |
 | Task 5 既有三态及设置回归 | Director 99、Scheduler 21、Runtime 1、IPC 9、Provider 193项通过；旧设置 fixture 4处期望修正后相关74项通过；agent-core 契约12项通过 | 复用原运动调度，开关关闭不清心情；这些结果不能替代实际动画连续性与原生窗口体验 |
+| Qwen 决策字段与当次请求约束 | 提交 `0023eb90`；26个直接定向用例、runtime／agent-core／desktop typecheck 通过 | 心情和计划必填可 null；Main 已处理的指令限制运动建议，并取消重复显式播放建议；限定审查另发现修复轮的 null 计划冻结缺口，已接管 |
+| 正式代码真实 Qwen 代表场景 | `0023eb90` 重新生成诊断 bundle，真实内置模型、Vulkan 33/33；1次HTTP／Provider调用通过，心情强度0.95，选择 `cheer` 及其 `spin/wave` 动作，Main明确令牌保留；动作后仍可喜悦，虚拟2小时后回 `rest`（idle） | 使用真实 Main prepare／complete 入口，实际运动调用0、工具为空、运行时清理和Electron退出通过；临时隔离实例，无真实窗口、未观察连续分钟动画 |
+| 修复轮冻结首次 null 计划 | `2e5bd423`；1项 RED 复现，直接决策文件11项、desktop typecheck 通过，限定复核 Approved | 仅改修复轮合并及直接测试；请求 Schema／提示不变，不重复真实模型场景 |
 
 实际命令：
 
@@ -46,11 +49,10 @@ Task 2 先由缺失接口的 4 项失败进入实现，之后用 3 项失败定�
 
 Task 3 Main 的定向命令为 `pnpm.cmd --filter @myself/desktop test character-v3-cutover.test.ts character-store.test.ts`，以及 `pnpm.cmd --filter @myself/desktop test character-package-service.test.ts -t 'V3 导出|V1 角色包|复杂旧包|旧包资源校验|旧包图片结构'`。后者还有 69 项未运行，既有临时目录恢复扫描日志 `CHARACTER_IMPORT_RECOVERY_SCAN_FAILED` 仍出现，本轮未据该日志断言导入恢复失败或完全正常。正式开发实例在跨进程切换期间已结束，尚未在真实用户数据上启动新版本。
 
-Task 4 实际代表性模型命令为私有诊断入口 `node .superpowers/sdd/2026-09-06-ai-pet-custom-state-autonomy/run-character-live-smoke.cjs deepseek` 与同入口 `qwen`。只发送合成人设、状态及获奖场景，不读取真实会话或修改用户角色；DeepSeek原设置文件哈希保持一致。Qwen使用现有资源和Provider，Vulkan卸载33/33层，所有尝试最终均执行runtime清理。其首个问题由HTTP错误及[官方Qwen模板](https://huggingface.co/Qwen/Qwen3.5-4B/blob/main/chat_template.jinja)共同确证：模板只接受开头一条system；本地适配合并段落，未修改模型或资源模板。修复后实际HTTP已正常，当前继续定位返回结构缺失；未将尚未完成的复验写为通过。
+Task 4 实际代表性模型命令为私有诊断入口 `node .superpowers/sdd/2026-09-06-ai-pet-custom-state-autonomy/run-character-live-smoke.cjs deepseek` 与同入口 `qwen`。只发送合成人设、状态及获奖场景，不读取真实会话或修改用户角色；DeepSeek原设置文件哈希保持一致。Qwen使用现有资源和Provider，Vulkan卸载33/33层，所有尝试最终均执行runtime清理。其首个问题由HTTP错误及[官方Qwen模板](https://huggingface.co/Qwen/Qwen3.5-4B/blob/main/chat_template.jinja)共同确证：模板只接受开头一条system；本地适配合并段落，未修改模型或资源模板。随后完整JSON回包证明模型会省略可选的心情或计划；单纯强化提示未解决。将两项改为必须明确评估、允许 null 表示无更新，并收紧已处理指令的当次 Schema 后，正式 `0023eb90` 代表场景通过。分阶段私有实验仅用于定位，最终通过结果来自重新编译的正式源码。
 
 ## 尚未完成
 
-- Qwen真实角色决策场景及最终整合效果；人设与候选代码已经完成。
 - 旧正式路径清理及整体基本体验验证。
 
 真实 Windows 动画连续性、三态位移及真实人设效果尚待实际观察。当前开发记录不替代用户人工验收。
