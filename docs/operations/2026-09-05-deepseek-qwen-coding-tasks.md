@@ -4,6 +4,8 @@
 
 适用[文件任务规格](../superpowers/specs/2026-09-05-ai-pet-coding-assistant-design.md)与[实施计划](../superpowers/plans/2026-09-05-deepseek-qwen-coding-tasks.md)。本记录只证明下面已执行的范围，不代替用户真实体验或未执行的阶段门禁。角色自主状态不在本轮实现范围。
 
+用户于2026-09-06明确批准[入口与重复操作保护调整](../superpowers/specs/2026-09-06-ai-pet-task-entry-and-loop-proposal.md)。实施计划已固定两个模型各两轮、每轮11项的原生申请隔离矩阵及原Core重复保护；当前是准备阶段，尚无该实验或保护的实现结果。
+
 ## 环境与来源
 
 - Windows 开发工作区，系统 Node 24.18.0、pnpm 11.9.0。开始时 Electron 为 43.1.1；Task 3A 经退出故障对照后固定为 43.5.0，内嵌 Node 24.19.0。系统 Node 和 Electron 嵌入运行时分别验证，不能互相代替。

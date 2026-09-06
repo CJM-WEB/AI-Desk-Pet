@@ -11,6 +11,7 @@
 ## 全局约束
 
 - 适用规格：[文件任务重构规格](../specs/2026-09-05-ai-pet-coding-assistant-design.md)，尤其第 1.1 节用户确认。
+- 2026-09-06已获批的补充范围见[任务入口与重复操作保护调整](../specs/2026-09-06-ai-pet-task-entry-and-loop-proposal.md)。任务5A先做隔离验证，任务6独立补原Core保护；原生入口的正式接线只在5A全部通过后形成精确的5B实施拆解并执行。5A失败时记录并讨论后续入口选择，任务6继续，不擅自改成第二分类调用或关键词兜底。
 - 上游为本地 `D:/AgentLearning`，固定提交 `2a6be0a03b93a6734070e10a6c3b56863475f214`；保留 MIT 许可证、源路径和本地修改清单。
 - 按任务授权明确范围，范围内连续执行；超出范围或高风险操作再确认。
 - 用户模型、Provider 设置、凭据来源、内置模型运行与分发、人设及角色功能保留。
@@ -324,3 +325,242 @@ try {
 - [ ] 校验 `git diff --check`、中文文档、第三方来源和旧路径清理范围；更新实际运行记录。未观察的手工项写为“待用户人工确认”。
 
 **完成标准：** 两个目标模型各自有真实运行证据；相关自动化门禁通过；正式旧路径按批准范围退役；剩余限制明确，不以单元测试代替真实体验。
+
+2026-09-06 Task4B已独立复审并完成最终源码的`verify:desktop`，记录见正式验收文档；23个文件提交为`b114eda2bde14b4a2f7c0f45142cfe73bc237d83`，未push。该小任务完成不代表整个任务4完成：真实模型剩余失败由获批的任务5A及条件性5B处理，重复保护由任务6补齐，17个旧文件仍待大量删除二次批准后执行4C。
+
+## 任务 5A：隔离验证原生任务申请与聊天表现共存
+
+**依赖与目标：**任务4B复审和完整门禁完成后执行。适用已获批的[入口与重复保护调整](../specs/2026-09-06-ai-pet-task-entry-and-loop-proposal.md)。先证明现有 DeepSeek／内置 Qwen 能在同一个请求契约中选择严格申请或正常聊天；本任务不切换正式入口、不产生文件或命令能力，不把实验通过写成文件任务完成。
+
+**文件职责：**
+
+- 私有实验目录沿用本计划的 `.superpowers/sdd/2026-09-05-deepseek-qwen-coding-tasks/`；新增 `task-5a-native-probe.cjs`（限定源码和矩阵哈希的bundle构建与启动）、`task-5a-native-probe-main.ts`（Electron内的Provider/Runtime装配、固定矩阵与清理）、`task-5a-native-probe.test.cjs`（Node测试入口，通过同一bundle的有限HTTP模式检查兼容与接纳边界）。代码只服务本次实验，正式源码和公共类型不改，不新增Vitest配置。
+- 只读复用 `apps/desktop/src/main/providers/openai-provider.ts`、`local-model-provider.ts`、`provider-registry.ts`、`openai-tool-name-codec.ts`、`apps/desktop/src/main/conversation/conversation-chat-adapter.ts`、`capability-intent-router.ts`、`packages/character-runtime/src/character-behavior-plan.ts`。
+- 运行装配复用 `apps/desktop/scripts/deepseek-acceptance-main.ts`、`local-model-acceptance-runner.ts`、`run-local-model-acceptance.mjs` 的现有接口和最小构建设置；不修改这三个正式入口、不调用其实际文件验收主体。
+- 实际结果由主控写入 `docs/operations/2026-09-05-deepseek-qwen-coding-tasks.md`；详细私有报告为 `task-5a-report.md`。已有 `task-5-native-entry-seams.md` 给出精确源码符号和安全装配证据。
+
+**实验接口：**使用现成 `ModelRequest`、原生 codec 和基础 `characterChatResponseJsonSchema`。申请函数只声明协议，不附加 execute handler：
+
+```ts
+const authorizationTool = {
+  type: 'function' as const,
+  function: {
+    name: 'request_task_authorization',
+    description: '当用户要求实际查看、修改本地文件或运行项目命令时，申请当前输入的任务范围确认；不读取文件、不执行命令、不表示任务已完成。操作讨论、引用、示例和否定不申请。',
+    parameters: { type: 'object', properties: {}, required: [], additionalProperties: false }
+  }
+};
+const nativeChatContract = {
+  type: 'json_object' as const,
+  name: 'character_chat',
+  jsonSchema: characterChatResponseJsonSchema,
+  textField: 'text',
+  allowPlainTextFallback: true
+};
+```
+
+该工具不使用旧 `builtin.files.*`／`mcp.*` 工具请求，不向参数增加目录、命令、Provider或generation。申请的原始用户正文和轮次身份由宿主持有。对 `route(text)` 明确 `modelEscalation:'blocked'` 的输入使用 `tools:[]/toolChoice:'none'`，其他输入使用唯一函数和 `auto`；原已有文件直达规则不在实验中代替原生申请判断。
+
+**预先固定矩阵：**每模型两轮，每轮按下表顺序，共44项逻辑输入；各项空历史、独立宿主轮次。同一模型两轮完全相同的提示、Schema、参数、输入和后端。原六文本须与正式验收runner中的唯一字面量逐字匹配；负例取当前Router测试，不新增关键词表。
+
+| ID | 输入原文 | 预期 |
+| --- | --- | --- |
+| read | 帮我看看 note.txt 里写了什么，把内容显示给我。 | 严格申请 |
+| question | 配置说明里记录的批次编号是多少。 | 严格申请 |
+| question_explicit | 请查看项目中的 配置说明.txt，里面记录的批次编号是多少。 | 严格申请 |
+| repair | 请先运行现有测试确认问题，再修好 sum.cjs 中的函数并重新测试。 | 严格申请 |
+| reject | 请删除项目里的 keep.txt 文件。 | 严格申请，不执行删除 |
+| cancel | 请运行项目现有的 build 脚本，观察它持续运行的状态。 | 严格申请，不执行命令 |
+| daily | 只用简短中文回答：你好。 | 无申请，正文与表现合法 |
+| discussion | 帮我评估在当前目录创建 ab.txt 文件有什么风险 | 无申请，正文与表现合法，仍保留模型判断机会 |
+| reference | 引用“帮我在当前目录下创建 ab.txt 文件”这句话 | 无申请，沿现有阻断 |
+| code | 下方代码块所示原文 | 无申请，沿现有阻断 |
+| negation | 不要帮我在当前目录下创建 ab.txt 文件 | 无申请，沿现有阻断 |
+
+`code` 的完整字符串为 `下面是示例：\n\x60\x60\x60text\n删除 a.txt\n\x60\x60\x60`；构造后含三个实际换行与两处三个反引号，不把反斜杠字符发送模型。源代码可使用以下等价字面量并断言它与现有Router测试相同：
+
+```ts
+const codeInput = ['下面是示例：', '```text', '删除 a.txt', '```'].join('\n');
+```
+
+**接纳与记录接口：**私有观察结果按封闭类别重建，不扩张正式 `ModelResponse`：
+
+```ts
+type NativeProbeObservation = {
+  caseId: 'read' | 'question' | 'question_explicit' | 'repair' | 'reject' | 'cancel'
+    | 'daily' | 'discussion' | 'reference' | 'code' | 'negation';
+  round: 1 | 2;
+  responseKind: 'tool_only' | 'text_only' | 'mixed' | 'invalid';
+  application: 'valid' | 'none' | 'rejected';
+  behavior: 'valid' | 'absent' | 'invalid';
+  bodyValid: boolean;
+  currentInputPreserved: boolean;
+  inputBudgetValid: boolean;
+  generationCurrent: boolean;
+  httpAttempts: number;
+};
+```
+
+报告另以严格有限字段记录模型ID、实际后端、Router类别、稳定错误码及清理结果。不得序列化原Provider返回、参数、工具metadata、错误cause、密钥或私有路径。严格申请允许 `tool_only`，如实记为没有表现；`text_only` 普通聊天必须正文和表现合法。`mixed` 的申请独立校验，表现只按现有Schema接受，模型口头执行成功不发布界面。本实验不启动Renderer。
+
+- [ ] **RED：**先用现有 `OpenAICompatibleProvider` 与有限HTTP响应获得可判定失败：唯一申请工具＋基础聊天契约在当前guard前被拒绝，零HTTP调用；这是待适配点，不是模型失败。同时创建正确原生回包，预期能选取严格申请，当前不能得到该结果。
+
+```ts
+const reply = {
+  choices: [{ message: { content: null, tool_calls: [{
+    id: 'application-1', type: 'function',
+    function: { name: 'request_task_authorization', arguments: '{}' }
+  }] } }]
+};
+// 本地HTTP只返回有限回包；原Provider不应在兼容修复前产生一次成功申请。
+expect(observation.application).toBe('valid');
+expect(observation.responseKind).toBe('tool_only');
+```
+
+- [ ] **GREEN：**构建前固定源码SHA和唯一替换片段，以 `esbuild.onLoad` 对精确绝对路径进行私有转换。只在严格唯一函数、空参数Schema、`auto`、基础聊天契约全部匹配时放行原冲突检查；其他工具组合保留拒绝。仅这一路对原 `normalizeResponse` 增加私有观察输出，保留通用响应shape、单调用、codec、ID与原JSON参数解码，再严格检查参数为空普通对象。借现有导出/精确bundle导出接缝复用系统构造器和表现Schema，不复制Provider、人物上下文裁剪或HTTP实现。
+- [ ] 实验提示从当前聊天提示中删除被替代的 `capabilityPlan` 分类要求和例子；只替换为原生申请语义，不保留双重判断，不删角色指令。固定实验提示和Schema哈希之后不随矩阵结果调整。首次及可能的原控制修复system均不超过4800 UTF-8字节，Qwen输入仍不超过现有6400 token预算；当前用户正文完整、历史规则不放宽。
+- [ ] 先通过本地HTTP的严格 `{}`、合法/坏可选表现mixed、未知名、多调用、非function、空ID、缺失/非JSON/非空/数组/null参数、无表现裸文本、blocked时零工具及伪造申请拒绝、取消/迟到响应和Local generation变化。普通参数错误只作为拒绝，不输出其原值。取消计时器和服务器均在finally清理；有限回包与硬期限防止红测挂死。
+- [ ] 执行 `node --test .superpowers/sdd/2026-09-05-deepseek-qwen-coding-tasks/task-5a-native-probe.test.cjs`，记录每项RED/GREEN命令和计数。测试入口驱动临时bundle的HTTP模式，只配置本地夹具Provider，不读取真实凭据或启动Qwen；正例必须经过实际Provider请求/解码，不能只调用观察值分类函数。先由主控核对实验范围、实际HTTP捕获和私有bundle源码差异，再调用真实模型。纯文字/Schema测试不算Provider兼容通过，不扩大正式源码guard。
+- [ ] 原DeepSeek配置来自已授权源userData和profile；复用副本 `SettingsStore`／`Local State`／原 `SecretStore.readForProviderCall`，源配置前后SHA相同。Qwen复用固定资源、`LocalModelRuntime`、`LocalModelProvider`和 `vulkan-only`；保留本地非思考、JSON schema、8192上下文、单slot、6400输入预算与generation检查。两个模型串行，不与完整E2E竞争资源。
+- [ ] 主控核对后分别执行 `node .superpowers/sdd/2026-09-05-deepseek-qwen-coding-tasks/task-5a-native-probe.cjs --model deepseek` 和同命令 `--model qwen`，各完成固定两轮矩阵；选择值仅允许这两个常量，源userData与profile沿当前私有授权配置传入子进程且不打印。只发一次语义判定；保留Provider现有最多两次空正文同请求尝试时记录实际HTTP次数，不增加前置分类调用或表现修复后的再次申请判断。语义失败继续收集预定行，传输/Runtime硬错误使后续行记录未运行；两轮不能择优合并。整次运行复用15分钟期限与30秒清理期限，不更改真实任务的产品预算。
+- [ ] 结束先中止在途请求并等待自身Runtime/Electron退出，再清理已核对的精确临时叶子文件及空目录。源设置不得写入；不按进程名称强杀、不批量删其他目录。运行结果必须同时列源/矩阵/bundle哈希、实际后端、每行判断与cleanup，不以主控后续手工清理倒改失败。
+- [ ] **条件门：**44项逻辑输入全部按预期，所有负例正文/表现合法、原预算/原句/generation/清理全部符合，才标本实验通过并交独立审查。任何失败保留具体类别和未运行项，正式入口保持原样；不改成两次分类或关键词兜底。实验成功也不能代替实际文件读写、编程闭环和取消验收。
+- [ ] 独立规格/质量审查后主控更新公开验收记录和条件门状态，提交已核实的规格/计划/记录，暂不push。本任务没有正式产品源码差异；临时实验目录留到最终批准清理。
+
+**完成标准：**得到不可择优拼接的协议/语义实验结论，并明确允许或禁止进入任务5B；失败本身是有效实验结果，不是新入口实现完成。
+
+## 任务 6：原 Core 重复操作保护
+
+**目标：**同一当前用户输入中，第三次连续同名、同序列化参数的本地调用在副作用前等待许可；仅继续这一次或结束当前任务。
+
+**架构：**检测留在原V2 runner，等待使用PermissionV2.assert；Main保存许可类型并复用取消清理，Renderer在现有确认区增加严格分支。任务6不依赖5A实验通过，不引入总steps或第二执行器。
+
+### 本任务约束与精确文件
+
+- 不打包、不运行真实模型、不修改网站／角色；实施时只做该范围内必要门禁。主控管理 Git，实施者仅只读 Git。
+- 复用固定提交 `2a6be0a03b93a6734070e10a6c3b56863475f214` 的 V1 `packages/opencode/src/session/processor.ts:29,353–379` 比较方式；本地适配必须明确补跨轮，不能声称原样复用覆盖全任务。
+- 产品修改：`vendor/opencode/packages/core/src/session/runner/llm.ts`、`packages/coding-task-core/src/index.ts`、`packages/shared-types/src/contracts.ts`、`apps/desktop/src/main/agent/coding-task-service.ts`、`apps/desktop/src/renderer/src/chat/ConfirmationCard.tsx`。
+- 新增测试：`packages/coding-task-core/tests/session-loop.test.ts`。复用或补充：`packages/coding-task-core/tests/fixture.ts`、`packages/coding-task-core/tests/model-route.test.ts`、`packages/shared-types/tests/contracts.test.ts`、`apps/desktop/tests/coding-task-service.test.ts`、`apps/desktop/tests/chat-panel.test.tsx`、`tests/integration/desktop-agent.test.ts`、`tests/security/permission-boundary.test.ts`、`tests/e2e/desktop.spec.ts`。
+- 来源更新：`vendor/opencode/local-patches.json`、`vendor/opencode/sources.json`、`vendor/opencode/README.md`；现行规格、计划、运行记录由主控维护。不要新增接口只为了暴露内部检测给测试。
+- `ConversationCoordinator.resolveFileAction` 与 Preload/IPC 的 confirm/cancel 接口保持。`task-store.ts` 现有终态清卡应先用现有测试验证，不预先改生产状态机。
+
+### 已核实的实现接缝
+
+1. **drain 所有权。** `index.ts:113–119` 用原 `SessionRunCoordinator.make` 将 drain 绑定 `runner.run`。`run-coordinator.ts` 在活动 drain 上 join，wake 合并后续 drain，interrupt 清 pendingWake 并等待 owner。当前 `CodingSession.run` 不允许 busy 时重新 run；普通聊天新输入不能向后台旧任务偷偷续权。
+2. **窗口存放。** 建议在 `llm.ts` 的 `run` 调用内建立一个非持久窗口，沿私有 `RunTurn` → `runTurn` → `runAfterOverflowCompaction` → `runTurnAttempt` 传递同一个引用；不要放在 layer 级全局变量、每个 provider turn、每个 assistant 或模型压缩历史中。自然返回、失败、中断及 runtime close 后不保留该引用。可用 ensuring 清除最后参数字符串，避免生命周期结束后持有正文。
+3. **新输入与压缩。** `runTurnAttempt:187–195` 只有 `promoted > 0` 才是真正推进新 steer/queue，此处与 currentStep 重置一起清窗口；不能每次 `promotion='steer'` 就清空。`ContinueAfterCompaction`／`ContinueAfterOverflowCompaction` 私有递归必须传回原窗口，不能因重建 request 清空。同一个 `run` 外层 queue 循环依赖实际 promotion 清空，不靠 step 值猜测。活动 drain 结束后的新 run 是新任务接纳生命周期，创建空窗口。
+4. **调用顺序。** `Stream.runForEach` 按事件顺序处理，当前先 `publish(event)`，再为工具使用 `FiberSet.run` 并发执行。必须在 publish 成功、确定为本地 tool-call 后，同步登记工具名／`JSON.stringify(event.input)`，快照本次重复次数，再启动任何该调用 fiber。不得在并发工具 fiber 中改同一个计数。重复 call ID 已由 publisher 在 `publish-llm-event.ts:313–329` 拒绝，不计作新的合法调用。
+5. **等待位置。** 第三次及以后在 stream 消费接缝等待 `PermissionV2.assert` 成功，再启动该工具 fiber；不要在持有 `withPublication` semaphore 时等待用户。这样本轮后续工具不会越过等待点；已启动的前两项仍按原服务结算，可能存在普通许可卡。中断由原 `providerStream`／FiberSet 清理，不能自己另开不归属作用域的 promise。
+6. **规则排序。** 当前正式 agent 并非全局 allow：`index.ts:155–156` 是 `* deny` 后叠加具体 allow/ask 与 approvedCommands。`PermissionV2.evaluate` 用 findLast；末尾追加 `{action:'doom_loop',resource:'*',effect:'ask'}`，不能插在默认 deny 前。即使未来先有 `* allow`，末尾精确 ask 也应胜出。`PermissionV2.assert` 等待 Deferred；同名 `ask` 仅登记后返回，不能用。
+7. **持久许可。** PermissionV2 最终还把 saved allow 接在配置之后；单靠末尾 ask 对任意已保存的 doom_loop allow 并非通用保证。本正式组装每次用新 `:memory:` DB，公有 `replyPermission` 仅 once/reject，没有装载外部 saved 规则。循环请求必须省略 save，Main 只发送 once，不加 always；以这些已有条件保证每次必问，不新增 PermissionV2 全局特判或第二策略引擎。若实施时发现实际消费者提供持久 saved 规则，先回主控核对，不能静默假定有效。
+
+### 任务6.1：原 runner 保护与 HTTP RED／GREEN
+
+**文件：**新增 `session-loop.test.ts`，修改 `llm.ts`、Core `index.ts` 及来源记录；必要时只为条件化压缩夹具扩展现有 `fixture.ts`，不复制第二套服务器。
+
+**内部接口草案（非公有导出）：**窗口仅需 `{tool?: string, serializedInput?: string, repeatCount: number}`。每次同名同字符串加一，不同则变为 1；达到 3 后每次都询问，不在 once 后归零。成功、普通失败和用户拒绝都计入调用序列；模型文本／摘要不计工具，也不重置。providerExecuted 不参与本地序列。未知／未装配工具保留原失败路径，不生成可授权的新工具名。正式装配八工具已核对为 read、glob、grep、write、edit、apply_patch、bash、todowrite。
+
+**原许可候选：**
+
+```ts
+// 参数比较留在 Core；内部 source 只用于原关联，不传 Renderer。
+yield* permission.assert({
+  sessionID: session.id,
+  agent: agent.id,
+  action: 'doom_loop',
+  resources: [event.name],
+  metadata: { repeatCount },
+  source: { type: 'tool', callID: event.id, messageID: assistantMessageID }
+}).pipe(Effect.orDie);
+```
+
+`vendor/opencode/packages/schema/src/permission.ts:17–23` 已核实 Source 必填 type='tool'、messageID、callID；source 对公开 DTO 不可见。runner 增加 `const permission = yield* PermissionV2.Service` 时同步把 `PermissionV2.node` 加入其 node deps；仅在总 Layer.group 出现不等于该 node 已声明直接依赖。当前 RunError 不包含 PermissionV2.Error；候选沿原工具的 Effect.orDie 收口，不扩张公有 RunError。正式循环结束由 Main abort，不依赖把循环 assert reject 变成可继续工具错误；异常与中断仍必须经过原 publisher／FiberSet 结算。
+
+- [ ] **RED：**先新增以下有界 HTTP 形状，当前代码会完成更多 read 而没有循环许可，失败原因应是缺少 doom_loop／第三次已完成。所用 fixture、session.run、replyPermission、events、requests 均已存在。
+
+```ts
+const calls: Step[] = Array.from({ length: 4 }, (_, i) => [
+  { name: 'read', args: { path: 'note.txt' }, id: `repeat_${i + 1}` }
+]);
+const f = await fixture([...calls, '结束']);
+const controller = new AbortController();
+let execution: ReturnType<typeof f.session.run> | undefined;
+const timer = setTimeout(() => controller.abort(), 8_000);
+try {
+  await writeFile(join(f.directory, 'note.txt'), '固定测试正文');
+  execution = f.session.run('检查本轮文件', controller.signal);
+  void execution.catch(() => undefined);
+  await expect.poll(() => f.events.some(e => e.type === 'permission' && e.action === 'doom_loop')
+    || f.requests.length >= 4, { timeout: 5_000 }).toBe(true);
+  const loop = f.events.find((e): e is Extract<CodingSessionEvent, { type: 'permission' }> =>
+    e.type === 'permission' && e.action === 'doom_loop');
+  expect(loop).toBeDefined();
+  expect(f.requests).toHaveLength(3);
+  expect(f.events.filter(e => e.type === 'tool' && e.status === 'completed')).toHaveLength(2);
+} finally {
+  clearTimeout(timer);
+  controller.abort();
+  await execution?.catch(() => undefined);
+  await f.close();
+}
+```
+
+测试给 10 秒外层期限，计时器是夹具防挂，不是产品限额。Core fixture 的 Step 是有限字符串／工具数组，超出数组默认“结束”，不会真的构造无限模型。
+
+- [ ] 运行 `pnpm.cmd --filter @myself/coding-task-core test tests/session-loop.test.ts`，保留明确 RED 输出。
+- [ ] **GREEN：**按上述窗口、顺序、assert、agent 最终 ask 作最小实现。原七工具拒绝映射完全保留。两次重复完成后出现许可，第三次无副作用。once 后第三次执行，第四次出现新 ID、repeatCount=4；旧 ID 再回复失败。
+- [ ] 追加有限反例：`read A, read A, read B, read A` 不触发；同输入但不同工具打断；缺失文件重复仍触发；外目录普通许可拒绝两次后第三次先循环卡，再 once 后仍有外目录许可；不允许用 once 循环卡绕过真实访问许可。
+- [ ] 同轮数组包含四个相同 read：登记顺序固定为第1/2次执行、第3次等待；一次批准不把第4次一起放行。补“第一项普通许可待定，后续第三重复进入循环许可”组合，避免等前项结算才能显示循环卡的死锁。
+- [ ] 沿 `model-route.test.ts` 的真实原压缩配置构造“两个重复结果后触发摘要，再第三次重复”；必须断言实际出现 `Create a new anchored summary` 请求且 repeatCount 仍为3。可在 fixture 中增加只按请求内容区分“摘要请求→摘要正文／普通请求→下一个有限 Step”的可选回调，保持默认行为不变；不能把预置摘要字符串误当已经触发原压缩。
+- [ ] 同一 CodingSession 完成两次 read 后新 `run` 再两次，不继承旧窗口；取消／close 后新实例同样为空。Core 未公开 busy steer，因此不加测试专用公有入口；promotion 的新输入重置通过现有原 Session 服务的内部测试接缝或现有可观测用例证明，实施者记录是否覆盖活动 steer，不能把无用接口作为验证手段。
+
+### 任务6.2：严格 DTO 与 Main 许可结束语义
+
+**文件：**`contracts.ts`、`contracts.test.ts`、`coding-task-service.ts`、`coding-task-service.test.ts`。
+
+**最小公有 DTO 候选：**在现有 taskPermissionRequiredEventSchema.request discriminatedUnion 增加一支，沿原 actionId 和 Main 固定 summary，不增加 resources、路径、command、metadata、callId 或模型指定文案。
+
+```ts
+z.object({
+  action: z.literal('doom_loop'),
+  tool: z.enum(['read', 'glob', 'grep', 'write', 'edit', 'apply_patch', 'bash', 'todowrite']),
+  repeatCount: z.number().int().min(3).max(Number.MAX_SAFE_INTEGER)
+}).strict()
+```
+
+整数上界只约束安全数值表示，不是总工具预算。summary 固定“重复操作保护”。Core 公有 CodingSessionEvent 现有 permission 分支可继续使用 resources／metadata，但 Main 只抽取唯一工具标识和 count，严格验证 `resources.length===1`、工具白名单及次数；不展开 metadata，不把 source/callId 写入 DTO。
+
+- [ ] RED：新分支最小对象通过，未知工具、次数2／小数／无穷、额外 resources／metadata／command／path 全部失败；现有四类许可仍通过。
+- [ ] RED：Main 接收一张 doom_loop 和一张普通许可，发布准确白名单 DTO；confirm 仅调用原 session.replyPermission(id,'once')；循环 cancelAction 必须中断当前任务，普通 cancelAction 仍只 replyPermission(id,'reject')。
+- [ ] GREEN：把 `active.permissions: Map<string,boolean>` 最小替换成 `Map<string,{action: TaskPermissionRequiredEvent['request']['action']; replying: boolean}>`，ID 入表时保存 **已解析 DTO** 的 action，不能从后续 Renderer 请求接受 action。重复／失效 ID 校验和16项同时待定限制保留。replying 在任何异步前置真。
+- [ ] 在原 `reply(actionId, decision)` 完成当前 owner、ID、未答复验证后，若 `decision==='reject' && pending.action==='doom_loop'`，直接 `await this.cancelActive()` 并返回。不要先 replyPermission('reject') 再 cancel，避免原 runner 在中断前继续下一轮；不要在事件回调或 runOwned finally 中 await 自身 owner.done。
+- [ ] once 和普通 reject 复用原路径；失败只在同 owner 仍活跃且未 abort 时恢复 replying。终止将 controller 同步 abort，原 runOwned finally 等 run／close 屏障后清全部许可并发布终态；清理失败继续 error 并锁入口，不能报取消成功。
+- [ ] 扩展现有 runGate／cleanupGate 测试，证明 loop cancelAction 在两个门都结算前不返回、不发布 success/cancelled；同轮其他许可 ID 在 abort 后不可 confirm，迟到 tool/text 不公开，reset/config generation/close 不保留任何循环许可。普通拒绝后独立 read 的真实 HTTP 回归必须仍通过。
+
+### 任务6.3：现有确认区及正式链
+
+**文件：**`ConfirmationCard.tsx`、`chat-panel.test.tsx`、现有集成／安全／桌面 E2E 用例。
+
+- [ ] RED：渲染新 DTO 时能看到“重复操作保护”、白名单工具与次数，以及“仅继续这一次”“结束当前任务”；不能渲染 resources 循环或把它显示成外目录许可。用现有 confirm/cancel 回调测试对应调用，不新增 IPC。
+- [ ] GREEN：现有卡片内一个 doom_loop 分支，原四种文案及“拒绝本次操作”保持。说明固定为“同一操作连续重复；继续仅放行本次，原文件和命令许可仍有效。”结束提示已完成操作不撤销。
+- [ ] 用现有 taskStore 多卡测试证明结束任务的 terminal phase 清除其余 pendingPermissions；点击到清理结束期间即使其他卡仍在，Main 拒绝迟到回复。若 UI 现有 busy 只禁单卡，先判断是否已有任务状态足以全禁；不因方便引入第二份 task 状态。
+- [ ] 正式 HTTP 组合从范围授权开始，不绕过 Main 创建许可：两次重复 read 后第三次循环卡→继续一次→第四次新卡→结束；scope 前零 Core、结束后后续调用零副作用、原用户文本不改写。
+- [ ] 实际 Electron E2E 只增加一个有界循环卡旅程，复用已有窗口与私有 fixture；另以定向测试覆盖排列。运行旧普通许可拒绝旅程，证明没有把局部拒绝变成整任务取消。
+
+### 任务6.4：来源、验证及减法交接
+
+- [ ] runner 修改必须写入 `local-patches.json` 的固定来源记录，保留原 upstreamSha256，before/after 精确对应固定原文与当前源码，中文 reason 标出“V1阈值与比较参考、V2跨轮/权限接缝适配”。本提取器对 source 用 find，仅消费一条补丁，不能给同一 source 追加多条记录冒充可重放。
+- [ ] 从仓库根运行 `node packages/coding-task-core/extract-upstream.cjs`：它会拒绝未记录本地修改，重算 sources.localSha256 与静态闭包；不是 Git 写操作。核对新增依赖仅已有 PermissionV2 服务、固定源 commit 与原始 SHA 不变，无跨网站依赖变化；不删除闭包外旧文件。README 只按实际结果更新数量与职责。
+- [ ] 依次运行 Core 定向、`pnpm.cmd --filter @myself/coding-task-core typecheck`、`node packages/coding-task-core/run-electron-tests.cjs tests/session-loop.test.ts tests/session-permission.test.ts`；该现有 wrapper 60秒上限，组过大就分组，不扩大产品期限。
+- [ ] 运行 `pnpm.cmd --filter @myself/shared-types test tests/contracts.test.ts`、`pnpm.cmd --filter @myself/desktop test tests/coding-task-service.test.ts tests/chat-panel.test.tsx`，再共享所有消费者类型、相关 integration/security 和 E2E；最终源码 `pnpm.cmd verify:desktop` 已包含 typecheck、Core test、unit、security、integration、desktop E2E，不无理由重复同一全套。
+- [ ] `git diff --check`、只读 diff 核对无网站／角色／模型路由改动。单诊断或命令15分钟硬时间盒；长门禁后台轮询，不运行安装包构建或真实模型。
+- [ ] 主控在规格／计划／验收更新实际证据与仍不覆盖的等效循环，不把精确检测写成通用进展判断。普通许可类、旧路径清理和来源索引只做该功能必要调整，无大量删除。交独立审查后停止编辑。
+
+### 实施者可自行决定的局部细节
+
+- 私有窗口参数名称及是否用一个小型非导出辅助函数；不得为此新增 package、公有配置或另一套执行记录。
+- runner 对 assert 失败的最小类型收口是否直接用上述 Effect.orDie 或现有错误适配，须保持原清理与 Main 脱敏，不把未知错误透传公开文本。
+- 压缩测试的最小触发正文大小与夹具可选响应函数签名，以实际出现原摘要请求为证据；不能通过加大固定 sleep 获得绿色。
+- 对 tool definitions 的已装配名称判定复用当前 materialization，不在产品两处维护不同工具目录。公开 DTO 固定八工具是外部白名单，新增工具必须显式更新消费者。
+
+以上均不需要新增用户决定；若不能保持批准的第三次前等待、一次放行、结束全任务、压缩不绕过及普通拒绝局部语义，则交回主控记录冲突，不能自行降级。
