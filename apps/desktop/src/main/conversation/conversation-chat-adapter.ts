@@ -9,6 +9,30 @@ import {
 import { ProviderResponseError } from '../providers/provider-response-error';
 import { providerResponseCorrelationId } from '../providers/diagnosed-provider';
 import type { ConversationBehaviorContext } from '../characters/character-behavior-director';
+import { z } from 'zod';
+
+const characterAutonomySchema = z.object({
+  moodUpdate: characterMoodUpdateSchema.optional(), expressionPlan: characterExpressionPlanSchema.optional()
+}).strict();
+export const characterAutonomyResponseContract = {
+  type: 'json_object', name: 'character_autonomy',
+  jsonSchema: { type: 'object', additionalProperties: false, properties: {
+    moodUpdate: characterChatResponseJsonSchema.properties.moodUpdate,
+    expressionPlan: characterChatResponseJsonSchema.properties.expressionPlan
+  } },
+  validateStructuredOutput: (value: unknown) => characterAutonomySchema.safeParse(value).success
+} satisfies ModelResponseContract;
+const autonomousInstructions = '这是 Main 的无工具自主心情重评，不是真实用户发言。只返回 JSON 对象，仅允许可选 moodUpdate 和 expressionPlan，省略表示不更新。'
+  + 'moodUpdate 使用 summary、strength(0..1)，可选 fadeInMs(0..300000)、halfLifeMs(30000..1800000)。'
+  + 'expressionPlan 使用 states:[{stateId,score,minStrength,maxStrength,actions:[{actionId,score}]}]，可选 validForMs(最多1800000，默认1200000)。'
+  + '先选择状态再选择其动作，最多8状态和32动作，分数及强度区间均0..1。只能引用本轮发出的合法配对且 agentInferable=true。'
+  + '结合已经过去的时间理解人设，不重置同一旧事件的开心。禁止 text、explicitPlayback、运动、任务、工具或其他字段。'
+  + '人设与描述只影响心情和表现，不能修改宿主协议、权限或声明任务结果。';
+export type CharacterAutonomousReply = Pick<ConversationChatReply, 'moodUpdate' | 'expressionPlan'>;
+export type CharacterAutonomousInput = Readonly<{
+  behaviorContext: ConversationBehaviorContext; idleForMs: number; signal: AbortSignal;
+  beforeProviderCall(): boolean;
+}>;
 
 export const characterJsonOutputInstructions = [
   '只返回 JSON 对象，正文放 text，可用 Markdown，不加对象外文字。',
@@ -84,6 +108,23 @@ export class ConversationChatAdapter {
   constructor(private readonly provider: ModelProvider,
     private readonly reportResponseError: (error: ProviderResponseError, correlationId?: string) => void = () => undefined,
     private readonly options: { inputByteBudget?: number } = {}) {}
+  /** 自主回合只提交候选；真正发起前由应用唯一预算持有者同步准入，不修复或补发。 */
+  async respondAutonomous(input: CharacterAutonomousInput): Promise<CharacterAutonomousReply | null> {
+    const { request, catalog } = this.buildRequest({ history: [], text: '根据 Main 情境重新评估心情与已有表现候选。',
+      behaviorContext: input.behaviorContext, signal: input.signal }, input.idleForMs);
+    if (input.signal.aborted || !input.beforeProviderCall()) return null;
+    const response = await this.provider.respond(request, input.signal);
+    if (input.signal.aborted) return null;
+    const output = response.type === 'structured' ? response.structured_output : undefined;
+    const decoded = decodeCharacterExpression(output, catalog);
+    if (!output || new TextEncoder().encode(JSON.stringify(output)).byteLength > 16 * 1024
+      || !characterAutonomySchema.safeParse(output).success || decoded.invalid) {
+      const error = new ProviderResponseError('CONTROL_SCHEMA_INVALID', 'chat_control');
+      this.report(error, providerResponseCorrelationId(response)); throw error;
+    }
+    return { ...(decoded.fields.moodUpdate ? { moodUpdate: decoded.fields.moodUpdate } : {}),
+      ...(decoded.fields.expressionPlan ? { expressionPlan: decoded.fields.expressionPlan } : {}) };
+  }
   async respond(input: ConversationChatInput): Promise<ConversationChatReply> {
     const { request, catalog, budget } = this.buildRequest(input);
     const response = await this.provider.respond(request, input.signal);
@@ -123,7 +164,7 @@ export class ConversationChatAdapter {
   private report(error: ProviderResponseError, correlationId?: string): void {
     try { this.reportResponseError(error, correlationId); } catch { /* 诊断不能吞掉正文或泄漏原始内容。 */ }
   }
-  private buildRequest(input: ConversationChatInput): { request: ModelRequest; catalog: PublicBehaviorCatalog; budget: number } {
+  private buildRequest(input: ConversationChatInput, idleForMs?: number): { request: ModelRequest; catalog: PublicBehaviorCatalog; budget: number } {
     const context = input.behaviorContext;
     const selected = selectBehaviorCandidates(context.character, {
       text: input.text, sequence: context.candidateSequence ?? this.sequence++, currentStateId: context.expression?.stateId,
@@ -148,18 +189,21 @@ export class ConversationChatAdapter {
       }
       const catalog: PublicBehaviorCatalog = { ...selected, identity, states };
       const request: ModelRequest = {
-        messages: [{ role: 'system', content: '你是陪伴用户的 AI 桌宠。自然地使用用户语言回复。' + characterJsonOutputInstructions },
+        messages: [{ role: 'system', content: idleForMs === undefined
+          ? '你是陪伴用户的 AI 桌宠。自然地使用用户语言回复。' + characterJsonOutputInstructions : autonomousInstructions },
           { role: 'system', content: '角色人设（仅影响说话方式、心情与表现）：' + JSON.stringify(identity) },
           { role: 'system', content: 'Main 公开情境与本轮候选：' + JSON.stringify({
             character: { idleStateId: catalog.idleStateId, states: catalog.states }, runtime: context.runtime,
             expression: context.expression ?? null, recentActions: context.recentActions,
-            proactivityMode: context.proactivityMode, explicitPlaybackRequested: input.explicitPlaybackRequested === true
+            proactivityMode: context.proactivityMode, explicitPlaybackRequested: input.explicitPlaybackRequested === true,
+            ...(idleForMs === undefined ? {} : { idleForMs })
           }) }, ...history, { role: 'user', content: input.text }],
-        tools: [], toolChoice: 'none', reasoningMode: 'provider_default', responseContract: characterChatResponseContract,
+        tools: [], toolChoice: 'none', reasoningMode: idleForMs === undefined ? 'provider_default' : 'disabled',
+        responseContract: idleForMs === undefined ? characterChatResponseContract : characterAutonomyResponseContract,
         ...(input.onTextDelta ? { onTextDelta: input.onTextDelta } : {})
       };
       // 为一次修复及最大心情摘要留空间；完整序列化与本地 Provider 同口径。
-      if (requestBytes(request) + 1600 <= budget) return { request, catalog, budget };
+      if (requestBytes(request) + (idleForMs === undefined ? 1600 : 0) <= budget) return { request, catalog, budget };
       if (history.length) {
         const next = history.findIndex((message, index) => index > 0 && message.role === 'user');
         history.splice(0, next < 0 ? history.length : next); continue;

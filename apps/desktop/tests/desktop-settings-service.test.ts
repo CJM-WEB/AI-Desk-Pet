@@ -4,6 +4,11 @@ import { PrivacySessionRegistry } from '../src/main/agent/disclosure-policy';
 import { DesktopSettingsService } from '../src/main/settings/desktop-settings-service';
 import type { LocalModelPublicStatus } from '../src/shared/local-model-ipc';
 import { DEFAULT_WORKSHOP_LAYOUT } from '../src/shared/workshop-layout-ipc';
+import type { IpcMain } from 'electron';
+import { CharacterExpressionEngine, characterManifestV3Schema } from '@myself/character-runtime';
+import { v3Fixture, resourceFields } from '../../../packages/character-runtime/tests/character-v3-fixture';
+import { registerAdvancedSettingsIpc } from '../src/main/ipc/register-ipc';
+import { ipcChannels } from '../src/shared/ipc-channels';
 
 function providerSnapshot() {
   return {
@@ -41,6 +46,7 @@ function createFixture() {
     deleteProviderProfile: vi.fn(async () => undefined),
     saveModelRoute: vi.fn(async () => undefined),
     getPrivacySettings: vi.fn(async () => ({
+      autonomousMoodEnabled: true,
       dataCategories: {
         memory: false
       },
@@ -92,6 +98,7 @@ function createFixture() {
     async () => undefined
   );
   const applyCharacterBehaviorSettings = vi.fn();
+  const applyAutonomousMoodEnabled = vi.fn();
   const localModelStatus: LocalModelPublicStatus = {
     enabled: true,
     phase: 'ready',
@@ -110,7 +117,8 @@ function createFixture() {
     sessionId: 'desktop-session',
     localModel,
     applyPetAlwaysOnTop,
-    applyCharacterBehaviorSettings
+    applyCharacterBehaviorSettings,
+    applyAutonomousMoodEnabled
   };
   const service = new DesktopSettingsService(options);
   return {
@@ -130,6 +138,24 @@ function createFixture() {
 }
 
 describe('DesktopSettingsService', () => {
+  test('同一隐私 IPC 关闭自主心情保留已有心情，既有隐私变化仍重置', async () => {
+    const f = createFixture();
+    const engine = new CharacterExpressionEngine({ manifest: characterManifestV3Schema.parse({ ...v3Fixture(), ...resourceFields }), now: () => 0 });
+    engine.applyDecision({ context: engine.context(), eventId: 'chat', source: 'chat', moodUpdate: { summary: '开心', strength: 1 } });
+    const handlers = new Map<string, (event: unknown, raw: unknown) => unknown>();
+    const ipc = { removeHandler: (name: string) => handlers.delete(name), handle: (name: string, handler: (event: unknown, raw: unknown) => unknown) => handlers.set(name, handler) } as unknown as IpcMain;
+    const reset = vi.fn(() => { engine.reset(); });
+    registerAdvancedSettingsIpc(ipc, f.service, { onConfigurationChanged: reset });
+    const save = handlers.get(ipcChannels.settingsPrivacySave)!;
+    const input = { dataCategories: { memory: false }, longTermMemory: false, proactivityMode: 'assistive', autonomousMoodEnabled: false };
+    await expect(save({}, input)).resolves.toBeDefined();
+    expect(engine.snapshot().mood?.summary).toBe('开心');
+    expect(reset).not.toHaveBeenCalled();
+    expect(f.options.applyAutonomousMoodEnabled).toHaveBeenCalledWith(false);
+    await save({}, { ...input, proactivityMode: 'passive' });
+    expect(reset).toHaveBeenCalledOnce();
+    expect(engine.snapshot().mood).toBeNull();
+  });
   test('正式设置服务依赖不含 MCP Manager 或 Store', () => {
     const optionKeys = Object.keys(createFixture().options);
 

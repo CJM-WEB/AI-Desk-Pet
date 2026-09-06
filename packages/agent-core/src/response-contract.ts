@@ -1,17 +1,24 @@
-export type ModelResponseContract = Readonly<{
+type ResponseContractBase = Readonly<{
   type: 'json_object';
-  name: 'character_chat';
   jsonSchema: Readonly<Record<string, unknown>>;
+}>;
+export type ModelResponseContract = ResponseContractBase & (Readonly<{
+  name: 'character_chat';
   textField: 'text';
   /** 仅控制非 JSON 正文兼容；JSON 隐藏字段不得参与可见正文成败判定。 */
   allowPlainTextFallback: boolean;
   /** 旧本地 Provider 可复核整体结构；云端聊天不得把它作为正文成功前置条件。 */
   validateStructuredOutput?: (value: unknown) => boolean;
-}>;
+}> | Readonly<{
+  name: 'character_autonomy';
+  /** 自主请求没有可见正文，完整严格校验成功后才交给 Main。 */
+  validateStructuredOutput(value: unknown): boolean;
+}>);
 
 export type ResponseContractDecodeResult =
   | Readonly<{ kind: 'structured'; text: string; structured_output: Record<string, unknown> }>
   | Readonly<{ kind: 'plain_text'; text: string }>
+  | Readonly<{ kind: 'structured_only'; structured_output: Record<string, unknown> }>
   | Readonly<{ kind: 'invalid' }>;
 
 const MAX_RESPONSE_TEXT_LENGTH = 4_000;
@@ -110,11 +117,20 @@ function extractTopLevelText(raw: string, textField: string): string | null {
   return null;
 }
 
-/** 仅恢复可显示正文；行为字段继续由上层按角色契约单独验证。 */
+/** 聊天可恢复可见正文；自主信封必须完整且严格有效，不进行正文或截断恢复。 */
 export function decodeResponseContractText(
   raw: string,
   contract: ModelResponseContract
 ): ResponseContractDecodeResult {
+  if (contract.name === 'character_autonomy') {
+    if (new TextEncoder().encode(raw).byteLength > 16 * 1024) return { kind: 'invalid' };
+    try {
+      const parsed: unknown = JSON.parse(raw);
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)
+        || !contract.validateStructuredOutput(parsed)) return { kind: 'invalid' };
+      return { kind: 'structured_only', structured_output: parsed as Record<string, unknown> };
+    } catch { return { kind: 'invalid' }; }
+  }
   const trimmed = raw.trim();
   if (!trimmed) return { kind: 'invalid' };
 

@@ -66,6 +66,7 @@ export type ModelResponse =
       behaviorIntent?: CharacterAgentBehaviorIntent;
       structured_output?: Record<string, unknown>;
     }
+  | { type: 'structured'; structured_output: Record<string, unknown> }
   | { type: 'tool_request'; request: unknown };
 
 export type FilePlanningOperation =

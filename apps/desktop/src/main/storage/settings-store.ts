@@ -106,6 +106,7 @@ export const privacySettingsSchema = z.object({
     memory: z.boolean()
   }).strict(),
   longTermMemory: z.boolean(),
+  autonomousMoodEnabled: z.boolean().default(true),
   proactivityMode: z.enum(['passive', 'assistive', 'autonomous'])
 }).strict();
 export type PrivacySettings = z.infer<typeof privacySettingsSchema>;
@@ -319,6 +320,7 @@ function defaultPrivacySettings(): PrivacySettings {
       memory: false
     },
     longTermMemory: false,
+    autonomousMoodEnabled: true,
     proactivityMode: 'autonomous'
   };
 }
@@ -1029,7 +1031,7 @@ export class SettingsStore {
     });
   }
 
-  savePrivacySettings(input: PrivacySettings): Promise<CharacterBehaviorSettingsSnapshot> {
+  savePrivacySettings(input: z.input<typeof privacySettingsSchema>): Promise<CharacterBehaviorSettingsSnapshot> {
     return this.enqueue(async () => {
       const privacy = privacySettingsSchema.parse(input);
       const settings = await this.load();

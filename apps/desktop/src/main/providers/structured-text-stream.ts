@@ -25,7 +25,7 @@ export type StructuredSseOptions = Readonly<{
 }>;
 
 export function shouldStreamStructuredText(request: ModelRequest): boolean {
-  return request.responseContract !== undefined
+  return request.responseContract?.name === 'character_chat'
     && request.tools.length === 0
     && request.toolChoice === 'none'
     && request.onTextDelta !== undefined;
@@ -42,12 +42,14 @@ export async function readStructuredTextSse(
   response: Response,
   options: StructuredSseOptions
 ): Promise<unknown> {
+  const contract = options.request.responseContract;
+  if (contract?.name !== 'character_chat') options.malformed();
   if (response.body === null) options.malformed();
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
   const projector = new TopLevelTextProjector({
-    field: options.request.responseContract!.textField,
-    allowPlainTextFallback: options.request.responseContract!.allowPlainTextFallback,
+    field: contract.textField,
+    allowPlainTextFallback: contract.allowPlainTextFallback,
     malformed: options.malformed
   });
   let lineBuffer = '';

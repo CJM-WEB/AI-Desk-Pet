@@ -87,6 +87,10 @@ export type CompletedCharacterPrompt = Readonly<{
   moodUpdate?: CharacterMoodUpdate; expressionPlan?: CharacterExpressionPlanInput; explicitPlayback?: CharacterExplicitPlayback;
   movementControl?: MovementControlPlan | null;
 }>;
+export type AutonomousCharacterDecision = Readonly<{
+  lifecycle: number; eventId: string; context: CharacterExpressionContext;
+  moodUpdate?: CharacterMoodUpdate; expressionPlan?: CharacterExpressionPlanInput;
+}>;
 
 export interface ConversationBehaviorPort {
   prepareUserPrompt(text: string): Promise<PreparedBehaviorPrompt>;
@@ -240,6 +244,15 @@ export class CharacterBehaviorDirector {
   }
 
   captureExpressionContext(): CharacterExpressionContext | null { return this.options.behavior.context(); }
+  /** 自主建议只进入表达引擎；保留请求前修订，绝不复用聊天的运动或任务提交。 */
+  applyAutonomousDecision(input: AutonomousCharacterDecision): void {
+    if (this.closed || input.lifecycle !== this.behaviorLifecycleGeneration || this.chatting
+      || this.capabilityTask || this.awaitingConfirmation || this.dragging) return;
+    const authorization = this.options.behavior.applyDecision({ context: input.context, eventId: input.eventId, source: 'autonomous',
+      ...(input.moodUpdate === undefined ? {} : { moodUpdate: input.moodUpdate }),
+      ...(input.expressionPlan === undefined ? {} : { expressionPlan: input.expressionPlan }) });
+    if (authorization.kind === 'play') this.active = { source: 'local-idle', playbackToken: authorization.playbackToken };
+  }
   handleChatResponseFinished(): void { this.options.behavior.recordTrustedEvent('response-finished'); }
 
   getChatContext(): ConversationBehaviorContext {
@@ -463,7 +476,7 @@ export class CharacterBehaviorDirector {
     }
   }
 
-  /** 原 500ms poll 只推进既有引擎超时，主动候选由唯一 Scheduler 负责。 */
+  /** 500ms 推进只更新本地心情与表现；模型重评和独立运动由宿主 Runtime 分别调度。 */
   advance(): void {
     if (this.closed) return;
     const expiredTokens = this.options.behavior.advance();

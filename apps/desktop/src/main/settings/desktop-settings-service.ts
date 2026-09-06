@@ -76,9 +76,11 @@ export interface DesktopSettingsServiceOptions {
   localModel: LocalModelSettingsAccess;
   applyPetAlwaysOnTop(enabled: boolean): Promise<void> | void;
   applyCharacterBehaviorSettings(snapshot: CharacterBehaviorSettingsSnapshot): void;
+  applyAutonomousMoodEnabled?(enabled: boolean): void;
 }
 
 export class DesktopSettingsService {
+  private privacyQueue: Promise<void> = Promise.resolve();
   private petAlwaysOnTopQueue: Promise<void> = Promise.resolve();
   private petAlwaysOnTopFrozen = false;
   private petAlwaysOnTopFlush: Promise<void> | undefined;
@@ -223,10 +225,20 @@ export class DesktopSettingsService {
     }
   }
 
-  async savePrivacySettings(input: PrivacySettingsDto): Promise<SettingsDashboardDto> {
-    const snapshot = await this.options.settings.savePrivacySettings(input);
-    this.options.applyCharacterBehaviorSettings(snapshot);
-    return this.getDashboard();
+  savePrivacySettings(input: PrivacySettingsDto, onConfigurationChanged: () => void = () => undefined): Promise<SettingsDashboardDto> {
+    // 比较与原子保存同序执行，纯自主开关不清心情，既有披露配置变化仍使会话失效。
+    const transaction = this.privacyQueue.then(async () => {
+      const previous = await this.options.settings.getPrivacySettings();
+      const next = { ...input, autonomousMoodEnabled: input.autonomousMoodEnabled ?? true };
+      const snapshot = await this.options.settings.savePrivacySettings(next);
+      this.options.applyCharacterBehaviorSettings(snapshot);
+      this.options.applyAutonomousMoodEnabled?.(next.autonomousMoodEnabled);
+      if (previous.dataCategories.memory !== next.dataCategories.memory
+        || previous.longTermMemory !== next.longTermMemory || previous.proactivityMode !== next.proactivityMode) onConfigurationChanged();
+      return this.getDashboard();
+    });
+    this.privacyQueue = transaction.then(() => undefined, () => undefined);
+    return transaction;
   }
 
   /** 工作台布局持久化只代理强类型设置存取，不在 Main 增加额外运行态副作用。 */

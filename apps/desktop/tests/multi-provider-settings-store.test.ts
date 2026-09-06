@@ -312,6 +312,7 @@ describe('多 Provider 设置持久化', () => {
     });
     await expect(store.getPrivacySettings()).resolves.toEqual({
       ...privacy,
+      autonomousMoodEnabled: true,
       dataCategories: { memory: false }
     });
     await expect(store.getCharacterBehaviorSettings()).resolves.toEqual({
@@ -438,6 +439,7 @@ describe('多 Provider 设置持久化', () => {
     const store = await createStore();
 
     const snapshot = await store.savePrivacySettings({
+      autonomousMoodEnabled: false,
       dataCategories: { memory: false },
       longTermMemory: true,
       proactivityMode: 'passive'
@@ -446,6 +448,7 @@ describe('多 Provider 设置持久化', () => {
     await expect(store.getPrivacySettings()).resolves.toEqual({
       dataCategories: { memory: false },
       longTermMemory: true,
+      autonomousMoodEnabled: false,
       proactivityMode: 'passive'
     });
 

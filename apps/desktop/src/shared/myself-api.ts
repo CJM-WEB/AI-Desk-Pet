@@ -53,6 +53,8 @@ export interface PrivacySettingsDto {
     memory: boolean;
   };
   longTermMemory: boolean;
+  /** 旧客户端可省略；Main 读取与保存时统一补为默认启用。 */
+  autonomousMoodEnabled?: boolean;
   proactivityMode: 'passive' | 'assistive' | 'autonomous';
 }
 

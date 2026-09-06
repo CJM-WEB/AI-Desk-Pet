@@ -729,6 +729,7 @@ export class SettingsStore {
     const legacy = JSON.parse(await readFile(file, 'utf8'));
     delete legacy.workshopLayout;
     legacy.version = 5;
+    delete legacy.privacy.autonomousMoodEnabled;
     legacy.fileDisclosureAccepted = false;
     legacy.privacy.dataCategories.file = false;
     await writeFile(file, JSON.stringify(legacy), 'utf8');
@@ -736,6 +737,7 @@ export class SettingsStore {
     await expect(store.getPrivacySettings()).resolves.toEqual({
       dataCategories: { memory: false },
       longTermMemory: false,
+      autonomousMoodEnabled: true,
       proactivityMode: 'autonomous'
     });
     const persisted = JSON.parse(await readFile(file, 'utf8'));
@@ -1417,6 +1419,7 @@ test('加载旧设置时移除截图与剪贴板隐私占位并保留其余设�
   const legacy = JSON.parse(await readFile(file, 'utf8'));
   delete legacy.workshopLayout;
   legacy.version = 5;
+  delete legacy.privacy.autonomousMoodEnabled;
   legacy.fileDisclosureAccepted = true;
   legacy.privacy.dataCategories.file = true;
   legacy.privacy.dataCategories.memory = false;

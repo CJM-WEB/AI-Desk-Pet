@@ -109,6 +109,14 @@ export function PrivacySettings(props: PrivacySettingsProps) {
           </label>
         </div>
 
+        <label className="permission-row">
+          <span>
+            <strong>自主心情</strong>
+            <small>未互动 5 分钟后可重新理解心情，此后至少间隔 15 分钟，每小时最多 4 次模型请求。关闭后已有心情仍会自然平复，动画继续变化。</small>
+          </span>
+          <input type="checkbox" aria-label="自主心情" checked={privacy.autonomousMoodEnabled ?? true}
+            disabled={props.busy} onChange={event => setPrivacy(current => ({ ...current, autonomousMoodEnabled: event.target.checked }))} />
+        </label>
         <fieldset className="proactivity-fieldset">
           <legend>
             主动性{!props.runtimeSupport.proactivity ? '（尚未接入运行时）' : ''}

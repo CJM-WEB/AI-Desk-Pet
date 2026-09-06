@@ -17,6 +17,7 @@ import {
   ipcMain,
   Menu,
   nativeImage,
+  powerMonitor,
   safeStorage,
   screen,
   shell,
@@ -62,7 +63,7 @@ import {
   CharacterBehaviorDirector,
   type CharacterBehaviorNotice
 } from './characters/character-behavior-director';
-import { createCharacterProactivityRuntime } from
+import { createCharacterProactivityRuntime, createCharacterRuntimeClock } from
   './characters/character-proactivity-runtime';
 import { CharacterPackageService } from './characters/character-package-service';
 import { CharacterStore } from './characters/character-store';
@@ -536,7 +537,11 @@ async function createApplicationWindows(
       setEnabled: enabled => localModelService.setEnabled(enabled)
     },
     applyPetAlwaysOnTop: enabled => explorerCoordinator.setPetAlwaysOnTop(enabled),
-    applyCharacterBehaviorSettings: snapshot => characterBehaviorDirector.applyBehaviorSettings(snapshot)
+    applyCharacterBehaviorSettings: snapshot => characterBehaviorDirector.applyBehaviorSettings(snapshot),
+    applyAutonomousMoodEnabled: enabled => {
+      characterProactivityRuntime.noteUserInteraction();
+      characterProactivityRuntime.setAutonomousMoodEnabled(enabled);
+    }
   });
   startupCleanup.add(() => desktopSettingsService.close());
   const activeGeometryManifest = await characterStore.getActiveManifestV3();
@@ -583,9 +588,11 @@ async function createApplicationWindows(
   ): void => {
     console.error('角色运动定时器异常，已停止。', code);
   };
+  const characterRuntimeClock = createCharacterRuntimeClock();
   const characterBehavior = new CharacterBehaviorService({
     store: characterStore,
     motion: characterMotion,
+    now: characterRuntimeClock.now,
     reportError: reportCharacterBehaviorError
   });
   const petGeometry = new PetGeometryCoordinator({
@@ -691,25 +698,45 @@ async function createApplicationWindows(
   });
   const characterProactivityRuntime = createCharacterProactivityRuntime({
     director: characterBehaviorDirector,
-    advanceBehavior: () => characterBehaviorDirector.advance()
+    advanceBehavior: () => characterBehaviorDirector.advance(),
+    now: characterRuntimeClock.now,
+    autonomousMoodEnabled: (await settingsStore.getPrivacySettings()).autonomousMoodEnabled,
+    requestAutonomousDecision: input => conversationComposition.requestAutonomousDecision(input)
   });
+  // 休眠边沿只推进同一宿主时钟一次；恢复时不补发动画或模型调用队列。
+  const suspendCharacterRuntime = () => { characterRuntimeClock.suspend(); characterProactivityRuntime.suspend(); };
+  const resumeCharacterRuntime = () => { characterRuntimeClock.resume(); characterProactivityRuntime.resume(); };
+  powerMonitor.on('suspend', suspendCharacterRuntime);
+  powerMonitor.on('resume', resumeCharacterRuntime);
+  const releaseCharacterClockEvents = () => {
+    powerMonitor.removeListener('suspend', suspendCharacterRuntime);
+    powerMonitor.removeListener('resume', resumeCharacterRuntime);
+  };
+  startupCleanup.add(releaseCharacterClockEvents);
   // 组合创建后立即进入启动清理栈；Service 初始化前 Scheduler 尚未 start。
   startupCleanup.add(() => characterProactivityRuntime.close());
   const characterSwitching = createCharacterActivationCoordinator({
     activateInStore: activateCharacterInStore,
     reloadBehavior: () => characterBehaviorDirector.handleActiveCharacterChanged()
   });
-  characterActions.activateCharacter = (characterId, confirmIncomplete) => (
-    characterSwitching.activate(characterId, confirmIncomplete)
-  );
+  characterActions.activateCharacter = (characterId, confirmIncomplete) => {
+    characterProactivityRuntime.noteUserInteraction();
+    return characterSwitching.activate(characterId, confirmIncomplete);
+  };
   let refreshTray = async (): Promise<void> => undefined;
+  // 命中角色的按下即沿 petDragBegin 到达此处，未移动的真实点击也算互动；两种拖拽来源按边沿去重。
+  const notePetInteraction = () => {
+    if (characterBehaviorDirector.getActivityBlockers().dragging) return;
+    characterProactivityRuntime.noteUserInteraction();
+    characterBehavior.handleUserInteraction();
+    characterBehaviorDirector.setDragging(true);
+  };
   const petWindowInteraction = new PetWindowInteractionController({
     window: pet,
     getCursorScreenPoint: () => screen.getCursorScreenPoint(),
     onDragStarted: () => {
       characterMotion.beginUserMove(undefined, 'controller');
-      characterBehavior.handleUserInteraction();
-      characterBehaviorDirector.setDragging(true);
+      notePetInteraction();
     },
     onDragEnded: () => {
       characterMotion.endUserMove('controller');
@@ -723,8 +750,7 @@ async function createApplicationWindows(
   );
   const releaseMotionWindowEvents = bindCharacterMotionWindow(pet, characterMotion, {
     onUserMoveStarted: () => {
-      characterBehavior.handleUserInteraction();
-      characterBehaviorDirector.setDragging(true);
+      notePetInteraction();
     },
     onUserMoveEnded: () => {
       characterBehaviorDirector.setDragging(false);
@@ -736,7 +762,7 @@ async function createApplicationWindows(
     applyPlaybackFeedback: feedback => {
       characterBehaviorDirector.applyPlaybackFeedback({
         ...feedback,
-        occurredAtMs: performance.now()
+        occurredAtMs: characterRuntimeClock.now()
       });
     }
   }, pet.webContents);
@@ -788,6 +814,7 @@ async function createApplicationWindows(
     motionRuntime.destroy();
     releaseMotionEvents();
     releaseBehaviorEvents();
+    releaseCharacterClockEvents();
     await characterProactivityRuntime.close();
     await characterBehaviorDirector.close();
     releaseMotionWindowEvents();
@@ -997,6 +1024,7 @@ async function createApplicationWindows(
     message: notice.message
   });
   const conversationComposition = createMainConversationComposition({
+    autonomy: characterBehaviorDirector,
     catalog: mainProviderCatalog,
     privacySessions,
     sessionId,
@@ -1042,11 +1070,13 @@ async function createApplicationWindows(
   startupCleanup.add(() => conversationComposition.close());
   resetLocalModelConversation = async () => {
     characterProactivityRuntime.invalidate();
+    characterProactivityRuntime.setAutonomousMoodEnabled((await settingsStore.getPrivacySettings()).autonomousMoodEnabled);
     await conversationComposition.resetForConfigurationChange();
   };
   const conversationIpcService = {
     submit: async (text: string, intent?: ChatSubmissionIntent): Promise<void> => {
       reportedSubmitErrorCode = null;
+      characterProactivityRuntime.noteUserInteraction();
       await conversationCoordinator.submit(text, intent);
     },
     hasReportedFailure: (error: unknown): boolean => (
@@ -1055,19 +1085,30 @@ async function createApplicationWindows(
       && typeof error.code === 'string'
       && error.code === reportedSubmitErrorCode
     ),
-    cancelActive: () => conversationCoordinator.cancelActive(),
-    resolveFileAction: (actionId: string, decision: 'confirm' | 'cancel') => (
-      conversationCoordinator.resolveFileAction(actionId, decision)
-    ),
+    cancelActive: () => { characterProactivityRuntime.noteUserInteraction(); return conversationCoordinator.cancelActive(); },
+    resolveFileAction: (actionId: string, decision: 'confirm' | 'cancel') => {
+      characterProactivityRuntime.noteUserInteraction();
+      return conversationCoordinator.resolveFileAction(actionId, decision);
+    },
     resolveHistoryDisclosure: (
       requestId: string,
       decision: 'share_once' | 'current_message_only'
-    ) => conversationCoordinator.resolveHistoryDisclosure(requestId, decision),
+    ) => {
+      characterProactivityRuntime.noteUserInteraction();
+      return conversationCoordinator.resolveHistoryDisclosure(requestId, decision);
+    },
     resolveCapabilityAuthorization: (
       requestId: string,
       decision: 'confirm' | 'cancel'
-    ) => conversationCoordinator.resolveCapabilityAuthorization(requestId, decision),
-    resetConversation: () => conversationCoordinator.resetConversation()
+    ) => {
+      characterProactivityRuntime.noteUserInteraction();
+      return conversationCoordinator.resolveCapabilityAuthorization(requestId, decision);
+    },
+    resetConversation: () => {
+      characterProactivityRuntime.noteUserInteraction();
+      characterProactivityRuntime.invalidate();
+      return conversationCoordinator.resetConversation();
+    }
   };
   registerAgentIpc(ipcMain, conversationIpcService, getCurrentChatWebContents);
 

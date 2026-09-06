@@ -35,6 +35,7 @@ const emptyDashboard: SettingsDashboardDto = {
       memory: false
     },
     longTermMemory: false,
+    autonomousMoodEnabled: true,
     proactivityMode: 'assistive'
   },
   privacyRuntimeSupport: {

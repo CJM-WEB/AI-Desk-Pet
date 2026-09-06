@@ -207,7 +207,7 @@ function normalizeResponse(
   const response = responseContract === undefined
     ? { type: 'text' as const, text: message.content }
     : normalizeResponseContractText(message.content, responseContract);
-  if (responseContract === undefined) {
+  if (responseContract === undefined && response.type === 'text') {
     if (message.metadata?.emotion !== undefined) {
       const emotion = characterEmotionLabelSchema.safeParse(message.metadata.emotion);
       if (!emotion.success) {
@@ -277,7 +277,7 @@ async function readProviderSse(
   let heldProjection = '';
   let streamDone = false;
   let dispatchedEvents = 0;
-  const projector = request.responseContract === undefined
+  const projector = request.responseContract?.name !== 'character_chat'
     ? null
     : new TopLevelTextProjector({
         field: request.responseContract.textField,
@@ -473,11 +473,11 @@ async function readCloudOpenAISse(
   });
 }
 
-/** 三类 Provider 只以可见正文作为成功前置条件，隐藏字段留给聊天适配器逐项校验。 */
+/** 各 Provider 共用契约解码；聊天隐藏字段留给适配器，自主只返回完整有效的无正文信封。 */
 export function normalizeResponseContractText(
   raw: string,
   contract: ModelResponseContract
-): Extract<ModelResponse, { type: 'text' }> {
+): Exclude<ModelResponse, { type: 'tool_request' }> {
   const decoded = decodeResponseContractText(raw, contract);
   if (decoded.kind === 'invalid') {
     throw new ProviderResponseError('RESPONSE_FORMAT_UNSUPPORTED', 'chat_control');
@@ -485,9 +485,12 @@ export function normalizeResponseContractText(
   if (decoded.kind === 'plain_text') {
     return { type: 'text', text: decoded.text };
   }
+  if (decoded.kind === 'structured_only') {
+    return { type: 'structured', structured_output: decoded.structured_output };
+  }
   const required = contract.jsonSchema['required'];
   if (
-    !contract.allowPlainTextFallback
+    contract.name === 'character_chat' && !contract.allowPlainTextFallback
     && Array.isArray(required)
     && required.some(field => (
       typeof field !== 'string'
@@ -507,7 +510,8 @@ export function normalizeResponseContractText(
 export function assertResponseContractRequest(request: ModelRequest): void {
   if (
     request.responseContract !== undefined
-    && (request.tools.length > 0 || request.toolChoice !== 'none')
+    && (request.tools.length > 0 || request.toolChoice !== 'none'
+      || request.responseContract.name === 'character_autonomy' && request.onTextDelta !== undefined)
   ) {
     throw new ProviderError('PROVIDER_RESPONSE_CONTRACT_CONFLICT', false);
   }

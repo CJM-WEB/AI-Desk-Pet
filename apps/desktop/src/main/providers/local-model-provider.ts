@@ -191,7 +191,7 @@ function createRequestPolicy(
   generation: string,
   request: ModelRequest
 ): OpenAIRequestPolicy {
-  const streamVisibleText = request.responseContract !== undefined
+  const streamVisibleText = request.responseContract?.name === 'character_chat'
     && request.tools.length === 0
     && request.toolChoice === 'none'
     && request.onTextDelta !== undefined;

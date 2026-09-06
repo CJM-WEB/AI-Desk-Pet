@@ -292,7 +292,7 @@ export interface AdvancedSettingsIpcService {
   deleteProviderProfile(profileId: string): Promise<unknown>;
   saveModelRoute(route: z.infer<typeof modelRouteConfigSchema>): Promise<unknown>;
   testProviderProfile(profileId: string): Promise<unknown>;
-  savePrivacySettings(input: z.infer<typeof privacySettingsSchema>): Promise<unknown>;
+  savePrivacySettings(input: z.infer<typeof privacySettingsSchema>, onConfigurationChanged?: () => void): Promise<unknown>;
   getWorkshopLayout(): Promise<unknown>;
   saveWorkshopLayout(input: z.infer<typeof workshopLayoutSettingsSchema>): Promise<unknown>;
   savePetAlwaysOnTop(enabled: boolean): Promise<unknown>;
@@ -311,7 +311,7 @@ function inputError(): Error & { code: string } {
   });
 }
 
-function parseInput<T>(schema: z.ZodType<T>, raw: unknown): T {
+function parseInput<TOutput, TInput>(schema: z.ZodType<TOutput, z.ZodTypeDef, TInput>, raw: unknown): TOutput {
   const parsed = schema.safeParse(raw);
   if (!parsed.success) throw inputError();
   return parsed.data;
@@ -347,7 +347,7 @@ export function registerAdvancedSettingsIpc(
   });
   replaceHandler(ipcMain, ipcChannels.settingsPrivacySave, async (_event, raw) => {
     const input = parseInput(privacySettingsSchema, raw);
-    return changed(() => service.savePrivacySettings(input));
+    return service.savePrivacySettings(input, () => lifecycle?.onConfigurationChanged());
   });
   replaceHandler(ipcMain, ipcChannels.settingsWorkshopLayoutGet, async (_event, raw) => {
     parseInput(workshopLayoutGetSchema, raw);

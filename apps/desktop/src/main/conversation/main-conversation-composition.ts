@@ -2,7 +2,7 @@ import {
   ModelRouter,
   type ModelSelection
 } from '@myself/agent-core';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { readFile, realpath } from 'node:fs/promises';
 import { join } from 'node:path';
 import { taskApprovedCommandsSchema } from '@myself/shared-types';
@@ -31,6 +31,8 @@ import type { CapabilityTaskKind } from './conversation-coordinator';
 import type { CodingTaskToolResult } from '../agent/coding-task-service';
 import type { ConversationBehaviorPort } from
   '../characters/character-behavior-director';
+import type { CharacterBehaviorDirector } from '../characters/character-behavior-director';
+import type { CharacterAutonomousRequest } from '../characters/character-proactivity-runtime';
 
 export type MainConversationCodingTaskSnapshot<TPrivacy> = Readonly<{
   taskKind: CapabilityTaskKind;
@@ -63,12 +65,14 @@ export interface MainConversationCompositionOptions<TPrivacy> {
     input: MainConversationCodingTaskFactoryInput<TPrivacy>
   ): CapabilityTaskServicePort;
   behavior: ConversationBehaviorPort;
+  autonomy?: Pick<CharacterBehaviorDirector, 'getActivityBlockers' | 'getBehaviorLifecycleGeneration' | 'applyAutonomousDecision'>;
   emit(event: TaskEvent): void;
 }
 
 export interface MainConversationComposition {
   coordinator: ConversationCoordinator;
   capabilityTasks: CapabilityTaskAdapter;
+  requestAutonomousDecision(input: CharacterAutonomousRequest): Promise<void>;
   resetForConfigurationChange(): Promise<void>;
   close(): Promise<void>;
 }
@@ -97,6 +101,8 @@ export function createMainConversationComposition<TPrivacy>(
   }> | null = null;
   let activeCodingTaskRootPath: string | null = null;
   let closePromise: Promise<void> | null = null;
+  let autonomousFlight: { controller: AbortController; signal: AbortSignal } | null = null;
+  const invalidateAutonomy = () => { autonomousFlight?.controller.abort(); autonomousFlight = null; };
   const assertProviderReady = options.assertProviderReady ?? (profile => {
     if (!profile.hasStoredSecret) throw settingsIncompleteError();
   });
@@ -253,7 +259,35 @@ export function createMainConversationComposition<TPrivacy>(
   return {
     coordinator,
     capabilityTasks,
+    /** 当前聊天 Provider 的独立无工具请求；不经过会话消息、历史或任务路由。 */
+    async requestAutonomousDecision(input): Promise<void> {
+      const autonomy = options.autonomy;
+      if (!autonomy || closePromise || input.signal.aborted || autonomousFlight && !autonomousFlight.signal.aborted) return;
+      const controller = new AbortController();
+      const current = { controller, signal: AbortSignal.any([input.signal, controller.signal]) };
+      autonomousFlight = current;
+      const lifecycle = autonomy.getBehaviorLifecycleGeneration();
+      const context = options.behavior.captureExpressionContext();
+      const behaviorContext = options.behavior.getChatContext();
+      const isCurrent = () => {
+        const blockers = autonomy.getActivityBlockers();
+        return autonomousFlight === current && !current.signal.aborted && !closePromise
+          && lifecycle === autonomy.getBehaviorLifecycleGeneration() && !blockers.closed
+          && !blockers.chatting && !blockers.capabilityTask && !blockers.awaitingConfirmation && !blockers.dragging;
+      };
+      try {
+        if (!context || !isCurrent()) return;
+        const turn = await createChatTurn();
+        if (!isCurrent()) return;
+        const decision = await turn.adapter.respondAutonomous({ behaviorContext, idleForMs: input.idleForMs,
+          signal: current.signal, beforeProviderCall: () => isCurrent() && input.beforeProviderCall() });
+        if (decision && isCurrent()) autonomy.applyAutonomousDecision({ ...decision, context, lifecycle, eventId: randomUUID() });
+      } finally {
+        if (autonomousFlight === current) autonomousFlight = null;
+      }
+    },
     async resetForConfigurationChange(): Promise<void> {
+      invalidateAutonomy();
       preparedCodingTaskSnapshot = null;
       preparedCodingTaskTarget = null;
       activeCodingTaskRootPath = null;
@@ -261,6 +295,7 @@ export function createMainConversationComposition<TPrivacy>(
     },
     close(): Promise<void> {
       if (closePromise) return closePromise;
+      invalidateAutonomy();
       closePromise = Promise.resolve().then(async () => {
         let firstFailure: unknown;
         try {
