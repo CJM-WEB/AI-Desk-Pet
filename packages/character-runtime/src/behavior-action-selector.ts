@@ -7,12 +7,8 @@ import type { CharacterBehaviorStateSnapshot } from './behavior-contracts';
 import type { ResolvedBehaviorTarget } from './behavior-target-resolver';
 import { resolveCharacterPresentation } from './character-presentation-resolver';
 
-export type CharacterActionHistoryEntry = {
-  actionId: string;
-  startedAtMs: number;
-  finishedAtMs: number | null;
-  outcome: 'completed' | 'interrupted' | 'failed' | null;
-};
+import type { CharacterActionHistoryEntry } from './behavior-scheduler';
+export type { CharacterActionHistoryEntry } from './behavior-scheduler';
 
 export type CharacterActionRecency = {
   latestStartedAtMs: number;

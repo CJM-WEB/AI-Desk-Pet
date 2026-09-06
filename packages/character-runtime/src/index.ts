@@ -16,3 +16,6 @@ export * from './behavior-scheduler';
 export * from './character-behavior-engine';
 export * from './character-behavior-plan';
 export * from './behavior-target-resolver';
+export * from './character-mood';
+export * from './character-expression-plan';
+export * from './character-expression-engine';
