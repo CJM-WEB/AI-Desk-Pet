@@ -42,6 +42,22 @@ describe('角色描述决策接线', () => {
     expect(reply).not.toHaveProperty('moodUpdate');
     expect(f.requests).toHaveLength(2);
   });
+  it('修复越界明确播放不能覆盖首次 null 计划，合法心情仍独立保留', async () => {
+    for (const moodUpdate of [null, { summary: '新的感受', strength: .7 }]) {
+      const f = fixture();
+      f.responses.splice(0, 1,
+        { type: 'text', text: '保留正文', structured_output: { ...f.controls, moodUpdate, expressionPlan: null,
+          explicitPlayback: { stateId: 's39', actionId: 'a39' } } },
+        { type: 'text', text: '修复正文', structured_output: { ...f.controls, moodUpdate: null, expressionPlan: { states: [] } } });
+      const reply = await new ConversationChatAdapter(f.provider).respond(f.input);
+      expect(reply).toMatchObject({ text: '保留正文', ...f.controls });
+      expect(reply).not.toHaveProperty('expressionPlan');
+      expect(reply).not.toHaveProperty('explicitPlayback');
+      if (moodUpdate) expect(reply.moodUpdate).toMatchObject(moodUpdate);
+      else expect(reply).not.toHaveProperty('moodUpdate');
+      expect(f.requests).toHaveLength(2);
+    }
+  });
   it('未知表现字段和重复坏正文不吞独立合法建议，未知字段本身不接纳', async () => {
     const f = fixture();
     f.responses.splice(0, 1, { type: 'text', text: '首次合法正文', structured_output: {

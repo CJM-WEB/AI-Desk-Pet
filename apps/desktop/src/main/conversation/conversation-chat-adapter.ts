@@ -151,7 +151,10 @@ export class ConversationChatAdapter {
         if (requestBytes(repairRequest) <= budget) {
           const repaired = await this.provider.respond(repairRequest, input.signal);
           if (repaired.type === 'text') {
-            const repair = decodeCharacterExpression(expressionEnvelope(repaired.structured_output), catalog, input.explicitPlaybackRequested === true, acceptedMood);
+            const repairOutput = expressionEnvelope(repaired.structured_output);
+            // 首次 null 计划已明确无更新；其他坏字段的修复不能改成清空或重选计划。
+            if (repairOutput && output?.expressionPlan === null) repairOutput.expressionPlan = null;
+            const repair = decodeCharacterExpression(repairOutput, catalog, input.explicitPlaybackRequested === true, acceptedMood);
             expression = { ...repair.fields, ...expression };
           }
         }
