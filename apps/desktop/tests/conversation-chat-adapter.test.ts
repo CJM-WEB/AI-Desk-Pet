@@ -74,3 +74,31 @@ test.each([false, true])('条件建议经过正常输出或修复（%s）保留 
     expect(instruction).toContain('描述');
   }
 });
+
+test.each(['不可推断待机', '只有动作条件'])('真实 Qwen 坏输出（%s）得到具体修复原因，首轮合法分区冻结', async kind => {
+  const requests: Parameters<ModelProvider['respond']>[0][] = [];
+  const state = { stateId: 'amber', score: 1, minStrength: 0, maxStrength: 1, lifetime: 'condition',
+    actions: [{ actionId: 'step', score: 1, when: { moving: true } }] };
+  const p: ModelProvider = { respond: async request => {
+    requests.push(request);
+    return { type: 'text', text: requests.length === 1 ? '走一小段' : '不可替换正文', structured_output: {
+      ...controls, moodUpdate: null, expressionPlan: { states: requests.length === 1
+        ? kind === '不可推断待机' ? [{ ...state, stateId: 'rest', lifetime: 'episode', actions: [{ actionId: 'blink', score: 1 }] }]
+          : [state]
+        : [{ ...state, when: { moving: true } }] } } };
+  } };
+  const reply = await new ConversationChatAdapter(p).respond({ ...input, text: '向右走一点', movementControlHandled: true,
+    behaviorContext: { ...input.behaviorContext, runtime: { ...input.behaviorContext.runtime, pendingMovement: true },
+      character: { ...input.behaviorContext.character, idleStateId: 'rest', states: [
+        { stateId: 'rest', name: '眨眼', agentInferable: false, tags: [], actions: [{ actionId: 'blink', name: '眨眼', tags: [] }] },
+        { stateId: 'amber', name: '玻璃糖', description: '真实桌面位移时迈步，静止禁用', agentInferable: true, tags: [], actions: [{ actionId: 'step', name: '迈步', tags: [] }] }
+      ] } } });
+  expect(reply).toMatchObject({ text: '走一小段', ...controls, expressionPlan: { states: [{ stateId: 'amber', when: { moving: true }, lifetime: 'condition' }] } });
+  expect(reply).not.toHaveProperty('moodUpdate');
+  expect(requests).toHaveLength(2);
+  const repair = JSON.parse(requests[1]!.messages.at(-1)!.content.slice(requests[1]!.messages.at(-1)!.content.indexOf('{')));
+  expect(repair.repairIssues).toContainEqual(kind === '不可推断待机'
+    ? { path: 'expressionPlan.states.0.stateId', reason: '状态必须在本轮候选中且 agentInferable=true；待机兜底由 Main 负责。' }
+    : { path: 'expressionPlan.states.0.when', reason: '持续情境状态至少需要一个为真的活动条件。' });
+  for (const request of requests) expect(request).toMatchObject({ tools: [], toolChoice: 'none' });
+});

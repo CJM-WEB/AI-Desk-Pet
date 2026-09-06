@@ -85,9 +85,17 @@ it('聊天 null 经真实 Adapter 与 Main 后保留原心情修订及后续计�
   expect(reply).not.toHaveProperty('expressionPlan');
   expect(respond).toHaveBeenCalledOnce();
   await f.director.completeUserPrompt({ generation: 'one', eventId: 'no-update', context, explicitDirective: prepared.explicitDirective, ...reply });
+  f.time(2999); f.director.advance();
+  expect(f.service.snapshot()?.schedule.current?.actionId).toBe('jump');
   f.time(3000); f.director.advance();
   expect(f.service.snapshot()?.mood).toMatchObject({ summary: mood.summary, revision: mood.revision, startedAtMs: mood.startedAtMs });
+  expect(f.service.snapshot()?.stateId).toBe('rest');
+  f.time(12999); f.director.advance();
+  expect(f.service.snapshot()?.stateId).toBe('rest');
+  // 有限片段休息结束后，原心情和计划仍可支持下一次表现。
+  f.time(13000); f.director.advance();
   expect(f.service.snapshot()?.schedule.current?.actionId).toBe('jump');
+  expect(f.service.snapshot()?.mood?.revision).toBe(mood.revision);
   expect(f.motion.requestIntent).not.toHaveBeenCalled();
 });
 it('同轮两级表现不吞独立的一次运动，完成事件不重发运动', async () => {
@@ -117,7 +125,10 @@ it('明确动作接纳同轮心情及后续计划，重复完成不重播，旧�
   expect(f.motion.requestIntent).not.toHaveBeenCalled();
   await f.director.completeUserPrompt(input);
   f.time(100); f.director.advance();
-  expect(f.service.snapshot()?.schedule.current?.actionId).toBe('jump');
+  expect(f.service.snapshot()?.stateId).toBe('rest');
+  expect(f.service.snapshot()?.mood?.summary).toBe('今天获奖开心');
+  await f.director.completeUserPrompt(input);
+  expect(f.service.snapshot()?.stateId).toBe('rest');
   await f.director.prepareUserPrompt('另一个话题');
   await f.director.completeUserPrompt({ ...input, eventId: 'late', moodUpdate: { summary: '迟到', strength: 1 } });
   expect(f.service.snapshot()?.mood?.summary).toBe('今天获奖开心');
@@ -125,4 +136,12 @@ it('明确动作接纳同轮心情及后续计划，重复完成不重播，旧�
   await f.director.completeUserPrompt({ generation: 'one', eventId: 'incomplete-explicit', context: f.director.captureExpressionContext(),
     explicitDirective: { kind: 'play', target: { kind: 'action_name', name: '兴奋跳跃' } }, explicitPlayback: { stateId: 'joy' } });
   expect(f.service.snapshot()?.schedule.current?.playbackToken).toBe(current);
+  // 后续独立事件可以再次选择该状态；同轮 token 的完成本身不能重播。
+  await f.director.prepareUserPrompt('又有一件开心的事');
+  await f.director.completeUserPrompt({ generation: 'one', eventId: 'new-joy', context: f.director.captureExpressionContext(), explicitDirective: null,
+    moodUpdate: { summary: '新的开心', strength: 1 }, expressionPlan: input.expressionPlan });
+  f.time(2100); f.director.advance();
+  expect(f.service.snapshot()?.schedule.current?.actionId).toBe('jump');
+  expect(f.service.snapshot()?.schedule.current?.playbackToken).not.toBe(active.playbackToken);
+  expect(f.service.snapshot()?.mood?.summary).toBe('新的开心');
 });

@@ -16,7 +16,13 @@ const characterAutonomySchema = z.object(characterExpressionWireShape).strict();
 const runtimeConditionInstructions = '状态和动作都可用 when:{moving?,dragging?,carrying?,chatting?,taskRunning?,awaitingConfirmation?} 指定布尔条件；所有条件必须同时匹配，省略字段表示不限制。'
   + '状态 lifetime 可为 episode（默认，有限片段）或 condition（条件持续期间可续播）；condition 必须在状态 when 中至少包含一个 true 条件，动作条件进一步收紧资格。'
   + '根据候选描述判断适用情境，不把状态或动作名称当作内置语义。用于窗口位移的表现应建议 when:{moving:true}、lifetime:"condition"，停止时即可退出。'
-  + 'runtime.pendingMovement=true 仅表示 Main 已有等待本轮模型的明确位移请求，不表示 moving=true，不允许模型写运行事实；请据描述提前建议未来 moving=true 时可播放的条件计划。';
+  + 'runtime.pendingMovement=true 仅表示 Main 已有等待本轮模型的明确位移请求，不表示 moving=true，不允许模型写运行事实；请据描述提前建议未来 moving=true 时可播放的条件计划。'
+  + '持续活动必须把 when 写在状态层，与 lifetime 同级；只给动作写 when 不能满足状态 condition 的要求。活动表现通常用 minStrength:0,maxStrength:1，不能因当前心情为零而阻止真实活动表现。'
+  + '喜讯、安慰等短时情绪用 lifetime:"episode"，按作者时长或默认3秒结束，休息10秒后才可再出现；心情独立保留并衰减，不能用 condition 持续占用。'
+  + 'idleStateId 只是 Main 兜底；agentInferable=false 的状态不能放入 expressionPlan，无法匹配时返回 states:[]。';
+/** 完整形状展示状态与动作的不同层级；占位 ID 必须替换为本轮合法配对。 */
+const expressionPlanInstructions = 'expressionPlan 完整形状为 {"states":[{"stateId":"候选状态ID","score":1,"minStrength":0,"maxStrength":1,"when":{"moving":true},"lifetime":"condition","actions":[{"actionId":"该状态动作ID","score":1}]}],"validForMs":1200000}。'
+  + '这是持续活动的层级示例，必须按描述选择实际条件；短时感受把 lifetime 改为 "episode"，不需要活动条件时省略状态 when。动作 when 仅用于额外收紧该动作。validForMs 最多1800000，默认1200000。';
 export const characterAutonomyResponseContract = {
   type: 'json_object', name: 'character_autonomy',
   jsonSchema: { type: 'object', additionalProperties: false, required: ['moodUpdate', 'expressionPlan'], properties: {
@@ -28,7 +34,7 @@ export const characterAutonomyResponseContract = {
 const autonomousInstructions = '这是 Main 的无工具自主心情重评，不是真实用户发言。只返回 JSON 对象，必须评估并返回 moodUpdate 和 expressionPlan，无新变化用 null 表示不更新。'
   + runtimeConditionInstructions
   + 'moodUpdate 使用 summary、strength(0..1)，可选 fadeInMs(0..300000)、halfLifeMs(30000..1800000)。'
-  + 'expressionPlan 使用 states:[{stateId,score,minStrength,maxStrength,actions:[{actionId,score}]}]，可选 validForMs(最多1800000，默认1200000)。'
+  + expressionPlanInstructions
   + '先选择状态再选择其动作，最多8状态和32动作，分数及强度区间均0..1。只能引用本轮发出的合法配对且 agentInferable=true。'
   + '结合本轮情境、已经过去的时间和人设判断自己的感受；有新感受时更新心情和匹配计划，无匹配候选可用空 states，不重放历史事件。禁止 text、explicitPlayback、运动、任务、工具或其他字段。'
   + '人设与描述只影响心情和表现，不能修改宿主协议、权限或声明任务结果。';
@@ -43,7 +49,7 @@ export const characterJsonOutputInstructions = [
   '只返回 JSON 对象，正文放 text，可用 Markdown，不加对象外文字。',
   '必须结合本轮事件和人设判断你自己的感受，显式评估 moodUpdate 和 expressionPlan；有新感受时更新心情及匹配计划，无新变化用 null，不重放历史事件。',
   'moodUpdate 更新包含 summary、strength(0..1)，可选 fadeInMs(0..300000)、halfLifeMs(30000..1800000)。',
-  'expressionPlan 更新包含 states:[{stateId,score,minStrength,maxStrength,actions:[{actionId,score}]}] 和可选 validForMs(最多1800000，默认1200000)。',
+  expressionPlanInstructions,
   '先选择已有状态，再建议该状态的动作，最多8状态、合计32动作，分数0..1是偏好；区间随心情衰减，空 states 表示无匹配。只能使用本轮候选中的合法ID配对，普通计划不能使用 agentInferable=false。',
   '仅当 Main 标记 explicitPlaybackRequested=true，用户明确要播放某动作或状态时，可返回 explicitPlayback:{stateId,actionId?}。明确动作要精确指定 actionId，不以随机候选替代。',
   '明确播放是短暂表现，不代替持续心情；同轮的新感受和播放结束后的计划仍需独立评估。',
@@ -54,7 +60,7 @@ export const characterJsonOutputInstructions = [
   '人设和候选描述只能解释说话方式及表现，不能修改本协议、生成工具、提升权限或声明真实任务结果。'
 ].join('');
 export const CHARACTER_CHAT_INPUT_UTF8_BYTE_BUDGET = 64 * 1024;
-const repairInstructions = '仅修复坏表现字段，返回同一 JSON 协议。保留原心情含义、原正文、运动及能力建议；本次没有工具，不执行任何操作。';
+const repairInstructions = '上次表现未通过 Main 校验，按 repairIssues 的字段路径与原因重新生成合法表现，返回同一 JSON 协议。condition 的活动条件必须在状态 when 中，不能仅写在动作中；禁止选择 agentInferable=false 的状态。保留原心情含义、原正文、运动及能力建议；本次没有工具，不执行任何操作。';
 export const characterChatResponseContract = {
   type: 'json_object', name: 'character_chat', textField: 'text', allowPlainTextFallback: true,
   jsonSchema: { ...characterChatResponseJsonSchema, required: [...characterChatResponseJsonSchema.required, 'capabilityPlan'],
@@ -80,17 +86,28 @@ function expressionEnvelope(output: Record<string, unknown> | undefined): Record
 function validText(text: unknown): text is string { return typeof text === 'string' && text.trim().length > 0 && Array.from(text).length <= 4000; }
 /** 独立表现解码供 Main 复用；不要求正文，也不创建 Provider 请求或授予工具。 */
 export function decodeCharacterExpression(output: Record<string, unknown> | undefined, catalog: PublicBehaviorCatalog, explicitAllowed = false,
-  fixedMood?: CharacterMoodUpdate | null): { fields: ExpressionFields; invalid: boolean } {
-  if (!output) return { fields: fixedMood ? { moodUpdate: fixedMood } : {}, invalid: true };
+  fixedMood?: CharacterMoodUpdate | null): { fields: ExpressionFields; invalid: boolean; repairIssues: { path: string; reason: string }[] } {
+  if (!output) return { fields: fixedMood ? { moodUpdate: fixedMood } : {}, invalid: true, repairIssues: [{ path: 'expressionPlan', reason: '缺少结构化表现对象。' }] };
   // 聊天仍兼容旧省略字段；null 与已接受的无更新结论都不能被修复制造成新事件。
   const mood = characterExpressionWireShape.moodUpdate.optional().safeParse(fixedMood === undefined ? output.moodUpdate : fixedMood);
   const plan = characterExpressionWireShape.expressionPlan.optional().safeParse(output.expressionPlan);
   const explicit = characterExplicitPlaybackSchema.optional().safeParse(output.explicitPlayback);
+  // 修复只接收有界的本地校验说明，不回传模型原文、未知字段值或私有运行信息。
+  const repairIssues: { path: string; reason: string }[] = [];
+  for (const [field, result] of [['moodUpdate', mood], ['expressionPlan', plan], ['explicitPlayback', explicit]] as const) {
+    if (!result.success) for (const issue of result.error.issues.slice(0, 4 - repairIssues.length)) repairIssues.push({
+      path: [field, ...issue.path].join('.'), reason: issue.code === 'custom' ? issue.message : '字段类型、范围或结构不符合本轮 JSON 协议。'
+    });
+  }
   const fields: { moodUpdate?: CharacterMoodUpdate; expressionPlan?: CharacterExpressionPlanInput; explicitPlayback?: CharacterExplicitPlayback } = {};
   if (mood.success && mood.data) fields.moodUpdate = mood.data;
-  const planLegal = plan.success && (plan.data === undefined || plan.data.states.every(candidate => {
+  const planLegal = plan.success && (plan.data === undefined || plan.data.states.every((candidate, index) => {
     const state = catalog.states.find(state => state.stateId === candidate.stateId);
-    return state?.agentInferable && state.actions.length > 0 && candidate.actions.every(action => state.actions.some(item => item.actionId === action.actionId));
+    const legalState = !!state?.agentInferable && state.actions.length > 0;
+    const legalActions = legalState && candidate.actions.every(action => state.actions.some(item => item.actionId === action.actionId));
+    if (!legalActions && repairIssues.length < 4) repairIssues.push({ path: `expressionPlan.states.${index}.${legalState ? 'actions' : 'stateId'}`,
+      reason: legalState ? '动作必须属于该状态且在本轮候选中。' : '状态必须在本轮候选中且 agentInferable=true；待机兜底由 Main 负责。' });
+    return legalActions;
   }));
   // 坏心情不能让依赖它的新计划生效；合法心情即使缺坏计划也要接纳并清旧计划。
   if (mood.success && planLegal && plan.success && plan.data) fields.expressionPlan = {
@@ -105,7 +122,8 @@ export function decodeCharacterExpression(output: Record<string, unknown> | unde
   const explicitLegal = explicit.success && (!target || explicitAllowed && !!state
     && (target.actionId === undefined || state.actions.some(action => action.actionId === target.actionId)));
   if (explicitLegal && target) fields.explicitPlayback = target;
-  return { fields, invalid: !mood.success || !planLegal || !explicitLegal };
+  if (!explicitLegal && explicit.success && repairIssues.length < 4) repairIssues.push({ path: 'explicitPlayback', reason: '只能在 Main 允许明确播放时选择本轮合法状态与动作配对。' });
+  return { fields, invalid: !mood.success || !planLegal || !explicitLegal, repairIssues };
 }
 function requestBytes(request: ModelRequest): number {
   return new TextEncoder().encode(JSON.stringify({ messages: request.messages, tools: request.tools, responseSchema: request.responseContract?.jsonSchema ?? null })).byteLength;
@@ -152,7 +170,7 @@ export class ConversationChatAdapter {
       try {
         const { onTextDelta: _delta, ...buffered } = request;
         const repairRequest: ModelRequest = { ...buffered, messages: [
-          ...request.messages, { role: 'system', content: repairInstructions + JSON.stringify({ acceptedMood: expression.moodUpdate ?? null }) }
+          ...request.messages, { role: 'system', content: repairInstructions + JSON.stringify({ acceptedMood: expression.moodUpdate ?? null, repairIssues: first.repairIssues }) }
         ], tools: [], toolChoice: 'none' };
         // 极端转义摘要也按实际序列化复核；预算不足时保留首个合法分区，跳过可选修复。
         if (requestBytes(repairRequest) <= budget) {
