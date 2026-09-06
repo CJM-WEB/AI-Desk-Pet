@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import {
-  CharacterExpressionEngine, createPublicBehaviorCatalog, resolveBehaviorTarget, resolveCharacterPresentationV3,
+  CharacterExpressionEngine, characterPlaybackFeedbackSchema, createPublicBehaviorCatalog, resolveBehaviorTarget, resolveCharacterPresentationV3,
   type BehaviorTarget, type CharacterAgentBehaviorIntent, type CharacterBehaviorPlan,
   type CharacterExpressionContext, type CharacterExpressionDecision, type CharacterExpressionResult,
   type CharacterManifestV3, type CharacterPlaybackFeedback, type PublicBehaviorCatalog,
@@ -42,6 +42,8 @@ export class CharacterBehaviorService {
   private readonly now: () => number;
   private readonly listeners = new Set<(event: CharacterBehaviorPlaybackEvent) => void>();
   private readonly recentPublicActions: string[] = [];
+  /** 仅保存最近十六个实际发布片段，辨认宿主先到期而 Renderer 终态稍晚的正常竞争。 */
+  private readonly publishedPlaybacks = new Map<string, { actionId: string; scheduledAtMs: number }>();
   private engine: CharacterExpressionEngine | null = null;
   private manifest: CharacterManifestV3 | null = null;
   private direction: 'left' | 'right' = 'right';
@@ -142,6 +144,7 @@ export class CharacterBehaviorService {
   }
   snapshot() { return this.closed || this.transitioning ? null : this.engine?.snapshot() ?? null; }
   cancelStateLifecycle(): void {
+    this.publishedPlaybacks.clear();
     if (this.engine) { this.publish(this.engine.reset()); this.publish(this.engine.updateRuntimeFacts(this.runtimeFacts)); }
   }
   advance(): readonly string[] {
@@ -153,6 +156,11 @@ export class CharacterBehaviorService {
   applyPlaybackFeedback(feedback: CharacterPlaybackFeedback): void {
     if (this.closed) return;
     const current = this.engine?.snapshot().schedule.current;
+    const published = this.publishedPlaybacks.get(feedback.playbackToken);
+    // 旧片段只能无副作用地确认终态；不能再次 started，也不能进入 Engine 污染当前播放或近期动作。
+    if (!this.transitioning && this.engine && current?.playbackToken !== feedback.playbackToken
+      && published?.actionId === feedback.actionId && characterPlaybackFeedbackSchema.safeParse(feedback).success
+      && feedback.status !== 'started' && feedback.occurredAtMs >= published.scheduledAtMs && feedback.occurredAtMs <= this.now()) return;
     if (this.transitioning || !this.engine || !current || current.playbackToken !== feedback.playbackToken
       || current.actionId !== feedback.actionId || feedback.occurredAtMs < current.scheduledAtMs || feedback.occurredAtMs > this.now()) {
       throw new Error('CHARACTER_PLAYBACK_UNAUTHORIZED');
@@ -173,6 +181,7 @@ export class CharacterBehaviorService {
     if (this.closed) return;
     if (this.engine) this.publish(this.engine.reset());
     this.closed = true; this.loadRevision++; this.engine = null; this.manifest = null;
+    this.publishedPlaybacks.clear();
     this.recentPublicActions.splice(0); this.listeners.clear();
   }
   /** 切换期间撤销旧令牌；候选严格解析成功才启用，不恢复第二套旧运行时。 */
@@ -180,6 +189,7 @@ export class CharacterBehaviorService {
     const revision = ++this.loadRevision;
     this.transitioning = true;
     if (this.engine) this.publish(this.engine.reset());
+    this.publishedPlaybacks.clear();
     this.engine = null; this.manifest = null; this.recentPublicActions.splice(0);
     try {
       const manifest = await this.options.store.getActiveManifestV3();
@@ -199,6 +209,8 @@ export class CharacterBehaviorService {
     for (const effect of result.effects) {
       if (effect.type === 'interrupt') this.emit({ type: 'behavior-interrupt', playbackToken: effect.playbackToken });
       if (effect.type !== 'play') continue;
+      this.publishedPlaybacks.set(effect.action.playbackToken, { actionId: effect.action.actionId, scheduledAtMs: effect.action.scheduledAtMs });
+      if (this.publishedPlaybacks.size > 16) this.publishedPlaybacks.delete(this.publishedPlaybacks.keys().next().value!);
       authorization = { kind: 'play', stateId: effect.action.stateId, actionId: effect.action.actionId, playbackToken: effect.action.playbackToken };
       const presentation = this.manifest && resolveCharacterPresentationV3(this.manifest, result.snapshot.skinId, effect.action.stateId, effect.action.actionId)?.presentation;
       this.emit({ type: 'behavior-action', revision: result.snapshot.schedule.revision,

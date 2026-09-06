@@ -171,6 +171,72 @@ test('V3 初始化保留真实 ID，公开目录不暴露旧语义', async () =>
   service.close();
 });
 
+test.each([true, false])('成功响应后按剩余预算等待真实心情资格（可匹配=%s），同步位移只提交一次', async matches => {
+  const f = fixture(); await f.service.initialize(); let now = 0;
+  const time = (value: number) => { now = value; f.setNow(value); };
+  const notices = vi.fn();
+  const director = new CharacterBehaviorDirector({ behavior: f.service, motion: { ...f.motion, stop: vi.fn() },
+    now: () => now, initialGeneration: 'real', initialSettings: { movementMode: 0, proactivityMode: 'assistive' },
+    saveMovementMode: async () => undefined, publishNotice: notices });
+  const prepared = await director.prepareUserPrompt('向右走一点');
+  time(matches ? 4000 : 7500);
+  f.motion.requestIntent.mockImplementation(() => {
+    expect(director.getChatContext().runtime).not.toHaveProperty('pendingMovement');
+    const snapshot = { ...f.motion.getSnapshot(), moving: true };
+    f.service.handleMovement(snapshot); director.handleMotionSnapshot(snapshot); director.advance();
+    expect(f.service.snapshot()?.stateId).toBe(matches ? 'move-state' : 'idle-state');
+    return snapshot;
+  });
+  await director.completeUserPrompt({ generation: 'real', eventId: 'fade-response', context: director.captureExpressionContext(),
+    explicitDirective: prepared.explicitDirective, moodUpdate: { summary: '轻快', strength: .6, fadeInMs: 1000 },
+    expressionPlan: { states: matches ? [{ stateId: 'move-state', score: 1, minStrength: .5, maxStrength: .9,
+      when: { moving: true }, lifetime: 'condition', actions: [{ actionId: 'move-action', score: 1 }] }] : [] } });
+  director.handleTaskEvent({ type: 'phase', phase: 'success' });
+  expect(f.motion.requestIntent).not.toHaveBeenCalled();
+  expect(director.getChatContext().runtime.pendingMovement).toBe(true);
+  time(matches ? 4500 : 7999); director.advance();
+  expect(f.motion.requestIntent).not.toHaveBeenCalled();
+  time(matches ? 5000 : 8000); director.advance();
+  expect(f.motion.requestIntent).toHaveBeenCalledExactlyOnceWith({ kind: 'relative', direction: 'right', distance: 'near' });
+  expect(notices).toHaveBeenCalledTimes(matches ? 0 : 1);
+  time(9000); director.advance();
+  expect(f.motion.requestIntent).toHaveBeenCalledTimes(1);
+  await director.close();
+});
+
+test.each(['completed', 'interrupted', 'failed'] as const)('Main先换片段后的已发布旧令牌 %s 回报仅忽略且无副作用', async status => {
+  const f = fixture(); await f.service.initialize(); const old = currentAction(f.events);
+  f.service.applyPlaybackFeedback({ playbackToken: old.playbackToken, actionId: old.actionId, status: 'started', occurredAtMs: 0 });
+  f.setNow(500); f.service.advance();
+  expect(currentAction(f.events).playbackToken).not.toBe(old.playbackToken);
+  f.setNow(500.8);
+  const before = f.service.snapshot(); const events = f.events.length; const recent = f.service.getRecentPublicActions();
+  expect(() => f.service.applyPlaybackFeedback({ playbackToken: old.playbackToken, actionId: old.actionId, status, occurredAtMs: 500.8 })).not.toThrow();
+  expect(f.service.snapshot()).toEqual(before); expect(f.events).toHaveLength(events);
+  expect(f.service.getRecentPublicActions()).toEqual(recent);
+  for (const invalid of [
+    { playbackToken: 'forged-token', actionId: old.actionId, status, occurredAtMs: 500.8 },
+    { playbackToken: old.playbackToken, actionId: 'wrong-action', status, occurredAtMs: 500.8 },
+    { playbackToken: old.playbackToken, actionId: old.actionId, status: 'started' as const, occurredAtMs: 500.8 },
+    { playbackToken: old.playbackToken, actionId: old.actionId, status, occurredAtMs: -1 },
+    { playbackToken: old.playbackToken, actionId: old.actionId, status, occurredAtMs: 501 }
+  ]) expect(() => f.service.applyPlaybackFeedback(invalid)).toThrow('CHARACTER_PLAYBACK_UNAUTHORIZED');
+  f.service.cancelStateLifecycle();
+  expect(() => f.service.applyPlaybackFeedback({ playbackToken: old.playbackToken, actionId: old.actionId, status, occurredAtMs: 500.8 })).toThrow('CHARACTER_PLAYBACK_UNAUTHORIZED');
+  f.service.close();
+});
+
+test('已结束令牌记录有界淘汰，过旧令牌不能作为当前生命周期授权', async () => {
+  const f = fixture(); await f.service.initialize(); const old = currentAction(f.events);
+  for (let index = 1; index <= 20; index++) {
+    f.setNow(index * 500);
+    f.service.requestDirectedBehavior({ kind: 'state_action', stateId: 'idle-state', actionId: 'idle-action' });
+  }
+  expect(() => f.service.applyPlaybackFeedback({ playbackToken: old.playbackToken, actionId: old.actionId,
+    status: 'completed', occurredAtMs: 10000 })).toThrow('CHARACTER_PLAYBACK_UNAUTHORIZED');
+  f.service.close();
+});
+
 test('几何绑定保留真实来源并随方向更新 generation', async () => {
   const { service, motion } = fixture(); await service.initialize();
   const first = service.getGeometryBinding()!;

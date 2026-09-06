@@ -286,10 +286,11 @@ describe('Main 角色行为 Director', () => {
     expect(f.motion.requestIntent).not.toHaveBeenCalled();
     expect(f.director.getChatContext().runtime).toMatchObject({ moving: false, pendingMovement: true });
     f.director.handleTaskEvent({ type: 'phase', phase: 'thinking' });
+    f.behavior.hasEligibleExpressionFor.mockReturnValue(true);
     await f.director.completeUserPrompt({ generation: 'generation-1', eventId: 'pending-response',
       context: f.director.captureExpressionContext(), explicitDirective: prepared.explicitDirective });
     expect(f.motion.requestIntent).toHaveBeenCalledExactlyOnceWith({ kind: 'relative', direction: 'left', distance: 'near' });
-    expect(f.notices).toEqual([{ code: 'CHARACTER_ACTION_UNAVAILABLE', message: '当前角色没有可播放的对应动作。' }]);
+    expect(f.notices).toEqual([]);
     f.director.handleTaskEvent({ type: 'phase', phase: 'success' }); f.setNow(9000); f.director.advance();
     expect(f.motion.requestIntent).toHaveBeenCalledTimes(1);
     expect(f.director.getChatContext().runtime).not.toHaveProperty('pendingMovement');
@@ -308,7 +309,7 @@ describe('Main 角色行为 Director', () => {
     expect(f.notices).toEqual([{ code: 'CHARACTER_ACTION_UNAVAILABLE', message: '当前角色没有可播放的对应动作。' }]);
   });
 
-  test.each(['stop', 'cancel', 'drag', 'character', 'input', 'reset', 'close', 'acting', 'awaiting_confirmation', 'configuration'] as const)(
+  test.each(['stop', 'cancel', 'drag', 'character', 'input', 'reset', 'close', 'acting', 'awaiting_confirmation', 'configuration', 'proactivity'] as const)(
     '%s 使等待位移失效，迟到完成与超时不能复活', async edge => {
       const f = createFixture(); f.behavior.hasEligibleExpressionFor.mockReturnValue(false);
       const prepared = await f.director.prepareUserPrompt('向左一点');
@@ -321,7 +322,9 @@ describe('Main 角色行为 Director', () => {
       if (edge === 'reset') f.director.reset('generation-2');
       if (edge === 'close') await f.director.close();
       if (edge === 'configuration') f.director.invalidateBehaviorLifecycle();
+      if (edge === 'proactivity') f.director.applyBehaviorSettings({ movementMode: 2, proactivityMode: 'passive' });
       if (edge === 'acting' || edge === 'awaiting_confirmation') f.director.handleTaskEvent({ type: 'phase', phase: edge });
+      expect(f.director.getChatContext().runtime).not.toHaveProperty('pendingMovement');
       await f.director.completeUserPrompt({ generation: 'generation-1', eventId: 'late', context: null, explicitDirective: prepared.explicitDirective });
       f.director.handleTaskEvent({ type: 'phase', phase: 'success' }); f.setNow(9000); f.director.advance();
       expect(f.motion.requestIntent).not.toHaveBeenCalled();

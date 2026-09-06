@@ -398,7 +398,9 @@ export class CharacterBehaviorDirector {
     }
     if (this.pendingMotion?.lifecycle === 'explicit-response-or-timeout') {
       this.pendingMotion = { ...this.pendingMotion, modelResponseCompleted: true };
-      this.commitPendingMotion('explicit-response-or-timeout');
+      if (this.options.behavior.hasEligibleExpressionFor({ moving: true }, 'moving') || this.now() >= this.pendingMotion.deadlineAtMs) {
+        this.commitPendingMotion('explicit-response-or-timeout');
+      }
     } else if (movementControl.kind === 'move_once' && !this.capabilityTask && !this.awaitingConfirmation && !this.dragging) {
       this.pendingMotion = this.createPendingMotion({ mode: 'once', target: movementControl.target, distance: movementControl.distance }, 'chat', 'chat-success');
     }
@@ -519,7 +521,10 @@ export class CharacterBehaviorDirector {
   /** 500ms 推进只更新本地心情与表现；模型重评和独立运动由宿主 Runtime 分别调度。 */
   advance(): void {
     if (this.closed) return;
-    if (this.pendingMotion?.lifecycle === 'explicit-response-or-timeout' && this.now() >= this.pendingMotion.deadlineAtMs) {
+    // 成功响应不保证心情已淡入资格区间；沿原截止等待，不延长预算或补发模型。
+    if (this.pendingMotion?.lifecycle === 'explicit-response-or-timeout'
+      && (this.now() >= this.pendingMotion.deadlineAtMs || this.pendingMotion.modelResponseCompleted
+        && this.options.behavior.hasEligibleExpressionFor({ moving: true }, 'moving'))) {
       this.commitPendingMotion('explicit-response-or-timeout');
     }
     const expiredTokens = this.options.behavior.advance();
@@ -611,15 +616,15 @@ export class CharacterBehaviorDirector {
   applyBehaviorSettings(snapshot: CharacterBehaviorSettingsSnapshot): void {
     if (this.closed) return;
     const movementModeChanged = this.movementMode !== snapshot.movementMode;
+    const proactivityModeChanged = this.proactivityMode !== snapshot.proactivityMode;
     const transitionAlreadyInvalidated = this.movementModeTransitionPending;
-    if (movementModeChanged) this.clearPendingChat();
+    if (movementModeChanged || proactivityModeChanged) this.clearPendingChat();
     // 模式边界拥有旧目标：切换先终止旧 Motion/播放令牌，再让 Scheduler 启动新策略。
     if (movementModeChanged && !transitionAlreadyInvalidated) {
       if (snapshot.movementMode === 0) this.stopContinuousMotion();
       else this.clearContinuousMotion();
     }
     this.movementMode = snapshot.movementMode;
-    const proactivityModeChanged = this.proactivityMode !== snapshot.proactivityMode;
     this.proactivityMode = snapshot.proactivityMode;
     if (movementModeChanged || proactivityModeChanged) this.behaviorLifecycleGeneration += 1;
     this.publishActivityChanged();
