@@ -68,11 +68,55 @@ test.each([false, true])('条件建议经过正常输出或修复（%s）保留 
   expect(requests).toHaveLength(repair ? 2 : 1);
   for (const request of requests) {
     expect(request.tools).toEqual([]);
+    const context = JSON.parse(request.messages[2]!.content.slice(request.messages[2]!.content.indexOf('{')));
+    expect(context.requestFocus).toMatchObject({ fact: 'moving', purpose: expect.any(String) });
+    expect(context.runtime).toMatchObject({ moving: false, pendingMovement: true });
+    expect(Buffer.byteLength(JSON.stringify({ messages: request.messages, tools: request.tools,
+      responseSchema: request.responseContract?.jsonSchema ?? null }))).toBeLessThanOrEqual(64 * 1024);
     const instruction = request.messages[0]!.content;
     expect(instruction).toContain('when'); expect(instruction).toContain('lifetime');
     expect(instruction).toContain('pendingMovement'); expect(instruction).toContain('moving=true');
     expect(instruction).toContain('描述');
   }
+});
+
+test.each(['普通', '自主', '明确'] as const)('%s请求只发送其允许推断或明确查找的实际候选', async mode => {
+  const requests: Parameters<ModelProvider['respond']>[0][] = [];
+  const behaviorContext = { ...input.behaviorContext, expression: { stateId: 'locked', actionId: 'secret', mood: null },
+    character: { ...input.behaviorContext.character, states: [
+      { stateId: 'idle', name: '基础', agentInferable: false, tags: [], actions: [{ actionId: 'blink', name: '眨眼', tags: [] }] },
+      { stateId: 'locked', name: '星屑', agentInferable: false, tags: [], actions: [{ actionId: 'secret', name: '手工', tags: [] }] },
+      { stateId: 'amber', name: '玻璃糖', agentInferable: true, tags: [], actions: [{ actionId: 'step', name: '轻摆', tags: [] }] }
+    ] } };
+  const adapter = new ConversationChatAdapter({ respond: async request => {
+    requests.push(request);
+    return mode === '自主' ? { type: 'structured', structured_output: { moodUpdate: null, expressionPlan: { states: [] } } }
+      : { type: 'text', text: '陪着你。', structured_output: { ...controls, moodUpdate: null, expressionPlan: { states: [] } } };
+  } });
+  if (mode === '自主') await adapter.respondAutonomous({ behaviorContext, idleForMs: 1000, signal: input.signal, beforeProviderCall: () => true });
+  else await adapter.respond({ ...input, text: '讨论 pendingMovement=true', behaviorContext, explicitPlaybackRequested: mode === '明确' });
+  expect(requests).toHaveLength(1);
+  const request = requests[0]!;
+  const context = JSON.parse(request.messages[2]!.content.slice(request.messages[2]!.content.indexOf('{')));
+  expect(context.character.states.map((state: { stateId: string }) => state.stateId).sort()).toEqual(mode === '明确' ? ['amber', 'idle', 'locked'] : ['amber']);
+  expect(context).not.toHaveProperty('requestFocus');
+  expect(request).toMatchObject({ tools: [], toolChoice: 'none' });
+});
+
+test.each(['空', '无更新', '静止情绪'] as const)('待执行位移仍接纳合法%s计划且不增加修复', async kind => {
+  const emotion = { states: [{ stateId: 'amber', score: 1, minStrength: .3, maxStrength: 1,
+    when: {}, lifetime: 'episode', actions: [{ actionId: 'step', score: 1 }] }] };
+  const expressionPlan = kind === '空' ? { states: [] } : kind === '无更新' ? null : emotion;
+  const p = provider({ type: 'text', text: '我很开心。', structured_output: { ...controls,
+    moodUpdate: { summary: '开心', strength: .8 }, expressionPlan } });
+  const reply = await new ConversationChatAdapter(p).respond({ ...input, movementControlHandled: true,
+    behaviorContext: { ...input.behaviorContext, runtime: { ...input.behaviorContext.runtime, pendingMovement: true },
+      character: { ...input.behaviorContext.character, states: [{ stateId: 'amber', name: '玻璃糖', agentInferable: true, tags: [],
+        actions: [{ actionId: 'step', name: '轻摆', tags: [] }] }] } } });
+  expect(p.respond).toHaveBeenCalledOnce();
+  expect(reply).toMatchObject({ text: '我很开心。', moodUpdate: { summary: '开心', strength: .8 }, ...controls });
+  if (expressionPlan) expect(reply.expressionPlan).toMatchObject(expressionPlan);
+  else expect(reply).not.toHaveProperty('expressionPlan');
 });
 
 test.each(['不可推断待机', '只有动作条件'])('真实 Qwen 坏输出（%s）得到具体修复原因，首轮合法分区冻结', async kind => {

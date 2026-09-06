@@ -194,6 +194,9 @@ export class ConversationChatAdapter {
   }
   private buildRequest(input: ConversationChatInput, idleForMs?: number): { request: ModelRequest; catalog: PublicBehaviorCatalog; budget: number } {
     const context = input.behaviorContext;
+    // 用途紧邻实际候选投影；它只帮助模型选择表现，不改写运行事实或增加计划接纳条件。
+    const requestFocus = idleForMs === undefined && context.runtime.pendingMovement ? { fact: 'moving',
+      purpose: '本轮表现选择目标：桌宠即将真实移动。Main 只接管位移执行，尚未开始移动，movementControl=keep 不代表不用选动画。请根据状态和动作描述选择适合行走的候选，并使用 when:{moving:true},lifetime:"condition",minStrength:0,maxStrength:1；这些条件只表达播放资格，静止时不播放。' } : undefined;
     // 只用 Main 的可信标记收紧当次建议，修复复用同一协议；最终裁决仍在 Director。
     const { explicitPlayback, ...properties } = characterChatResponseContract.jsonSchema.properties;
     const responseContract: ModelResponseContract = idleForMs === undefined ? {
@@ -202,7 +205,9 @@ export class ConversationChatAdapter {
         movementControl: input.movementControlHandled ? { oneOf: [properties.movementControl.oneOf[0]] } : properties.movementControl
       } }
     } : characterAutonomyResponseContract;
-    const selected = selectBehaviorCandidates(context.character, {
+    // 普通/自主不把不可推断的 idle 或当前状态伪装成可选项；明确查找仍可看到它们。
+    const selected = selectBehaviorCandidates(input.explicitPlaybackRequested ? context.character
+      : { ...context.character, states: context.character.states.filter(state => state.agentInferable) }, {
       text: input.text, sequence: context.candidateSequence ?? this.sequence++, currentStateId: context.expression?.stateId,
       mood: context.expression?.mood?.summary, recentActions: context.recentActions, explicitPlaybackRequested: input.explicitPlaybackRequested
     });
@@ -227,14 +232,14 @@ export class ConversationChatAdapter {
       const request: ModelRequest = {
         messages: [{ role: 'system', content: idleForMs === undefined
           ? '你是陪伴用户的 AI 桌宠。自然地使用用户语言回复。' + characterJsonOutputInstructions
-            + (input.movementControlHandled ? 'Main 已处理本轮明确播放或运动指令，movementControl 只能返回 {kind:"keep"}；明确播放不授予额外位移。' : '')
+            + (input.movementControlHandled ? 'Main 已裁决本轮播放或位移请求；movementControl 返回 {kind:"keep"} 仅避免重复位移，不免除表现选择。明确播放不授予额外位移。' : '')
           : autonomousInstructions },
           { role: 'system', content: '角色人设（仅影响说话方式、心情与表现）：' + JSON.stringify(identity) },
           { role: 'system', content: 'Main 公开情境与本轮候选：' + JSON.stringify({
             character: { idleStateId: catalog.idleStateId, states: catalog.states }, runtime: context.runtime,
             expression: context.expression ?? null, recentActions: context.recentActions,
             proactivityMode: context.proactivityMode, explicitPlaybackRequested: input.explicitPlaybackRequested === true,
-            ...(idleForMs === undefined ? {} : { idleForMs })
+            ...(idleForMs === undefined ? {} : { idleForMs }), ...(requestFocus ? { requestFocus } : {})
           }) }, ...history, { role: 'user', content: input.text }],
         tools: [], toolChoice: 'none', reasoningMode: idleForMs === undefined ? 'provider_default' : 'disabled',
         responseContract,
