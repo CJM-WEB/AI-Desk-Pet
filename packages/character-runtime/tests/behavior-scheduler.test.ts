@@ -2,7 +2,6 @@ import { describe, expect, test } from 'vitest';
 import {
   type CharacterActionDefinitionV2,
   type CharacterActionHistoryEntry,
-  type CharacterBehaviorActionSelection,
   type CharacterBehaviorSchedule,
   reduceCharacterActionSchedule
 } from '../src';
@@ -32,23 +31,8 @@ function createAction(
 }
 
 /** 创建调度器所需的最小动作选择结果。 */
-function createSelection(actionId: string, stateId = 'idle-state'): CharacterBehaviorActionSelection {
-  return {
-    actionId,
-    stateId,
-    reason: 'state-preference',
-    presentation: {
-      actionId,
-      fps: 12,
-      frames: [{ assetId: `${actionId}-frame`, x: 0, y: 0, width: 1, height: 1 }],
-      anchors: { ground: { x: 0.5, y: 1 } },
-      geometry: {
-        visualBounds: { x: 0, y: 0, width: 1, height: 1 },
-        groundAnchor: { x: 0.5, y: 1 },
-        resourceRevision: 'a'.repeat(64)
-      }
-    }
-  };
+function createSelection(actionId: string, stateId = 'idle-state'): { actionId: string; stateId: string } {
+  return { actionId, stateId };
 }
 
 /** 创建空调度快照。 */

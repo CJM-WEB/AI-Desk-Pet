@@ -3,7 +3,6 @@ import { testPlaybackView } from './fixtures/character-v3-playback';
 
 import type {
   ActionClip,
-  ActionSelectionResult,
   CharacterManifestV1,
   DraftActionClip
 } from '@myself/character-runtime';
@@ -12,6 +11,7 @@ import type { CharacterAssetBundle } from '../src/renderer/src/characters/player
 import {
   createBrowserPixiCharacterScene,
   PixiCharacterPlayer,
+  type CharacterPlaybackSelection as ActionSelectionResult,
   type PixiCharacterScene
 } from '../src/renderer/src/characters/player/pixi-character-player';
 import {

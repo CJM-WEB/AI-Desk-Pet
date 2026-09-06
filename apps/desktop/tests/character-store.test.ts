@@ -31,8 +31,7 @@ import {
   migrateCharacterManifestToV3,
   createCharacterPlaybackView,
   convertCharacterDraftV1ToV2,
-  convertCharacterManifestV1ToV2,
-  projectCharacterManifestV2ToLegacy
+  convertCharacterManifestV1ToV2
 } from '@myself/character-runtime';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import electronViteConfig from '../electron.vite.config';
