@@ -523,7 +523,8 @@ function isEmptyCompatibleContent(raw: unknown): boolean {
   if (!parsed.success) return false;
   const message = parsed.data.choices[0]?.message;
   if (message === undefined || (message.tool_calls?.length ?? 0) > 0) return false;
-  return message.content === undefined || message.content === null || message.content === '';
+  // 全空白同样没有可见正文，复用原有一次重试预算，不扩大重放范围。
+  return message.content === undefined || message.content === null || message.content.trim() === '';
 }
 
 export class OpenAICompatibleProvider implements ModelProvider {

@@ -2808,7 +2808,11 @@ capabilityPlan: { kind: 'chat' }}
     });
   });
 
-  test('DeepSeek 空 content 经 Provider 重试得到合法正文后结束，不修复省略的表现', async () => {
+  test.each([
+    ['空 content SSE', 'sse', null],
+    ['53 字符全空白 SSE', 'sse', ' '.repeat(53)],
+    ['53 字符全空白 JSON', 'json', ' '.repeat(53)]
+  ] as const)('DeepSeek %s 经 Provider 重试得到合法正文后结束，不修复省略的表现', async (_name, transport, content) => {
     const profile: ProviderProfileV2 = {
       id: 'deepseek-empty-chat-profile',
       displayName: 'DeepSeek',
@@ -2818,10 +2822,11 @@ capabilityPlan: { kind: 'chat' }}
       hasStoredSecret: true
     };
     const fetchClient = vi.fn<FetchLike>()
-      .mockResolvedValueOnce(sseResponse([
-        JSON.stringify({ choices: [{ delta: { content: null, tool_calls: [] } }] }),
+      // 使用实际故障的无正文形状验证既有一次重试，传输形式不改变空正文语义。
+      .mockResolvedValueOnce(transport === 'sse' ? sseResponse([
+        JSON.stringify({ choices: [{ delta: { content, tool_calls: [] } }] }),
         '[DONE]'
-      ]))
+      ]) : jsonResponse({ choices: [{ message: { content, tool_calls: [] } }] }))
       .mockResolvedValueOnce(characterChatSseResponse(
         'OpenAI Compatible',
         '{"text":"重试后正文"}'
@@ -2854,7 +2859,10 @@ capabilityPlan: { kind: 'chat' }}
     });
   });
 
-  test('DeepSeek 桌宠聊天空 content 重试耗尽后返回格式错误', async () => {
+  test.each([
+    ['空 content', null, 'RESPONSE_SHAPE_INVALID'],
+    ['全空白 content', ' \n\t'.repeat(18), 'RESPONSE_FORMAT_UNSUPPORTED']
+  ] as const)('DeepSeek 桌宠聊天%s 重试耗尽后返回格式错误', async (_name, content, code) => {
     const profile: ProviderProfileV2 = {
       id: 'deepseek-empty-chat-failure-profile',
       displayName: 'DeepSeek',
@@ -2864,7 +2872,7 @@ capabilityPlan: { kind: 'chat' }}
       hasStoredSecret: true
     };
     const fetchClient = vi.fn<FetchLike>(async () => jsonResponse({
-      choices: [{ message: { content: null, tool_calls: [] } }]
+      choices: [{ message: { content, tool_calls: [] } }]
     }));
     const adapter = new ConversationChatAdapter(new ProviderRegistry(providerCatalog).create(
       profile,
@@ -2878,7 +2886,7 @@ capabilityPlan: { kind: 'chat' }}
       behaviorContext: providerBehaviorContext,
       signal: new AbortController().signal
     })).rejects.toMatchObject({
-      code: 'RESPONSE_SHAPE_INVALID',
+      code,
       retryable: false
     });
     expect(fetchClient).toHaveBeenCalledTimes(2);
