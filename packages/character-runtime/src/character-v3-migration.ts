@@ -96,11 +96,12 @@ function convertV2(source: CharacterDraftV2, issues: CharacterMigrationIssueV3[]
   return characterDraftV3Schema.parse({ ...common, version: 3, idleStateId, states: convertedStates, actions: convertedActions, skins: convertedSkins });
 }
 
-/** V1 转换器未解释的触发规则必须在旁路问题报告中保留。 */
+/** V1 转换器遗漏或合并种类的触发规则必须保留摘要，通用交互不等价于原交互。 */
 function v1Issues(source: ReturnType<typeof characterDraftV1Schema.parse>, issues: CharacterMigrationIssueV3[]): void {
   source.states.forEach(state => {
-    if (state.kind === 'extension' && state.triggers && (state.triggers.keywords.length || state.triggers.emotions.length)) {
-      addIssue(issues, 'v1-trigger', state.id, '旧关键词与情绪触发不能等价转换为可信事件，请重新配置。', state.triggers);
+    if (state.kind === 'extension' && state.triggers && (state.triggers.keywords.length || state.triggers.emotions.length
+      || state.triggers.events.some(event => event !== 'idle'))) {
+      addIssue(issues, 'v1-trigger', state.id, '旧交互种类、关键词或情绪触发不能等价转换为通用可信事件，请审阅原规则后重新配置。', state.triggers);
     }
   });
 }

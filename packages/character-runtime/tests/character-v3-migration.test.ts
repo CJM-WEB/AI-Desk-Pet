@@ -90,3 +90,19 @@ test('V1 空草稿不能将旧转换器补出的 idle 误当作者明确指定',
   expect(result.document.idleStateId).toBeNull();
   expect(result.issues).toContainEqual(expect.objectContaining({ code: 'idle-missing', objectId: 'empty' }));
 });
+
+test.each(['single_click', 'double_click', 'context_menu'] as const)('V1 %s 的原事件范围不能被通用交互静默放宽', event => {
+  const action = { id: 'breathe', name: '呼吸', fps: 12, loop: true, weight: 1,
+    anchors: { ground: { x: 0.5, y: 1 } }, frames: [{ assetId: 'atlas', x: 0, y: 0, width: 32, height: 32 }] };
+  const source = { version: 1, id: 'pet', name: '伙伴', states: [
+    { id: 'idle', kind: 'core', actions: [action] },
+    { id: 'custom:greet', kind: 'extension', actions: [{ ...action, id: 'greet' }],
+      triggers: { events: [event], keywords: [], emotions: [] } }
+  ] };
+  const before = structuredClone(source);
+  const result = runtime.migrateCharacterDraftToV3(source);
+  const issue = result.issues.find(item => item.code === 'v1-trigger' && item.objectId === 'custom:greet');
+  expect(issue).toBeDefined();
+  expect(JSON.parse(issue!.originalRule)).toEqual({ events: [event], keywords: [], emotions: [] });
+  expect(source).toEqual(before);
+});
