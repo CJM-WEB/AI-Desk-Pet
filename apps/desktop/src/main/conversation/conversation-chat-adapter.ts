@@ -13,16 +13,14 @@ import { z } from 'zod';
 
 const characterAutonomySchema = z.object(characterExpressionWireShape).strict();
 /** 条件是模型建议的资格表达式，只有 Main 可以提供或更新运行事实。 */
-const runtimeConditionInstructions = '状态和动作都可用 when:{moving?,dragging?,carrying?,chatting?,taskRunning?,awaitingConfirmation?} 指定布尔条件；所有条件必须同时匹配，省略字段表示不限制。'
-  + '状态 lifetime 可为 episode（默认，有限片段）或 condition（条件持续期间可续播）；condition 必须在状态 when 中至少包含一个 true 条件，动作条件进一步收紧资格。'
-  + '根据候选描述判断适用情境，不把状态或动作名称当作内置语义。用于窗口位移的表现应建议 when:{moving:true}、lifetime:"condition"，停止时即可退出。'
-  + 'runtime.pendingMovement=true 仅表示 Main 已有等待本轮模型的明确位移请求，不表示 moving=true，不允许模型写运行事实；请据描述提前建议未来 moving=true 时可播放的条件计划。'
-  + '持续活动必须把 when 写在状态层，与 lifetime 同级；只给动作写 when 不能满足状态 condition 的要求。活动表现通常用 minStrength:0,maxStrength:1，不能因当前心情为零而阻止真实活动表现。'
-  + '喜讯、安慰等短时情绪用 lifetime:"episode"，按作者时长或默认3秒结束，休息10秒后才可再出现；心情独立保留并衰减，不能用 condition 持续占用。'
-  + 'idleStateId 只是 Main 兜底；agentInferable=false 的状态不能放入 expressionPlan，无法匹配时返回 states:[]。';
+const runtimeConditionInstructions = '状态/动作 when 仅含 moving、dragging、carrying、chatting、taskRunning、awaitingConfirmation 六布尔，全部满足才适用；省略表示不限。'
+  + '依据描述判断情境，不能猜名称语义。持续活动用 lifetime:"condition"；必须有状态级 when（与 lifetime 同级）至少一项 true，动作 when 只额外收紧，不能代替状态条件。活动通常用 minStrength:0,maxStrength:1，避免心情零值阻止活动。'
+  + 'runtime.pendingMovement=true 是 Main 已接纳的待执行位移，不是 moving=true；模型不能写事实，应提前建议未来 moving=true 适用的条件计划，停止即退出。'
+  + '喜讯等短时情绪用 lifetime:"episode"（默认），按作者时长或默认3秒结束、休息10秒；心情独立衰减，不能用 condition 占用。'
+  + 'idleStateId 由 Main 兜底；expressionPlan 禁止 agentInferable=false，无匹配用 states:[]。';
 /** 完整形状展示状态与动作的不同层级；占位 ID 必须替换为本轮合法配对。 */
 const expressionPlanInstructions = 'expressionPlan 完整形状为 {"states":[{"stateId":"候选状态ID","score":1,"minStrength":0,"maxStrength":1,"when":{"moving":true},"lifetime":"condition","actions":[{"actionId":"该状态动作ID","score":1}]}],"validForMs":1200000}。'
-  + '这是持续活动的层级示例，必须按描述选择实际条件；短时感受把 lifetime 改为 "episode"，不需要活动条件时省略状态 when。动作 when 仅用于额外收紧该动作。validForMs 最多1800000，默认1200000。';
+  + '按描述替换条件和ID；短时感受改为 episode，无活动要求省略 when。validForMs 最多1800000，默认1200000。';
 export const characterAutonomyResponseContract = {
   type: 'json_object', name: 'character_autonomy',
   jsonSchema: { type: 'object', additionalProperties: false, required: ['moodUpdate', 'expressionPlan'], properties: {
@@ -50,7 +48,7 @@ export const characterJsonOutputInstructions = [
   '必须结合本轮事件和人设判断你自己的感受，显式评估 moodUpdate 和 expressionPlan；有新感受时更新心情及匹配计划，无新变化用 null，不重放历史事件。',
   'moodUpdate 更新包含 summary、strength(0..1)，可选 fadeInMs(0..300000)、halfLifeMs(30000..1800000)。',
   expressionPlanInstructions,
-  '先选择已有状态，再建议该状态的动作，最多8状态、合计32动作，分数0..1是偏好；区间随心情衰减，空 states 表示无匹配。只能使用本轮候选中的合法ID配对，普通计划不能使用 agentInferable=false。',
+  '先选状态再选其动作，只用本轮合法ID配对；最多8状态、合计32动作，score/minStrength/maxStrength 均0..1，区间随心情衰减。',
   '仅当 Main 标记 explicitPlaybackRequested=true，用户明确要播放某动作或状态时，可返回 explicitPlayback:{stateId,actionId?}。明确动作要精确指定 actionId，不以随机候选替代。',
   '明确播放是短暂表现，不代替持续心情；同轮的新感受和播放结束后的计划仍需独立评估。',
   'movementControl 必填：无位移要求用 {kind:"keep"}；停止用 {kind:"set_mode",mode:0}，一直运动为1，间断运动为2；一次移动用 {kind:"move_once",target,distance}。',
@@ -252,6 +250,8 @@ export class ConversationChatAdapter {
       if (listLimit > 1) { listLimit = Math.ceil(listLimit / 2); continue; }
       if (actionLimit > Math.max(1, stateLimit)) { actionLimit = Math.max(1, stateLimit); continue; }
       if (stateLimit > 1) { stateLimit--; actionLimit = stateLimit; continue; }
+      // 可选修复不占用用户正文的首发权；最小目录实际合规时发送，修复仍另作精确预算检查。
+      if (requestBytes(request) <= budget) return { request, catalog, budget };
       throw new Error('CHARACTER_CONTEXT_BUDGET_EXCEEDED');
     }
   }

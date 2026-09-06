@@ -403,7 +403,7 @@ function conversationBehaviorDouble(
 }
 
 /** 沿用 Coordinator、Adapter、Director 和真实 V3 Service，仅隔离窗口位移与持久设置。 */
-async function behaviorDirectorIntegrationFixture() {
+async function behaviorDirectorIntegrationFixture(now = performance.now.bind(performance)) {
   let target = 0;
   const notices: Array<{ code: string; message: string }> = [];
   const motion = {
@@ -420,12 +420,12 @@ async function behaviorDirectorIntegrationFixture() {
   };
   const behavior = new CharacterBehaviorService({
     store: { getActiveManifestV3: async () => createBehaviorManifest() },
-    motion, random: () => 0
+    motion, now, random: () => 0
   });
   await behavior.initialize();
   const saveMovementMode = vi.fn<(mode: 0 | 1 | 2) => Promise<void>>();
   const director = new CharacterBehaviorDirector({
-    behavior, motion, initialGeneration: 'integration-chat-generation',
+    behavior, motion, now, initialGeneration: 'integration-chat-generation',
     initialSettings: { movementMode: 2, proactivityMode: 'assistive' },
     saveMovementMode, publishNotice: notice => notices.push(notice)
   });
@@ -750,10 +750,11 @@ describe('桌面会话分流纵向集成', () => {
   );
 
   test.each([
-    ['向左一点', { kind: 'region', region: 'left' }],
+    ['向左一点', { kind: 'relative', direction: 'left', distance: 'near' }],
     ['去右下角', { kind: 'region', region: 'bottom_right' }]
-  ] as const)('明确移动“%s”在普通聊天 Provider 前直接提交对象化运动', async (text, expectedIntent) => {
-    const behaviorFixture = await behaviorDirectorIntegrationFixture();
+  ] as const)('明确移动“%s”在普通聊天后按原八秒预算降级且保持精确运动', async (text, expectedIntent) => {
+    let now = 0;
+    const behaviorFixture = await behaviorDirectorIntegrationFixture(() => now);
     const providerRespond = vi.fn(async (): Promise<ModelResponse> => ({
       type: 'text', text: '移动指令已处理', structured_output: {}
     }));
@@ -766,9 +767,16 @@ describe('桌面会话分流纵向集成', () => {
     await fixture.composition.coordinator.submit(text);
 
     expect(behaviorFixture.behavior.snapshot()?.stateId).toBe('rest');
+    expect(behaviorFixture.motion.requestIntent).not.toHaveBeenCalled();
+    now = 7999; behaviorFixture.director.advance();
+    expect(behaviorFixture.motion.requestIntent).not.toHaveBeenCalled();
+    now = 8000; behaviorFixture.director.advance();
     expect(behaviorFixture.motion.requestIntent).toHaveBeenCalledExactlyOnceWith(expectedIntent);
     expect(behaviorFixture.motion.requestIntent.mock.invocationCallOrder[0])
-      .toBeLessThan(providerRespond.mock.invocationCallOrder[0]!);
+      .toBeGreaterThan(providerRespond.mock.invocationCallOrder[0]!);
+    now = 9000; behaviorFixture.director.advance();
+    expect(behaviorFixture.motion.requestIntent).toHaveBeenCalledTimes(1);
+    expect(behaviorFixture.notices).toEqual([{ code: 'CHARACTER_ACTION_UNAVAILABLE', message: '当前角色没有可播放的对应动作。' }]);
     await fixture.composition.close();
   });
 
@@ -1008,16 +1016,21 @@ describe('桌面 Agent 真实服务集成', () => {
         minStrength: 0, maxStrength: 1, actions: [{ actionId: 'focus-action', score: 1 }] }] }
     });
     const director = new CharacterBehaviorDirector({
-      behavior, motion, initialGeneration: 'integration-autonomous',
+      behavior, motion, now: () => now, initialGeneration: 'integration-autonomous',
       initialSettings: { movementMode: 2, proactivityMode: 'autonomous' },
       saveMovementMode: async () => undefined
     });
     try {
-      // 清单没有移动状态；明确位移不需要动画授权，也不取消已接纳的心情。
+      // 清单没有移动条件计划；原八秒预算后明确位移降级，有限表现先结束但心情保留。
       await director.prepareUserPrompt('向右一点');
+      now = 3000; director.advance();
+      expect(behavior.snapshot()?.stateId).toBe('rest');
+      now = 7999; director.advance();
+      expect(positions).toHaveLength(0);
+      now = 8000; director.advance();
       let snapshot = motion.getSnapshot();
       for (let step = 1; step <= 100 && (step === 1 || snapshot.moving); step += 1) {
-        now = step * 100;
+        now = 8000 + step * 100;
         snapshot = motion.tick();
       }
       expect(positions.length).toBeGreaterThan(0);
@@ -1025,13 +1038,22 @@ describe('桌面 Agent 真实服务集成', () => {
       expect(Math.hypot(snapshot.position.x - snapshot.target.x, snapshot.position.y - snapshot.target.y))
         .toBeLessThanOrEqual(24);
       expect(behavior.snapshot()).toMatchObject({
-        stateId: 'agent-focus', mood: { summary: '安心陪伴' },
-        schedule: { current: { actionId: 'focus-action' } }
+        stateId: 'rest', mood: { summary: '安心陪伴' },
+        schedule: { current: { actionId: 'breathe' } }
       });
       expect(() => behavior.applyPlaybackFeedback({
         playbackToken: initialIdle.playbackToken, actionId: initialIdle.actionId,
-        status: 'completed', occurredAtMs: now
+        status: 'started', occurredAtMs: now
       })).toThrow('CHARACTER_PLAYBACK_UNAUTHORIZED');
+      const beforeLateCompletion = behavior.snapshot();
+      expect(() => behavior.applyPlaybackFeedback({
+        playbackToken: initialIdle.playbackToken, actionId: initialIdle.actionId,
+        status: 'completed', occurredAtMs: now
+      })).not.toThrow();
+      expect(behavior.snapshot()).toEqual(beforeLateCompletion);
+      now = 13000; director.advance();
+      expect(behavior.snapshot()).toMatchObject({ stateId: 'agent-focus', mood: { summary: '安心陪伴' },
+        schedule: { current: { actionId: 'focus-action' } } });
     } finally {
       await director.close();
     }

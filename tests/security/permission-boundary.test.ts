@@ -207,6 +207,8 @@ function securityBehaviorDouble(
 function movementLockDirector() {
   const saveMovementMode = vi.fn<(mode: 0 | 1 | 2) => Promise<void>>();
   const behavior = {
+    updateRuntimeFacts: vi.fn(),
+    hasEligibleExpressionFor: vi.fn(() => false),
     context: vi.fn(() => null),
     snapshot: vi.fn(() => null),
     applyDecision: vi.fn(() => ({ kind: 'none' as const })),
