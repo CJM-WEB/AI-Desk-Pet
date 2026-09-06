@@ -431,6 +431,8 @@ expect(observation.responseKind).toBe('tool_only');
 
 ## 任务 6：原 Core 重复操作保护
 
+**2026-09-06 完成记录：** 当前公有任务路径已完成实施、独立审查及最终 `verify:desktop`，具体计数和限制见[验收记录](../../operations/2026-09-05-deepseek-qwen-coding-tasks.md)。活动 steer／queue promotion、overflow 恢复、providerExecuted、重复 call ID 仅有源码核查，未新增动态覆盖；不把这些分支写为实际运行通过。网站、模型配置与角色功能未修改，本轮不打包。
+
 **目标：**同一当前用户输入中，第三次连续同名、同序列化参数的本地调用在副作用前等待许可；仅继续这一次或结束当前任务。
 
 **架构：**检测留在原V2 runner，等待使用PermissionV2.assert；Main保存许可类型并复用取消清理，Renderer在现有确认区增加严格分支。任务6不依赖5A实验通过，不引入总steps或第二执行器。
@@ -476,7 +478,7 @@ yield* permission.assert({
 
 `vendor/opencode/packages/schema/src/permission.ts:17–23` 已核实 Source 必填 type='tool'、messageID、callID；source 对公开 DTO 不可见。runner 增加 `const permission = yield* PermissionV2.Service` 时同步把 `PermissionV2.node` 加入其 node deps；仅在总 Layer.group 出现不等于该 node 已声明直接依赖。当前 RunError 不包含 PermissionV2.Error；候选沿原工具的 Effect.orDie 收口，不扩张公有 RunError。正式循环结束由 Main abort，不依赖把循环 assert reject 变成可继续工具错误；异常与中断仍必须经过原 publisher／FiberSet 结算。
 
-- [ ] **RED：**先新增以下有界 HTTP 形状，当前代码会完成更多 read 而没有循环许可，失败原因应是缺少 doom_loop／第三次已完成。所用 fixture、session.run、replyPermission、events、requests 均已存在。
+- [x] **RED：**先新增以下有界 HTTP 形状，当前代码会完成更多 read 而没有循环许可，失败原因应是缺少 doom_loop／第三次已完成。所用 fixture、session.run、replyPermission、events、requests 均已存在。
 
 ```ts
 const calls: Step[] = Array.from({ length: 4 }, (_, i) => [
@@ -507,12 +509,12 @@ try {
 
 测试给 10 秒外层期限，计时器是夹具防挂，不是产品限额。Core fixture 的 Step 是有限字符串／工具数组，超出数组默认“结束”，不会真的构造无限模型。
 
-- [ ] 运行 `pnpm.cmd --filter @myself/coding-task-core test tests/session-loop.test.ts`，保留明确 RED 输出。
-- [ ] **GREEN：**按上述窗口、顺序、assert、agent 最终 ask 作最小实现。原七工具拒绝映射完全保留。两次重复完成后出现许可，第三次无副作用。once 后第三次执行，第四次出现新 ID、repeatCount=4；旧 ID 再回复失败。
-- [ ] 追加有限反例：`read A, read A, read B, read A` 不触发；同输入但不同工具打断；缺失文件重复仍触发；外目录普通许可拒绝两次后第三次先循环卡，再 once 后仍有外目录许可；不允许用 once 循环卡绕过真实访问许可。
-- [ ] 同轮数组包含四个相同 read：登记顺序固定为第1/2次执行、第3次等待；一次批准不把第4次一起放行。补“第一项普通许可待定，后续第三重复进入循环许可”组合，避免等前项结算才能显示循环卡的死锁。
-- [ ] 沿 `model-route.test.ts` 的真实原压缩配置构造“两个重复结果后触发摘要，再第三次重复”；必须断言实际出现 `Create a new anchored summary` 请求且 repeatCount 仍为3。可在 fixture 中增加只按请求内容区分“摘要请求→摘要正文／普通请求→下一个有限 Step”的可选回调，保持默认行为不变；不能把预置摘要字符串误当已经触发原压缩。
-- [ ] 同一 CodingSession 完成两次 read 后新 `run` 再两次，不继承旧窗口；取消／close 后新实例同样为空。Core 未公开 busy steer，因此不加测试专用公有入口；promotion 的新输入重置通过现有原 Session 服务的内部测试接缝或现有可观测用例证明，实施者记录是否覆盖活动 steer，不能把无用接口作为验证手段。
+- [x] 运行 `pnpm.cmd --filter @myself/coding-task-core test tests/session-loop.test.ts`，保留明确 RED 输出。
+- [x] **GREEN：**按上述窗口、顺序、assert、agent 最终 ask 作最小实现。原七工具拒绝映射完全保留。两次重复完成后出现许可，第三次无副作用。once 后第三次执行，第四次出现新 ID、repeatCount=4；旧 ID 再回复失败。
+- [x] 追加有限反例：`read A, read A, read B, read A` 不触发；同输入但不同工具打断；缺失文件重复仍触发；外目录普通许可拒绝两次后第三次先循环卡，再 once 后仍有外目录许可；不允许用 once 循环卡绕过真实访问许可。
+- [x] 同轮数组包含四个相同 read：登记顺序固定为第1/2次执行、第3次等待；一次批准不把第4次一起放行。补“第一项普通许可待定，后续第三重复进入循环许可”组合，避免等前项结算才能显示循环卡的死锁。
+- [x] 沿 `model-route.test.ts` 的真实原压缩配置构造“两个重复结果后触发摘要，再第三次重复”；必须断言实际出现 `Create a new anchored summary` 请求且 repeatCount 仍为3。可在 fixture 中增加只按请求内容区分“摘要请求→摘要正文／普通请求→下一个有限 Step”的可选回调，保持默认行为不变；不能把预置摘要字符串误当已经触发原压缩。
+- [x] 同一 CodingSession 完成两次 read 后新 `run` 再两次，不继承旧窗口；取消／close 后新实例同样为空。当前公有路径已动态验证。Core 未公开 busy steer，未增加测试专用公有入口；活动 promotion 的重置仅源码核查，未覆盖动态活动 steer，已在验收记录保留限制。
 
 ### 任务6.2：严格 DTO 与 Main 许可结束语义
 
@@ -530,31 +532,31 @@ z.object({
 
 整数上界只约束安全数值表示，不是总工具预算。summary 固定“重复操作保护”。Core 公有 CodingSessionEvent 现有 permission 分支可继续使用 resources／metadata，但 Main 只抽取唯一工具标识和 count，严格验证 `resources.length===1`、工具白名单及次数；不展开 metadata，不把 source/callId 写入 DTO。
 
-- [ ] RED：新分支最小对象通过，未知工具、次数2／小数／无穷、额外 resources／metadata／command／path 全部失败；现有四类许可仍通过。
-- [ ] RED：Main 接收一张 doom_loop 和一张普通许可，发布准确白名单 DTO；confirm 仅调用原 session.replyPermission(id,'once')；循环 cancelAction 必须中断当前任务，普通 cancelAction 仍只 replyPermission(id,'reject')。
-- [ ] GREEN：把 `active.permissions: Map<string,boolean>` 最小替换成 `Map<string,{action: TaskPermissionRequiredEvent['request']['action']; replying: boolean}>`，ID 入表时保存 **已解析 DTO** 的 action，不能从后续 Renderer 请求接受 action。重复／失效 ID 校验和16项同时待定限制保留。replying 在任何异步前置真。
-- [ ] 在原 `reply(actionId, decision)` 完成当前 owner、ID、未答复验证后，若 `decision==='reject' && pending.action==='doom_loop'`，直接 `await this.cancelActive()` 并返回。不要先 replyPermission('reject') 再 cancel，避免原 runner 在中断前继续下一轮；不要在事件回调或 runOwned finally 中 await 自身 owner.done。
-- [ ] once 和普通 reject 复用原路径；失败只在同 owner 仍活跃且未 abort 时恢复 replying。终止将 controller 同步 abort，原 runOwned finally 等 run／close 屏障后清全部许可并发布终态；清理失败继续 error 并锁入口，不能报取消成功。
-- [ ] 扩展现有 runGate／cleanupGate 测试，证明 loop cancelAction 在两个门都结算前不返回、不发布 success/cancelled；同轮其他许可 ID 在 abort 后不可 confirm，迟到 tool/text 不公开，reset/config generation/close 不保留任何循环许可。普通拒绝后独立 read 的真实 HTTP 回归必须仍通过。
+- [x] RED：新分支最小对象通过，未知工具、次数2／小数／无穷、额外 resources／metadata／command／path 全部失败；现有四类许可仍通过。
+- [x] RED：Main 接收一张 doom_loop 和一张普通许可，发布准确白名单 DTO；confirm 仅调用原 session.replyPermission(id,'once')；循环 cancelAction 必须中断当前任务，普通 cancelAction 仍只 replyPermission(id,'reject')。
+- [x] GREEN：把 `active.permissions: Map<string,boolean>` 最小替换成 `Map<string,{action: TaskPermissionRequiredEvent['request']['action']; replying: boolean}>`，ID 入表时保存 **已解析 DTO** 的 action，不能从后续 Renderer 请求接受 action。重复／失效 ID 校验和16项同时待定限制保留。replying 在任何异步前置真。
+- [x] 在原 `reply(actionId, decision)` 完成当前 owner、ID、未答复验证后，若 `decision==='reject' && pending.action==='doom_loop'`，直接 `await this.cancelActive()` 并返回。不要先 replyPermission('reject') 再 cancel，避免原 runner 在中断前继续下一轮；不要在事件回调或 runOwned finally 中 await 自身 owner.done。
+- [x] once 和普通 reject 复用原路径；失败只在同 owner 仍活跃且未 abort 时恢复 replying。终止将 controller 同步 abort，原 runOwned finally 等 run／close 屏障后清全部许可并发布终态；清理失败继续 error 并锁入口，不能报取消成功。
+- [x] 扩展现有 runGate／cleanupGate 测试，证明 loop cancelAction 在两个门都结算前不返回、不发布 success/cancelled；同轮其他许可 ID 在 abort 后不可 confirm，迟到 tool/text 不公开，reset/config generation/close 不保留任何循环许可。普通拒绝后独立 read 的真实 HTTP 回归必须仍通过。
 
 ### 任务6.3：现有确认区及正式链
 
 **文件：**`ConfirmationCard.tsx`、`chat-panel.test.tsx`、现有集成／安全／桌面 E2E 用例。
 
-- [ ] RED：渲染新 DTO 时能看到“重复操作保护”、白名单工具与次数，以及“仅继续这一次”“结束当前任务”；不能渲染 resources 循环或把它显示成外目录许可。用现有 confirm/cancel 回调测试对应调用，不新增 IPC。
-- [ ] GREEN：现有卡片内一个 doom_loop 分支，原四种文案及“拒绝本次操作”保持。说明固定为“同一操作连续重复；继续仅放行本次，原文件和命令许可仍有效。”结束提示已完成操作不撤销。
-- [ ] 用现有 taskStore 多卡测试证明结束任务的 terminal phase 清除其余 pendingPermissions；点击到清理结束期间即使其他卡仍在，Main 拒绝迟到回复。若 UI 现有 busy 只禁单卡，先判断是否已有任务状态足以全禁；不因方便引入第二份 task 状态。
-- [ ] 正式 HTTP 组合从范围授权开始，不绕过 Main 创建许可：两次重复 read 后第三次循环卡→继续一次→第四次新卡→结束；scope 前零 Core、结束后后续调用零副作用、原用户文本不改写。
-- [ ] 实际 Electron E2E 只增加一个有界循环卡旅程，复用已有窗口与私有 fixture；另以定向测试覆盖排列。运行旧普通许可拒绝旅程，证明没有把局部拒绝变成整任务取消。
+- [x] RED：渲染新 DTO 时能看到“重复操作保护”、白名单工具与次数，以及“仅继续这一次”“结束当前任务”；不能渲染 resources 循环或把它显示成外目录许可。用现有 confirm/cancel 回调测试对应调用，不新增 IPC。
+- [x] GREEN：现有卡片内一个 doom_loop 分支，原四种文案及“拒绝本次操作”保持。说明固定为“同一操作连续重复；继续仅放行本次，原文件和命令许可仍有效。”结束提示已完成操作不撤销。
+- [x] 用现有 taskStore 多卡测试证明结束任务的 terminal phase 清除其余 pendingPermissions；点击到清理结束期间即使其他卡仍在，Main 拒绝迟到回复。若 UI 现有 busy 只禁单卡，先判断是否已有任务状态足以全禁；不因方便引入第二份 task 状态。
+- [x] 正式 HTTP 组合从范围授权开始，不绕过 Main 创建许可：两次重复 read 后第三次循环卡→继续一次→第四次新卡→结束；scope 前零 Core、结束后后续调用零副作用、原用户文本不改写。
+- [x] 实际 Electron E2E 只增加一个有界循环卡旅程，复用已有窗口与私有 fixture；另以定向测试覆盖排列。运行旧普通许可拒绝旅程，证明没有把局部拒绝变成整任务取消。
 
 ### 任务6.4：来源、验证及减法交接
 
-- [ ] runner 修改必须写入 `local-patches.json` 的固定来源记录，保留原 upstreamSha256，before/after 精确对应固定原文与当前源码，中文 reason 标出“V1阈值与比较参考、V2跨轮/权限接缝适配”。本提取器对 source 用 find，仅消费一条补丁，不能给同一 source 追加多条记录冒充可重放。
-- [ ] 从仓库根运行 `node packages/coding-task-core/extract-upstream.cjs`：它会拒绝未记录本地修改，重算 sources.localSha256 与静态闭包；不是 Git 写操作。核对新增依赖仅已有 PermissionV2 服务、固定源 commit 与原始 SHA 不变，无跨网站依赖变化；不删除闭包外旧文件。README 只按实际结果更新数量与职责。
-- [ ] 依次运行 Core 定向、`pnpm.cmd --filter @myself/coding-task-core typecheck`、`node packages/coding-task-core/run-electron-tests.cjs tests/session-loop.test.ts tests/session-permission.test.ts`；该现有 wrapper 60秒上限，组过大就分组，不扩大产品期限。
-- [ ] 运行 `pnpm.cmd --filter @myself/shared-types test tests/contracts.test.ts`、`pnpm.cmd --filter @myself/desktop test tests/coding-task-service.test.ts tests/chat-panel.test.tsx`，再共享所有消费者类型、相关 integration/security 和 E2E；最终源码 `pnpm.cmd verify:desktop` 已包含 typecheck、Core test、unit、security、integration、desktop E2E，不无理由重复同一全套。
-- [ ] `git diff --check`、只读 diff 核对无网站／角色／模型路由改动。单诊断或命令15分钟硬时间盒；长门禁后台轮询，不运行安装包构建或真实模型。
-- [ ] 主控在规格／计划／验收更新实际证据与仍不覆盖的等效循环，不把精确检测写成通用进展判断。普通许可类、旧路径清理和来源索引只做该功能必要调整，无大量删除。交独立审查后停止编辑。
+- [x] runner 修改必须写入 `local-patches.json` 的固定来源记录，保留原 upstreamSha256，before/after 精确对应固定原文与当前源码，中文 reason 标出“V1阈值与比较参考、V2跨轮/权限接缝适配”。本提取器对 source 用 find，仅消费一条补丁，不能给同一 source 追加多条记录冒充可重放。
+- [x] 从仓库根运行 `node packages/coding-task-core/extract-upstream.cjs`：它会拒绝未记录本地修改，重算 sources.localSha256 与静态闭包；不是 Git 写操作。核对新增依赖仅已有 PermissionV2 服务、固定源 commit 与原始 SHA 不变，无跨网站依赖变化；不删除闭包外旧文件。README 只按实际结果更新数量与职责。
+- [x] 依次运行 Core 定向、`pnpm.cmd --filter @myself/coding-task-core typecheck`、`node packages/coding-task-core/run-electron-tests.cjs tests/session-loop.test.ts tests/session-permission.test.ts`；该现有 wrapper 60秒上限，组过大就分组，不扩大产品期限。
+- [x] 运行 `pnpm.cmd --filter @myself/shared-types test tests/contracts.test.ts`、`pnpm.cmd --filter @myself/desktop test tests/coding-task-service.test.ts tests/chat-panel.test.tsx`，再共享所有消费者类型、相关 integration/security 和 E2E；最终源码 `pnpm.cmd verify:desktop` 已包含 typecheck、Core test、unit、security、integration、desktop E2E，不无理由重复同一全套。
+- [x] `git diff --check`、只读 diff 核对无网站／角色／模型路由改动。单诊断或命令15分钟硬时间盒；长门禁后台轮询，不运行安装包构建或真实模型。
+- [x] 主控在规格／计划／验收更新实际证据与仍不覆盖的等效循环，不把精确检测写成通用进展判断。普通许可类、旧路径清理和来源索引只做该功能必要调整，无大量删除。交独立审查后停止编辑。
 
 ### 实施者可自行决定的局部细节
 

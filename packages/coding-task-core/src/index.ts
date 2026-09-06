@@ -154,6 +154,8 @@ export async function createCodingSession(options: CodingSessionOptions): Promis
             + JSON.stringify({ platform: process.platform, directory, shell: commandShell, approvedCommands: options.approvedCommands });
           agent.permissions = [{ action: '*', resource: '*', effect: 'deny' }, ...['read', 'glob', 'grep', 'edit', 'create', 'todowrite'].map(action => ({ action, resource: '*', effect: 'allow' as const })), ...['overwrite', 'delete', 'bash', 'external_directory'].map(action => ({ action, resource: '*', effect: 'ask' as const }))];
           agent.permissions.push(...options.approvedCommands.map(command => ({ action: 'bash', resource: commandResource(commandShell, directory, command), effect: 'allow' as const })));
+          // 精确 ask 位于范围规则之后；本会话无持久 saved allow，重复操作每次仅能 once。
+          agent.permissions.push({ action: 'doom_loop', resource: '*', effect: 'ask' });
         });
         draft.default(agentID);
       }).pipe(Effect.provideService(Scope.Scope, scope));

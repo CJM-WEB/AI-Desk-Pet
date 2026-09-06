@@ -97,6 +97,7 @@ const layer = Layer.effect(
     const llm = yield* LLMClient.Service
     const agents = yield* AgentV2.Service
     const tools = yield* ToolRegistry.Service
+    const permission = yield* PermissionV2.Service
     const models = yield* SessionRunnerModel.Service
     const store = yield* SessionStore.Service
     const location = yield* Location.Service
@@ -170,10 +171,19 @@ const layer = Layer.effect(
         concurrency: "unbounded",
       }).pipe(Effect.map(SystemContext.combine))
 
+    // 窗口只属于本次 drain；参数仅用于精确比较，不写历史或公开事件。
+    type RepetitionWindow = { tool?: string; serializedInput?: string; repeatCount: number }
+    const clearRepetition = (window: RepetitionWindow) => {
+      window.tool = undefined
+      window.serializedInput = undefined
+      window.repeatCount = 0
+    }
+
     const runTurnAttempt = Effect.fn("SessionRunner.runTurn")(function* (
       sessionID: SessionSchema.ID,
       promotion: SessionInput.Delivery | undefined,
       step: number,
+      repetition: RepetitionWindow,
       recoverOverflow?: typeof compaction.compactAfterOverflow,
     ) {
       const session = yield* getSession(sessionID)
@@ -192,7 +202,10 @@ const layer = Layer.effect(
           promoted += Number(yield* SessionInput.promoteNextQueued(db, events, session.id))
           promoted += yield* SessionInput.promoteSteers(db, events, session.id, cutoff)
         }
-        if (promoted > 0) currentStep = 1
+        if (promoted > 0) {
+          currentStep = 1
+          clearRepetition(repetition)
+        }
       }
       const system =
         initialized ?? (yield* SessionContextEpoch.prepare(db, events, loadSystemContext(agent), session.id))
@@ -254,6 +267,24 @@ const layer = Layer.effect(
             }
             needsContinuation = true
             const assistantMessageID = yield* publisher.assistantMessageID(event.id)
+            // 按已发布的本地调用顺序登记，在工具 fiber 启动前等待；旧 fiber 仍可结算。
+            if (toolMaterialization.definitions.some((definition) => definition.name === event.name)) {
+              const serializedInput = JSON.stringify(event.input)
+              const repeatCount = repetition.tool === event.name && repetition.serializedInput === serializedInput
+                ? repetition.repeatCount + 1
+                : 1
+              repetition.tool = event.name
+              repetition.serializedInput = serializedInput
+              repetition.repeatCount = repeatCount
+              if (repeatCount >= 3) yield* permission.assert({
+                sessionID: session.id,
+                agent: agent.id,
+                action: "doom_loop",
+                resources: [event.name],
+                metadata: { repeatCount },
+                source: { type: "tool", callID: event.id, messageID: assistantMessageID },
+              }).pipe(Effect.orDie)
+            }
             yield* Effect.uninterruptibleMask((restore) =>
               restore(
                 toolMaterialization.settle({
@@ -357,31 +388,32 @@ const layer = Layer.effect(
       sessionID: SessionSchema.ID,
       promotion: SessionInput.Delivery | undefined,
       step: number,
+      repetition: RepetitionWindow,
     ) => Effect.Effect<{ readonly needsContinuation: boolean; readonly step: number }, RunError>
 
-    const runAfterOverflowCompaction: RunTurn = Effect.fnUntraced(function* (sessionID, promotion, step) {
-      return yield* runTurnAttempt(sessionID, promotion, step).pipe(
+    const runAfterOverflowCompaction: RunTurn = Effect.fnUntraced(function* (sessionID, promotion, step, repetition) {
+      return yield* runTurnAttempt(sessionID, promotion, step, repetition).pipe(
         Effect.catchDefect(
           Effect.fnUntraced(function* (defect) {
             if (!(defect instanceof TurnTransitionError)) return yield* Effect.die(defect)
             if (defect.transition._tag === "ContinueAfterOverflowCompaction")
               return yield* Effect.die("Post-compaction provider attempt cannot recover another overflow")
             yield* Effect.yieldNow
-            return yield* runAfterOverflowCompaction(sessionID, undefined, defect.transition.step)
+            return yield* runAfterOverflowCompaction(sessionID, undefined, defect.transition.step, repetition)
           }),
         ),
       )
     })
 
-    const runTurn: RunTurn = Effect.fnUntraced(function* (sessionID, promotion, step) {
-      return yield* runTurnAttempt(sessionID, promotion, step, compaction.compactAfterOverflow).pipe(
+    const runTurn: RunTurn = Effect.fnUntraced(function* (sessionID, promotion, step, repetition) {
+      return yield* runTurnAttempt(sessionID, promotion, step, repetition, compaction.compactAfterOverflow).pipe(
         Effect.catchDefect(
           Effect.fnUntraced(function* (defect) {
             if (!(defect instanceof TurnTransitionError)) return yield* Effect.die(defect)
             yield* Effect.yieldNow
             if (defect.transition._tag === "ContinueAfterOverflowCompaction")
-              return yield* runAfterOverflowCompaction(sessionID, undefined, defect.transition.step)
-            return yield* runTurn(sessionID, undefined, defect.transition.step)
+              return yield* runAfterOverflowCompaction(sessionID, undefined, defect.transition.step, repetition)
+            return yield* runTurn(sessionID, undefined, defect.transition.step, repetition)
           }),
         ),
       )
@@ -391,6 +423,8 @@ const layer = Layer.effect(
       readonly sessionID: SessionSchema.ID
       readonly force: boolean
     }) {
+      const repetition: RepetitionWindow = { repeatCount: 0 }
+      yield* Effect.addFinalizer(() => Effect.sync(() => clearRepetition(repetition)))
       const hasSteer = yield* SessionInput.hasPending(db, input.sessionID, "steer")
       const hasQueue = hasSteer ? false : yield* SessionInput.hasPending(db, input.sessionID, "queue")
       if (!input.force && !hasSteer && !hasQueue) return
@@ -401,7 +435,7 @@ const layer = Layer.effect(
         let needsContinuation = true
         let step = 1
         while (needsContinuation) {
-          const result = yield* runTurn(input.sessionID, promotion, step)
+          const result = yield* runTurn(input.sessionID, promotion, step, repetition)
           needsContinuation = result.needsContinuation
           step = result.step + 1
           promotion = "steer"
@@ -410,7 +444,7 @@ const layer = Layer.effect(
         shouldRun = yield* SessionInput.hasPending(db, input.sessionID, "queue")
         promotion = shouldRun ? "queue" : undefined
       }
-    })
+    }, Effect.scoped)
 
     return Service.of({
       run,
@@ -426,6 +460,7 @@ export const node = makeLocationNode({
     llmClient,
     AgentV2.node,
     ToolRegistry.node,
+    PermissionV2.node,
     SessionRunnerModel.node,
     SessionStore.node,
     Location.node,

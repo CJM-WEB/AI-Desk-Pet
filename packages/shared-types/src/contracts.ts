@@ -78,7 +78,8 @@ export const taskPermissionRequiredEventSchema = z.object({
   summary: z.string().min(1).max(240),
   request: z.discriminatedUnion('action', [
     z.object({ action: z.literal('bash'), resources: taskPermissionResourcesSchema, command: taskCommandSchema, cwd: z.string().min(1).max(1_024) }).strict(),
-    z.object({ action: z.enum(['external_directory', 'delete', 'overwrite']), resources: taskPermissionResourcesSchema }).strict()
+    z.object({ action: z.enum(['external_directory', 'delete', 'overwrite']), resources: taskPermissionResourcesSchema }).strict(),
+    z.object({ action: z.literal('doom_loop'), tool: z.enum(['read', 'glob', 'grep', 'write', 'edit', 'apply_patch', 'bash', 'todowrite']), repeatCount: z.number().int().min(3).max(Number.MAX_SAFE_INTEGER) }).strict()
   ])
 }).strict();
 export type TaskPermissionRequiredEvent = z.infer<typeof taskPermissionRequiredEventSchema>;

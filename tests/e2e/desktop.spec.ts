@@ -583,6 +583,54 @@ async function readCodingEvents(page: Page): Promise<TaskEvent[]> {
 }
 
 test.describe('正式 Core 任务 UI', () => {
+  test('重复操作卡仅继续一次并结束任务，随后普通拒绝仍只拒绝本次操作', async () => {
+    test.setTimeout(120000);
+    const nonce = `循环正文-${randomBytes(16).toString('hex')}`;
+    const provider = await startProviderServer([
+      ...Array.from({ length: 4 }, (_, index) => ({ response: codingResponse([{ name: 'read', args: { path: 'note.txt' }, id: `ui-loop-${index}` }]) })),
+      { response: codingResponse([{ name: 'write', args: { path: 'note.txt', content: '禁止覆盖' }, id: 'ui-rejected' }]) },
+      { response: codingResponse([{ name: 'read', args: { path: 'note.txt' }, id: 'ui-after-reject' }]), inspectRaw: request => { expect(JSON.stringify(request.messages)).toContain('rejected'); } },
+      { response: request => { expect(JSON.stringify(request.messages)).toContain(nonce); return codingResponse('普通拒绝后继续读取成功'); } }
+    ]);
+    let fixture: AppFixture | undefined;
+    try {
+      fixture = await (await loadElectronFixtureModule()).createElectronAppFixture({ workspaceRoot: resolve(process.cwd()), apiKey: provider.apiKey, logSentinels: [nonce] });
+      await writeFile(join(fixture.authorizedRootDirectory, 'note.txt'), nonce);
+      const { chat } = await configureCodingApp(fixture, provider);
+      await recordCodingEvents(chat);
+      await submitChatMessage(chat, '读取 note.txt 文件');
+      await expect(chat.getByRole('article', { name: '本地任务授权' })).toBeVisible();
+      expect(provider.requests).toHaveLength(0);
+      await approveCodingScope(chat);
+      const permission = chat.getByRole('region', { name: '具体操作许可' });
+      await expect(permission).toContainText('重复操作保护');
+      await expect(permission).toContainText('连续 3 次');
+      await expect(permission).toContainText('read');
+      expect(provider.requests).toHaveLength(3);
+      const third = (await readCodingEvents(chat)).find(event => event.type === 'task_permission_required');
+      if (third?.type !== 'task_permission_required') throw new Error('缺少循环许可');
+      expect(third.request).toEqual({ action: 'doom_loop', tool: 'read', repeatCount: 3 });
+      await permission.getByRole('button', { name: '仅继续这一次' }).click();
+      await expect(permission).toContainText('连续 4 次');
+      expect(provider.requests).toHaveLength(4);
+      await expect(chat.evaluate(id => window.myself.confirmAction(id), third.actionId)).rejects.toThrow();
+      await permission.getByRole('button', { name: '结束当前任务' }).click();
+      await expect(chat.locator('.phase-pill')).toHaveClass(/phase-cancelled/u);
+      await expect(permission).toHaveCount(0);
+      expect(provider.requests).toHaveLength(4);
+      expect(await readFile(join(fixture.authorizedRootDirectory, 'note.txt'), 'utf8')).toBe(nonce);
+      await submitChatMessage(chat, '修改 note.txt 文件');
+      await approveCodingScope(chat);
+      await expect(permission.getByRole('button', { name: '确认覆盖文件' })).toBeEnabled();
+      await permission.getByRole('button', { name: '拒绝本次操作' }).click();
+      await expect(chat.getByText('普通拒绝后继续读取成功', { exact: true })).toBeVisible();
+      await expect(chat.locator('.phase-pill')).toHaveClass(/phase-success/u);
+      expect(await readFile(join(fixture.authorizedRootDirectory, 'note.txt'), 'utf8')).toBe(nonce);
+      provider.assertComplete();
+      expect(provider.inspectionErrors).toEqual([]);
+      expect(fixture.capturedLogEvidence).toEqual({ apiKey: false, authorizedRoot: false, authorizationHeader: false, sentinels: [false] });
+    } finally { try { await fixture?.dispose(); } finally { await provider.close(); } }
+  });
   test('自然读取随机正文经真实工具回注显示在聊天并结束', async () => {
     test.setTimeout(120000);
     const nonce = `读取正文-${randomBytes(16).toString('hex')}`;

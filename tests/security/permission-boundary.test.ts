@@ -242,6 +242,31 @@ function movementLockDirector() {
 }
 
 describe('权限边界安全回归', () => {
+  test('循环卡一次许可不能代替外部目录许可，结束使并存许可立即失效', async () => {
+    const fixture = await createCodingConversation([
+      { response: () => codingResponse(Array.from({ length: 4 }, (_, index) => ({ name: 'read', args: { path: join(fixture.authorized.base, 'outside.txt') }, id: `private-loop-call-${index}` }))) }
+    ]);
+    try {
+      await writeFile(join(fixture.authorized.base, 'outside.txt'), '外部私有正文');
+      await fixture.authorize('读取 outside.txt 文件');
+      const permissions = () => fixture.events.filter(event => event.type === 'task_permission_required');
+      await expect.poll(() => permissions().filter(event => event.request.action === 'doom_loop').length).toBe(1);
+      await expect.poll(() => permissions().filter(event => event.request.action === 'external_directory').length).toBe(2);
+      const third = permissions().find(event => event.request.action === 'doom_loop')!;
+      expect(third.request).toEqual({ action: 'doom_loop', tool: 'read', repeatCount: 3 });
+      expect(JSON.stringify(third)).not.toMatch(/outside|private|metadata|resources|source|callId/u);
+      await fixture.composition.coordinator.resolveFileAction(third.actionId, 'confirm');
+      await expect.poll(() => permissions().filter(event => event.request.action === 'doom_loop').length).toBe(2);
+      await expect.poll(() => permissions().filter(event => event.request.action === 'external_directory').length).toBe(3);
+      const fourth = permissions().filter(event => event.request.action === 'doom_loop')[1]!;
+      await fixture.composition.coordinator.resolveFileAction(fourth.actionId, 'cancel');
+      expect(fixture.events.at(-1)).toEqual({ type: 'phase', phase: 'cancelled' });
+      for (const permission of permissions()) await expect(fixture.composition.coordinator.resolveFileAction(permission.actionId, 'confirm')).rejects.toBeDefined();
+      expect(fixture.provider.requests).toHaveLength(1);
+      expect(JSON.stringify(fixture.events)).not.toContain('外部私有正文');
+      fixture.provider.assertComplete();
+    } finally { await fixture.close(); }
+  }, 15000);
   test('正式范围前零请求，拒绝外部目录许可后无越界副作用且模型仍可读取范围内文件', async () => {
     const nonce = crypto.randomUUID();
     const fixture = await createCodingConversation([

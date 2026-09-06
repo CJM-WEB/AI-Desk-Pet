@@ -11,15 +11,17 @@ const { createCodingSession }: typeof import('../src/index') = process.env.CODIN
 
 export type Step = string | { name: string; args: Record<string, unknown>; id?: string }[];
 // 只替换模型 HTTP 响应；文件、权限、runner 和命令均走生产链。
-export async function fixture(steps: Step[], host: Partial<CodingSessionOptions> = {}) {
+export async function fixture(steps: Step[], host: Partial<CodingSessionOptions> = {}, respond?: (request: unknown, next: () => Step) => Step) {
   const directory = await mkdtemp(join(tmpdir(), 'ai-pet 任务测试-'));
   const dataDirectory = await mkdtemp(join(tmpdir(), 'ai-pet-task-data-'));
   const events: CodingSessionEvent[] = [];
   const requests: { messages: { role: string; content: unknown; tool_call_id?: string }[] }[] = [];
+  let stepIndex = 0;
   const server = createServer(async (request, response) => {
     let body = ''; for await (const chunk of request) body += chunk.toString();
     requests.push(JSON.parse(body));
-    const step = steps[requests.length - 1] ?? '结束';
+    const next = () => steps[stepIndex++] ?? '结束';
+    const step = respond ? respond(requests.at(-1), next) : next();
     const delta = typeof step === 'string' ? { content: step } : { tool_calls: step.map((tool, index) => ({ index, id: tool.id ?? `call_${requests.length}_${index}`, type: 'function', function: { name: tool.name, arguments: JSON.stringify(tool.args) } })) };
     response.writeHead(200, { 'content-type': 'text/event-stream' });
     response.end(`data: ${JSON.stringify({ id: 'fixture', choices: [{ index: 0, delta, finish_reason: null }] })}\n\ndata: ${JSON.stringify({ id: 'fixture', choices: [{ index: 0, delta: {}, finish_reason: typeof step === 'string' ? 'stop' : 'tool_calls' }] })}\n\ndata: [DONE]\n\n`);

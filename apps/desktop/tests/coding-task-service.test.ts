@@ -8,6 +8,60 @@ import type { TaskEvent } from '@myself/shared-types';
 import { CodingTaskService } from '../src/main/agent/coding-task-service';
 import { commandResource } from '@myself/coding-task-core';
 
+test('循环许可仅投影工具与次数，结束直接中断并等待 run 与 close 两个屏障', async () => {
+  const events: TaskEvent[] = [];
+  const replies: unknown[] = [];
+  const facts: unknown[] = [];
+  let finishRun!: () => void;
+  let finishCleanup!: () => void;
+  let currentSignal!: AbortSignal;
+  let cleanupEntered = false;
+  const runGate = new Promise<void>(resolve => { finishRun = resolve; });
+  const cleanupGate = new Promise<void>(resolve => { finishCleanup = resolve; });
+  const service = new CodingTaskService({
+    sessionOptions: async () => ({ directory: 'D:\\task', dataDirectory: 'D:\\data', approvedCommands: [], model: { baseUrl: '', modelId: 'fixture', contextWindow: 8192, outputTokens: 2048, readCredential: async () => 'fixture' } }),
+    createSession: async options => ({
+      run: async (_text, signal) => {
+        currentSignal = signal;
+        for (const id of ['loop-1', 'loop-2']) options.onEvent({ type: 'permission', id, action: 'doom_loop', resources: ['read'], metadata: { repeatCount: 3, path: '私有路径', command: '私有命令' }, callId: '私有调用' });
+        options.onEvent({ type: 'permission', id: 'ordinary', action: 'overwrite', resources: ['目标'] });
+        await runGate;
+        options.onEvent({ type: 'tool', name: 'read', callId: 'late', status: 'completed' });
+        options.onEvent({ type: 'text', text: '迟到文本' });
+        return { text: '迟到正文', toolCalls: 1 };
+      },
+      replyPermission: async (id, decision) => { replies.push({ id, decision }); },
+      close: async () => { cleanupEntered = true; await cleanupGate; }
+    }), emit: event => events.push(event), emitTrustedToolResult: fact => facts.push(fact)
+  });
+  const run = service.submitFileTask({ text: '检查', visibleHistory: [] });
+  let ending: Promise<void> | undefined;
+  try {
+    await expect.poll(() => !!currentSignal).toBe(true);
+    expect(events.filter(event => event.type === 'task_permission_required')).toEqual([
+      ...['loop-1', 'loop-2'].map(actionId => ({ type: 'task_permission_required', actionId, summary: '重复操作保护', request: { action: 'doom_loop', tool: 'read', repeatCount: 3 } })),
+      { type: 'task_permission_required', actionId: 'ordinary', summary: '覆盖已有文件', request: { action: 'overwrite', resources: ['目标'] } }
+    ]);
+    await service.confirm('loop-1');
+    await expect(service.confirm('loop-1')).rejects.toMatchObject({ code: 'ACTION_EXPIRED' });
+    let settled = false;
+    ending = service.cancelAction('loop-2').then(() => { settled = true; });
+    expect(currentSignal.aborted).toBe(true);
+    expect(settled).toBe(false);
+    expect(cleanupEntered).toBe(false);
+    await expect(service.confirm('ordinary')).rejects.toMatchObject({ code: 'ACTION_EXPIRED' });
+    expect(replies).toEqual([{ id: 'loop-1', decision: 'once' }]);
+    finishRun();
+    await expect.poll(() => cleanupEntered).toBe(true);
+    expect(settled).toBe(false);
+    expect(events.some(event => event.type === 'phase' && ['success', 'cancelled'].includes(event.phase))).toBe(false);
+    finishCleanup(); await ending; await run;
+    expect(events.at(-1)).toEqual({ type: 'phase', phase: 'cancelled' });
+    expect(facts).toEqual([]);
+    expect(JSON.stringify(events)).not.toMatch(/私有|迟到/u);
+  } finally { finishRun(); finishCleanup(); await ending?.catch(() => undefined); await run; await service.close(); }
+});
+
 test('真实 Core 读取的正文先于清理完成后的成功终态', async () => {
   const nonce = randomUUID();
   let onEvent: (event: CodingSessionEvent) => void = () => undefined;
@@ -122,13 +176,14 @@ test.each(['cancel', 'reset', 'close'] as const)('%s 等待 run 和 close 屏障
   const cleanupGate = new Promise<void>(resolve => { finishCleanup = resolve; });
   const service = new CodingTaskService({
     sessionOptions: async () => ({ directory: 'D:\\task', dataDirectory: 'D:\\data', approvedCommands: [], model: { baseUrl: '', modelId: 'fixture', contextWindow: 8192, outputTokens: 2048, readCredential: async () => 'fixture' } }),
-    createSession: async options => ({ run: async () => { started(); await runGate; options.onEvent({ type: 'tool', name: 'write', callId: 'late', status: 'completed' }); return { text: '迟到正文', toolCalls: 1 }; }, replyPermission: async () => undefined, close: async () => { cleanupStarted(); await cleanupGate; } }),
+    createSession: async options => ({ run: async () => { options.onEvent({ type: 'permission', id: 'loop-ending', action: 'doom_loop', resources: ['read'], metadata: { repeatCount: 3 } }); started(); await runGate; options.onEvent({ type: 'tool', name: 'write', callId: 'late', status: 'completed' }); return { text: '迟到正文', toolCalls: 1 }; }, replyPermission: async () => undefined, close: async () => { cleanupStarted(); await cleanupGate; } }),
     emit: event => events.push(event), emitTrustedToolResult: result => facts.push(result)
   });
   const submission = service.submitFileTask({ text: '任务', visibleHistory: [] });
   await running;
   let settled = false;
   const ending = (action === 'cancel' ? service.cancelActive() : action === 'reset' ? service.resetForNewConversation() : service.close()).then(() => { settled = true; });
+  await expect(service.confirm('loop-ending')).rejects.toMatchObject({ code: 'ACTION_EXPIRED' });
   await expect(service.submitFileTask({ text: '下一任务', visibleHistory: [] })).rejects.toMatchObject({ code: 'TASK_ALREADY_ACTIVE' });
   finishRun(); await cleanupEntered;
   expect(settled).toBe(false);
@@ -164,7 +219,7 @@ test('零工具的正在读取回复也明确结束，不制造永久运行', as
   } finally { await service.close(); await f.close(); }
 });
 
-test.each(['unknown', 'hash', 'oversized', 'overflow'] as const)('畸形或超限许可 %s 封闭失败并清理当前任务', async kind => {
+test.each(['unknown', 'hash', 'oversized', 'overflow', 'loop-resources', 'loop-tool', 'loop-count'] as const)('畸形或超限许可 %s 封闭失败并清理当前任务', async kind => {
   const events: TaskEvent[] = [];
   let cleaned = false;
   const service = new CodingTaskService({
@@ -172,7 +227,9 @@ test.each(['unknown', 'hash', 'oversized', 'overflow'] as const)('畸形或超�
     createSession: async options => ({
       run: async (_text, signal) => {
         for (let index = 0; index < (kind === 'overflow' ? 17 : 1); index += 1) {
-          options.onEvent(kind === 'hash'
+          options.onEvent(kind.startsWith('loop-')
+            ? { type: 'permission', id: 'loop-invalid', action: 'doom_loop', resources: kind === 'loop-resources' ? ['read', 'write'] : [kind === 'loop-tool' ? 'unknown' : 'read'], metadata: { repeatCount: kind === 'loop-count' ? 2 : 3 } }
+            : kind === 'hash'
             ? { type: 'permission', id: 'permission-1', action: 'bash', resources: ['command-sha256:tampered'], metadata: { command: 'private-command', cwd: 'D:\\task' } }
             : { type: 'permission', id: `permission-${index}`, action: kind === 'unknown' ? 'arbitrary' : 'overwrite', resources: [kind === 'oversized' ? 'x'.repeat(1025) : 'D:\\task\\note.txt'] });
         }

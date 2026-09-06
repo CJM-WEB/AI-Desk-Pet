@@ -9,6 +9,19 @@ import {
 } from '../src/contracts';
 
 describe('正式任务许可契约', () => {
+  const loop = { type: 'task_permission_required', actionId: 'loop-1', summary: '重复操作保护', request: { action: 'doom_loop', tool: 'read', repeatCount: 3 } };
+  it('重复操作许可仅暴露白名单工具与安全整数次数', () => {
+    for (const tool of ['read', 'glob', 'grep', 'write', 'edit', 'apply_patch', 'bash', 'todowrite']) {
+      expect(taskEventSchema.safeParse({ ...loop, request: { ...loop.request, tool } }).success).toBe(true);
+    }
+    expect(taskEventSchema.safeParse({ ...loop, request: { ...loop.request, repeatCount: Number.MAX_SAFE_INTEGER } }).success).toBe(true);
+  });
+  it.each([{ tool: 'unknown' }, { repeatCount: 2 }, { repeatCount: 3.5 }, { repeatCount: Infinity }, { repeatCount: Number.MAX_SAFE_INTEGER + 1 }, { resources: ['private'] }, { metadata: {} }, { command: 'private' }, { path: 'private' }, { callId: 'private' }])('重复操作许可拒绝非法或额外字段 %#', change => {
+    expect(taskEventSchema.safeParse({ ...loop, request: { ...loop.request, ...change } }).success).toBe(false);
+  });
+  it.each(['external_directory', 'delete', 'overwrite'])('原有 %s 许可继续通过', action => {
+    expect(taskEventSchema.safeParse({ ...loop, request: { action, resources: ['目标'] } }).success).toBe(true);
+  });
   const permission = { type: 'task_permission_required', actionId: 'permission-1', summary: '运行命令', request: { action: 'bash', resources: ['command-sha256:fixture'], command: 'pnpm.cmd test', cwd: 'D:\\project' } };
   it('仅接受决策字段且不接受独立过期时间或原始metadata', () => {
     expect(taskEventSchema.parse(permission)).toEqual(permission);

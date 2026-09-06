@@ -4,6 +4,7 @@ import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, test, vi } from 'vitest';
 import { ChatPanel } from '../src/renderer/src/chat/ChatPanel';
 import { taskStore } from '../src/renderer/src/stores/task-store';
+import { ConfirmationCard } from '../src/renderer/src/chat/ConfirmationCard';
 import type { SettingsDashboardDto } from '../src/shared/myself-api';
 import type { LocalModelPublicStatus } from '../src/shared/local-model-ipc';
 
@@ -42,6 +43,28 @@ afterEach(() => {
 });
 
 describe('聊天面板本地模型状态', () => {
+  test('循环确认卡明确一次放行与结束整项任务，终态清除所有卡片', async () => {
+    const confirm = vi.fn();
+    const cancel = vi.fn();
+    const loop = { type: 'task_permission_required', actionId: 'loop-1', summary: '重复操作保护', request: { action: 'doom_loop', tool: 'read', repeatCount: 3 } } as const;
+    render(<ConfirmationCard action={loop as never} busy={false} onConfirm={confirm} onCancel={cancel} />);
+    expect(screen.getByText('重复操作保护')).toBeDefined();
+    expect(screen.getByText('read')).toBeDefined();
+    expect(screen.getByText(/连续 3 次/u)).toBeDefined();
+    expect(screen.getByText('同一操作连续重复；继续仅放行本次，原文件和命令许可仍有效。')).toBeDefined();
+    fireEvent.click(screen.getByRole('button', { name: '仅继续这一次' }));
+    fireEvent.click(screen.getByRole('button', { name: '结束当前任务' }));
+    expect(confirm).toHaveBeenCalledOnce();
+    expect(cancel).toHaveBeenCalledOnce();
+    expect(screen.queryByRole('button', { name: '拒绝本次操作' })).toBeNull();
+    act(() => {
+      taskStore.getState().apply(loop as never);
+      taskStore.getState().apply({ type: 'task_permission_required', actionId: 'ordinary', summary: '覆盖', request: { action: 'overwrite', resources: ['目标'] } });
+    });
+    expect(taskStore.getState().pendingPermissions).toHaveLength(2);
+    act(() => taskStore.getState().apply({ type: 'phase', phase: 'cancelled' }));
+    expect(taskStore.getState().pendingPermissions).toHaveLength(0);
+  });
   test('范围确认返回后可回复多张具体许可，只移除已接纳的当前项', async () => {
     const api = {
       submitMessage: vi.fn().mockResolvedValue(undefined), cancelTask: vi.fn().mockResolvedValue(undefined),

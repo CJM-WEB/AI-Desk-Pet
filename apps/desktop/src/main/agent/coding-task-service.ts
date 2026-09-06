@@ -1,6 +1,6 @@
 import { createCodingSession, commandResource, type CodingSession, type CodingSessionOptions, type CodingSessionEvent } from '@myself/coding-task-core';
 import type { ModelMessage } from '@myself/agent-core';
-import { taskPermissionRequiredEventSchema, taskPermissionIdSchema, type TaskEvent } from '@myself/shared-types';
+import { taskPermissionRequiredEventSchema, taskPermissionIdSchema, type TaskEvent, type TaskPermissionRequiredEvent } from '@myself/shared-types';
 
 export interface CodingTaskSubmission {
   text: string;
@@ -20,7 +20,7 @@ export interface CodingTaskServiceOptions {
 
 /** Main 只拥有当前任务的输入快照、许可投影及清理；执行与消息仍由原 Core 管理。 */
 export class CodingTaskService {
-  private active: { controller: AbortController; done: Promise<CodingTaskOutcome>; session?: CodingSession; permissions: Map<string, boolean>; invalidPermission: boolean } | null = null;
+  private active: { controller: AbortController; done: Promise<CodingTaskOutcome>; session?: CodingSession; permissions: Map<string, { action: TaskPermissionRequiredEvent['request']['action']; replying: boolean }>; invalidPermission: boolean } | null = null;
   private closed = false;
   private cleanupFailed = false;
   constructor(private readonly options: CodingTaskServiceOptions) {}
@@ -50,15 +50,18 @@ export class CodingTaskService {
           if (event.type === 'permission') {
             try {
               if (owner.permissions.size >= 16 || owner.permissions.has(event.id)) throw taskError('PERMISSION_INVALID');
-              const metadata = event.metadata as { command?: unknown; cwd?: unknown } | undefined;
-              const request = event.action === 'bash'
+              const metadata = event.metadata as { command?: unknown; cwd?: unknown; repeatCount?: unknown } | undefined;
+              if (event.action === 'doom_loop' && event.resources.length !== 1) throw taskError('PERMISSION_INVALID');
+              const request = event.action === 'doom_loop'
+                ? { action: event.action, tool: event.resources[0], repeatCount: metadata?.repeatCount }
+                : event.action === 'bash'
                 ? { action: event.action, resources: [...event.resources], command: metadata?.command, cwd: metadata?.cwd }
                 : { action: event.action, resources: [...event.resources] };
               const dto = taskPermissionRequiredEventSchema.parse({ type: 'task_permission_required', actionId: event.id,
-                summary: event.action === 'bash' ? '运行未预先批准的命令' : event.action === 'delete' ? '移入回收站' : event.action === 'overwrite' ? '覆盖已有文件' : '访问授权目录之外的位置', request });
+                summary: event.action === 'doom_loop' ? '重复操作保护' : event.action === 'bash' ? '运行未预先批准的命令' : event.action === 'delete' ? '移入回收站' : event.action === 'overwrite' ? '覆盖已有文件' : '访问授权目录之外的位置', request });
               if (dto.request.action === 'bash' && (!configuration.commandShell || dto.request.resources.length !== 1
                 || dto.request.resources[0] !== commandResource(configuration.commandShell, dto.request.cwd, dto.request.command))) throw taskError('PERMISSION_INVALID');
-              owner.permissions.set(event.id, false);
+              owner.permissions.set(event.id, { action: dto.request.action, replying: false });
               publish(dto);
             } catch { owner.invalidPermission = true; owner.controller.abort(); }
           }
@@ -111,13 +114,19 @@ export class CodingTaskService {
 
   private async reply(actionId: string, decision: 'once' | 'reject'): Promise<void> {
     const owner = this.active;
-    if (!taskPermissionIdSchema.safeParse(actionId).success || !owner?.session || owner.controller.signal.aborted || owner.permissions.get(actionId) !== false) throw taskError('ACTION_EXPIRED');
-    owner.permissions.set(actionId, true);
+    const pending = owner?.permissions.get(actionId);
+    if (!taskPermissionIdSchema.safeParse(actionId).success || !owner?.session || owner.controller.signal.aborted || !pending || pending.replying) throw taskError('ACTION_EXPIRED');
+    pending.replying = true;
+    // 循环卡的结束先同步失效整个 owner，再等待原 run/close；不能先 reject 放跑原循环。
+    if (decision === 'reject' && pending.action === 'doom_loop') {
+      await this.cancelActive();
+      return;
+    }
     try {
       await owner.session.replyPermission(actionId, decision);
       owner.permissions.delete(actionId);
     } catch (error) {
-      if (this.active === owner && !owner.controller.signal.aborted) owner.permissions.set(actionId, false);
+      if (this.active === owner && !owner.controller.signal.aborted) pending.replying = false;
       throw taskError('ACTION_EXPIRED');
     }
   }

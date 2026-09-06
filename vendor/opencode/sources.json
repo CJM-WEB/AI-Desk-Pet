@@ -4,16 +4,6 @@
   "entry": "packages/coding-task-core/src/index.ts",
   "files": [
     {
-      "source": "packages/llm/src/protocols/openai-chat.ts",
-      "sha256": "dd086d7ae33596a876256507dede7f5b9705aafb7cd4502155e9209bfdcc9148",
-      "localSha256": "dd086d7ae33596a876256507dede7f5b9705aafb7cd4502155e9209bfdcc9148"
-    },
-    {
-      "source": "packages/llm/src/route/index.ts",
-      "sha256": "ffe5b726c5188cda1655ab4bad7b1dc185d2df791681173bd438d0adc1f95b46",
-      "localSha256": "ffe5b726c5188cda1655ab4bad7b1dc185d2df791681173bd438d0adc1f95b46"
-    },
-    {
       "source": "packages/core/src/effect/layer-node.ts",
       "sha256": "eededbc130f4ecdcdda906099be5aca47496cd58d3a15897ea17ab13f4a3a758",
       "localSha256": "eededbc130f4ecdcdda906099be5aca47496cd58d3a15897ea17ab13f4a3a758"
@@ -42,6 +32,11 @@
       "source": "packages/core/src/config.ts",
       "sha256": "6f6b9f1d325cc607f028d55dfb57e0db48421b82b008703e32b6f2f0b6e4a08c",
       "localSha256": "6f6b9f1d325cc607f028d55dfb57e0db48421b82b008703e32b6f2f0b6e4a08c"
+    },
+    {
+      "source": "packages/core/src/config/compaction.ts",
+      "sha256": "6d9247b8155b368c6de2e13b48fce9e1a87468ac442dba0a29f7b3b3cbfb10b6",
+      "localSha256": "6d9247b8155b368c6de2e13b48fce9e1a87468ac442dba0a29f7b3b3cbfb10b6"
     },
     {
       "source": "packages/core/src/location.ts",
@@ -96,7 +91,7 @@
     {
       "source": "packages/core/src/session/runner/llm.ts",
       "sha256": "625134472e3c810fcf5b39f116950a5532bd24ae7ec0caa8b1c3198389fa5681",
-      "localSha256": "625134472e3c810fcf5b39f116950a5532bd24ae7ec0caa8b1c3198389fa5681"
+      "localSha256": "daf2a1538b1b3bfda684254987835f7f7c057b97ccf0d2feb4c70b8be57e8e12"
     },
     {
       "source": "packages/core/src/session/runner/model.ts",
@@ -209,76 +204,6 @@
       "localSha256": "f8c6363251babacd5dfc0c5e5e7413e0efd44bd6f56612a380286f61df23ba46"
     },
     {
-      "source": "packages/llm/src/route/client.ts",
-      "sha256": "3daf129affd63941ca575f39b908bf2a6f528a0043854b730799850d89fc5541",
-      "localSha256": "3daf129affd63941ca575f39b908bf2a6f528a0043854b730799850d89fc5541"
-    },
-    {
-      "source": "packages/llm/src/route/auth.ts",
-      "sha256": "8e6a2ca7130144ed94fa97d5dfaf86706bd088e4a23d74bede5a1687bbd5f8eb",
-      "localSha256": "8e6a2ca7130144ed94fa97d5dfaf86706bd088e4a23d74bede5a1687bbd5f8eb"
-    },
-    {
-      "source": "packages/llm/src/route/endpoint.ts",
-      "sha256": "8fd5a184bfea58fed703178ff5d735fbe1cf909925b04c7fea2f41ee53b90229",
-      "localSha256": "8fd5a184bfea58fed703178ff5d735fbe1cf909925b04c7fea2f41ee53b90229"
-    },
-    {
-      "source": "packages/llm/src/route/transport/index.ts",
-      "sha256": "037451e37c0cf36a5be4b030370c9a3e749c98cf9f5b3e43f34ffc491c4e75b4",
-      "localSha256": "037451e37c0cf36a5be4b030370c9a3e749c98cf9f5b3e43f34ffc491c4e75b4"
-    },
-    {
-      "source": "packages/llm/src/route/protocol.ts",
-      "sha256": "129570139773ab102329e7208ec8ba513e727a07b4e30d265f1f95a1d21f41ad",
-      "localSha256": "129570139773ab102329e7208ec8ba513e727a07b4e30d265f1f95a1d21f41ad"
-    },
-    {
-      "source": "packages/llm/src/schema/index.ts",
-      "sha256": "3bf793fbcabafcfb2ebe9a8487dd4652bdf5ef653bb56b33d85c2ad027208ba8",
-      "localSha256": "3bf793fbcabafcfb2ebe9a8487dd4652bdf5ef653bb56b33d85c2ad027208ba8"
-    },
-    {
-      "source": "packages/llm/src/protocols/shared.ts",
-      "sha256": "54174763abc26da4537ff88a111023f0bf10166e6bda79f3cf9213843d31a712",
-      "localSha256": "54174763abc26da4537ff88a111023f0bf10166e6bda79f3cf9213843d31a712"
-    },
-    {
-      "source": "packages/llm/src/protocols/utils/openai-options.ts",
-      "sha256": "dafb4c08cf29d903e0538faa5de23a477ea8a09733f371c9fc882e82868f91e6",
-      "localSha256": "dafb4c08cf29d903e0538faa5de23a477ea8a09733f371c9fc882e82868f91e6"
-    },
-    {
-      "source": "packages/llm/src/protocols/utils/lifecycle.ts",
-      "sha256": "14fa0bc933ff3a0010e45484287c0cbf8abf1bf4bc3b47e88b8eeef071cab519",
-      "localSha256": "14fa0bc933ff3a0010e45484287c0cbf8abf1bf4bc3b47e88b8eeef071cab519"
-    },
-    {
-      "source": "packages/llm/src/protocols/utils/tool-schema.ts",
-      "sha256": "3d5a9e8ce244f136af515762c2c48785fe47e8a176290ae15dbe5aeca5ffaafb",
-      "localSha256": "3d5a9e8ce244f136af515762c2c48785fe47e8a176290ae15dbe5aeca5ffaafb"
-    },
-    {
-      "source": "packages/llm/src/protocols/utils/tool-stream.ts",
-      "sha256": "3ee65a54572840bb59ff46e306a6dd36fae962b4966889ab265521f69c4a9e25",
-      "localSha256": "3ee65a54572840bb59ff46e306a6dd36fae962b4966889ab265521f69c4a9e25"
-    },
-    {
-      "source": "packages/llm/src/route/executor.ts",
-      "sha256": "4482edc712c72c8c65a164b137223689e02e9672fbb64f0dcb42b3b1f80e08e0",
-      "localSha256": "4482edc712c72c8c65a164b137223689e02e9672fbb64f0dcb42b3b1f80e08e0"
-    },
-    {
-      "source": "packages/llm/src/route/auth-options.ts",
-      "sha256": "623b152e96a7833de5c5ddf0b297461de2ad8990b6aa5e082c4b5376b05522d6",
-      "localSha256": "623b152e96a7833de5c5ddf0b297461de2ad8990b6aa5e082c4b5376b05522d6"
-    },
-    {
-      "source": "packages/llm/src/route/framing.ts",
-      "sha256": "a8ce133f5f216edf028ef8f7613eb3dfda5a1d9217c166350df9d73a88a151d9",
-      "localSha256": "a8ce133f5f216edf028ef8f7613eb3dfda5a1d9217c166350df9d73a88a151d9"
-    },
-    {
       "source": "packages/effect-drizzle-sqlite/src/index.ts",
       "sha256": "295a3543f802092c2432f00fc3f890403032fa528bbdc59ace94d63e83d784e9",
       "localSha256": "295a3543f802092c2432f00fc3f890403032fa528bbdc59ace94d63e83d784e9"
@@ -342,11 +267,6 @@
       "source": "packages/core/src/config/attachments.ts",
       "sha256": "7ac5e3d8cd80fcc9d3a2fd0c885647b04843879b60f30d197425b1127c331db1",
       "localSha256": "7ac5e3d8cd80fcc9d3a2fd0c885647b04843879b60f30d197425b1127c331db1"
-    },
-    {
-      "source": "packages/core/src/config/compaction.ts",
-      "sha256": "6d9247b8155b368c6de2e13b48fce9e1a87468ac442dba0a29f7b3b3cbfb10b6",
-      "localSha256": "6d9247b8155b368c6de2e13b48fce9e1a87468ac442dba0a29f7b3b3cbfb10b6"
     },
     {
       "source": "packages/core/src/config/command.ts",
@@ -604,6 +524,11 @@
       "localSha256": "616b4fb54fe5645586b92b584b5d41c6f92f815335205d3efd0fa2f438c64b59"
     },
     {
+      "source": "packages/llm/src/route/index.ts",
+      "sha256": "ffe5b726c5188cda1655ab4bad7b1dc185d2df791681173bd438d0adc1f95b46",
+      "localSha256": "ffe5b726c5188cda1655ab4bad7b1dc185d2df791681173bd438d0adc1f95b46"
+    },
+    {
       "source": "packages/core/src/catalog.ts",
       "sha256": "cf0b031776acbe48b63a9ee512db457564a7c6125e7982cb56764b7231fe764e",
       "localSha256": "cf0b031776acbe48b63a9ee512db457564a7c6125e7982cb56764b7231fe764e"
@@ -717,61 +642,6 @@
       "source": "packages/schema/src/prompt.ts",
       "sha256": "d1fc8764053e3c6b07791cd7f1f319e9c8b9a5942af04432c53a622af0f486a6",
       "localSha256": "d1fc8764053e3c6b07791cd7f1f319e9c8b9a5942af04432c53a622af0f486a6"
-    },
-    {
-      "source": "packages/llm/src/cache-policy.ts",
-      "sha256": "ad5d88575b9d5bff6f2896c9737e241b8c9e4caa39761c69947d5ee9acb7eaa7",
-      "localSha256": "ad5d88575b9d5bff6f2896c9737e241b8c9e4caa39761c69947d5ee9acb7eaa7"
-    },
-    {
-      "source": "packages/llm/src/route/transport/http.ts",
-      "sha256": "7f956da303ff5d0532498901845ee0e64a26fa78dd25697b229d3855c9483dd7",
-      "localSha256": "7f956da303ff5d0532498901845ee0e64a26fa78dd25697b229d3855c9483dd7"
-    },
-    {
-      "source": "packages/llm/src/route/transport/websocket.ts",
-      "sha256": "4568240ae28702c67004628ed9ea7c1030ab6b993cf0606a5f8fac8e932155d7",
-      "localSha256": "4568240ae28702c67004628ed9ea7c1030ab6b993cf0606a5f8fac8e932155d7"
-    },
-    {
-      "source": "packages/llm/src/schema/ids.ts",
-      "sha256": "f80e7677afc8c67163316549daa7d97baa1c4d6229830954c03c74dfedc9ed11",
-      "localSha256": "f80e7677afc8c67163316549daa7d97baa1c4d6229830954c03c74dfedc9ed11"
-    },
-    {
-      "source": "packages/llm/src/schema/options.ts",
-      "sha256": "9ec1576ea68eeba00a85586a7671e3f49003a77af36032d6a3137f317a8103e0",
-      "localSha256": "9ec1576ea68eeba00a85586a7671e3f49003a77af36032d6a3137f317a8103e0"
-    },
-    {
-      "source": "packages/llm/src/schema/messages.ts",
-      "sha256": "1b4c2a89ca2b4786292c261c2e06f54685f462ef334bc55fc08a0059e7d5de7c",
-      "localSha256": "1b4c2a89ca2b4786292c261c2e06f54685f462ef334bc55fc08a0059e7d5de7c"
-    },
-    {
-      "source": "packages/llm/src/schema/events.ts",
-      "sha256": "949dc10a3c62b1ad633c1ef784ce3d5c7587b58950215170cd6db87815a13e41",
-      "localSha256": "949dc10a3c62b1ad633c1ef784ce3d5c7587b58950215170cd6db87815a13e41"
-    },
-    {
-      "source": "packages/llm/src/schema/errors.ts",
-      "sha256": "a1b34b20c32343aeece5d0da5e93896f7b1102b7a2cf4e1b65609d982ba5b159",
-      "localSha256": "a1b34b20c32343aeece5d0da5e93896f7b1102b7a2cf4e1b65609d982ba5b159"
-    },
-    {
-      "source": "packages/llm/src/utils/record.ts",
-      "sha256": "d231e3f27c46bea0337dfaca41704d3729cd12b31f19c3afa0fb8112ec203a30",
-      "localSha256": "d231e3f27c46bea0337dfaca41704d3729cd12b31f19c3afa0fb8112ec203a30"
-    },
-    {
-      "source": "packages/llm/src/protocols/utils/gemini-tool-schema.ts",
-      "sha256": "ef128d8eb66642b9961803c324fb459027b5585c944eae910e499c34a21c5622",
-      "localSha256": "ef128d8eb66642b9961803c324fb459027b5585c944eae910e499c34a21c5622"
-    },
-    {
-      "source": "packages/llm/src/provider-error.ts",
-      "sha256": "652a9bbfa3fa2f5d1699e4ff20dc3361e7f8d2df1e1bf6dc3d2bbe99601494a8",
-      "localSha256": "652a9bbfa3fa2f5d1699e4ff20dc3361e7f8d2df1e1bf6dc3d2bbe99601494a8"
     },
     {
       "source": "packages/effect-drizzle-sqlite/src/effect-sqlite/driver.ts",
@@ -954,9 +824,29 @@
       "localSha256": "817d9ff37c1c522b5058bb31d818035ed5a72d5328929a398cc922b1fd94cb38"
     },
     {
+      "source": "packages/llm/src/route/client.ts",
+      "sha256": "3daf129affd63941ca575f39b908bf2a6f528a0043854b730799850d89fc5541",
+      "localSha256": "3daf129affd63941ca575f39b908bf2a6f528a0043854b730799850d89fc5541"
+    },
+    {
+      "source": "packages/llm/src/route/auth.ts",
+      "sha256": "8e6a2ca7130144ed94fa97d5dfaf86706bd088e4a23d74bede5a1687bbd5f8eb",
+      "localSha256": "8e6a2ca7130144ed94fa97d5dfaf86706bd088e4a23d74bede5a1687bbd5f8eb"
+    },
+    {
       "source": "packages/llm/src/provider.ts",
       "sha256": "1d1e1e1e18c96d9071d822e8671a85078951c986328d6f05591a0e7d1d80379b",
       "localSha256": "1d1e1e1e18c96d9071d822e8671a85078951c986328d6f05591a0e7d1d80379b"
+    },
+    {
+      "source": "packages/llm/src/provider-error.ts",
+      "sha256": "652a9bbfa3fa2f5d1699e4ff20dc3361e7f8d2df1e1bf6dc3d2bbe99601494a8",
+      "localSha256": "652a9bbfa3fa2f5d1699e4ff20dc3361e7f8d2df1e1bf6dc3d2bbe99601494a8"
+    },
+    {
+      "source": "packages/llm/src/schema/index.ts",
+      "sha256": "3bf793fbcabafcfb2ebe9a8487dd4652bdf5ef653bb56b33d85c2ad027208ba8",
+      "localSha256": "3bf793fbcabafcfb2ebe9a8487dd4652bdf5ef653bb56b33d85c2ad027208ba8"
     },
     {
       "source": "packages/llm/src/tool.ts",
@@ -999,9 +889,69 @@
       "localSha256": "a157df378a5baaf7a35ac1cb9c94dd29266d916329545529604274d6cddbc635"
     },
     {
+      "source": "packages/llm/src/route/endpoint.ts",
+      "sha256": "8fd5a184bfea58fed703178ff5d735fbe1cf909925b04c7fea2f41ee53b90229",
+      "localSha256": "8fd5a184bfea58fed703178ff5d735fbe1cf909925b04c7fea2f41ee53b90229"
+    },
+    {
+      "source": "packages/llm/src/route/framing.ts",
+      "sha256": "a8ce133f5f216edf028ef8f7613eb3dfda5a1d9217c166350df9d73a88a151d9",
+      "localSha256": "a8ce133f5f216edf028ef8f7613eb3dfda5a1d9217c166350df9d73a88a151d9"
+    },
+    {
+      "source": "packages/llm/src/route/protocol.ts",
+      "sha256": "129570139773ab102329e7208ec8ba513e727a07b4e30d265f1f95a1d21f41ad",
+      "localSha256": "129570139773ab102329e7208ec8ba513e727a07b4e30d265f1f95a1d21f41ad"
+    },
+    {
+      "source": "packages/llm/src/protocols/shared.ts",
+      "sha256": "54174763abc26da4537ff88a111023f0bf10166e6bda79f3cf9213843d31a712",
+      "localSha256": "54174763abc26da4537ff88a111023f0bf10166e6bda79f3cf9213843d31a712"
+    },
+    {
       "source": "packages/llm/src/protocols/utils/cache.ts",
       "sha256": "973a78b6ba310a5843a03ea5b4168739c455295f88e6ea0740e859a156576790",
       "localSha256": "973a78b6ba310a5843a03ea5b4168739c455295f88e6ea0740e859a156576790"
+    },
+    {
+      "source": "packages/llm/src/protocols/utils/lifecycle.ts",
+      "sha256": "14fa0bc933ff3a0010e45484287c0cbf8abf1bf4bc3b47e88b8eeef071cab519",
+      "localSha256": "14fa0bc933ff3a0010e45484287c0cbf8abf1bf4bc3b47e88b8eeef071cab519"
+    },
+    {
+      "source": "packages/llm/src/protocols/utils/tool-schema.ts",
+      "sha256": "3d5a9e8ce244f136af515762c2c48785fe47e8a176290ae15dbe5aeca5ffaafb",
+      "localSha256": "3d5a9e8ce244f136af515762c2c48785fe47e8a176290ae15dbe5aeca5ffaafb"
+    },
+    {
+      "source": "packages/llm/src/protocols/utils/tool-stream.ts",
+      "sha256": "3ee65a54572840bb59ff46e306a6dd36fae962b4966889ab265521f69c4a9e25",
+      "localSha256": "3ee65a54572840bb59ff46e306a6dd36fae962b4966889ab265521f69c4a9e25"
+    },
+    {
+      "source": "packages/llm/src/protocols/openai-chat.ts",
+      "sha256": "dd086d7ae33596a876256507dede7f5b9705aafb7cd4502155e9209bfdcc9148",
+      "localSha256": "dd086d7ae33596a876256507dede7f5b9705aafb7cd4502155e9209bfdcc9148"
+    },
+    {
+      "source": "packages/llm/src/route/transport/index.ts",
+      "sha256": "037451e37c0cf36a5be4b030370c9a3e749c98cf9f5b3e43f34ffc491c4e75b4",
+      "localSha256": "037451e37c0cf36a5be4b030370c9a3e749c98cf9f5b3e43f34ffc491c4e75b4"
+    },
+    {
+      "source": "packages/llm/src/protocols/utils/openai-options.ts",
+      "sha256": "dafb4c08cf29d903e0538faa5de23a477ea8a09733f371c9fc882e82868f91e6",
+      "localSha256": "dafb4c08cf29d903e0538faa5de23a477ea8a09733f371c9fc882e82868f91e6"
+    },
+    {
+      "source": "packages/llm/src/route/executor.ts",
+      "sha256": "4482edc712c72c8c65a164b137223689e02e9672fbb64f0dcb42b3b1f80e08e0",
+      "localSha256": "4482edc712c72c8c65a164b137223689e02e9672fbb64f0dcb42b3b1f80e08e0"
+    },
+    {
+      "source": "packages/llm/src/route/auth-options.ts",
+      "sha256": "623b152e96a7833de5c5ddf0b297461de2ad8990b6aa5e082c4b5376b05522d6",
+      "localSha256": "623b152e96a7833de5c5ddf0b297461de2ad8990b6aa5e082c4b5376b05522d6"
     },
     {
       "source": "packages/schema/src/catalog.ts",
@@ -1082,11 +1032,6 @@
       "source": "packages/schema/src/v1/permission.ts",
       "sha256": "eaa6c288030c691429e9fd63db59b0609e55337c63d6fa932b30b3c1c6956d89",
       "localSha256": "eaa6c288030c691429e9fd63db59b0609e55337c63d6fa932b30b3c1c6956d89"
-    },
-    {
-      "source": "packages/schema/src/llm.ts",
-      "sha256": "2fe451dc9d1c854d6aeaa64a61a25df3d1c4886de36ac3217a04f99a8d14a527",
-      "localSha256": "2fe451dc9d1c854d6aeaa64a61a25df3d1c4886de36ac3217a04f99a8d14a527"
     },
     {
       "source": "packages/effect-drizzle-sqlite/src/sqlite-core/effect/db.ts",
@@ -1294,6 +1239,11 @@
       "localSha256": "28cba1f4a10ee368606772097e7623121aa9719fb6dd2d70b91800fd4ef98362"
     },
     {
+      "source": "packages/schema/src/llm.ts",
+      "sha256": "2fe451dc9d1c854d6aeaa64a61a25df3d1c4886de36ac3217a04f99a8d14a527",
+      "localSha256": "2fe451dc9d1c854d6aeaa64a61a25df3d1c4886de36ac3217a04f99a8d14a527"
+    },
+    {
       "source": "packages/schema/src/session-delivery.ts",
       "sha256": "6c711801312cf2512c46695e44dfcba86f0e9cf9b8485aed4b435adcdba23528",
       "localSha256": "6c711801312cf2512c46695e44dfcba86f0e9cf9b8485aed4b435adcdba23528"
@@ -1309,9 +1259,59 @@
       "localSha256": "f9ef09253b0c964ccfa1e0c767a051a40236a120c9418056b58dfe7645cbba30"
     },
     {
+      "source": "packages/llm/src/cache-policy.ts",
+      "sha256": "ad5d88575b9d5bff6f2896c9737e241b8c9e4caa39761c69947d5ee9acb7eaa7",
+      "localSha256": "ad5d88575b9d5bff6f2896c9737e241b8c9e4caa39761c69947d5ee9acb7eaa7"
+    },
+    {
+      "source": "packages/llm/src/schema/ids.ts",
+      "sha256": "f80e7677afc8c67163316549daa7d97baa1c4d6229830954c03c74dfedc9ed11",
+      "localSha256": "f80e7677afc8c67163316549daa7d97baa1c4d6229830954c03c74dfedc9ed11"
+    },
+    {
+      "source": "packages/llm/src/schema/options.ts",
+      "sha256": "9ec1576ea68eeba00a85586a7671e3f49003a77af36032d6a3137f317a8103e0",
+      "localSha256": "9ec1576ea68eeba00a85586a7671e3f49003a77af36032d6a3137f317a8103e0"
+    },
+    {
+      "source": "packages/llm/src/schema/messages.ts",
+      "sha256": "1b4c2a89ca2b4786292c261c2e06f54685f462ef334bc55fc08a0059e7d5de7c",
+      "localSha256": "1b4c2a89ca2b4786292c261c2e06f54685f462ef334bc55fc08a0059e7d5de7c"
+    },
+    {
+      "source": "packages/llm/src/schema/events.ts",
+      "sha256": "949dc10a3c62b1ad633c1ef784ce3d5c7587b58950215170cd6db87815a13e41",
+      "localSha256": "949dc10a3c62b1ad633c1ef784ce3d5c7587b58950215170cd6db87815a13e41"
+    },
+    {
+      "source": "packages/llm/src/schema/errors.ts",
+      "sha256": "a1b34b20c32343aeece5d0da5e93896f7b1102b7a2cf4e1b65609d982ba5b159",
+      "localSha256": "a1b34b20c32343aeece5d0da5e93896f7b1102b7a2cf4e1b65609d982ba5b159"
+    },
+    {
       "source": "packages/core/src/util/identifier.ts",
       "sha256": "3d130cd008871b9774a239be79df238fd3167694bf0ee9737c88ae46a46bbaa2",
       "localSha256": "3d130cd008871b9774a239be79df238fd3167694bf0ee9737c88ae46a46bbaa2"
+    },
+    {
+      "source": "packages/llm/src/utils/record.ts",
+      "sha256": "d231e3f27c46bea0337dfaca41704d3729cd12b31f19c3afa0fb8112ec203a30",
+      "localSha256": "d231e3f27c46bea0337dfaca41704d3729cd12b31f19c3afa0fb8112ec203a30"
+    },
+    {
+      "source": "packages/llm/src/protocols/utils/gemini-tool-schema.ts",
+      "sha256": "ef128d8eb66642b9961803c324fb459027b5585c944eae910e499c34a21c5622",
+      "localSha256": "ef128d8eb66642b9961803c324fb459027b5585c944eae910e499c34a21c5622"
+    },
+    {
+      "source": "packages/llm/src/route/transport/http.ts",
+      "sha256": "7f956da303ff5d0532498901845ee0e64a26fa78dd25697b229d3855c9483dd7",
+      "localSha256": "7f956da303ff5d0532498901845ee0e64a26fa78dd25697b229d3855c9483dd7"
+    },
+    {
+      "source": "packages/llm/src/route/transport/websocket.ts",
+      "sha256": "4568240ae28702c67004628ed9ea7c1030ab6b993cf0606a5f8fac8e932155d7",
+      "localSha256": "4568240ae28702c67004628ed9ea7c1030ab6b993cf0606a5f8fac8e932155d7"
     },
     {
       "source": "packages/schema/src/integration-id.ts",
@@ -1386,10 +1386,6 @@
   ],
   "packageManifests": [
     {
-      "source": "packages/llm/package.json",
-      "sha256": "a133f57672c397262965c686cb57b531426a971969d745dc61bd861f041cdf08"
-    },
-    {
       "source": "packages/core/package.json",
       "sha256": "d2b5730edcb599230b4098b751b5bc488e6fb6ca03b7b0563ffd65a78593dc73"
     },
@@ -1400,13 +1396,13 @@
     {
       "source": "packages/effect-drizzle-sqlite/package.json",
       "sha256": "22a89f62b3e8e4a52e165fc84072e23c49057944e9303d2c395aaeb7be735098"
+    },
+    {
+      "source": "packages/llm/package.json",
+      "sha256": "a133f57672c397262965c686cb57b531426a971969d745dc61bd861f041cdf08"
     }
   ],
   "dependencies": {
-    "packages/llm": {
-      "effect": "4.0.0-beta.83",
-      "@opencode-ai/schema": "workspace:*"
-    },
     "packages/core": {
       "effect": "4.0.0-beta.83",
       "@opencode-ai/effect-drizzle-sqlite": "workspace:*",
@@ -1432,6 +1428,10 @@
     "packages/effect-drizzle-sqlite": {
       "drizzle-orm": "1.0.0-rc.2",
       "effect": "4.0.0-beta.83"
+    },
+    "packages/llm": {
+      "effect": "4.0.0-beta.83",
+      "@opencode-ai/schema": "workspace:*"
     }
   }
 }

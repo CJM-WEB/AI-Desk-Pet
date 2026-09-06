@@ -612,6 +612,44 @@ function latestDisclosureRequest(events: TaskEvent[]): string {
 }
 
 describe('桌面会话分流纵向集成', () => {
+  test('正式范围授权后第三次循环卡仅继续一次，第四次结束任务且原输入不改写', async () => {
+    const text = '读取 note.txt';
+    const fixture = await createCodingConversation(Array.from({ length: 4 }, (_, index) => ({
+      response: codingResponse([{ name: 'read', args: { path: 'note.txt' }, id: `loop-${index + 1}` }]),
+      inspectRaw: (request: Record<string, unknown>) => {
+        const messages = request.messages as Array<{ role: string; content: unknown; tool_call_id?: string }>;
+        expect(messages).toContainEqual(expect.objectContaining({ role: 'user', content: text }));
+        expect(messages.filter(message => message.role === 'tool')).toHaveLength(index);
+      }
+    })));
+    try {
+      await writeFile(join(fixture.authorized.root, 'note.txt'), '循环私有正文');
+      await fixture.composition.coordinator.submit(text);
+      expect(fixture.creates()).toBe(0);
+      expect(fixture.provider.requests).toHaveLength(0);
+      const scope = fixture.events.find(event => event.type === 'capability_authorization_required');
+      if (scope?.type !== 'capability_authorization_required') throw new Error('缺少范围授权');
+      await fixture.composition.coordinator.resolveCapabilityAuthorization(scope.requestId, 'confirm');
+      const permissions = () => fixture.events.filter(event => event.type === 'task_permission_required');
+      await expect.poll(() => permissions().length).toBe(1);
+      const third = permissions()[0]!;
+      expect(third.request).toEqual({ action: 'doom_loop', tool: 'read', repeatCount: 3 });
+      expect(fixture.provider.requests).toHaveLength(3);
+      await fixture.composition.coordinator.resolveFileAction(third.actionId, 'confirm');
+      await expect.poll(() => permissions().length).toBe(2);
+      const fourth = permissions()[1]!;
+      expect(fourth.request).toEqual({ action: 'doom_loop', tool: 'read', repeatCount: 4 });
+      expect(fourth.actionId).not.toBe(third.actionId);
+      await expect(fixture.composition.coordinator.resolveFileAction(third.actionId, 'confirm')).rejects.toBeDefined();
+      await fixture.composition.coordinator.resolveFileAction(fourth.actionId, 'cancel');
+      expect(fixture.events.at(-1)).toEqual({ type: 'phase', phase: 'cancelled' });
+      await expect(fixture.composition.coordinator.resolveFileAction(fourth.actionId, 'confirm')).rejects.toBeDefined();
+      expect(fixture.provider.requests).toHaveLength(4);
+      expect(JSON.stringify(permissions())).not.toMatch(/循环私有正文|note.txt|loop-[1-4]/u);
+      expect(fixture.provider.inspectionErrors).toEqual([]);
+      fixture.provider.assertComplete();
+    } finally { await fixture.close(); }
+  }, 15000);
   test('正式组合取消真实 PowerShell 时保持 owner，进程退出后才发布终态', async () => {
     const fixture = await createCodingConversation([{ response: codingResponse([{ name: 'bash', args: { command: 'Set-Content -LiteralPath marker.pid -Value $PID; Start-Sleep -Seconds 120', workdir: '.' } }]) }]);
     try {
@@ -652,9 +690,12 @@ describe('桌面会话分流纵向集成', () => {
     } finally { await fixture.close(); }
   }, 30000);
 
-  test.each(['cancel', 'reset', 'configuration'] as const)('正式任务 %s 后旧许可失效且新 generation 可继续', async mode => {
+  test.each([
+    { mode: 'cancel', loop: false }, { mode: 'reset', loop: false }, { mode: 'configuration', loop: false },
+    { mode: 'cancel', loop: true }, { mode: 'reset', loop: true }, { mode: 'configuration', loop: true }
+  ] as const)('正式任务 $mode 后旧许可失效且新 generation 可继续，循环=$loop', async ({ mode, loop }) => {
     const fixture = await createCodingConversation([
-      { response: codingResponse([{ name: 'write', args: { path: 'existing.txt', content: '不应覆盖' } }]) },
+      { response: codingResponse(loop ? Array.from({ length: 3 }, (_, index) => ({ name: 'read', args: { path: 'existing.txt' }, id: `loop-reset-${index}` })) : [{ name: 'write', args: { path: 'existing.txt', content: '不应覆盖' } }]) },
       { response: codingResponse('新任务结束') }
     ]);
     try {

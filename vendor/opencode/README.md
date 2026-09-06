@@ -4,7 +4,7 @@
 
 ## 来源与重建
 
-`sources.json` 记录每个上游源文件路径、原 SHA-256、本地 SHA-256、原包清单指纹和固定直接依赖。`local-patches.json` 保存有限修改的精确替换片段及原因；提取脚本校验上游指纹，并拒绝覆盖未记录的本地改动。当前提取 276 个源文件，修改 15 个上游文件。
+`sources.json` 记录每个上游源文件路径、原 SHA-256、本地 SHA-256、原包清单指纹和固定直接依赖。`local-patches.json` 保存有限修改的精确替换片段及原因；提取脚本校验上游指纹，并拒绝覆盖未记录的本地改动。当前提取 276 个源文件，修改 16 个上游文件。
 
 从仓库根目录运行：
 
@@ -27,6 +27,7 @@ node packages/coding-task-core/run-electron-tests.cjs
 - Image 明确禁用 Bun 专用 Photon 转换器，保持原 `ResizerUnavailableError` 回退契约。本次只验收文本读取，不声明图片转换能力。
 - 装配原 read、glob、grep、write、edit、apply_patch、bash、todowrite。插件、MCP、技能发现、外部指令发现、LSP、PTY、后台命令与全产品服务图不装配。源码中由静态类型/Schema依赖带入的产品配置定义不代表运行能力已开启。
 - 每实例独立内存数据库、任务 Agent 和 Session。只暴露 `once/reject`，不启用项目持久化 `always` 授权；输出落盘位于独立任务数据子目录，close 清理该子目录。
+- 重复保护参考同一固定提交 V1 `packages/opencode/src/session/processor.ts:29,353–379` 的第三次阈值与 `JSON.stringify` 比较。V2 本地适配把窗口放在一次 run/drain 中，跨模型轮与压缩保留，实际新输入 promotion 或生命周期结束清空；按流事件顺序登记，在第三次及之后的相同本地调用 fiber 启动前通过原 `PermissionV2.assert` 等待。Main 将循环卡结束转换为取消全任务，普通许可拒绝仍只结算本次操作；这不是通用进展或等效循环判断。
 
 ## 类型与打包
 
