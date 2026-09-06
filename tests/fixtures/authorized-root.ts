@@ -47,8 +47,11 @@ export async function createCodingConversation(steps: ProviderScript, options: {
     },
     behavior: {
       prepareUserPrompt: async text => ({ originalText: text, capabilityText: text, explicitDirective: null }),
-      getChatContext: () => ({ character: { identity: { name: '测试角色', description: '测试', background: '测试', traits: [], languageStyle: '简洁', likes: [], behavioralTendencies: [] }, states: [] }, runtime: { moving: false, dragging: false, carrying: false, movementMode: 2 }, proactivityMode: 'passive', recentActions: [] }),
-      completeUserPrompt: () => undefined, handleTaskEvent: () => undefined, applyPlaybackFeedback: () => undefined, cancelActive: () => undefined, reset: () => undefined, close: async () => undefined
+      // 文件任务夹具的陪伴端口提供完整空角色上下文，不增加本地能力。
+      getChatContext: () => ({ character: { idleStateId: 'idle', identity: { name: '测试角色', description: '测试', background: '测试', traits: [], languageStyle: '简洁', formsOfAddress: [], likes: [], dislikes: [], behavioralTendencies: [], boundaries: [], exampleLines: [] }, states: [] }, runtime: { moving: false, dragging: false, carrying: false, movementMode: 2 }, proactivityMode: 'passive', recentActions: [] }),
+      captureExpressionContext: () => null,
+      completeUserPrompt: async () => undefined, handleChatResponseFinished: () => undefined,
+      handleTaskEvent: () => undefined, applyPlaybackFeedback: () => undefined, cancelActive: () => undefined, reset: () => undefined, close: async () => undefined
     },
     emit: event => events.push(event)
   });

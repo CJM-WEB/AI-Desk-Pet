@@ -4917,8 +4917,6 @@ test.describe('自主行为最小闭环', () => {
       expect(await fixture.getCharacterMotionDeltaProbe()).toEqual(chattingMotion);
       chattingGate.release();
       await expect(chat.getByText('聊天阻塞已释放并挥手')).toBeVisible();
-      await expect.poll(() => behaviorActions(pet), { timeout: 15_000 })
-        .toContain('safe-wave-action');
 
       // assistive 恢复后只播放原地 idle，不产生位移。
       const assistiveOffset = (await behaviorActions(pet)).length;

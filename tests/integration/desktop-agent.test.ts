@@ -587,7 +587,7 @@ describe('桌面会话分流纵向集成', () => {
 
     expect(fixture.chatRequests).toHaveLength(2);
     expect(fixture.chatRequests[1]?.request.tools).toEqual([]);
-    expect(fixture.chatRequests[1]?.request.messages.slice(1)).toEqual([
+    expect(fixture.chatRequests[1]?.request.messages.filter(message => message.role !== 'system')).toEqual([
       { role: 'user', content: '第一轮消息' },
       { role: 'assistant', content: '第一轮回复' },
       { role: 'user', content: '第二轮消息' }
@@ -663,7 +663,7 @@ describe('桌面会话分流纵向集成', () => {
     );
 
     expect(fixture.chatRequests[1]?.profileId).toBe(conversationCross.id);
-    expect(fixture.chatRequests[1]?.request.messages.slice(1)).toEqual([
+    expect(fixture.chatRequests[1]?.request.messages.filter(message => message.role !== 'system')).toEqual([
       { role: 'user', content: '当前目标消息' }
     ]);
     await fixture.composition.close();
@@ -690,7 +690,7 @@ describe('桌面会话分流纵向集成', () => {
       firstRequestId,
       'share_once'
     );
-    expect(fixture.chatRequests[1]?.request.messages.slice(1)).toEqual([
+    expect(fixture.chatRequests[1]?.request.messages.filter(message => message.role !== 'system')).toEqual([
       { role: 'user', content: '来源消息' },
       { role: 'assistant', content: '来源回复' },
       { role: 'user', content: '目标消息' }
@@ -711,7 +711,7 @@ describe('桌面会话分流纵向集成', () => {
       secondRequestId,
       'current_message_only'
     );
-    expect(fixture.chatRequests[2]?.request.messages.slice(1)).toEqual([
+    expect(fixture.chatRequests[2]?.request.messages.filter(message => message.role !== 'system')).toEqual([
       { role: 'user', content: '再次发送' }
     ]);
     await fixture.composition.close();
@@ -1049,7 +1049,7 @@ describe('桌面 Agent 真实服务集成', () => {
             ...process.env,
             AI_PET_WORKSPACE_ROOT: process.cwd()
           },
-          execArgv: ['--experimental-strip-types'],
+          execArgv: ['--experimental-transform-types'],
           stdio: ['ignore', 'ignore', 'pipe', 'ipc']
         }
       );
