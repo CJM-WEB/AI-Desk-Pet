@@ -106,7 +106,7 @@ export type CharacterBehaviorDiagnosticSnapshot = Readonly<{
   movementMode: CharacterMovementMode;
   continuousTargetType: MotionTarget | null;
   moving: boolean;
-  currentTargetType: MotionTarget | null;
+  currentTargetType: MotionTarget | 'relative' | null;
 }>;
 
 export type BehaviorPlanSource = 'explicit' | 'chat' | 'local-idle';
@@ -152,7 +152,7 @@ type MotionRequest = Readonly<{
   mode: 'once' | 'continuous';
   target: MotionTarget;
   distance: MotionDistance;
-}>;
+}> | Readonly<{ mode: 'once'; target: 'relative'; direction: MoveDirection; distance: MoveDistance }>;
 
 const NONE: CharacterExpressionAuthorization = { kind: 'none' };
 const SOURCE_PRIORITY: Readonly<Record<ActiveBehaviorSource, number>> = {
@@ -190,7 +190,7 @@ export class CharacterBehaviorDirector {
   private movementMode: CharacterMovementMode;
   private continuousTarget: MotionTarget | null = null;
   private continuousDistance: MotionDistance = 'none';
-  private currentMotionTarget: MotionTarget | null = null;
+  private currentMotionTarget: MotionTarget | 'relative' | null = null;
   private lastSpatialTarget: CharacterMotionSnapshot['target'] | null = null;
   private motionWasMoving = false;
   private proactivityMode: CharacterBehaviorSettingsSnapshot['proactivityMode'];
@@ -444,11 +444,10 @@ export class CharacterBehaviorDirector {
     if (!this.canRequest(source)) return NONE;
 
     if (plan.kind === 'move' || plan.kind === 'move_region') {
-      // 空间运动只由既有 Main 策略门禁授权，不依赖某个动画或语义可用。
-      const result = this.options.motion.requestIntent(plan.kind === 'move'
-        ? { kind: 'relative', direction: plan.direction, distance: plan.distance }
-        : { kind: 'region', region: plan.region });
-      if (!result) this.publishUnavailableNotice();
+      // 相对位移和区域位移共用生命周期登记，运动不依赖动画可用性。
+      this.requestMotion(plan.kind === 'move'
+        ? { mode: 'once', target: 'relative', direction: plan.direction, distance: plan.distance }
+        : { mode: 'once', target: plan.region, distance: 'none' }, source);
       return NONE;
     }
     if (plan.kind !== 'play_state') return NONE;
@@ -748,12 +747,15 @@ export class CharacterBehaviorDirector {
 
   /** 运动与表达独立：保留同轮、停止锁、拖拽、任务及模式原子门禁。 */
   private requestMotion(plan: MotionRequest, source: BehaviorPlanSource, chatAuthorization: CharacterExpressionAuthorization = NONE): void {
+    if (source === 'local-idle' && this.movementMode === 0) return;
     const sameTurn = chatAuthorization.kind === 'play' && this.active?.playbackToken === chatAuthorization.playbackToken;
     if (sameTurn) {
       if (this.closed || this.trustedRuntimeBlocked || this.dragging || this.capabilityTask || this.awaitingConfirmation || this.movementModeTransitionPending) return;
     } else if (!this.canRequest(source)) return;
     if (plan.mode === 'once' && this.continuousTarget !== null) this.stopContinuousMotion();
-    const snapshot = this.options.motion.requestIntent(this.motionIntentFor(plan.target, plan.distance));
+    const snapshot = this.options.motion.requestIntent(plan.target === 'relative'
+      ? { kind: 'relative', direction: plan.direction, distance: plan.distance }
+      : this.motionIntentFor(plan.target, plan.distance));
     if (!snapshot) { this.publishUnavailableNotice(); return; }
     this.currentMotionTarget = plan.target;
     this.lastSpatialTarget = { ...snapshot.target };

@@ -800,7 +800,7 @@ export class CharacterStore {
       const index = await this.requireCharacter(characterId);
       await this.recordMigrationReview(characterId, index, evidence.issues);
       await this.preserveMigrationOriginal(characterId, 'draft', evidence.draftText);
-      await this.preserveMigrationOriginal(characterId, 'manifest', evidence.manifestText);
+      await this.preserveMigrationAssets(characterId, evidence.manifestText, evidence.assets);
       if (!evidence.issues.length) return;
       const raw: unknown = JSON.parse(evidence.manifestText);
       const migrated = prepareCharacterManifestMigration(raw);
@@ -856,7 +856,7 @@ export class CharacterStore {
     if (!(await exists(file))) return;
     const migrated = await this.readPublishedFrom(this.compiledDirectory(characterId), characterId);
     if (migrated.sourceVersion < 3) {
-      await this.preserveMigrationOriginal(characterId, 'manifest', await readFile(file, 'utf8'));
+      await this.preserveMigrationAssets(characterId, migrated.manifestText, migrated.assets);
       await this.recordMigrationReview(characterId, index, migrated.issues);
     }
   }
@@ -872,6 +872,26 @@ export class CharacterStore {
     const file = join(this.characterDirectory(characterId), `migration-original-${kind}.json`);
     await this.assertSafePath(file);
     if (!(await exists(file))) await this.safeWriteText(file, text);
+  }
+
+  /** 首次迁移证据独立于发布事务备份；已存在的原文与素材永不覆盖。 */
+  private async preserveMigrationAssets(characterId: string, manifestText: string, assets: Readonly<Record<string, Uint8Array>>): Promise<void> {
+    await this.preserveMigrationOriginal(characterId, 'manifest', manifestText);
+    const originalFile = join(this.characterDirectory(characterId), 'migration-original-manifest.json');
+    const original = prepareCharacterManifestMigration(JSON.parse(await readFile(originalFile, 'utf8'))).document;
+    const directory = join(this.characterDirectory(characterId), 'migration-original-assets');
+    await this.assertSafePath(directory);
+    await mkdir(directory, { recursive: true });
+    for (const resource of original.resources) {
+      const file = join(directory, resource.fileName);
+      await this.assertSafePath(file);
+      if (await exists(file)) continue;
+      const bytes = assets[resource.fileName];
+      if (!bytes || bytes.byteLength !== resource.byteLength || sha256(bytes) !== resource.sha256) {
+        throw characterError('CHARACTER_RESOURCE_INTEGRITY_FAILED');
+      }
+      await durableWrite(file, bytes);
+    }
   }
 
   getDraft(characterId: string): Promise<CharacterDraftV3> {
@@ -1363,17 +1383,15 @@ export class CharacterStore {
       this.compiledDirectory(characterId),
       characterId
     );
+    const recoveryResult = this.transactionRecovery.resultFor(characterId);
+    // 坏事务只能在内存投影，读取素材不得新增任何迁移证据或索引写入。
+    if (recoveryResult.draftErrorCode !== null || recoveryResult.publishErrorCode !== null) {
+      return requirePublishedCharacterMigration(migrated);
+    }
     await this.recordMigrationReview(characterId, index, migrated.issues);
-    if (migrated.sourceVersion < 3) await this.preserveMigrationOriginal(characterId, 'manifest', await readFile(join(this.compiledDirectory(characterId), 'manifest.json'), 'utf8'));
+    if (migrated.sourceVersion < 3) await this.preserveMigrationAssets(characterId, migrated.manifestText, migrated.assets);
     const manifest = requirePublishedCharacterMigration(migrated);
     if (!migrated.requiresPersistence) return manifest;
-    const recoveryResult = this.transactionRecovery.resultFor(characterId);
-    if (
-      recoveryResult.draftErrorCode !== null
-      || recoveryResult.publishErrorCode !== null
-    ) {
-      return manifest;
-    }
     await this.installPublishedTransaction(
       characterId,
       index,
@@ -1800,6 +1818,7 @@ export class CharacterStore {
     characterId: string
   ): Promise<FinalizedCharacterManifestMigration & {
     assets: Readonly<Record<string, Uint8Array>>;
+    manifestText: string;
   }> {
     await this.assertSafePath(directory);
     const directoryIdentity = await this.captureRuntimeIdentity(directory, 'directory');
@@ -1844,7 +1863,7 @@ export class CharacterStore {
       assets,
       this.geometryMigration
     );
-    return { ...finalized, assets };
+    return { ...finalized, assets, manifestText: manifestBytes.toString('utf8') };
   }
 
   private async readRuntimeAssetFrom(
@@ -1852,36 +1871,12 @@ export class CharacterStore {
     characterId: string,
     assetId: string
   ): Promise<Uint8Array> {
-    await this.assertSafePath(directory);
-    const directoryIdentity = await this.captureRuntimeIdentity(directory, 'directory');
-    const manifestFile = join(directory, 'manifest.json');
-    const manifestBytes = await this.readStableRuntimeFile(
-      manifestFile,
-      directory,
-      directoryIdentity,
-      'runtime:manifest-after-open'
-    );
-    const manifest = characterManifestV3Schema.parse(JSON.parse(manifestBytes.toString('utf8')));
-    if (manifest.id !== characterId) {
-      throw characterError('CHARACTER_RUNTIME_UNAVAILABLE');
-    }
+    // 与清单读取共享迁移门禁及稳定句柄校验，允许旧磁盘格式的只读投影。
+    const migrated = await this.readPublishedFrom(directory, characterId);
+    const manifest = requirePublishedCharacterMigration(migrated);
     const resource = manifest.resources.find(candidate => candidate.assetId === assetId);
     if (!resource) throw characterError('CHARACTER_RESOURCE_NOT_FOUND');
-
-    const resourceFile = join(directory, resource.fileName);
-    const bytes = new Uint8Array(await this.readStableRuntimeFile(
-      resourceFile,
-      directory,
-      directoryIdentity,
-      'runtime:resource-after-open'
-    ));
-    if (
-      bytes.byteLength !== resource.byteLength
-      || sha256(bytes) !== resource.sha256
-    ) {
-      throw characterError('CHARACTER_RESOURCE_INTEGRITY_FAILED');
-    }
-    return bytes;
+    return migrated.assets[resource.fileName]!;
   }
 
   /**

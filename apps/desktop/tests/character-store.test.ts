@@ -2286,6 +2286,20 @@ describe('CharacterStore', () => {
       .rejects.toThrow();
   });
 
+  test('迁移原始素材在后续发布后仍保留首次字节', async () => {
+    const store = new CharacterStore(charactersDirectory);
+    const original = createRuntimeV1();
+    await store.create({ id: 'demo', name: '演示角色' });
+    await writeRuntimeDirectory(join(charactersDirectory, 'demo', 'compiled'), original);
+    await store.getPublishedManifest('demo');
+    const next = createRuntime('demo', '演示角色', new Uint8Array([7, 8, 9]), new Uint8Array([10, 11, 12]));
+    await store.publishCompiled('demo', next.manifest, next.assets);
+    await expect(readFile(join(charactersDirectory, 'demo', 'migration-original-assets', 'atlas.png')))
+      .resolves.toEqual(Buffer.from(original.assets['atlas.png']!));
+    expect(JSON.parse(await readFile(join(charactersDirectory, 'demo', 'migration-original-manifest.json'), 'utf8')))
+      .toEqual(original.manifest);
+  });
+
   test('事务恢复协调：坏草稿下健康 V1 compiled 只读投影且不触发发布事务', async () => {
     const store = new CharacterStore(charactersDirectory);
     const runtime = createRuntimeV1();
@@ -2303,6 +2317,7 @@ describe('CharacterStore', () => {
     const indexFile = join(charactersDirectory, 'index.json');
     const index = JSON.parse(await readFile(indexFile, 'utf8'));
     index.characters[0].migrationErrorCode = 'CHARACTER_MIGRATION_FAILED';
+    index.activeCharacterId = 'demo';
     await writeFile(indexFile, `${JSON.stringify(index, null, 2)}\n`, 'utf8');
     const manifestBytes = await readFile(manifestFile);
     const compiledSnapshot = new Map(await Promise.all(
@@ -2313,11 +2328,14 @@ describe('CharacterStore', () => {
     ));
     const indexBytes = await readFile(indexFile);
 
+    const originalFiles = await readdir(join(charactersDirectory, 'demo'));
     const restarted = new CharacterStore(charactersDirectory);
 
     await expect(restarted.list()).resolves.toHaveLength(1);
     await expect(restarted.getRuntimeManifest('demo')).resolves.toMatchObject({ version: 3, id: runtime.manifest.id });
     await expect(restarted.getPublishedManifest('demo')).resolves.toMatchObject({ version: 3 });
+    await expect(restarted.readActiveRuntimeAsset('atlas')).resolves.toEqual(runtime.assets['atlas.png']);
+    expect(await readdir(join(charactersDirectory, 'demo'))).toEqual(originalFiles);
     expect(await readFile(manifestFile)).toEqual(manifestBytes);
     const compiledAfter = new Map(await Promise.all(
       (await readdir(compiledDirectory)).sort().map(async fileName => [

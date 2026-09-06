@@ -1773,6 +1773,21 @@ describe('Main 角色行为 Director', () => {
     expect(fixture.saveMovementMode).toHaveBeenCalledExactlyOnceWith(0, expect.any(Function));
   });
 
+  test.each([
+    { kind: 'move', direction: 'right', distance: 'near' },
+    { kind: 'move_region', region: 'top_left' }
+  ] as const)('直接运动计划 $kind 在 reset 时停止且保留零档', plan => {
+    const fixture = createFixture({ movementMode: 0, proactivityMode: 'autonomous' });
+    fixture.director.requestBehaviorPlan(plan, 'explicit');
+    expect(fixture.motion.requestIntent).toHaveBeenCalledWith(plan.kind === 'move'
+      ? { kind: 'relative', direction: 'right', distance: 'near' }
+      : { kind: 'region', region: 'top_left' });
+    fixture.director.reset('generation-2');
+    expect(fixture.motion.stop).toHaveBeenCalledOnce();
+    expect(fixture.director.getDiagnosticSnapshot()).toMatchObject({ movementMode: 0, currentTargetType: null });
+    expect(fixture.saveMovementMode).not.toHaveBeenCalled();
+  });
+
   test('停止锁在 Director 内拒绝 local-idle 的 move 语义并且不请求位移', () => {
     const fixture = createFixture({ movementMode: 0, proactivityMode: 'autonomous' });
     fixture.setDirectedAuthorization({
