@@ -26,6 +26,37 @@ const movingPlan = { states: [{ ...plan.states[0]!, minStrength: 0,
   ] }] };
 
 describe('通用情境条件与有限表现', () => {
+  it('明确截止后失败反馈先结束生命周期，不能新发零时长回退播放', () => {
+    let now = 0;
+    const manifest = fixture();
+    manifest.actions.find(action => action.id === 'bright-a')!.failureFallbackActionId = 'bright-b';
+    const engine = new runtime.CharacterExpressionEngine({ manifest, now: () => now, random: () => 0 });
+    const current = engine.playExplicit('bright').snapshot.schedule.current!;
+    engine.applyFeedback({ playbackToken: current.playbackToken, actionId: current.actionId, status: 'started', occurredAtMs: now });
+    now = 3001;
+    const result = engine.applyFeedback({ playbackToken: current.playbackToken, actionId: current.actionId, status: 'failed', occurredAtMs: now });
+    expect(result.snapshot.stateId).toBe('rest');
+    expect(result.effects.filter(effect => effect.type === 'play')).not.toContainEqual(expect.objectContaining({ action: expect.objectContaining({ stateId: 'bright' }) }));
+  });
+  it('退出边沿被抗中断延后后，失败反馈必须按退出资格择态', () => {
+    let now = 0;
+    const manifest = fixture();
+    manifest.states[1]!.exitConditions = [{ mode: 'any', clauses: [{ kind: 'event', event: 'drag-end' }] }];
+    manifest.actions.find(action => action.id === 'bright-a')!.interrupt = 'resistant';
+    manifest.actions.find(action => action.id === 'bright-a')!.failureFallbackActionId = 'bright-b';
+    const engine = new runtime.CharacterExpressionEngine({ manifest, now: () => now, random: () => 0 });
+    engine.updateRuntimeFacts({ moving: true });
+    const current = engine.applyDecision({ context: engine.context(), eventId: 'moving', source: 'chat', expressionPlan: {
+      states: [{ ...movingPlan.states[0]!, actions: [] }]
+    } }).snapshot.schedule.current!;
+    engine.applyFeedback({ playbackToken: current.playbackToken, actionId: current.actionId, status: 'started', occurredAtMs: now });
+    now = 2500;
+    expect(engine.recordEvent({ id: 'drop', type: 'drag-end', occurredAtMs: now }).snapshot.schedule.current?.playbackToken).toBe(current.playbackToken);
+    expect(engine.hasEligibleExpressionFor({ moving: true }, 'moving')).toBe(false);
+    const result = engine.applyFeedback({ playbackToken: current.playbackToken, actionId: current.actionId, status: 'failed', occurredAtMs: now });
+    expect(result.snapshot.stateId).toBe('rest');
+    expect(result.effects.filter(effect => effect.type === 'play')).not.toContainEqual(expect.objectContaining({ action: expect.objectContaining({ stateId: 'bright' }) }));
+  });
   it('presentation 条件动作完成后立即续播合法动作，无需等待宿主 tick', () => {
     let now = 0;
     const manifest = fixture();

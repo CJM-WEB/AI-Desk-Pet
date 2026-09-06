@@ -267,7 +267,7 @@ export class CharacterExpressionEngine {
       : [effect]);
   }
   advance(): CharacterExpressionResult { return this.advanceWith([]); }
-  private advanceWith(effects: CharacterExpressionEffect[], force = false, factsChanged = false): CharacterExpressionResult {
+  private advanceWith(effects: CharacterExpressionEffect[], force = false, factsChanged = false, fallbackActionId?: string): CharacterExpressionResult {
     const now = this.now();
     for (const [id, event] of this.events) if (now - event.occurredAtMs >= 120_000) { this.events.delete(id); this.consumed.delete(id); }
     if (this.mood && !sampleMood(this.mood, now)) { this.mood = null; this.moodRevision++; this.plan = null; force = true; }
@@ -297,7 +297,9 @@ export class CharacterExpressionEngine {
     // 状态寿命独立于动作寿命；自然结束或完成反馈清空 current 也不能绕过保持时限。
     if (!force && !factsChanged && target !== this.stateId && now - this.enteredAtMs < 2_000) return this.result(effects);
     this.nextEligibleAtMs = null;
-    const actionId = this.chooseAction(target);
+    // 回退只是已裁决状态内的优先动作，不能绕过明确截止、退出事件或普通候选资格。
+    const fallback = target === this.stateId && fallbackActionId ? this.chooseAction(target, fallbackActionId) : null;
+    const actionId = fallback ?? this.chooseAction(target);
     if (actionId) effects.push(...this.play(target, actionId, force || factsChanged));
     else {
       const idle = this.manifest.idleStateId;
@@ -345,15 +347,9 @@ export class CharacterExpressionEngine {
         this.explicit = false; this.explicitUntilMs = null;
         return this.advanceWith([], true);
       }
-      if (reduced.fallbackActionId && this.resolve(this.stateId, reduced.fallbackActionId)) {
-        const selected = this.chooseAction(this.stateId, reduced.fallbackActionId);
-        if (selected) return this.result(this.play(this.stateId, selected, true));
+      if (reduced.fallbackActionId || feedback.status === 'failed') {
+        return this.advanceWith([], feedback.status === 'failed', false, reduced.fallbackActionId);
       }
-      if (feedback.status === 'failed') {
-        const selected = this.chooseAction(this.stateId);
-        if (selected) return this.result(this.play(this.stateId, selected, true));
-      }
-      if (feedback.status === 'failed') return this.advanceWith([], true);
       if (feedback.status === 'completed' && !this.explicit && this.stateId !== this.manifest.idleStateId) return this.advanceWith([]);
       return this.result();
     } catch { return this.result(); }
