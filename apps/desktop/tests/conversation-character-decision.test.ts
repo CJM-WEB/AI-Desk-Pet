@@ -23,6 +23,25 @@ function fixture() {
 }
 
 describe('角色描述决策接线', () => {
+  it('null 与旧省略都独立保留正文，合法无更新不发修复请求', async () => {
+    for (const fields of [{ moodUpdate: null, expressionPlan: null }, {}]) {
+      const f = fixture();
+      f.responses.splice(0, 1, { type: 'text', text: '继续陪你聊。', structured_output: { ...f.controls, ...fields } });
+      const reply = await new ConversationChatAdapter(f.provider).respond(f.input);
+      expect(reply).toEqual({ text: '继续陪你聊。', ...f.controls });
+      expect(f.requests).toHaveLength(1);
+    }
+  });
+  it('修复坏计划不把首次合法 null 心情改成新事件', async () => {
+    const f = fixture();
+    f.responses.splice(0, 1,
+      { type: 'text', text: '保留正文', structured_output: { ...f.controls, moodUpdate: null, expressionPlan: { states: '坏计划' } } },
+      { type: 'text', text: '修复正文', structured_output: { ...f.controls, moodUpdate: { summary: '修复伪造的新事件', strength: 1 }, expressionPlan: { states: [] } } });
+    const reply = await new ConversationChatAdapter(f.provider).respond(f.input);
+    expect(reply).toMatchObject({ text: '保留正文', expressionPlan: { states: [] }, ...f.controls });
+    expect(reply).not.toHaveProperty('moodUpdate');
+    expect(f.requests).toHaveLength(2);
+  });
   it('未知表现字段和重复坏正文不吞独立合法建议，未知字段本身不接纳', async () => {
     const f = fixture();
     f.responses.splice(0, 1, { type: 'text', text: '首次合法正文', structured_output: {

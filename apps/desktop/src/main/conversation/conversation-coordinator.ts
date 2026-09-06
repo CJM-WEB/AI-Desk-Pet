@@ -617,6 +617,7 @@ export class ConversationCoordinator {
       text: context.text,
       behaviorContext,
       explicitPlaybackRequested: context.explicitDirective?.kind === 'play' && context.explicitPlaybackToken === undefined,
+      movementControlHandled: context.explicitDirective !== null,
       signal: context.controller.signal,
       onTextDelta: delta => {
         if (delta.length === 0 || !this.isRunning(context)) return;

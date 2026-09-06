@@ -126,7 +126,7 @@ describe('LocalModelProvider', () => {
     const requests: ModelRequest[] = [];
     let responseNumber = 0;
     const fetchClient = vi.fn<FetchLike>(async () => jsonResponse({ choices: [{ message: { content: JSON.stringify({
-      text: '  **保留正文😀**\n', movementControl: { kind: 'keep' }, capabilityPlan: { kind: 'chat' },
+      text: '  **保留正文😀**\n', moodUpdate: null, movementControl: { kind: 'keep' }, capabilityPlan: { kind: 'chat' },
       expressionPlan: ++responseNumber === 1 ? { states: 'bad' } : { states: [] }
     }) } }] }));
     const local = new LocalModelProvider(readyPort(), fetchClient);
@@ -139,7 +139,7 @@ describe('LocalModelProvider', () => {
       { role: 'assistant', content: '  历史答复  \r\n```text\n  原始缩进\n```' }
     ];
     const reply = await adapter.respond({ history, text: '  今天获奖了😀\n聊聊吧。  ',
-      behaviorContext: localBehaviorContext, signal: new AbortController().signal });
+      behaviorContext: localBehaviorContext, signal: new AbortController().signal, movementControlHandled: true });
     expect(reply.text).toBe('  **保留正文😀**\n');
     expect(fetchClient).toHaveBeenCalledTimes(2);
     for (const [index, original] of requests.entries()) {
@@ -152,6 +152,11 @@ describe('LocalModelProvider', () => {
       ]);
       expect(body.tools).toEqual([]);
       expect(body.tool_choice).toBe('none');
+      expect(body.response_format.schema).toEqual(original.responseContract?.jsonSchema);
+      expect(body.response_format.schema.required).toEqual(expect.arrayContaining(['moodUpdate', 'expressionPlan']));
+      for (const field of ['moodUpdate', 'expressionPlan']) expect(body.response_format.schema.properties[field].anyOf).toContainEqual({ type: 'null' });
+      expect(body.response_format.schema.properties.movementControl.oneOf).toHaveLength(1);
+      expect(body.response_format.schema.properties).not.toHaveProperty('explicitPlayback');
       const bytes = Buffer.byteLength(JSON.stringify({ messages: body.messages, tools: body.tools, responseSchema: body.response_format.schema }));
       const originalBytes = Buffer.byteLength(JSON.stringify({ messages: original.messages, tools: original.tools, responseSchema: original.responseContract?.jsonSchema }));
       expect(bytes).toBeLessThanOrEqual(originalBytes);

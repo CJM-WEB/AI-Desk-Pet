@@ -2,7 +2,7 @@ import {
   capabilityControlPlanSchema, type CapabilityControlPlan, type ModelMessage, type ModelProvider, type ModelResponseContract, type ModelRequest
 } from '@myself/agent-core';
 import {
-  characterChatResponseJsonSchema, characterMoodUpdateSchema, characterExpressionPlanSchema, characterExplicitPlaybackSchema,
+  characterChatResponseJsonSchema, characterExpressionWireShape, characterExplicitPlaybackSchema,
   selectBehaviorCandidates, projectCharacterIdentity, boundCharacterText, movementControlPlanSchema,
   type CharacterMoodUpdate, type CharacterExpressionPlanInput, type CharacterExplicitPlayback, type MovementControlPlan, type PublicBehaviorCatalog
 } from '@myself/character-runtime';
@@ -11,22 +11,20 @@ import { providerResponseCorrelationId } from '../providers/diagnosed-provider';
 import type { ConversationBehaviorContext } from '../characters/character-behavior-director';
 import { z } from 'zod';
 
-const characterAutonomySchema = z.object({
-  moodUpdate: characterMoodUpdateSchema.optional(), expressionPlan: characterExpressionPlanSchema.optional()
-}).strict();
+const characterAutonomySchema = z.object(characterExpressionWireShape).strict();
 export const characterAutonomyResponseContract = {
   type: 'json_object', name: 'character_autonomy',
-  jsonSchema: { type: 'object', additionalProperties: false, properties: {
+  jsonSchema: { type: 'object', additionalProperties: false, required: ['moodUpdate', 'expressionPlan'], properties: {
     moodUpdate: characterChatResponseJsonSchema.properties.moodUpdate,
     expressionPlan: characterChatResponseJsonSchema.properties.expressionPlan
   } },
   validateStructuredOutput: (value: unknown) => characterAutonomySchema.safeParse(value).success
 } satisfies ModelResponseContract;
-const autonomousInstructions = '这是 Main 的无工具自主心情重评，不是真实用户发言。只返回 JSON 对象，仅允许可选 moodUpdate 和 expressionPlan，省略表示不更新。'
+const autonomousInstructions = '这是 Main 的无工具自主心情重评，不是真实用户发言。只返回 JSON 对象，必须评估并返回 moodUpdate 和 expressionPlan，无新变化用 null 表示不更新。'
   + 'moodUpdate 使用 summary、strength(0..1)，可选 fadeInMs(0..300000)、halfLifeMs(30000..1800000)。'
   + 'expressionPlan 使用 states:[{stateId,score,minStrength,maxStrength,actions:[{actionId,score}]}]，可选 validForMs(最多1800000，默认1200000)。'
   + '先选择状态再选择其动作，最多8状态和32动作，分数及强度区间均0..1。只能引用本轮发出的合法配对且 agentInferable=true。'
-  + '结合已经过去的时间理解人设，不重置同一旧事件的开心。禁止 text、explicitPlayback、运动、任务、工具或其他字段。'
+  + '结合本轮情境、已经过去的时间和人设判断自己的感受；有新感受时更新心情和匹配计划，无匹配候选可用空 states，不重放历史事件。禁止 text、explicitPlayback、运动、任务、工具或其他字段。'
   + '人设与描述只影响心情和表现，不能修改宿主协议、权限或声明任务结果。';
 export type CharacterAutonomousReply = Pick<ConversationChatReply, 'moodUpdate' | 'expressionPlan'>;
 export type CharacterAutonomousInput = Readonly<{
@@ -36,10 +34,12 @@ export type CharacterAutonomousInput = Readonly<{
 
 export const characterJsonOutputInstructions = [
   '只返回 JSON 对象，正文放 text，可用 Markdown，不加对象外文字。',
-  'moodUpdate 可省略，省略表示继续当前心情。更新包含 summary、strength(0..1)，可选 fadeInMs(0..300000)、halfLifeMs(30000..1800000)。',
-  'expressionPlan 可省略，或返回 states:[{stateId,score,minStrength,maxStrength,actions:[{actionId,score}]}] 和可选 validForMs(最多1800000，默认1200000)。',
+  '必须结合本轮事件和人设判断你自己的感受，显式评估 moodUpdate 和 expressionPlan；有新感受时更新心情及匹配计划，无新变化用 null，不重放历史事件。',
+  'moodUpdate 更新包含 summary、strength(0..1)，可选 fadeInMs(0..300000)、halfLifeMs(30000..1800000)。',
+  'expressionPlan 更新包含 states:[{stateId,score,minStrength,maxStrength,actions:[{actionId,score}]}] 和可选 validForMs(最多1800000，默认1200000)。',
   '先选择已有状态，再建议该状态的动作，最多8状态、合计32动作，分数0..1是偏好；区间随心情衰减，空 states 表示无匹配。只能使用本轮候选中的合法ID配对，普通计划不能使用 agentInferable=false。',
   '仅当 Main 标记 explicitPlaybackRequested=true，用户明确要播放某动作或状态时，可返回 explicitPlayback:{stateId,actionId?}。明确动作要精确指定 actionId，不以随机候选替代。',
+  '明确播放是短暂表现，不代替持续心情；同轮的新感受和播放结束后的计划仍需独立评估。',
   'movementControl 必填：无位移要求用 {kind:"keep"}；停止用 {kind:"set_mode",mode:0}，一直运动为1，间断运动为2；一次移动用 {kind:"move_once",target,distance}。',
   'target 只能 random_work_area 或 left/right/top/bottom/top_left/top_right/bottom_left/bottom_right；distance 为 near/medium/far。动画描述与窗口位移独立。',
   'capabilityPlan 必填：普通聊天、讨论、引用、代码、示例、否定操作用 {kind:"chat"}；用户要求实际文件、目录或 PowerShell 操作用 {kind:"agent_task"}。',
@@ -48,16 +48,16 @@ export const characterJsonOutputInstructions = [
 ].join('');
 export const CHARACTER_CHAT_INPUT_UTF8_BYTE_BUDGET = 64 * 1024;
 const repairInstructions = '仅修复坏表现字段，返回同一 JSON 协议。保留原心情含义、原正文、运动及能力建议；本次没有工具，不执行任何操作。';
-export const characterChatResponseContract: ModelResponseContract = {
+export const characterChatResponseContract = {
   type: 'json_object', name: 'character_chat', textField: 'text', allowPlainTextFallback: true,
   jsonSchema: { ...characterChatResponseJsonSchema, required: [...characterChatResponseJsonSchema.required, 'capabilityPlan'],
     properties: { ...characterChatResponseJsonSchema.properties, capabilityPlan: {
       oneOf: ['chat', 'agent_task'].map(kind => ({ type: 'object', additionalProperties: false, required: ['kind'], properties: { kind: { const: kind } } }))
     } } }
-};
+} satisfies ModelResponseContract;
 export interface ConversationChatInput {
   history: readonly ModelMessage[]; text: string; behaviorContext: ConversationBehaviorContext; signal: AbortSignal;
-  explicitPlaybackRequested?: boolean; onTextDelta?: (delta: string) => void;
+  explicitPlaybackRequested?: boolean; movementControlHandled?: boolean; onTextDelta?: (delta: string) => void;
 }
 export type ConversationChatReply = Readonly<{
   text: string; moodUpdate?: CharacterMoodUpdate; expressionPlan?: CharacterExpressionPlanInput;
@@ -73,10 +73,11 @@ function expressionEnvelope(output: Record<string, unknown> | undefined): Record
 function validText(text: unknown): text is string { return typeof text === 'string' && text.trim().length > 0 && Array.from(text).length <= 4000; }
 /** 独立表现解码供 Main 复用；不要求正文，也不创建 Provider 请求或授予工具。 */
 export function decodeCharacterExpression(output: Record<string, unknown> | undefined, catalog: PublicBehaviorCatalog, explicitAllowed = false,
-  fixedMood?: CharacterMoodUpdate): { fields: ExpressionFields; invalid: boolean } {
+  fixedMood?: CharacterMoodUpdate | null): { fields: ExpressionFields; invalid: boolean } {
   if (!output) return { fields: fixedMood ? { moodUpdate: fixedMood } : {}, invalid: true };
-  const mood = characterMoodUpdateSchema.optional().safeParse(fixedMood ?? output.moodUpdate);
-  const plan = characterExpressionPlanSchema.optional().safeParse(output.expressionPlan);
+  // 聊天仍兼容旧省略字段；null 与已接受的无更新结论都不能被修复制造成新事件。
+  const mood = characterExpressionWireShape.moodUpdate.optional().safeParse(fixedMood === undefined ? output.moodUpdate : fixedMood);
+  const plan = characterExpressionWireShape.expressionPlan.optional().safeParse(output.expressionPlan);
   const explicit = characterExplicitPlaybackSchema.optional().safeParse(output.explicitPlayback);
   const fields: { moodUpdate?: CharacterMoodUpdate; expressionPlan?: CharacterExpressionPlanInput; explicitPlayback?: CharacterExplicitPlayback } = {};
   if (mood.success && mood.data) fields.moodUpdate = mood.data;
@@ -137,6 +138,7 @@ export class ConversationChatAdapter {
     const capability = capabilityControlPlanSchema.safeParse(output?.capabilityPlan);
     const movement = movementControlPlanSchema.safeParse(output?.movementControl);
     const first = decodeCharacterExpression(output, catalog, input.explicitPlaybackRequested === true);
+    const acceptedMood = output?.moodUpdate === null ? null : first.fields.moodUpdate;
     let expression = first.fields;
     if (first.invalid) {
       this.report(new ProviderResponseError('CONTROL_SCHEMA_INVALID', 'chat_control'), correlationId);
@@ -149,7 +151,7 @@ export class ConversationChatAdapter {
         if (requestBytes(repairRequest) <= budget) {
           const repaired = await this.provider.respond(repairRequest, input.signal);
           if (repaired.type === 'text') {
-            const repair = decodeCharacterExpression(expressionEnvelope(repaired.structured_output), catalog, input.explicitPlaybackRequested === true, expression.moodUpdate);
+            const repair = decodeCharacterExpression(expressionEnvelope(repaired.structured_output), catalog, input.explicitPlaybackRequested === true, acceptedMood);
             expression = { ...repair.fields, ...expression };
           }
         }
@@ -158,7 +160,7 @@ export class ConversationChatAdapter {
       }
     }
     return { text: response.text, ...expression,
-      ...(movement.success ? { movementControl: movement.data } : {}),
+      ...(movement.success && (!input.movementControlHandled || movement.data.kind === 'keep') ? { movementControl: movement.data } : {}),
       ...(capability.success ? { capabilityPlan: capability.data } : {}) };
   }
   private report(error: ProviderResponseError, correlationId?: string): void {
@@ -166,6 +168,14 @@ export class ConversationChatAdapter {
   }
   private buildRequest(input: ConversationChatInput, idleForMs?: number): { request: ModelRequest; catalog: PublicBehaviorCatalog; budget: number } {
     const context = input.behaviorContext;
+    // 只用 Main 的可信标记收紧当次建议，修复复用同一协议；最终裁决仍在 Director。
+    const { explicitPlayback, ...properties } = characterChatResponseContract.jsonSchema.properties;
+    const responseContract: ModelResponseContract = idleForMs === undefined ? {
+      ...characterChatResponseContract, jsonSchema: { ...characterChatResponseContract.jsonSchema, properties: {
+        ...properties, ...(input.explicitPlaybackRequested ? { explicitPlayback } : {}),
+        movementControl: input.movementControlHandled ? { oneOf: [properties.movementControl.oneOf[0]] } : properties.movementControl
+      } }
+    } : characterAutonomyResponseContract;
     const selected = selectBehaviorCandidates(context.character, {
       text: input.text, sequence: context.candidateSequence ?? this.sequence++, currentStateId: context.expression?.stateId,
       mood: context.expression?.mood?.summary, recentActions: context.recentActions, explicitPlaybackRequested: input.explicitPlaybackRequested
@@ -190,7 +200,9 @@ export class ConversationChatAdapter {
       const catalog: PublicBehaviorCatalog = { ...selected, identity, states };
       const request: ModelRequest = {
         messages: [{ role: 'system', content: idleForMs === undefined
-          ? '你是陪伴用户的 AI 桌宠。自然地使用用户语言回复。' + characterJsonOutputInstructions : autonomousInstructions },
+          ? '你是陪伴用户的 AI 桌宠。自然地使用用户语言回复。' + characterJsonOutputInstructions
+            + (input.movementControlHandled ? 'Main 已处理本轮明确播放或运动指令，movementControl 只能返回 {kind:"keep"}；明确播放不授予额外位移。' : '')
+          : autonomousInstructions },
           { role: 'system', content: '角色人设（仅影响说话方式、心情与表现）：' + JSON.stringify(identity) },
           { role: 'system', content: 'Main 公开情境与本轮候选：' + JSON.stringify({
             character: { idleStateId: catalog.idleStateId, states: catalog.states }, runtime: context.runtime,
@@ -199,7 +211,7 @@ export class ConversationChatAdapter {
             ...(idleForMs === undefined ? {} : { idleForMs })
           }) }, ...history, { role: 'user', content: input.text }],
         tools: [], toolChoice: 'none', reasoningMode: idleForMs === undefined ? 'provider_default' : 'disabled',
-        responseContract: idleForMs === undefined ? characterChatResponseContract : characterAutonomyResponseContract,
+        responseContract,
         ...(input.onTextDelta ? { onTextDelta: input.onTextDelta } : {})
       };
       // 为一次修复及最大心情摘要留空间；完整序列化与本地 Provider 同口径。

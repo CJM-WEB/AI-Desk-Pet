@@ -32,6 +32,7 @@ it('明确状态经本地名称或模型描述直达，按作者时长或默认�
     const reply = exact ? {} : await new ConversationChatAdapter({ respond: async request => {
       expect(request.tools).toEqual([]);
       expect(request.toolChoice).toBe('none');
+      expect(request.responseContract?.jsonSchema.properties).toHaveProperty('explicitPlayback');
       return { type: 'text', text: '轻快地陪你一会儿。', structured_output: {
         explicitPlayback: { stateId: 'joy' }, movementControl: { kind: 'keep' }, capabilityPlan: { kind: 'chat' }
       } };
@@ -67,6 +68,28 @@ it('Main新互动只失效在途结果，持续心情保留且普通完成提供
   f.director.reset('two');
   expect(f.service.snapshot()?.mood).toBeNull();
 });
+it('聊天 null 经真实 Adapter 与 Main 后保留原心情修订及后续计划', async () => {
+  const f = await fixture();
+  f.service.applyDecision({ context: f.service.context()!, source: 'chat', eventId: 'first',
+    moodUpdate: { summary: '持续开心', strength: 1 }, expressionPlan: { states: [{ stateId: 'joy', score: 1,
+      minStrength: 0, maxStrength: 1, actions: [{ actionId: 'jump', score: 1 }] }] } });
+  const mood = f.service.snapshot()!.mood!;
+  const prepared = await f.director.prepareUserPrompt('继续聊聊');
+  const context = f.director.captureExpressionContext();
+  const respond = vi.fn(async () => ({ type: 'text' as const, text: '我在听。', structured_output: {
+    moodUpdate: null, expressionPlan: null, movementControl: { kind: 'keep' }, capabilityPlan: { kind: 'chat' }
+  } }));
+  const reply = await new ConversationChatAdapter({ respond }).respond({ text: prepared.originalText, history: [],
+    behaviorContext: f.director.getChatContext(), signal: new AbortController().signal });
+  expect(reply).not.toHaveProperty('moodUpdate');
+  expect(reply).not.toHaveProperty('expressionPlan');
+  expect(respond).toHaveBeenCalledOnce();
+  await f.director.completeUserPrompt({ generation: 'one', eventId: 'no-update', context, explicitDirective: prepared.explicitDirective, ...reply });
+  f.time(3000); f.director.advance();
+  expect(f.service.snapshot()?.mood).toMatchObject({ summary: mood.summary, revision: mood.revision, startedAtMs: mood.startedAtMs });
+  expect(f.service.snapshot()?.schedule.current?.actionId).toBe('jump');
+  expect(f.motion.requestIntent).not.toHaveBeenCalled();
+});
 it('同轮两级表现不吞独立的一次运动，完成事件不重发运动', async () => {
   const f = await fixture();
   await f.director.prepareUserPrompt('开心地向左一点');
@@ -85,10 +108,13 @@ it('明确动作接纳同轮心情及后续计划，重复完成不重播，旧�
   f.service.applyPlaybackFeedback({ playbackToken: active.playbackToken, actionId: active.actionId, status: 'started', occurredAtMs: 0 });
   const input = { generation: 'one', eventId: 'turn-1', context, explicitDirective: prepared.explicitDirective,
     explicitPlaybackToken: prepared.explicitPlaybackToken!, moodUpdate: { summary: '今天获奖开心', strength: 1 },
+    movementControl: { kind: 'move_once' as const, target: 'left' as const, distance: 'near' as const },
     expressionPlan: { states: [{ stateId: 'joy', score: 1, minStrength: 0, maxStrength: 1, actions: [{ actionId: 'jump', score: 1 }] }] } };
   await f.director.completeUserPrompt(input);
   expect(f.service.snapshot()?.schedule.current?.playbackToken).toBe(active.playbackToken);
   expect(f.service.snapshot()?.mood?.summary).toBe('今天获奖开心');
+  // 即使绕过请求 Schema 返回越界运动，Main 仍只保留已开始的明确播放。
+  expect(f.motion.requestIntent).not.toHaveBeenCalled();
   await f.director.completeUserPrompt(input);
   f.time(100); f.director.advance();
   expect(f.service.snapshot()?.schedule.current?.actionId).toBe('jump');

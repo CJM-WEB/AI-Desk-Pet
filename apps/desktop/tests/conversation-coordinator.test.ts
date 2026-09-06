@@ -333,6 +333,29 @@ async function authorizeTask(harness: ReturnType<typeof createHarness>): Promise
 }
 
 describe('ConversationCoordinator', () => {
+  test('Main 明确入口通过可信标记收紧当次模型运动和播放 Schema，普通运动仍独立', async () => {
+    for (const handled of [true, false]) {
+      const movementControl = { kind: 'move_once', target: 'left', distance: 'near' };
+      const script = scriptedProvider({ type: 'text', text: '继续陪你。', structured_output: {
+        moodUpdate: null, expressionPlan: null, movementControl, capabilityPlan: { kind: 'chat' }
+      } });
+      const behavior = behaviorPortDouble({ prepareUserPrompt: vi.fn(async text => ({ originalText: text, capabilityText: text,
+        explicitDirective: handled ? { kind: 'play' as const, target: { kind: 'action_name' as const, name: '散步' } } : null,
+        ...(handled ? { explicitPlaybackToken: 'main-started' } : {})
+      })) });
+      const harness = createHarness([{ profileId: 'chat', providerIdentity: 'openai', providerName: '聊天', script }], { behavior });
+      await harness.coordinator.submit(handled ? '播放散步动作' : '陪我聊聊');
+      expect(script.requests).toHaveLength(1);
+      const schema = script.requests[0]!.responseContract!.jsonSchema as { required: string[]; properties: Record<string, unknown> & { movementControl: { oneOf: unknown[] } } };
+      expect(schema.required).toEqual(expect.arrayContaining(['moodUpdate', 'expressionPlan']));
+      expect(schema.properties.movementControl.oneOf).toHaveLength(handled ? 1 : 3);
+      expect(schema.properties).not.toHaveProperty('explicitPlayback');
+      expect(behavior.completeUserPrompt).toHaveBeenCalledWith(expect.objectContaining({ movementControl: handled ? null : movementControl }));
+      expect(script.requests[0]).toMatchObject({ tools: [], toolChoice: 'none' });
+      expect(harness.fileTasks.submissions).toEqual([]);
+      await harness.coordinator.close();
+    }
+  });
   test('普通聊天传回请求前表达修订，接纳完成只发专用 response 事实', async () => {
     const script = deferredProvider();
     const original = { contextRevision: 1, moodRevision: 1, instance: Symbol('request') };

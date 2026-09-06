@@ -15,7 +15,7 @@ import { LocalModelProvider } from '../src/main/providers/local-model-provider';
 afterEach(() => vi.useRealTimers());
 const minute = 60_000;
 const flush = async () => { for (let i = 0; i < 12; i++) await Promise.resolve(); };
-const response = (summary = '安静地陪伴') => ({ type: 'structured' as const, structured_output: { moodUpdate: { summary, strength: .8 } } });
+const response = (summary = '安静地陪伴') => ({ type: 'structured' as const, structured_output: { moodUpdate: { summary, strength: .8 }, expressionPlan: null } });
 
 /** 只替换网络与窗口；使用真实组合、Director、Service 和表达引擎。 */
 async function fixture(provider?: ModelProvider) {
@@ -66,14 +66,40 @@ it('无正文契约复用云端与本地传输，严格拒绝额外字段且 Dee
   }
   expect(bodies.every(body => JSON.stringify(body.tools) === '[]' && body.tool_choice === 'none' && body.stream !== true)).toBe(true);
   expect((bodies[1]!.messages as Array<{ role: string }>).filter(message => message.role === 'system')).toHaveLength(1);
-  for (const forbidden of [{ text: '不能公开' }, { movementControl: { kind: 'set_mode', mode: 1 } }, { capabilityPlan: { kind: 'agent_task' } }, { moodUpdate: { summary: 'x'.repeat(17_000), strength: .2 } }]) {
-    output = forbidden;
+  output = { moodUpdate: null, expressionPlan: null };
+  for (const provider of providers) expect(await provider.respond(request, new AbortController().signal)).toEqual({ type: 'structured', structured_output: output });
+  expect(characterAutonomyResponseContract.jsonSchema.required).toEqual(expect.arrayContaining(['moodUpdate', 'expressionPlan']));
+  for (const forbidden of [{ text: '不能公开' }, { explicitPlayback: { stateId: 'rest' } }, { tools: [] }, { unknown: true },
+    { movementControl: { kind: 'set_mode', mode: 1 } }, { capabilityPlan: { kind: 'agent_task' } }, { moodUpdate: { summary: 'x'.repeat(17_000), strength: .2 } }]) {
+    output = { moodUpdate: null, expressionPlan: null, ...forbidden };
     await expect(providers[0]!.respond(request, new AbortController().signal)).rejects.toThrow();
   }
+  output = { moodUpdate: null };
+  await expect(providers[0]!.respond(request, new AbortController().signal)).rejects.toThrow();
   output = null;
   const before = fetcher.mock.calls.length;
   await expect(providers[0]!.respond(request, new AbortController().signal)).rejects.toThrow();
   expect(fetcher.mock.calls.length - before).toBe(1);
+});
+
+it('自主 null 归一化为无更新，真实 Main 保持旧心情且不发正文或工具', async () => {
+  const f = await fixture({ respond: async () => ({ type: 'structured', structured_output: { moodUpdate: null, expressionPlan: null } }) });
+  try {
+    f.service.applyDecision({ context: f.service.context()!, eventId: 'chat', source: 'chat', moodUpdate: { summary: '旧心情', strength: .8 } });
+    const mood = f.service.snapshot()!.mood!;
+    await f.time(5 * minute);
+    expect(f.requests).toHaveLength(1);
+    const request = f.requests[0]!;
+    expect(request).toMatchObject({ tools: [], toolChoice: 'none', responseContract: { name: 'character_autonomy' } });
+    expect(request.onTextDelta).toBeUndefined();
+    expect(f.service.snapshot()?.mood).toMatchObject({ summary: mood.summary, revision: mood.revision, startedAtMs: mood.startedAtMs });
+    expect(f.events).toEqual([]);
+    expect(f.motion.requestIntent).not.toHaveBeenCalled();
+    // 验证 Adapter 接纳而非上层吞掉格式错误，正式 Main 决策中不能残留 null。
+    const adapter = new ConversationChatAdapter({ respond: async () => ({ type: 'structured', structured_output: { moodUpdate: null, expressionPlan: null } }) }, () => undefined, { inputByteBudget: 19200 });
+    expect(await adapter.respondAutonomous({ behaviorContext: f.director.getChatContext(), idleForMs: 5 * minute,
+      signal: new AbortController().signal, beforeProviderCall: () => true })).toEqual({});
+  } finally { await f.close(); }
 });
 
 it('应用本次运行预算在真正调用时扣除，0 档推进且 reset 与开关不清额度', async () => {
