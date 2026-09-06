@@ -49,6 +49,15 @@
 
 `CharacterExpressionPlan` 使用 V3 stateId/actionId 候选与 0..1 分数、强度区间、有效期和 moodRevision，最多 8 状态/32 动作、默认 20 分钟/最多 30 分钟。`CharacterExpressionEngine` 提供更新心情/应用计划/明确播放/可信事件/advance/feedback/replace/reset/snapshot；产出真实 ID 播放事件、唯一 stateId 和 mood。动作冷却、重复抑制、loop、中断、失败回退及播放 token 复用通用机制；有可用替代时不连续选同一动作，状态最短保持 2 秒。全冷却不忙循环，idle 有效帧可静止。旧 token、角色/情境/心情修订不匹配不能复活。
 
+**供后续接线的具体约定：**
+- 导出严格 `characterMoodUpdateSchema`（`summary/strength/fadeInMs?/halfLifeMs?`）与 `characterExpressionPlanSchema`（`states:[{stateId,score,minStrength,maxStrength,actions:[{actionId,score}]}], validForMs`）。解析补默认有效期；空候选表示没有匹配状态。动作候选为空时使用该状态作者动作权重。
+- 模型不提供修订号；Main 捕获请求上下文，Engine 将计划绑定 contextRevision/moodRevision。提供 `context()` 返回不可变修订标记；`applyDecision({context,eventId,source:'chat'|'autonomous',moodUpdate?,expressionPlan?})` 校验标记后一次提交心情与配套计划。无更新表示继续演进，新心情无合法计划清旧计划。
+- Engine 构造器接 `manifest/skinId?/now/random/createPlaybackToken`；导出 `advance()`、`playExplicit(stateId,actionId?)`、`applyFeedback(feedback)`、`recordEvent({id,type,occurredAtMs})`、`invalidateContext()`、`replaceCharacter(manifest,skinId?)`、`reset()`、`snapshot()`。具体返回类型统一为 `{snapshot,effects}`；snapshot 至少含 stateId/skinId/mood/contextRevision/moodRevision/schedule，便于 Main 原几何绑定和令牌反馈复用。
+- 普通 advance 不递增情境修订；真实新交互或角色/配置变化由 Main 显式 invalidate。事件条件按规格 4.2 的 2 分钟边沿消费，idle 兜底和明确指定可越过可选条件但仍校验资源。
+- `behavior-scheduler.ts` 只需要动作 id、interrupt、loopPolicy、fallback ID 与选择的 stateId/actionId，可把参数改成最小结构型接口供 V2/V3 同时调用，避免复制整套归约器。必要通用历史类型可移到此模块；不要让新引擎依赖旧状态推断/语义选择器。
+- 模型计划时效、心情变化及明确停止表现能够结束持续循环；“until-interrupted”不允许过期计划永久续播。动态静止/循环/时长应由播放 effect 明确表达，后续 Renderer 依此执行；帧播放器不自行选择状态。
+- 本步原 Main/UI 尚未切换，新增 V3 引擎接线由 Task 3 完成；不得用临时 any/旧主修饰快照假装接口兼容。
+
 - [ ] RED：开心→弱开心→idle 无需下一条消息；同状态两个动作轮换；新心情丢弃旧计划；迟到反馈和非法 ID 无效；无可用候选稳定 idle。
 - [ ] GREEN：独立可复用引擎，解释计划与窗口位移无关。
 - [ ] 验证：相应定向测试与角色包 typecheck；不按真实分钟等待测试，不调用真实模型。
