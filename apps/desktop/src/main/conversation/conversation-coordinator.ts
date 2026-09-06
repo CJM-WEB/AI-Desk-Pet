@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import type { ChatSubmissionIntent } from '../../shared/myself-api';
 import type { ModelMessage } from '@myself/agent-core';
 import type {
   HistoryDisclosureDecision,
@@ -169,8 +170,8 @@ export class ConversationCoordinator {
     );
   }
 
-  async submit(text: string): Promise<void> {
-    if (this.handleAwaitingConfirmationFollowUp(text)) return;
+  async submit(text: string, submissionIntent: ChatSubmissionIntent = 'auto'): Promise<void> {
+    if (submissionIntent === 'auto' && this.handleAwaitingConfirmationFollowUp(text)) return;
     try {
       this.assertIdle();
     } catch (error) {
@@ -186,7 +187,7 @@ export class ConversationCoordinator {
       throw normalizedError;
     }
 
-    if (this.resultSummary !== null && this.resultSummary.phase !== null
+    if (submissionIntent === 'auto' && this.resultSummary !== null && this.resultSummary.phase !== null
       && /^(?:上一个任务|任务|上次任务)?(?:完成了吗|成功了吗|结束了吗)[？?。]?$/u.test(normalized)) {
       const summary = this.resultSummary;
       this.options.emit({ type: 'message', role: 'user', text: normalized });
@@ -215,6 +216,22 @@ export class ConversationCoordinator {
       if (!this.isRunning(context)) return;
       this.options.emit({ type: 'phase', phase: 'thinking' });
       if (!this.isRunning(context)) return;
+
+      // 明确入口保留原文，跳过角色改写和陪伴模型；授权仍由原范围流程裁决。
+      if (submissionIntent === 'task') {
+        const intent = capabilityIntentRouter.route(normalized);
+        if (intent.kind === 'powershell_task' && intent.evidence.requestedRunMode === 'background') {
+          throw publicErrorForCode('POWERSHELL_BACKGROUND_UNSUPPORTED');
+        }
+        this.state = {
+          kind: 'preparing_capability_task',
+          generation: context.generation,
+          controller: context.controller,
+          taskKind: 'file'
+        };
+        await this.prepareCapabilityTask(context, 'file');
+        return;
+      }
 
       const prepared = await this.options.behavior.prepareUserPrompt(normalized);
       if (!this.isRunning(context)) return;

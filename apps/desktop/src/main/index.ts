@@ -104,6 +104,7 @@ import { ProviderRegistry } from './providers/provider-registry';
 import { LocalModelRuntime } from './local-model/local-model-runtime';
 import { LocalModelService } from './local-model/local-model-service';
 import { BUILTIN_LOCAL_PROVIDER_CATALOG_ENTRY } from './local-model/local-model-route';
+import type { ChatSubmissionIntent } from '../shared/myself-api';
 import { ipcChannels } from '../shared/ipc-channels';
 import {
   localModelPublicStatusSchema,
@@ -1043,9 +1044,9 @@ async function createApplicationWindows(
     await conversationComposition.resetForConfigurationChange();
   };
   const conversationIpcService = {
-    submit: async (text: string): Promise<void> => {
+    submit: async (text: string, intent?: ChatSubmissionIntent): Promise<void> => {
       reportedSubmitErrorCode = null;
-      await conversationCoordinator.submit(text);
+      await conversationCoordinator.submit(text, intent);
     },
     hasReportedFailure: (error: unknown): boolean => (
       error instanceof Error

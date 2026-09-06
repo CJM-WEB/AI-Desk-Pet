@@ -204,7 +204,7 @@ describe('Main 会话组合模块', () => {
     expect(harness.factoryInputs).toHaveLength(0);
     await harness.composition.close();
   });
-  test('自然读取表现降级后仍先确认正式范围，确认 IPC 不等待最终正文', async () => {
+  test.each([undefined, 'task'] as const)('提交意图 %s 的真实读取先确认范围，确认 IPC 不等待最终正文', async intent => {
     const nonce = randomUUID();
     let forward: (event: CodingSessionEvent) => void = () => undefined;
     const f = await fixture([[{ name: 'read', args: { path: 'note.txt' } }], nonce], { onEvent: event => forward(event) });
@@ -212,8 +212,9 @@ describe('Main 会话组合模块', () => {
     await base.composition.close();
     const events: TaskEvent[] = [];
     let creates = 0;
+    const createChatAdapter = vi.fn(base.options.createChatAdapter);
     const execution = deferred();
-    const composition = createMainConversationComposition({ ...base.options,
+    const composition = createMainConversationComposition({ ...base.options, createChatAdapter,
       readAuthorizedRootPath: async () => f.directory,
       createCodingTaskService: input => {
         creates += 1;
@@ -227,9 +228,10 @@ describe('Main 会话组合模块', () => {
     try {
       await writeFile(join(f.directory, 'note.txt'), nonce);
       await writeFile(join(f.directory, 'package.json'), JSON.stringify({ packageManager: 'pnpm@10.0.0', scripts: { test: 'vitest run', lint: 'eslint .' } }));
-      await composition.coordinator.submit('帮我看看 note.txt 里写了什么');
+      await composition.coordinator.submit('帮我看看 note.txt 里写了什么', intent);
       expect(creates).toBe(0);
       expect(f.requests).toHaveLength(0);
+      if (intent === 'task') expect(createChatAdapter).not.toHaveBeenCalled();
       const scope = events.find(event => event.type === 'capability_authorization_required');
       expect(scope).toBeDefined();
       if (scope?.type !== 'capability_authorization_required') throw new Error('缺少范围授权');
@@ -349,6 +351,18 @@ describe('Main 会话组合模块', () => {
 
     expect(harness.factoryInputs).toHaveLength(2);
     await harness.composition.close();
+  });
+
+  test('明确任务范围在配置 generation 变化后不能激活', async () => {
+    const harness = baseOptions();
+    try {
+      await harness.composition.coordinator.submit('note.txt 里面写了什么？', 'task');
+      const scope = harness.events.find(event => event.type === 'capability_authorization_required');
+      if (scope?.type !== 'capability_authorization_required') throw new Error('缺少范围授权');
+      await harness.composition.resetForConfigurationChange();
+      await expect(harness.composition.coordinator.resolveCapabilityAuthorization(scope.requestId, 'confirm')).rejects.toMatchObject({ code: 'ACTION_EXPIRED' });
+      expect(harness.factoryInputs).toHaveLength(0);
+    } finally { await harness.composition.close(); }
   });
 
   test.each(localReadinessCases)('本地档案处于 %s 时抛出稳定就绪错误且不要求 Secret', (phase, code) => {

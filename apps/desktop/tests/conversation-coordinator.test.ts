@@ -334,6 +334,63 @@ async function authorizeTask(harness: ReturnType<typeof createHarness>): Promise
 }
 
 describe('ConversationCoordinator', () => {
+  test('明确任务保留规范化正文并跳过聊天与角色改写，确认后才执行且意图不延续', async () => {
+    const script = scriptedProvider({ type: 'text', text: '普通聊天回复' });
+    const harness = createHarness([{ profileId: 'chat', providerIdentity: 'openai', providerName: 'Chat', script }]);
+    await harness.coordinator.submit('  note.txt 里面写了什么？  ', 'task');
+    expect(harness.factoryCallCount()).toBe(0);
+    expect(script.requests).toHaveLength(0);
+    expect(harness.behavior.prepareUserPrompt).not.toHaveBeenCalled();
+    expect(harness.fileTasks.activationCalls).toBe(0);
+    expect(harness.fileTasks.submissions).toHaveLength(0);
+    expect(harness.events).toContainEqual(expect.objectContaining({ type: 'capability_authorization_required', requestSummary: 'note.txt 里面写了什么？', directory: 'D:\\authorized', modelId: 'model-test', capability: 'file' }));
+    await authorizeTask(harness);
+    expect(harness.fileTasks.activationCalls).toBe(1);
+    expect(harness.fileTasks.submissions).toEqual([expect.objectContaining({ text: 'note.txt 里面写了什么？', taskKind: 'file' })]);
+    harness.fileTasks.publish({ type: 'phase', phase: 'success' }, 'generation-current');
+    await harness.coordinator.submit('你好');
+    expect(harness.factoryCallCount()).toBe(1);
+    expect(script.requests).toHaveLength(1);
+    expect(harness.fileTasks.submissions).toHaveLength(1);
+  });
+
+  test.each(['cancel', 'reset', 'close'] as const)('明确任务范围在 %s 后不能以旧确认激活', async action => {
+    const script = scriptedProvider({ type: 'text', text: '普通回复' });
+    const harness = createHarness([{ profileId: 'chat', providerIdentity: 'openai', providerName: 'Chat', script }]);
+    await harness.coordinator.submit('note.txt 里面写了什么？', 'task');
+    const requestId = scopeId(harness);
+    if (action === 'cancel') await harness.coordinator.resolveCapabilityAuthorization(requestId, 'cancel');
+    else if (action === 'close') await harness.coordinator.close();
+    else await harness.coordinator.resetConversation();
+    await expect(harness.coordinator.resolveCapabilityAuthorization(requestId, 'confirm')).rejects.toBeDefined();
+    expect(harness.fileTasks.activationCalls).toBe(0);
+    expect(harness.fileTasks.submissions).toHaveLength(0);
+    expect(script.requests).toHaveLength(0);
+  });
+
+  test('明确任务不被等待确认的聊天追问和已完成快捷回复吞掉', async () => {
+    const harness = createHarness([]);
+    await harness.coordinator.submit('读取 note.txt');
+    await expect(harness.coordinator.submit('任务完成了吗', 'task')).rejects.toBeDefined();
+    expect(harness.fileTasks.activationCalls).toBe(0);
+    await authorizeTask(harness);
+    harness.fileTasks.publish({ type: 'phase', phase: 'awaiting_confirmation' }, 'generation-current');
+    await expect(harness.coordinator.submit('继续', 'task')).rejects.toMatchObject({ code: 'TASK_ALREADY_ACTIVE' });
+    await expect(harness.coordinator.submit('继续')).resolves.toBeUndefined();
+    expect(harness.fileTasks.submissions).toHaveLength(1);
+    harness.fileTasks.publish({ type: 'phase', phase: 'success' }, 'generation-current');
+    await harness.coordinator.submit('任务完成了吗', 'task');
+    expect(harness.events.filter(event => event.type === 'capability_authorization_required')).toHaveLength(2);
+    expect(harness.factoryCallCount()).toBe(0);
+  });
+
+  test('明确任务仍拒绝显式后台 PowerShell 请求', async () => {
+    const harness = createHarness([]);
+    await expect(harness.coordinator.submit('后台运行构建', 'task')).rejects.toMatchObject({ code: 'POWERSHELL_BACKGROUND_UNSUPPORTED' });
+    expect(harness.fileTasks.preparedGenerations).toHaveLength(0);
+    expect(harness.factoryCallCount()).toBe(0);
+  });
+
   test('状态追问只使用当前代有限工具事实，重置后不保留旧结果', async () => {
     const harness = createHarness([]);
     await harness.coordinator.submit('执行 PowerShell 测试');
@@ -1553,9 +1610,11 @@ describe('ConversationCoordinator', () => {
     ['share_once', [
       { role: 'user', content: '旧问题' },
       { role: 'assistant', content: '旧回答' }
-    ]],
-    ['current_message_only', []]
-  ] as const)('文件目标跨 Provider 时 %s 后只恢复一次原提交', async (decision, expectedHistory) => {
+    ], undefined],
+    ['current_message_only', [], undefined],
+    ['share_once', [{ role: 'user', content: '旧问题' }, { role: 'assistant', content: '旧回答' }], 'task'],
+    ['current_message_only', [], 'task']
+  ] as const)('文件目标跨 Provider 时 %s 后只恢复一次原提交 %#', async (decision, expectedHistory, intent) => {
     const harness = createHarness([]);
     harness.fileTasks.target = Object.freeze({
       profileId: 'profile-anthropic-agent',
@@ -1570,7 +1629,7 @@ describe('ConversationCoordinator', () => {
       providerIdentity: 'openai'
     });
 
-    await harness.coordinator.submit('整理文件');
+    await harness.coordinator.submit('整理文件', intent);
     await authorizeTask(harness);
 
     expect(harness.fileTasks.submissions).toEqual([]);

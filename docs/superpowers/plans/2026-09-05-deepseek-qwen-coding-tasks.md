@@ -718,24 +718,24 @@ const request: ModelRequest = {
 
 ### 9.1 RED：先证明入口和信任边界
 
-- [ ] 在既有 apps/desktop/tests/conversation-coordinator.test.ts 用当前被自然入口漏判的内容问答发task提交，断言chatTurnFactory/聊天Provider零调用、原始规范化文本不变、Main现有范围卡出现，确认前capability submit/激活为零，确认后同一任务端口执行。拒绝范围时零执行。
-- [ ] 断言task是单次意图：下一次省略intent仍走auto；未知intent在IPC拒绝；busy/reset/关闭或配置generation变化后旧确认不能激活新任务。复用既有披露与范围生命周期回归，补针对新增分支的最小用例。
-- [ ] 在 apps/desktop/tests/agent-ipc.test.ts 与 preload-api.test.ts 证明只传text和intent，仍验证当前chat sender，额外目录/授权字段严格拒绝；原单参数调用兼容。
-- [ ] 在 apps/desktop/tests/chat-panel.test.tsx 通过真实按钮点击断言任务意图、普通发送缺省auto、两者共用空输入/忙碌/许可等待/本地模型加载禁用及停止；不保存模式或复制提交owner。先观察正确RED再改产品。
+- [x] 在既有 apps/desktop/tests/conversation-coordinator.test.ts 用当前被自然入口漏判的内容问答发task提交，断言chatTurnFactory/聊天Provider零调用、原始规范化文本不变、Main现有范围卡出现，确认前capability submit/激活为零，确认后同一任务端口执行。拒绝范围时零执行。
+- [x] 断言task是单次意图：下一次省略intent仍走auto；未知intent在IPC拒绝；busy/reset/关闭或配置generation变化后旧确认不能激活新任务。复用既有披露与范围生命周期回归，补针对新增分支的最小用例。
+- [x] 在 apps/desktop/tests/agent-ipc.test.ts 与 preload-api.test.ts 证明只传text和intent，仍验证当前chat sender，额外目录/授权字段严格拒绝；原单参数调用兼容。
+- [x] 在 apps/desktop/tests/chat-panel.test.tsx 通过真实按钮点击断言任务意图、普通发送缺省auto、两者共用空输入/忙碌/许可等待/本地模型加载禁用及停止；不保存模式或复制提交owner。先观察正确RED再改产品。
 
 ### 9.2 GREEN：复用准备、披露和范围授权
 
-- [ ] ChatPanel保留“发送给 AI Pet”作为现有表单默认，增加type=button“作为任务发送”，调用同一提交函数并传task；保留文本框、输入长度、错误、停止、revision和owner处理。两个按钮可使用现有primary/quiet样式，无第二消息存储或任务页。
-- [ ] Main严格校验后传递单次意图。在Coordinator现有文本/空闲校验、同一context与事件生命周期中，task分支直接进入prepareCapabilityTask(context,'file')，不调用陪伴模型、不通过角色prepareUserPrompt改写任务文字或执行角色指令。当前'file'任务Kind已装配全部八工具与范围命令，不另造coding Kind。
-- [ ] 省略/auto保持原路由与陪伴行为。task不被“任务完成了吗”等普通快捷回复吞掉，也不能通过等待确认时的聊天回复绕过busy校验；原auto的等待提示行为保留。原明确后台运行请求拒绝规则保留，可复用已有本地route证据判断，不能用该路由重新决定task是否变聊天。
-- [ ] prepareCapabilityTask复用Main快照、跨Provider披露、范围卡、确认/拒绝与过期检查；scope之前零Core。目录/模型/能力/完整命令由Main决定。未知/额外输入不进入授权。不存在替代旧Core或放宽权限的代码。
+- [x] ChatPanel保留“发送给 AI Pet”作为现有表单默认，增加type=button“作为任务发送”，调用同一提交函数并传task；保留文本框、输入长度、错误、停止、revision和owner处理。两个按钮可使用现有primary/quiet样式，无第二消息存储或任务页。
+- [x] Main严格校验后传递单次意图。在Coordinator现有文本/空闲校验、同一context与事件生命周期中，task分支直接进入prepareCapabilityTask(context,'file')，不调用陪伴模型、不通过角色prepareUserPrompt改写任务文字或执行角色指令。当前'file'任务Kind已装配全部八工具与范围命令，不另造coding Kind。
+- [x] 省略/auto保持原路由与陪伴行为。task不被“任务完成了吗”等普通快捷回复吞掉，也不能通过等待确认时的聊天回复绕过busy校验；原auto的等待提示行为保留。原明确后台运行请求拒绝规则保留，可复用已有本地route证据判断，不能用该路由重新决定task是否变聊天。
+- [x] prepareCapabilityTask复用Main快照、跨Provider披露、范围卡、确认/拒绝与过期检查；scope之前零Core。目录/模型/能力/完整命令由Main决定。未知/额外输入不进入授权。不存在替代旧Core或放宽权限的代码。
 
 ### 9.3 组合和真实界面回归
 
-- [ ] apps/desktop/tests/main-conversation-composition.test.ts 使用既有真实HTTP/Core夹具从task提交到Main范围卡，再批准并读取未知随机内容。断言范围前无模型请求、范围后真实read回注，最终正文包含内容，未调用聊天适配器。保留自然入口既有测试。
-- [ ] 既有“正式Core任务UI”组增加单个明确按钮读取旅程：输入内容问答、点击按钮、出现准确目录/模型卡且Provider请求0；批准后原Core读取随机文件并在既有聊天正文可见；结束后普通发送仍走原聊天。使用当前configureCodingApp/fixture/ProviderServer，不复制新夹具。运行新用例与原自然读取、许可拒绝/重复保护必要旅程，不跑无关拖拽专项。
-- [ ] 定向测试后Desktop typecheck/build、preload边界。完整verify:desktop及真实两模型由主控在审查后执行，实施者不重复总门禁。
-- [ ] 提供task-9-report.md、task-9-final-manifest.json及RED/GREEN日志；源码检查仅上述范围，git diff --check通过。主控生成冻结差异后独立规格与质量审查。
+- [x] apps/desktop/tests/main-conversation-composition.test.ts 使用既有真实HTTP/Core夹具从task提交到Main范围卡，再批准并读取未知随机内容。断言范围前无模型请求、范围后真实read回注，最终正文包含内容，未调用聊天适配器。保留自然入口既有测试。
+- [x] 既有“正式Core任务UI”组增加单个明确按钮读取旅程：输入内容问答、点击按钮、出现准确目录/模型卡且Provider请求0；批准后原Core读取随机文件并在既有聊天正文可见；结束后普通发送仍走原聊天。使用当前configureCodingApp/fixture/ProviderServer，不复制新夹具。运行新用例与原自然读取、许可拒绝/重复保护必要旅程，不跑无关拖拽专项。
+- [x] 定向测试后Desktop typecheck/build、preload边界。完整verify:desktop及真实两模型由主控在审查后执行，实施者不重复总门禁。
+- [x] 提供task-9-report.md、task-9-final-manifest.json及RED/GREEN日志；源码检查仅上述范围，git diff --check通过。主控生成冻结差异后独立规格与质量审查。
 
 完成标准：明确任务能从原界面可靠到达原授权与执行链，普通发送保持原体验；scope前不产生本地副作用；新增入口无持久权限；未改变其他业务。自动识别的已知误判不因本任务记为已修复。
 
@@ -745,10 +745,10 @@ const request: ModelRequest = {
 
 ### 10.1 最小迁移现有验收器
 
-- [ ] 只修改 apps/desktop/scripts/local-model-acceptance-runner.ts、run-local-model-acceptance.mjs、run-local-model-acceptance.d.mts 和 apps/desktop/tests/local-model-acceptance.test.ts；不建立第二个执行或验收框架。主控维护公开文档和Git。实施者不运行真实模型或UI。
+- [ ] 只修改 apps/desktop/scripts/local-model-acceptance-runner.ts、run-local-model-acceptance.mjs、run-local-model-acceptance.d.mts、deepseek-acceptance-main.ts 和 apps/desktop/tests/local-model-acceptance.test.ts；不建立第二个执行或验收框架。主控维护公开文档和Git。实施者不运行真实模型或UI。
 - [ ] 现有runCodingModelAcceptance的六场景输入原文、顺序、磁盘随机内容、修复目标/测试断言、拒绝处理、完整命令allowlist、取消进程与心跳检查保持原样；唯一任务入口变化是每项文件场景调用正式coordinator.submit(text,'task')。首条中文聊天继续auto；不将源文案加文件内容、期望答案或分类暗示。
 - [ ] 先以现有正式HTTP/Core夹具覆盖一个问答场景：陪伴Provider只允许首条普通中文聊天，文件问答必须不调用陪伴模型而经原Main范围和真实Core读取未知随机值后通过。旧auto验收路径上应因漏入聊天而正确失败。复用既有runCodingModelAcceptance，不增加测试专用executor。
-- [ ] 公开验收记录增加闭合字段taskEntry:'auto'|'task'，真实新运行明确记task；缺失历史字段保留auto含义，不把旧记录标成task。schemaVersion更新为3，声明/失败记录/重建器同步。先补记录白名单失败测试，原隐私与嵌套字段剥离保持；不保存正文、路径、命令原文或凭据。
+- [ ] 公开验收记录增加闭合字段taskEntry:'auto'|'task'，真实新运行明确记task；缺失历史字段保留auto含义，不把旧记录标成task。schemaVersion更新为3，声明/失败记录/重建器同步；deepseek-acceptance-main.ts仅同步失败记录入口字段，不改变凭据或生命周期。先补记录白名单失败测试，原隐私与嵌套字段剥离保持；不保存正文、路径、命令原文或凭据。
 - [ ] GREEN后运行local-model-acceptance定向与Desktop typecheck，保存 task-10-report.md、task-10-final-manifest.json、RED/GREEN日志和新旧源指纹；独立审查后由主控运行模型。现有15分钟整轮期限、30秒清理、owner/generation与原停止条件不扩大。
 
 ### 10.2 主控真实运行及交付

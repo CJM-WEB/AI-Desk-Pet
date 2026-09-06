@@ -583,6 +583,37 @@ async function readCodingEvents(page: Page): Promise<TaskEvent[]> {
 }
 
 test.describe('正式 Core 任务 UI', () => {
+  test('明确任务按钮读取随机正文，范围前零模型请求且普通发送仍聊天', async () => {
+    test.setTimeout(120000);
+    const nonce = `明确入口正文-${randomBytes(16).toString('hex')}`;
+    const provider = await startProviderServer([
+      { response: codingResponse([{ name: 'read', args: { path: 'note.txt' }, id: 'explicit-read' }]) },
+      { response: request => { const messages = request.messages as Array<{ tool_call_id?: string; content: string }>; expect(messages.find(message => message.tool_call_id === 'explicit-read')?.content).toContain(nonce); return codingResponse(nonce); } },
+      { response: characterChatResponse('普通聊天仍然可用'), inspect: expectCharacterChatRequest }
+    ]);
+    let fixture: AppFixture | undefined;
+    try {
+      fixture = await (await loadElectronFixtureModule()).createElectronAppFixture({ workspaceRoot: resolve(process.cwd()), apiKey: provider.apiKey, logSentinels: [nonce] });
+      await writeFile(join(fixture.authorizedRootDirectory, 'note.txt'), nonce);
+      const { chat } = await configureCodingApp(fixture, provider);
+      await chat.getByRole('textbox', { name: '和我说点什么' }).fill('note.txt 里面写了什么？');
+      await chat.getByRole('button', { name: '作为任务发送' }).click();
+      const scope = chat.getByRole('article', { name: '本地任务授权' });
+      await expect(scope).toContainText('coding-e2e-model');
+      await expect(scope).toContainText(await realpath(fixture.authorizedRootDirectory));
+      expect(provider.requests).toHaveLength(0);
+      await approveCodingScope(chat);
+      await expect(chat.getByText(nonce, { exact: true })).toBeVisible();
+      await expect(chat.locator('.phase-pill')).toHaveClass(/phase-success/u);
+      await submitChatMessage(chat, '你好');
+      await expect(chat.getByText('普通聊天仍然可用', { exact: true })).toBeVisible();
+      await expect(scope).toHaveCount(0);
+      provider.assertComplete();
+      expect(provider.inspectionErrors).toEqual([]);
+      expect(fixture.capturedLogEvidence).toEqual({ apiKey: false, authorizedRoot: false, authorizationHeader: false, sentinels: [false] });
+    } finally { try { await fixture?.dispose(); } finally { await provider.close(); } }
+  });
+
   test('重复操作卡仅继续一次并结束任务，随后普通拒绝仍只拒绝本次操作', async () => {
     test.setTimeout(120000);
     const nonce = `循环正文-${randomBytes(16).toString('hex')}`;

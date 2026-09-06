@@ -1,6 +1,6 @@
-import { useEffect, useRef, useState, type FormEvent } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { HistoryDisclosureDecision, TaskPhase } from '@myself/shared-types';
-import type { MyselfApi } from '../../../shared/myself-api';
+import type { ChatSubmissionIntent, MyselfApi } from '../../../shared/myself-api';
 import type { LocalModelPublicStatus } from '../../../shared/local-model-ipc';
 import { localModelReasonText } from '../local-model-status';
 import { ConfirmationCard } from './ConfirmationCard';
@@ -117,8 +117,8 @@ export function ChatPanel({ api = window.myself }: { api?: MyselfApi }) {
     };
   }, [api]);
 
-  const submit = async (event: FormEvent): Promise<void> => {
-    event.preventDefault();
+  // 两种入口共用提交 owner、revision 和停止流程，意图只属于本次调用。
+  const submit = async (intent: ChatSubmissionIntent = 'auto'): Promise<void> => {
     const normalized = text.trim();
     if (!normalized || submitDisabled) return;
     const owner: RevisionOwner = {
@@ -129,7 +129,8 @@ export function ChatPanel({ api = window.myself }: { api?: MyselfApi }) {
     setText('');
     taskStore.getState().beginListening();
     try {
-      await api.submitMessage(normalized);
+      if (intent === 'task') await api.submitMessage(normalized, intent);
+      else await api.submitMessage(normalized);
     } catch {
       if (isCurrentOwner(owner, submitOwner.current)
         && taskStore.getState().phase !== 'error') {
@@ -389,7 +390,7 @@ export function ChatPanel({ api = window.myself }: { api?: MyselfApi }) {
         ) : null}
       </section>
 
-      <form className="composer" onSubmit={event => void submit(event)}>
+      <form className="composer" onSubmit={event => { event.preventDefault(); void submit(); }}>
         <label htmlFor="message-input">和我说点什么</label>
         <textarea
           id="message-input"
@@ -412,9 +413,15 @@ export function ChatPanel({ api = window.myself }: { api?: MyselfApi }) {
               停止当前任务
             </button>
           ) : (
-            <button className="primary-button" type="submit" disabled={!text.trim() || submitDisabled}>
-              发送给 AI Pet
-            </button>
+            <>
+              <button className="quiet-button" type="button" disabled={!text.trim() || submitDisabled}
+                onClick={() => void submit('task')}>
+                作为任务发送
+              </button>
+              <button className="primary-button" type="submit" disabled={!text.trim() || submitDisabled}>
+                发送给 AI Pet
+              </button>
+            </>
           )}
         </div>
       </form>

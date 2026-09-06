@@ -79,6 +79,15 @@ describe('preload 清除本地数据转发', () => {
 });
 
 describe('preload 公开 API', () => {
+  test('明确任务只传正文和单次意图，普通单参数调用保持兼容', async () => {
+    await exposedApi!.submitMessage('note.txt 里面写了什么？', 'task');
+    await exposedApi!.submitMessage('你好');
+    expect(invoke.mock.calls).toEqual([
+      [ipcChannels.chatSubmit, { text: 'note.txt 里面写了什么？', intent: 'task' }],
+      [ipcChannels.chatSubmit, { text: '你好' }]
+    ]);
+  });
+
   test('恢复快照从固定 IPC 通道返回合法 Main 结果', async () => {
     invoke.mockResolvedValueOnce({ fallbackErrorCode: null, issues: [] });
     await expect(exposedApi?.getCharacterRecoverySnapshot()).resolves.toEqual({
