@@ -1,6 +1,5 @@
 import type {
   BehaviorTarget,
-  CharacterBehaviorAuthorization,
   CharacterBehaviorPlan,
   CharacterAgentBehaviorIntent,
   CharacterPlaybackFeedback,
@@ -15,6 +14,7 @@ import { isPublicBehaviorTarget, selectPublicBehaviorTarget } from '@myself/char
 import type { TaskEvent } from '@myself/shared-types';
 import {
   characterTaskRuntimeBlock,
+  type CharacterExpressionAuthorization,
   type CharacterBehaviorService
 } from './character-behavior-service';
 import type { CharacterMotionService } from './character-motion-service';
@@ -117,8 +117,6 @@ type BehaviorServicePort = Pick<
   | 'getRecentPublicActions'
   | 'resolveBehaviorTarget'
   | 'resolveBehaviorStatePlan'
-  | 'isMovementBehaviorTarget'
-  | 'isMovementAgentIntent'
   | 'requestDirectedBehavior'
   | 'requestProactiveBehavior'
   | 'handleAgentIntent'
@@ -156,7 +154,7 @@ type MotionRequest = Readonly<{
   distance: MotionDistance;
 }>;
 
-const NONE: CharacterBehaviorAuthorization = { kind: 'none' };
+const NONE: CharacterExpressionAuthorization = { kind: 'none' };
 const SOURCE_PRIORITY: Readonly<Record<ActiveBehaviorSource, number>> = {
   explicit: 5,
   'trusted-task': 4,
@@ -193,7 +191,6 @@ export class CharacterBehaviorDirector {
   private continuousTarget: MotionTarget | null = null;
   private continuousDistance: MotionDistance = 'none';
   private currentMotionTarget: MotionTarget | null = null;
-  private continuousPlaybackToken: string | null = null;
   private lastSpatialTarget: CharacterMotionSnapshot['target'] | null = null;
   private motionWasMoving = false;
   private proactivityMode: CharacterBehaviorSettingsSnapshot['proactivityMode'];
@@ -209,7 +206,6 @@ export class CharacterBehaviorDirector {
   private active: Readonly<{
     source: ActiveBehaviorSource;
     playbackToken: string;
-    semantic?: string;
   }> | null = null;
   private readonly activityListeners = new Set<() => void>();
   private behaviorLifecycleGeneration = 0;
@@ -364,11 +360,7 @@ export class CharacterBehaviorDirector {
     // 持久化可能跨过 reset/close；旧轮完成后不得重新写入已清空的待提交槽。
     if (this.closed || input.generation !== this.generation) return;
     // mode 0/2 的移动动画只能伴随真实 Motion：静止时禁止，间歇时只由 Scheduler 发起。
-    this.pendingChatPlan = movementControl.kind !== 'move_once'
-      && this.movementMode !== 1
-      && this.isMovementPlan(candidatePlan, catalog)
-      ? null
-      : candidatePlan;
+    this.pendingChatPlan = candidatePlan;
     this.pendingMovementControl = movementControl.kind === 'move_once' ? movementControl : null;
   }
 
@@ -390,7 +382,6 @@ export class CharacterBehaviorDirector {
       this.active = {
         source: 'trusted-task',
         playbackToken: authorization.playbackToken,
-        semantic: authorization.semantic
       };
     }
 
@@ -417,19 +408,14 @@ export class CharacterBehaviorDirector {
   }
 
   /** 兼容能力任务的高层意图仍先经过显式优先级与停止锁，再生成唯一运动意图。 */
-  handleAgentBehaviorIntent(intent: CharacterAgentBehaviorIntent): CharacterBehaviorAuthorization {
+  handleAgentBehaviorIntent(intent: CharacterAgentBehaviorIntent): CharacterExpressionAuthorization {
     if (this.closed || this.active?.source === 'explicit') return NONE;
-    if (this.movementMode === 0 && this.options.behavior.isMovementAgentIntent(intent)) return NONE;
     const authorization = this.options.behavior.handleAgentIntent(intent);
     if (authorization.kind !== 'play') return authorization;
     this.active = {
       source: 'trusted-task',
       playbackToken: authorization.playbackToken,
-      semantic: authorization.semantic
     };
-    if (authorization.semantic === 'move') {
-      this.options.motion.requestIntent({ kind: 'wander', scope: 'work_area' });
-    }
     return authorization;
   }
 
@@ -454,67 +440,23 @@ export class CharacterBehaviorDirector {
   requestBehaviorPlan(
     plan: CharacterBehaviorPlan,
     source: BehaviorPlanSource
-  ): CharacterBehaviorAuthorization {
+  ): CharacterExpressionAuthorization {
     if (!this.canRequest(source)) return NONE;
 
-    const motion = plan.kind === 'move'
-      ? { kind: 'relative', direction: plan.direction, distance: plan.distance } as const
-      : plan.kind === 'move_region'
-        ? { kind: 'region', region: plan.region } as const
-        : null;
-    const publicTarget: BehaviorTarget | null = plan.kind === 'play_state'
-      ? plan.action === undefined
-        ? { kind: 'state_name', name: plan.state }
-        : { kind: 'action_name', name: plan.action }
-      : motion
-        ? { kind: 'semantic', semantic: 'move' }
-        : null;
-    if (!publicTarget) return NONE;
-
+    if (plan.kind === 'move' || plan.kind === 'move_region') {
+      // 空间运动只由既有 Main 策略门禁授权，不依赖某个动画或语义可用。
+      const result = this.options.motion.requestIntent(plan.kind === 'move'
+        ? { kind: 'relative', direction: plan.direction, distance: plan.distance }
+        : { kind: 'region', region: plan.region });
+      if (!result) this.publishUnavailableNotice();
+      return NONE;
+    }
+    if (plan.kind !== 'play_state') return NONE;
     try {
-      const resolvedTarget = plan.kind === 'play_state'
-        ? this.options.behavior.resolveBehaviorStatePlan(plan)
-        : this.options.behavior.resolveBehaviorTarget(publicTarget);
-      if (source === 'local-idle') {
-        if (plan.kind === 'move' && plan.distance !== 'near') return NONE;
-        if (plan.kind !== 'play_state' && plan.kind !== 'move') return NONE;
-        if (this.movementMode === 0
-          && this.options.behavior.isMovementBehaviorTarget(resolvedTarget)) return NONE;
-        const authorization = this.options.behavior.requestProactiveBehavior(publicTarget, {
-          urgency: SOURCE_OPTIONS[source].urgency,
-          allowMovement: motion !== null
-        });
-        if (authorization.kind === 'play') {
-          this.active = {
-            source,
-            playbackToken: authorization.playbackToken,
-            semantic: authorization.semantic
-          };
-          if (authorization.semantic === 'move' && motion !== null) {
-            this.options.motion.requestIntent(motion);
-          }
-        }
-        return authorization;
-      }
-      const authorization = this.options.behavior.requestDirectedBehavior(
-        resolvedTarget,
-        SOURCE_OPTIONS[source]
-      );
-      if (authorization.kind === 'play') {
-        if (source === 'explicit') this.clearContinuousMotion();
-        this.active = {
-          source,
-          playbackToken: authorization.playbackToken,
-          semantic: authorization.semantic
-        };
-        if (authorization.semantic === 'move' && motion !== null && !(
-          source === 'chat' && this.pendingMovementControl?.kind === 'move_once'
-        )) {
-          this.options.motion.requestIntent(motion);
-        }
-      } else if (source === 'explicit' || source === 'chat') {
-        this.publishUnavailableNotice();
-      }
+      const resolved = this.options.behavior.resolveBehaviorStatePlan(plan);
+      const authorization = this.options.behavior.requestDirectedBehavior(resolved, SOURCE_OPTIONS[source]);
+      if (authorization.kind === 'play') this.active = { source, playbackToken: authorization.playbackToken };
+      else if (source === 'explicit' || source === 'chat') this.publishUnavailableNotice();
       return authorization;
     } catch (error) {
       if (!(error instanceof Error) || error.message !== 'CHARACTER_ACTION_UNAVAILABLE') throw error;
@@ -527,7 +469,7 @@ export class CharacterBehaviorDirector {
   private requestBehaviorTarget(
     target: BehaviorTarget,
     source: Extract<BehaviorPlanSource, 'explicit'>
-  ): CharacterBehaviorAuthorization {
+  ): CharacterExpressionAuthorization {
     if (!this.canRequest(source)) return NONE;
     try {
       const authorization = this.options.behavior.requestDirectedBehavior(
@@ -539,7 +481,6 @@ export class CharacterBehaviorDirector {
         this.active = {
           source,
           playbackToken: authorization.playbackToken,
-          semantic: authorization.semantic
         };
       } else {
         this.publishUnavailableNotice();
@@ -564,7 +505,6 @@ export class CharacterBehaviorDirector {
     if (this.closed || this.dragging === active) return;
     this.dragging = active;
     if (active) {
-      this.options.behavior.cancelStateLifecycle();
       this.clearContinuousMotion();
     }
     this.publishActivityChanged();
@@ -633,12 +573,8 @@ export class CharacterBehaviorDirector {
         this.stopContinuousMotion();
       }
     } else if (arrived) {
-      // 一段运动的终态同时撤销旧 move 状态续播权；idle 由真实 movement=false 信号恢复。
-      this.options.behavior.cancelStateLifecycle();
+      // 运动到达只结束空间目标；表达由同一引擎自行续播。
       this.currentMotionTarget = null;
-      if (this.active?.semantic === 'move') {
-        this.active = null;
-      }
     }
     this.publishActivityChanged();
   }
@@ -648,9 +584,6 @@ export class CharacterBehaviorDirector {
     if (this.closed) return;
     const movementModeChanged = this.movementMode !== snapshot.movementMode;
     const transitionAlreadyInvalidated = this.movementModeTransitionPending;
-    if (snapshot.movementMode === 0 || movementModeChanged) {
-      this.options.behavior.cancelStateLifecycle();
-    }
     if (movementModeChanged) this.clearPendingChat();
     // 模式边界拥有旧目标：切换先终止旧 Motion/播放令牌，再让 Scheduler 启动新策略。
     if (movementModeChanged && !transitionAlreadyInvalidated) {
@@ -661,7 +594,6 @@ export class CharacterBehaviorDirector {
     const proactivityModeChanged = this.proactivityMode !== snapshot.proactivityMode;
     this.proactivityMode = snapshot.proactivityMode;
     if (movementModeChanged || proactivityModeChanged) this.behaviorLifecycleGeneration += 1;
-    if (movementModeChanged && this.active?.semantic === 'move') this.active = null;
     this.publishActivityChanged();
   }
 
@@ -732,11 +664,9 @@ export class CharacterBehaviorDirector {
   private beginMovementModeTransition(mode: CharacterMovementMode): number {
     const revision = ++this.movementModeTransitionRevision;
     this.movementModeTransitionPending = true;
-    this.options.behavior.cancelStateLifecycle();
     this.clearPendingChat();
     if (mode === 0) this.stopContinuousMotion();
     else this.clearContinuousMotion();
-    if (this.active?.semantic === 'move') this.active = null;
     this.publishActivityChanged();
     return revision;
   }
@@ -775,14 +705,14 @@ export class CharacterBehaviorDirector {
     }
   }
 
-  private commitPendingChatPlan(): CharacterBehaviorAuthorization {
+  private commitPendingChatPlan(): CharacterExpressionAuthorization {
     const plan = this.pendingChatPlan;
     this.pendingChatPlan = null;
     return plan ? this.requestBehaviorPlan(plan, 'chat') : NONE;
   }
 
   private commitPendingMovementControl(
-    chatAuthorization: CharacterBehaviorAuthorization = NONE
+    chatAuthorization: CharacterExpressionAuthorization = NONE
   ): void {
     const control = this.pendingMovementControl;
     this.pendingMovementControl = null;
@@ -797,28 +727,6 @@ export class CharacterBehaviorDirector {
     this.pendingChatPlan = null;
     this.pendingMovementControl = null;
     this.pendingSuccessToken = null;
-  }
-
-  /** 模型动作只能决定动画候选，持久模式为 0/2 时不得伪造正在移动。 */
-  private isMovementPlan(
-    plan: CharacterBehaviorPlan | null,
-    catalog: PublicBehaviorCatalog | null
-  ): boolean {
-    if (!plan || plan.kind !== 'play_state' || !catalog) return false;
-    const state = catalog.states.find(candidate => candidate.name === plan.state);
-    if (!state) return false;
-    try {
-      // 状态生命周期可在动作完成后续选同状态其他动作，因此必须按整个状态判断移动能力。
-      return this.options.behavior.isMovementBehaviorTarget(
-        this.options.behavior.resolveBehaviorStatePlan({
-          kind: 'play_state',
-          state: state.name
-        })
-      );
-    } catch {
-      // mode 0/2 无法证明状态安全时失败关闭，避免目录切换竞态建立 move 生命周期。
-      return true;
-    }
   }
 
   private releasePlaybackToken(playbackToken: string): void {
@@ -838,79 +746,27 @@ export class CharacterBehaviorDirector {
     this.options.publishNotice?.(ACTION_UNAVAILABLE_NOTICE);
   }
 
-  /** 运动建议必须先取得现有 move 动画授权，再把公开目标交给唯一 MotionService。 */
-  private requestMotion(
-    plan: MotionRequest,
-    source: BehaviorPlanSource,
-    chatAuthorization: CharacterBehaviorAuthorization = NONE
-  ): void {
-    // 一次命令可临时替换持续目标，但不修改持久 mode；到达后 Scheduler 会恢复 mode=1。
-    if (
-      plan.mode === 'once'
-      && this.continuousPlaybackToken !== null
-      && this.active?.playbackToken === this.continuousPlaybackToken
-    ) this.stopContinuousMotion();
-    const reusesSameTurnMove = chatAuthorization.kind === 'play'
-      && chatAuthorization.semantic === 'move';
-    // 同轮相似动作已经通过完整授权，只跳过它与自身 active 的优先级竞争；可信阻塞仍失败关闭。
-    if (reusesSameTurnMove) {
-      if (this.closed || this.trustedRuntimeBlocked || this.dragging) return;
+  /** 运动与表达独立：保留同轮、停止锁、拖拽、任务及模式原子门禁。 */
+  private requestMotion(plan: MotionRequest, source: BehaviorPlanSource, chatAuthorization: CharacterExpressionAuthorization = NONE): void {
+    const sameTurn = chatAuthorization.kind === 'play' && this.active?.playbackToken === chatAuthorization.playbackToken;
+    if (sameTurn) {
+      if (this.closed || this.trustedRuntimeBlocked || this.dragging || this.capabilityTask || this.awaitingConfirmation || this.movementModeTransitionPending) return;
     } else if (!this.canRequest(source)) return;
-    try {
-      const authorization = reusesSameTurnMove
-        ? chatAuthorization
-        : source === 'local-idle'
-          ? this.options.behavior.requestProactiveBehavior(
-              { kind: 'semantic', semantic: 'move' },
-              { urgency: SOURCE_OPTIONS[source].urgency, allowMovement: true }
-            )
-          : this.options.behavior.requestDirectedBehavior(
-              this.options.behavior.resolveBehaviorTarget({ kind: 'semantic', semantic: 'move' }),
-              SOURCE_OPTIONS[source]
-            );
-      if (authorization.kind !== 'play') {
-        this.publishUnavailableNotice();
-        return;
-      }
-      this.active = {
-        source,
-        playbackToken: authorization.playbackToken,
-        semantic: authorization.semantic
-      };
-      const motionSnapshot = this.options.motion.requestIntent(
-        this.motionIntentFor(plan.target, plan.distance)
-      );
-      if (motionSnapshot === null) {
-        if (this.active?.playbackToken === authorization.playbackToken) this.active = null;
-        this.publishUnavailableNotice();
-        this.publishActivityChanged();
-        return;
-      }
-      this.currentMotionTarget = plan.target;
-      this.lastSpatialTarget = { ...motionSnapshot.target };
-      this.motionWasMoving = motionSnapshot.moving;
-      if (plan.mode === 'continuous') {
-        this.continuousTarget = plan.target === 'random_work_area'
-          ? plan.target
-          : 'random_work_area';
-        this.continuousDistance = plan.distance;
-        this.continuousPlaybackToken = authorization.playbackToken;
-        if (!motionSnapshot.moving && !this.requestNextContinuousIntent()) {
-          this.stopContinuousMotion();
-        }
-      } else {
-        this.continuousTarget = null;
-        this.continuousPlaybackToken = null;
-        if (!motionSnapshot.moving) {
-          this.currentMotionTarget = null;
-          if (this.active?.playbackToken === authorization.playbackToken) this.active = null;
-        }
-      }
-      this.publishActivityChanged();
-    } catch (error) {
-      if (!(error instanceof Error) || error.message !== 'CHARACTER_ACTION_UNAVAILABLE') throw error;
-      this.publishUnavailableNotice();
+    if (plan.mode === 'once' && this.continuousTarget !== null) this.stopContinuousMotion();
+    const snapshot = this.options.motion.requestIntent(this.motionIntentFor(plan.target, plan.distance));
+    if (!snapshot) { this.publishUnavailableNotice(); return; }
+    this.currentMotionTarget = plan.target;
+    this.lastSpatialTarget = { ...snapshot.target };
+    this.motionWasMoving = snapshot.moving;
+    if (plan.mode === 'continuous') {
+      this.continuousTarget = 'random_work_area';
+      this.continuousDistance = plan.distance;
+      if (!snapshot.moving && !this.requestNextContinuousIntent()) this.stopContinuousMotion();
+    } else {
+      this.continuousTarget = null;
+      if (!snapshot.moving) this.currentMotionTarget = null;
     }
+    this.publishActivityChanged();
   }
 
   private motionIntentFor(
@@ -928,15 +784,12 @@ export class CharacterBehaviorDirector {
   }
 
   private stopContinuousMotion(): void {
-    const playbackToken = this.continuousPlaybackToken;
     this.continuousTarget = null;
     this.continuousDistance = 'none';
     this.currentMotionTarget = null;
-    this.continuousPlaybackToken = null;
     this.lastSpatialTarget = null;
     this.motionWasMoving = false;
     this.options.motion.stop();
-    if (playbackToken !== null && this.active?.playbackToken === playbackToken) this.active = null;
   }
 
   /** 生命周期仅撤销本 Director 发起的连续计划，不打断无关的用户位置。 */
@@ -946,7 +799,6 @@ export class CharacterBehaviorDirector {
       || this.currentMotionTarget !== null
     ) {
       this.stopContinuousMotion();
-      if (this.active?.semantic === 'move') this.active = null;
     }
   }
 
@@ -958,7 +810,7 @@ export class CharacterBehaviorDirector {
       || this.trustedRuntimeBlocked
       || this.capabilityTask
       || this.awaitingConfirmation
-      || this.active !== null && this.active.playbackToken !== this.continuousPlaybackToken;
+      || this.active?.source === 'explicit';
   }
 
   private hasIntermittentBlocker(): boolean {

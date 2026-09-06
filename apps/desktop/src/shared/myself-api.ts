@@ -1,3 +1,4 @@
+import type { CharacterMigrationReview, CharacterMigrationResolution } from './character-ipc';
 import type {
   HistoryDisclosureDecision,
   ModelRouteConfig,
@@ -7,7 +8,7 @@ import type {
   StoredProviderProfileV2,
   TaskEvent
 } from '@myself/shared-types';
-import type { CharacterDraftV2 } from '@myself/character-runtime';
+import type { CharacterDraftV3 } from '@myself/character-runtime';
 import type {
   CharacterCreateInput,
   CharacterEvent,
@@ -120,13 +121,15 @@ export interface MyselfApi extends PetWindowInteractionApi {
   onTaskEvent(listener: (event: TaskEvent) => void): () => void;
   onLocalModelStatus(listener: (status: LocalModelPublicStatus) => void): () => void;
   listCharacters(): Promise<CharacterSummaryDto[]>;
-  createCharacter(input: CharacterCreateInput): Promise<CharacterDraftV2>;
-  duplicateCharacter(characterId: string): Promise<CharacterDraftV2>;
-  getCharacterDraft(characterId: string): Promise<CharacterDraftV2>;
+  createCharacter(input: CharacterCreateInput): Promise<CharacterDraftV3>;
+  duplicateCharacter(characterId: string): Promise<CharacterDraftV3>;
+  getCharacterDraft(characterId: string): Promise<CharacterDraftV3>;
+  getCharacterMigrationReview(characterId: string): Promise<CharacterMigrationReview>;
   saveCharacterDraft(
     characterId: string,
-    draft: CharacterDraftV2,
-    draftRevision: string
+    draft: CharacterDraftV3,
+    draftRevision: string,
+    migrationResolutions?: readonly CharacterMigrationResolution[]
   ): Promise<void>;
   chooseCharacterSources(characterId: string): Promise<CharacterSourceChoiceResult>;
   listCharacterSources(characterId: string): Promise<CharacterWorkshopSourceDto[]>;

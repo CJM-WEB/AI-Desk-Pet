@@ -103,8 +103,9 @@ export function createCharacterPlaybackView(manifest: CharacterManifestV3, skinI
   const idleState = document.states.find(state => state.id === document.idleStateId)!;
   const idleActionId = idleState.actionIds.find(id => presentations.some(item => item.actionId === id));
   if (!idleActionId) throw new Error('播放视图缺少可用兜底表现。');
+  const usedAssets = new Set(presentations.flatMap(item => item.presentation.frames.map(frame => frame.assetId)));
   return characterPlaybackViewSchema.parse({ version: 3, id: document.id, skinId, defaultSkinId: document.defaultSkinId,
-    idleStateId: document.idleStateId, resources: document.resources,
+    idleStateId: document.idleStateId, resources: document.resources.filter(resource => usedAssets.has(resource.assetId)),
     states: document.states.map(({ id, name, actionIds }) => ({ id, name, actionIds })),
     actions: document.actions.map(({ id, loopPolicy }) => ({ id, loopPolicy })), presentations,
     idle: { stateId: document.idleStateId, actionId: idleActionId } });

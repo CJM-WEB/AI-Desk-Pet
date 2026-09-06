@@ -1,22 +1,22 @@
 import { describe, expect, test } from 'vitest';
 import {
   createPublicBehaviorCatalog,
-  characterManifestV2Schema,
+  characterManifestV3Schema,
   isPublicBehaviorTarget,
   PUBLIC_BEHAVIOR_CATALOG_ENTRY_BUDGET,
   PUBLIC_BEHAVIOR_CATALOG_UTF8_BYTE_BUDGET,
   publicBehaviorCatalogSchema,
   selectPublicBehaviorTarget,
   resolveBehaviorTarget,
-  type CharacterManifestV2,
+  type CharacterManifestV3,
   type PublicBehaviorCatalog
 } from '../src';
 
-/** 构造同时包含标准语义、公开名称、标签和不可公开状态的最小角色清单。 */
-function createManifest(): CharacterManifestV2 {
+/** 构造同时包含稳定标识、公开名称、标签和不可公开状态的最小角色清单。 */
+function createManifest(): CharacterManifestV3 {
   const actionIds = ['idle-action', 'wave-action', 'dance-action', 'hidden-action'];
   return {
-    version: 2,
+    version: 3,
     id: 'resolver-fixture',
     name: '解析角色',
     thumbnailAssetId: 'thumbnail',
@@ -26,29 +26,29 @@ function createManifest(): CharacterManifestV2 {
       formsOfAddress: [], likes: [], dislikes: [], behavioralTendencies: [], boundaries: [], exampleLines: []
     },
     defaultSkinId: 'default-skin',
-    defaultStateId: 'idle-state',
+    idleStateId: 'idle-state',
     states: [
       {
-        id: 'idle-state', name: '待机', description: '安静陪伴', kind: 'primary', semantic: 'idle', tags: ['calm'], intensity: 1,
-        coexistWithStateIds: [], forbiddenStateIds: [], enterConditions: [], exitConditions: [],
+        id: 'idle-state', name: '待机', description: '安静陪伴', tags: ['calm'], intensity: 1,
+        enterConditions: [], exitConditions: [],
         agentInferable: true, actionIds: ['idle-action']
       },
       {
-        id: 'happy-state', name: 'ＣＨＥＥＲ', kind: 'primary', semantic: 'celebrate', tags: ['joy'], intensity: 2,
-        coexistWithStateIds: [], forbiddenStateIds: [], enterConditions: [], exitConditions: [],
+        id: 'happy-state', name: 'ＣＨＥＥＲ', tags: ['joy'], intensity: 2,
+        enterConditions: [], exitConditions: [],
         agentInferable: true, actionIds: ['wave-action', 'dance-action']
       },
       {
-        id: 'hidden-state', name: '隐藏状态', kind: 'primary', semantic: 'idle', tags: ['hidden'], intensity: 1,
-        coexistWithStateIds: [], forbiddenStateIds: [], enterConditions: [], exitConditions: [],
+        id: 'hidden-state', name: '隐藏状态', tags: ['hidden'], intensity: 1,
+        enterConditions: [], exitConditions: [],
         agentInferable: false, actionIds: ['hidden-action']
       }
     ],
     actions: [
-      createAction('idle-action', '待机动作', 'idle', ['calm']),
-      { ...createAction('wave-action', '挥手', 'celebrate', ['greet']), description: '向用户热情挥手' },
-      createAction('dance-action', '跳舞', 'celebrate', ['dance']),
-      createAction('hidden-action', '隐藏动作', 'idle', ['hidden'])
+      createAction('idle-action', '待机动作', ['calm']),
+      { ...createAction('wave-action', '挥手', ['greet']), description: '向用户热情挥手' },
+      createAction('dance-action', '跳舞', ['dance']),
+      createAction('hidden-action', '隐藏动作', ['hidden'])
     ],
     skins: [{
       id: 'default-skin',
@@ -64,7 +64,6 @@ function createManifest(): CharacterManifestV2 {
           resourceRevision: 'a'.repeat(64)
         }
       })),
-      semanticFallbacks: []
     }],
     resources: [
       { assetId: 'thumbnail', fileName: 'thumbnail.png', sha256: 'a'.repeat(64), byteLength: 1 },
@@ -78,34 +77,31 @@ function createManifest(): CharacterManifestV2 {
 function createAction(
   id: string,
   name: string,
-  semantic: CharacterManifestV2['actions'][number]['semantic'],
   tags: string[]
-): CharacterManifestV2['actions'][number] {
+): CharacterManifestV3['actions'][number] {
   return {
-    id, name, semantic, tags, preference: 1, cooldownMs: 0, repeatSuppressionMs: 0,
-    loopPolicy: 'never', interrupt: 'normal', allowedPrimaryStateIds: [], forbiddenPrimaryStateIds: [],
-    requiredModifierStateIds: [], forbiddenModifierStateIds: [], direction: 'any'
+    id, name, tags, preference: 1, cooldownMs: 0, repeatSuppressionMs: 0,
+    loopPolicy: 'never', interrupt: 'normal',
+    direction: 'any'
   };
 }
 
-/** 构造 V2 现行上限内、且让共享动作在每个状态重复出现的压力清单。 */
-function createMaximumSharedManifest(): CharacterManifestV2 {
+/** 构造 V3 现行上限内、且让共享动作在每个状态重复出现的压力清单。 */
+function createMaximumSharedManifest(): CharacterManifestV3 {
   const manifest = createManifest();
   const tags = Array.from({ length: 32 }, (_, index) => `tag-${index}`);
   const actions = Array.from({ length: 100 }, (_, index) => ({
-    ...createAction(`shared-action-${index}`, `共享动作${index}`, 'move', tags),
+    ...createAction(`shared-action-${index}`, `共享动作${index}`, tags),
     description: `动作说明${index}${'甲'.repeat(1_990)}`
   }));
   const states = Array.from({ length: 100 }, (_, index) => ({
     id: `shared-state-${index}`,
     name: `共享状态${index}`,
     description: `状态说明${index}${'乙'.repeat(1_990)}`,
-    kind: 'primary' as const,
-    semantic: 'move' as const,
+
+
     tags,
     intensity: 1,
-    coexistWithStateIds: [],
-    forbiddenStateIds: [],
     enterConditions: [],
     exitConditions: [],
     agentInferable: true,
@@ -135,7 +131,7 @@ function createMaximumSharedManifest(): CharacterManifestV2 {
         { length: 32 }, (_, index) => `倾向${index}${'丙'.repeat(225)}`
       )
     },
-    defaultStateId: 'shared-state-99',
+    idleStateId: 'shared-state-99',
     states,
     actions,
     skins: [{ ...manifest.skins[0]!, presentations }],
@@ -152,7 +148,7 @@ function createMaximumSharedManifest(): CharacterManifestV2 {
 }
 
 describe('公开行为目标解析器', () => {
-  test('公开清单保留状态到动作归属与有界人设，不泄露私有实现数据', () => {
+  test('公开清单保留状态到动作归属与有界人设，保留稳定ID且不泄露素材数据', () => {
     const catalog = createPublicBehaviorCatalog(createManifest(), 'default-skin');
 
     expect(catalog).toEqual({
@@ -167,33 +163,33 @@ describe('公开行为目标解析器', () => {
       },
       states: [
         {
-          name: '待机', semantic: 'idle', description: '安静陪伴', tags: ['calm'],
-          actions: [{ name: '待机动作', semantic: 'idle', tags: ['calm'] }]
+          name: '待机', stateId: 'idle-state', description: '安静陪伴', tags: ['calm'],
+          actions: [{ name: '待机动作', actionId: 'idle-action', tags: ['calm'] }]
         },
         {
-          name: 'ＣＨＥＥＲ', semantic: 'celebrate', tags: ['joy'],
+          name: 'ＣＨＥＥＲ', stateId: 'happy-state', tags: ['joy'],
           actions: [
-            { name: '挥手', semantic: 'celebrate', description: '向用户热情挥手', tags: ['greet'] },
-            { name: '跳舞', semantic: 'celebrate', tags: ['dance'] }
+            { name: '挥手', actionId: 'wave-action', description: '向用户热情挥手', tags: ['greet'] },
+            { name: '跳舞', actionId: 'dance-action', tags: ['dance'] }
           ]
         }
       ]
     });
     expect(JSON.stringify(catalog)).not.toMatch(
-      /(?:idle-state|wave-action|hidden|asset|fileName|frames|formsOfAddress|boundaries|exampleLines)/u
+      /(?:hidden|asset|fileName|frames|formsOfAddress|boundaries|exampleLines)/u
     );
     expect(() => publicBehaviorCatalogSchema.parse({
       ...catalog,
       states: [{
         ...catalog.states[0]!,
-        actions: [{ ...catalog.states[0]!.actions[0]!, actionId: 'idle-action' }]
+        actions: [{ ...catalog.states[0]!.actions[0]!, privatePath: '/private' }]
       }]
     })).toThrow();
   });
 
   test('最大合法清单与跨状态共享动作被确定性裁剪到公开总预算且保留默认状态', () => {
     const manifest = createMaximumSharedManifest();
-    expect(characterManifestV2Schema.safeParse(manifest).success).toBe(true);
+    expect(characterManifestV3Schema.safeParse(manifest).success).toBe(true);
     const first = createPublicBehaviorCatalog(manifest, 'default-skin');
     const second = createPublicBehaviorCatalog(manifest, 'default-skin');
     const serialized = JSON.stringify(first);
@@ -207,15 +203,14 @@ describe('公开行为目标解析器', () => {
     expect(first.states.find(state => state.name === '共享状态99')?.actions.length)
       .toBeGreaterThan(0);
     expect(first.states.every(state => state.actions.length > 0)).toBe(true);
-    expect(serialized).not.toMatch(/(?:shared-state-|shared-action-|asset|fileName|frames)/u);
+    expect(serialized).not.toMatch(/(?:asset|fileName|frames)/u);
     expect(first.states.length * 100).toBeGreaterThan(entryCount);
   });
 
   test.each([
-    [{ kind: 'semantic', semantic: 'celebrate' }, { kind: 'semantic', semantic: 'celebrate' }],
     [{ kind: 'state_name', name: 'cheer' }, { kind: 'state', stateId: 'happy-state' }],
-    [{ kind: 'action_name', name: '挥手' }, { kind: 'action', actionId: 'wave-action' }],
-    [{ kind: 'tag', tag: 'dance' }, { kind: 'action', actionId: 'dance-action' }]
+    [{ kind: 'action_name', name: '挥手' }, { kind: 'state_action', stateId: 'happy-state', actionId: 'wave-action' }],
+    [{ kind: 'tag', tag: 'dance' }, { kind: 'state_action', stateId: 'happy-state', actionId: 'dance-action' }]
   ] as const)('将公开目标 %o 解析为唯一私有目标', (target, expected) => {
     expect(resolveBehaviorTarget(createManifest(), 'default-skin', target)).toEqual(expected);
   });
@@ -235,9 +230,9 @@ describe('公开行为目标解析器', () => {
         languageStyle: '简洁', likes: [], behavioralTendencies: []
       },
       states: [{
-        name: '公开目标', semantic: 'idle', description: '状态说明', tags: [],
+        name: '公开目标', stateId: 'public-state', description: '状态说明', tags: [],
         actions: [{
-          name: '公开目标', semantic: 'idle', description: '只在动作描述中出现的唯一短语', tags: []
+          name: '公开目标', actionId: 'public-action', description: '只在动作描述中出现的唯一短语', tags: []
         }]
       }]
     };
@@ -269,9 +264,9 @@ describe('公开行为目标解析器', () => {
       },
       states: [
         {
-          name: '运动状态', semantic: 'idle', tags: [], actions: [
-            { name: '安静等待', semantic: 'idle', tags: ['still'] },
-            { name: '巡游四方', semantic: 'move', tags: ['locomotion'] }
+          name: '运动状态', stateId: 'move-state', tags: [], actions: [
+            { name: '安静等待', actionId: 'wait', tags: ['still'] },
+            { name: '巡游四方', actionId: 'wander', description: '移动', tags: ['locomotion'] }
           ]
         }
       ]
@@ -301,8 +296,8 @@ describe('公开行为目标解析器', () => {
         languageStyle: '简洁', likes: [], behavioralTendencies: []
       },
       states: [{
-        name: '甲乙丙丁戊', semantic: 'resting', tags: [],
-        actions: [{ name: '己庚辛', semantic: 'idle', tags: [] }]
+        name: '甲乙丙丁戊', stateId: 'threshold', tags: [],
+        actions: [{ name: '己庚辛', actionId: 'chars', tags: [] }]
       }]
     };
 
@@ -318,7 +313,7 @@ describe('公开行为目标解析器', () => {
         name: '英文阈值角色', description: '阈值测试', background: '测试环境', traits: [],
         languageStyle: '简洁', likes: [], behavioralTendencies: []
       },
-      states: [{ name: 'idle', semantic: 'idle', tags: [], actions: [] }]
+      states: [{ name: 'idle', stateId: 'idle', tags: [], actions: [] }]
     };
 
     expect(selectPublicBehaviorTarget(catalog, 'inside', undefined)).toEqual({ kind: 'none' });
@@ -330,7 +325,7 @@ describe('公开行为目标解析器', () => {
         name: '混合阈值角色', description: '阈值测试', background: '测试环境', traits: [],
         languageStyle: '简洁', likes: [], behavioralTendencies: []
       },
-      states: [{ name: '乙abc', semantic: 'idle', tags: [], actions: [] }]
+      states: [{ name: '乙abc', stateId: 'mixed', tags: [], actions: [] }]
     };
 
     expect(selectPublicBehaviorTarget(catalog, '甲abc', undefined)).toEqual({ kind: 'none' });
@@ -352,8 +347,7 @@ describe('公开行为目标解析器', () => {
   });
 
   test.each([
-    ['标准语义', 'celebrate'],
-    ['动作描述', '向用户热情挥手'],
+        ['动作描述', '向用户热情挥手'],
     ['动作标签', 'greet']
   ])('层级计划按%s在指定状态内选择最高相似动作', (_label, action) => {
     const manifest = createManifest();

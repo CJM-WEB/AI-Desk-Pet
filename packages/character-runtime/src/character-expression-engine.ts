@@ -45,6 +45,9 @@ export class CharacterExpressionEngine {
   private nextEligibleAtMs: number | null = null;
   private serial = 0;
   private explicit = false;
+  private explicitSingleAction = false;
+  private explicitDurationMs = 0;
+  private explicitUntilMs: number | null = null;
   private staticPlayback = false;
   constructor(private readonly options: CharacterExpressionEngineOptions) {
     this.manifest = characterManifestV3Schema.parse(options.manifest);
@@ -131,7 +134,7 @@ export class CharacterExpressionEngine {
     return [{ type: 'interrupt', playbackToken: current.playbackToken, fallbackActionId: null }];
   }
   private chooseState(force: boolean): string {
-    if (this.explicit && this.schedule.current) return this.stateId;
+    if (this.explicit) return this.stateId;
     const strength = sampleMood(this.mood, this.now())?.strength ?? 0;
     const current = this.manifest.states.find(state => state.id === this.stateId)!;
     const exit = this.conditionEvents(current, true);
@@ -177,6 +180,11 @@ export class CharacterExpressionEngine {
       startConfirmationTimeoutMs: 5_000, durationMs: duration, urgency: 0, systemForced: forced }, this.manifest.actions);
     if (result.schedule === this.schedule) return [];
     this.schedule = result.schedule;
+    // 明确请求的寿命覆盖作者无限循环；反馈和 Main 时钟共用同一个有限时长。
+    if (this.explicit && this.schedule.current) {
+      this.schedule.current.durationMs = this.explicitUntilMs === null
+        ? this.explicitDurationMs : Math.max(0, this.explicitUntilMs - this.now());
+    }
     this.staticPlayback = mode === 'static';
     if (mode === 'static' && this.schedule.current) this.schedule.current.durationMs = null;
     if (stateId !== this.stateId) {
@@ -188,7 +196,7 @@ export class CharacterExpressionEngine {
     this.lastActionId = actionId;
     if (!this.staticPlayback) this.recency.set(actionId, this.now());
     return result.effects.flatMap<CharacterExpressionEffect>(effect => effect.type === 'none' ? [] : effect.type === 'play'
-      ? [{ ...effect, action: { ...this.schedule.current! }, playback: { mode: mode ?? (action.loopPolicy === 'never' ? 'once' : 'loop'), durationMs: this.schedule.current!.durationMs } }]
+      ? [{ ...effect, action: { ...this.schedule.current! }, playback: { mode: mode ?? (this.explicitSingleAction && this.explicit || action.loopPolicy === 'never' ? 'once' : 'loop'), durationMs: this.schedule.current!.durationMs } }]
       : [effect]);
   }
   advance(): CharacterExpressionResult { return this.advanceWith([]); }
@@ -200,6 +208,11 @@ export class CharacterExpressionEngine {
     const before = this.schedule.current;
     this.schedule = reduceCharacterActionSchedule(this.schedule, { type: 'expire', nowMs: now }, this.manifest.actions).schedule;
     if (before && !this.schedule.current) effects.push({ type: 'interrupt', playbackToken: before.playbackToken, fallbackActionId: null });
+    if (this.explicit && ((this.explicitUntilMs !== null && now >= this.explicitUntilMs)
+      || (before && !this.schedule.current && (this.explicitSingleAction || before.startedAtMs === null)))) {
+      this.explicit = false; this.explicitUntilMs = null; force = true;
+      effects.push(...this.stop());
+    }
     const target = this.chooseState(force);
     const staticDue = this.staticPlayback && this.nextEligibleAtMs !== null && now >= this.nextEligibleAtMs;
     const stateDuration = this.manifest.states.find(state => state.id === this.stateId)?.suggestedDurationMs;
@@ -228,7 +241,12 @@ export class CharacterExpressionEngine {
     this.nextEligibleAtMs = null;
     const selected = this.chooseAction(stateId, actionId);
     if (!selected) return this.result();
-    this.invalidateContext(); this.explicit = true;
+    const resolved = this.resolve(stateId, selected)!;
+    this.invalidateContext(); this.explicit = true; this.explicitSingleAction = actionId !== undefined;
+    this.explicitUntilMs = null;
+    this.explicitDurationMs = actionId !== undefined
+      ? resolved.presentation.frames.reduce((sum, frame) => sum + (frame.durationMs ?? 1000 / resolved.presentation.fps), 0) / (resolved.presentation.playbackRate ?? 1)
+      : this.manifest.states.find(state => state.id === stateId)!.suggestedDurationMs ?? 3000;
     return this.result(this.play(stateId, selected, true));
   }
   applyFeedback(feedback: CharacterPlaybackFeedback): CharacterExpressionResult {
@@ -239,9 +257,16 @@ export class CharacterExpressionEngine {
     try {
       const reduced = reduceCharacterActionSchedule(this.schedule, { type: 'feedback', feedback, nowMs: this.now() }, this.manifest.actions);
       this.schedule = reduced.schedule;
-      if (feedback.status === 'started') return this.result();
+      if (feedback.status === 'started') {
+        if (this.explicit && this.explicitUntilMs === null) this.explicitUntilMs = feedback.occurredAtMs + this.explicitDurationMs;
+        return this.result();
+      }
       this.recency.set(feedback.actionId, this.now());
       if (feedback.status === 'failed') this.failed.add(feedback.actionId);
+      if (this.explicit && this.explicitSingleAction && feedback.status === 'completed') {
+        this.explicit = false; this.explicitUntilMs = null;
+        return this.advanceWith([], true);
+      }
       if (reduced.fallbackActionId && this.resolve(this.stateId, reduced.fallbackActionId)) {
         const selected = this.chooseAction(this.stateId, reduced.fallbackActionId);
         if (selected) return this.result(this.play(this.stateId, selected, true));
@@ -256,6 +281,7 @@ export class CharacterExpressionEngine {
   reset(): CharacterExpressionResult {
     const effects = this.stop();
     this.contextRevision++; this.moodRevision++; this.mood = null; this.plan = null; this.explicit = false;
+    this.explicitUntilMs = null; this.explicitDurationMs = 0; this.explicitSingleAction = false;
     this.events.clear(); this.consumed.clear(); this.decisions.clear(); this.recency.clear(); this.failed.clear();
     this.stateId = this.manifest.idleStateId; this.enteredAtMs = this.now(); this.lastActionId = null;
     this.schedule = { revision: this.schedule.revision + 1, current: null, history: [] };

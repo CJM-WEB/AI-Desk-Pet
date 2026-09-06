@@ -20,6 +20,23 @@ const plan = { states: [
 ] };
 
 describe('V3 心情与表现', () => {
+  it('明确动作覆盖作者无限循环并在完整周期后自主退出，状态请求有界驻留', () => {
+    let now = 0;
+    const manifest = fixture();
+    const engine = new runtime.CharacterExpressionEngine({ manifest, now: () => now });
+    const result = engine.playExplicit('bright', 'bright-a');
+    const presentation = manifest.skins[0]!.presentations.find(item => item.actionId === 'bright-a')!;
+    const cycle = presentation.frames.reduce((sum, frame) => sum + (frame.durationMs ?? 1000 / presentation.fps), 0) / (presentation.playbackRate ?? 1);
+    expect(result.effects.find(effect => effect.type === 'play')).toMatchObject({ playback: { mode: 'once', durationMs: cycle } });
+    const current = result.snapshot.schedule.current!;
+    engine.applyFeedback({ playbackToken: current.playbackToken, actionId: current.actionId, status: 'started', occurredAtMs: now });
+    now = cycle + 1;
+    expect(engine.advance().snapshot.stateId).toBe('rest');
+    const state = engine.playExplicit('bright').snapshot.schedule.current!;
+    engine.applyFeedback({ playbackToken: state.playbackToken, actionId: state.actionId, status: 'started', occurredAtMs: now });
+    now += 3001;
+    expect(engine.advance().snapshot.stateId).toBe('rest');
+  });
   it('导出独立 V3 引擎及严格建议契约', () => {
     expect(runtime).toHaveProperty('CharacterExpressionEngine');
     expect(runtime).toHaveProperty('characterMoodUpdateSchema');

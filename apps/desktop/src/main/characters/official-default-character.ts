@@ -2,14 +2,15 @@ import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type {
-  CharacterDraftV2,
-  PreparedCharacterManifestV2,
+  CharacterDraftV3,
+  PreparedCharacterManifestV3,
   CoreCharacterState
 } from '@myself/character-runtime';
-import { V1_STATE_SEMANTICS } from '@myself/character-runtime';
+
 import type { CharacterStore } from './character-store';
 import {
   finalizeCharacterManifestMigration,
+  requirePublishedCharacterMigration,
   prepareCharacterManifestMigration,
   type CharacterGeometryMigrationDependencies
 } from './character-migrations';
@@ -82,8 +83,8 @@ export async function ensureOfficialDefaultCharacter(
       const bytes = await readFile(join(resourceDirectory, `${state}.png`));
       return { state, bytes, assetId: `${state}-atlas` };
     }));
-    const draft: CharacterDraftV2 = {
-      version: 2,
+    const draft: CharacterDraftV3 = {
+      version: 3,
       id: DEFAULT_CHARACTER_ID,
       name: 'AI Pet 默认角色',
       thumbnailAssetId: 'idle-atlas',
@@ -100,22 +101,17 @@ export async function ensureOfficialDefaultCharacter(
         exampleLines: []
       },
       defaultSkinId: 'default',
-      defaultStateId: 'idle',
+      idleStateId: 'idle',
       skins: [{
         id: 'default',
         name: '默认皮肤',
-        presentations: loaded.map(({ state, assetId }) => presentation(state, assetId)),
-        semanticFallbacks: []
+        presentations: loaded.map(({ state, assetId }) => presentation(state, assetId))
       }],
       states: loaded.map(({ state, assetId }) => ({
         id: state,
         name: state,
-        kind: 'primary' as const,
-        semantic: V1_STATE_SEMANTICS[state],
         tags: [],
         intensity: 1,
-        coexistWithStateIds: [],
-        forbiddenStateIds: [],
         enterConditions: [],
         exitConditions: [],
         agentInferable: false,
@@ -125,25 +121,21 @@ export async function ensureOfficialDefaultCharacter(
         ...loaded.map(({ state }) => ({
           id: `${state}-main`,
           name: state,
-          semantic: V1_STATE_SEMANTICS[state],
           tags: [],
           preference: 1,
           cooldownMs: 0,
           repeatSuppressionMs: 0,
           loopPolicy: 'until-interrupted' as const,
           interrupt: 'normal' as const,
-          allowedPrimaryStateIds: [state],
-          forbiddenPrimaryStateIds: [],
-          requiredModifierStateIds: [],
-          forbiddenModifierStateIds: [],
           direction: 'any' as const
         }))
       ]
     };
-    const manifest: PreparedCharacterManifestV2 = {
+    const manifest: PreparedCharacterManifestV3 = {
       ...draft,
+      idleStateId: 'idle',
       thumbnailAssetId: 'idle-atlas',
-      compilerVersion: 'official-default-v2',
+      compilerVersion: 'official-default-v3',
       resources: loaded.map(({ state, assetId, bytes }) => ({
         assetId,
         fileName: `${state}.png`,
@@ -163,7 +155,7 @@ export async function ensureOfficialDefaultCharacter(
     );
     await store.publishCompiled(
       DEFAULT_CHARACTER_ID,
-      finalized.document,
+      requirePublishedCharacterMigration(finalized),
       assets
     );
   }

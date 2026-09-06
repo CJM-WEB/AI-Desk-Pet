@@ -539,7 +539,7 @@ async function createApplicationWindows(
     applyCharacterBehaviorSettings: snapshot => characterBehaviorDirector.applyBehaviorSettings(snapshot)
   });
   startupCleanup.add(() => desktopSettingsService.close());
-  const activeGeometryManifest = await characterStore.getActiveManifestV2();
+  const activeGeometryManifest = await characterStore.getActiveManifestV3();
   const startupPlacement = await settingsStore.getPetPlacementState(activeGeometryManifest.id);
   if (startupPlacement.kind === 'pending-legacy') {
     // pending 只在 Main 私下恢复旧窗口左上角；首次真实 viewport 成功后才 CAS 清除。
@@ -574,7 +574,7 @@ async function createApplicationWindows(
   });
   inspectPetNativeDraggingForE2e = () => characterMotion.isUserMoving();
   const reportCharacterBehaviorError = (
-    code: 'CHARACTER_BEHAVIOR_V2_UNAVAILABLE'
+    code: 'CHARACTER_BEHAVIOR_V3_UNAVAILABLE'
   ): void => {
     console.error('更新角色行为失败。', code);
   };

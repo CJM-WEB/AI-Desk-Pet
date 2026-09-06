@@ -44,8 +44,10 @@ import {
   type PackageEntryDescriptor
 } from '@myself/character-assets';
 import {
-  type CharacterDraftV2,
-  type CharacterManifestV2
+  type CharacterDraftV3,
+  type CharacterMigrationIssueV3,
+  characterManifestV3Schema,
+  type CharacterMigrationManifestV3
 } from '@myself/character-runtime';
 import * as yauzl from 'yauzl';
 import { ZipFile } from 'yazl';
@@ -144,11 +146,14 @@ type ExtractedFiles = ReadonlyMap<string, ExtractedFileDescriptor>;
 
 type PreparedPackage = {
   originalId: string;
-  draft: CharacterDraftV2;
-  manifest: CharacterManifestV2;
+  draft: CharacterDraftV3;
+  manifest: CharacterMigrationManifestV3;
   runtimeAssets: Readonly<Record<string, Uint8Array>>;
   sourceCatalog: CharacterSourceCatalogV1;
-  sourceVersion: 1 | 2;
+  sourceVersion: 1 | 2 | 3;
+  issues: CharacterMigrationIssueV3[];
+  draftText: string;
+  manifestText: string;
 };
 
 type DirectoryIdentity = {
@@ -1189,7 +1194,7 @@ async function preparePackage(
     });
     runtimeAssets[resource.fileName] = bytes;
   }
-  let manifest: CharacterManifestV2;
+  let manifest: CharacterMigrationManifestV3;
   try {
     manifest = (await finalizeCharacterManifestMigration(
       manifestResult,
@@ -1227,7 +1232,10 @@ async function preparePackage(
     manifest,
     runtimeAssets,
     sourceCatalog,
-    sourceVersion: draftResult.sourceVersion
+    sourceVersion: draftResult.sourceVersion,
+    issues: [...draftResult.issues, ...manifestResult.issues],
+    draftText: await readFile(extractedPath(files, 'draft/draft.json'), 'utf8'),
+    manifestText: await readFile(extractedPath(files, 'compiled/manifest.json'), 'utf8')
   };
 }
 
@@ -2107,9 +2115,13 @@ export class CharacterPackageService {
         ...prepared.draft,
         id: createdId
       });
-      await this.store.publishCompiled(
+      if (prepared.sourceVersion < 3) await this.store.retainImportedMigration(createdId, {
+        draftText: prepared.draftText, manifestText: prepared.manifestText,
+        issues: prepared.issues, assets: prepared.runtimeAssets
+      });
+      if (!prepared.issues.length) await this.store.publishCompiled(
         createdId,
-        { ...prepared.manifest, id: createdId },
+        characterManifestV3Schema.parse({ ...prepared.manifest, id: createdId }),
         prepared.runtimeAssets
       );
       if (!await this.store.completeImportedCharacter(

@@ -1,3 +1,4 @@
+import type { CharacterMigrationReview, CharacterMigrationResolution } from '../../shared/character-ipc';
 import type { IpcMain, IpcMainInvokeEvent, WebContents } from 'electron';
 import {
   type HistoryDisclosureDecision,
@@ -37,7 +38,7 @@ import {
   type CharacterRuntimeSnapshot,
   type CharacterWorkshopSourceDto
 } from '../../shared/character-ipc';
-import type { CharacterDraftV2 } from '@myself/character-runtime';
+import type { CharacterDraftV3 } from '@myself/character-runtime';
 import {
   petMousePassthroughInputSchema,
   petInteractionProbeRecordEventSchema,
@@ -375,13 +376,15 @@ export function registerAdvancedSettingsIpc(
 
 export interface CharacterIpcService {
   listCharacters(): Promise<Array<z.input<typeof characterSummarySchema>>>;
-  createCharacter(input: { name: string }): Promise<CharacterDraftV2>;
-  duplicateCharacter(characterId: string): Promise<CharacterDraftV2>;
-  getCharacterDraft(characterId: string): Promise<CharacterDraftV2>;
+  createCharacter(input: { name: string }): Promise<CharacterDraftV3>;
+  duplicateCharacter(characterId: string): Promise<CharacterDraftV3>;
+  getCharacterDraft(characterId: string): Promise<CharacterDraftV3>;
+  getCharacterMigrationReview(characterId: string): Promise<CharacterMigrationReview>;
   saveCharacterDraft(
     characterId: string,
-    draft: CharacterDraftV2,
-    draftRevision: string
+    draft: CharacterDraftV3,
+    draftRevision: string,
+    migrationResolutions?: readonly CharacterMigrationResolution[]
   ): Promise<void>;
   chooseCharacterSources(
     characterId: string,
@@ -485,16 +488,17 @@ export function registerCharacterIpc(
   replaceHandler(ipcMain, ipcChannels.characterDraftGet, async (_event, raw) => {
     const { characterId } = parseCharacterInput(characterIdInputSchema, raw);
     return characterOperation(characterDraftResultSchema, async () => ({
-      draft: await service.getCharacterDraft(characterId)
+      draft: await service.getCharacterDraft(characterId),
+      migrationReview: await service.getCharacterMigrationReview(characterId)
     }));
   });
   replaceHandler(ipcMain, ipcChannels.characterDraftSave, async (_event, raw) => {
-    const { characterId, draft, draftRevision } = parseCharacterInput(
+    const { characterId, draft, draftRevision, migrationResolutions } = parseCharacterInput(
       characterDraftSaveInputSchema,
       raw
     );
     return characterOperation(characterMutationResultSchema, async () => {
-      await service.saveCharacterDraft(characterId, draft, draftRevision);
+      await service.saveCharacterDraft(characterId, draft, draftRevision, migrationResolutions);
       return { ok: true };
     });
   });

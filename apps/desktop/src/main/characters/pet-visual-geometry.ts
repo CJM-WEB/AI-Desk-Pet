@@ -1,6 +1,6 @@
 import {
-  characterManifestV2Schema,
-  type CharacterManifestV2,
+  characterManifestV3Schema,
+  type CharacterManifestV3,
   type PresentationGeometryV2
 } from '@myself/character-runtime';
 import { z } from 'zod';
@@ -202,7 +202,7 @@ export function unionVisiblePresentationBounds(
 }
 
 function expectedResourceRevision(
-  manifest: CharacterManifestV2,
+  manifest: CharacterManifestV3,
   frameAssetIds: readonly string[]
 ): string {
   const revisions = new Map(manifest.resources.map(resource => [resource.assetId, resource.sha256]));
@@ -337,7 +337,7 @@ export class PetVisualGeometryAuthority {
     if (!envelope.success) return failure('PET_GEOMETRY_INPUT_INVALID');
     const input = envelope.data;
 
-    const parsedManifest = characterManifestV2Schema.safeParse(input.manifest);
+    const parsedManifest = characterManifestV3Schema.safeParse(input.manifest);
     if (!parsedManifest.success) return failure('PET_GEOMETRY_MANIFEST_INVALID');
     const manifest = parsedManifest.data;
     if (manifest.id !== activeCharacterId) return failure('PET_GEOMETRY_CHARACTER_MISMATCH');

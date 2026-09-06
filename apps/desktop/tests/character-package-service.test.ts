@@ -17,9 +17,11 @@ import { dirname, join } from 'node:path';
 import { finished } from 'node:stream/promises';
 import {
   characterManifestV2Schema,
+  characterManifestV3Schema,
+  migrateCharacterManifestToV3,
   convertCharacterManifestV1ToV2,
   type CharacterManifestV1,
-  type CharacterManifestV2
+  type CharacterManifestV3
 } from '@myself/character-runtime';
 import * as yauzl from 'yauzl';
 import { ZipFile } from 'yazl';
@@ -137,7 +139,7 @@ function legacyRuntime(characterId: string): {
 }
 
 function runtime(characterId: string): {
-  manifest: CharacterManifestV2;
+  manifest: CharacterManifestV3;
   assets: Readonly<Record<string, Uint8Array>>;
 } {
   const legacy = legacyRuntime(characterId);
@@ -151,7 +153,7 @@ function runtime(characterId: string): {
     resourceRevision: manifest.resources[0]!.sha256
   };
   return {
-    manifest: characterManifestV2Schema.parse(manifest),
+    manifest: characterManifestV3Schema.parse(migrateCharacterManifestToV3(characterManifestV2Schema.parse(manifest)).document),
     assets: legacy.assets
   };
 }
@@ -315,16 +317,16 @@ describe('角色包 Main 服务', () => {
     return packagePath;
   }
 
-  test('V2 导出直接读取正式草稿与发布清单', async () => {
+  test('V3 导出直接读取正式草稿与发布清单', async () => {
     await createPublishedCharacter();
     const destination = await exportDemoPackage('v2-export.zip');
 
     const files = await readZip(destination);
     expect(JSON.parse(files.get('draft/draft.json')!.toString('utf8')))
-      .toMatchObject({ version: 2, id: 'demo' });
+      .toMatchObject({ version: 3, id: 'demo' });
     expect(JSON.parse(files.get('compiled/manifest.json')!.toString('utf8')))
       .toMatchObject({
-        version: 2,
+        version: 3,
         id: 'demo',
         identity: { description: '演示角色' },
         skins: [{
@@ -337,7 +339,7 @@ describe('角色包 Main 服务', () => {
   // 根级多项目门禁会与真实角色存储和 ZIP I/O 竞争；隔离及桌面 suite 均通过，保留局部并发余量。
   }, 20_000);
 
-  test('V1 角色包在 staging 内统一转换为 V2 后安装', async () => {
+  test('V1 角色包在 staging 内统一转换为 V3 后安装', async () => {
     const packagePath = join(testDirectory, 'legacy-v1.zip');
     const legacy = legacyRuntime('legacy');
     await writeZip(packagePath, [
@@ -373,15 +375,37 @@ describe('角色包 Main 服务', () => {
     }).importCharacter(packagePath);
 
     expect(importedId).toBe('legacy');
-    await expect(store.getDraft(importedId)).resolves.toMatchObject({ version: 2 });
+    await expect(store.getDraft(importedId)).resolves.toMatchObject({ version: 3 });
     await expect(store.getPublishedManifest(importedId))
       .resolves.toMatchObject({
-        version: 2,
+        version: 3,
         skins: [{ presentations: [{ geometry: {
           visualBounds: { x: 0, y: 0, width: 1, height: 1 }
         } }] }]
       });
     expect(decodeAlpha).toHaveBeenCalledOnce();
+  });
+
+  test('复杂旧包保留原规则供编辑且不能静默启用，原包字节不改变', async () => {
+    const legacy = legacyRuntime('complex');
+    const old = convertCharacterManifestV1ToV2(legacy.manifest).document;
+    old.states.push({ ...structuredClone(old.states[0]!), id: 'overlay', kind: 'modifier', semantic: { kind: 'custom', value: 'overlay' } });
+    const { resources, compilerVersion, ...draft } = old;
+    const packagePath = join(testDirectory, 'complex-v2.zip');
+    await writeZip(packagePath, [
+      { path: 'draft/draft.json', bytes: JSON.stringify(draft) },
+      { path: 'compiled/manifest.json', bytes: JSON.stringify(old) },
+      { path: 'source/catalog.json', bytes: JSON.stringify({ version: 1, characterId: 'complex', sources: [] }) },
+      { path: 'compiled/atlas.png', bytes: legacy.assets['atlas.png']! }
+    ]);
+    const original = await readFile(packagePath);
+    const directory = join(testDirectory, 'complex-import');
+    const store = new CharacterStore(directory);
+    const id = await new CharacterPackageService(directory, { store }).importCharacter(packagePath);
+    expect((await store.getDraft(id)).version).toBe(3);
+    expect((await store.getMigrationReview(id)).issues.some(issue => issue.code === 'modifier-state')).toBe(true);
+    await expect(store.setActive(id)).rejects.toThrow('CHARACTER_MIGRATION_REVIEW_REQUIRED');
+    expect(await readFile(packagePath)).toEqual(original);
   });
 
   test('旧包资源校验失败时不会进入 Alpha 解码', async () => {

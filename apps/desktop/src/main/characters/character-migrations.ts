@@ -1,121 +1,51 @@
 import {
-  characterDraftV1Schema,
-  characterDraftV2Schema,
-  characterManifestV1Schema,
-  characterManifestV2Schema,
-  legacyPreparedCharacterManifestV2Schema,
-  preparedCharacterManifestV2Schema,
-  convertCharacterDraftV1ToV2,
-  convertCharacterManifestV1ToV2,
-  type CharacterDraftV2,
-  type CharacterManifestV2,
-  type PreparedCharacterManifestV2
+  characterManifestV3Schema, preparedCharacterManifestV3Schema, characterMigrationManifestV3Schema,
+  migrateCharacterDraftToV3, migrateCharacterManifestToV3,
+  type CharacterDraftV3, type CharacterManifestV3, type CharacterMigrationManifestV3,
+  type CharacterMigrationIssueV3
 } from '@myself/character-runtime';
-import {
-  createPresentationAlphaGeometryAccumulator,
-  type CharacterImageMimeType
-} from '@myself/character-assets';
+import { createPresentationAlphaGeometryAccumulator, type CharacterImageMimeType } from '@myself/character-assets';
 import { characterError } from './character-errors';
 
-type CharacterMigrationResult<TDocument> = {
-  document: TDocument;
-  sourceVersion: 1 | 2;
-};
-
-export type CharacterAlphaImage = Readonly<{
-  width: number;
-  height: number;
-  alpha: Uint8Array;
-}>;
-
+type CharacterMigrationResult<T> = { document: T; sourceVersion: 1 | 2 | 3; issues: CharacterMigrationIssueV3[] };
+export type CharacterAlphaImage = Readonly<{ width: number; height: number; alpha: Uint8Array }>;
 export type CharacterGeometryMigrationDependencies = Readonly<{
-  decodeAlpha(
-    bytes: Uint8Array,
-    mimeType: CharacterImageMimeType
-  ): Promise<CharacterAlphaImage>;
+  decodeAlpha(bytes: Uint8Array, mimeType: CharacterImageMimeType): Promise<CharacterAlphaImage>;
   reportDiagnostic?(code: 'CHARACTER_RESOURCE_GEOMETRY_FALLBACK'): void;
 }>;
+export type PreparedCharacterManifestMigration = CharacterMigrationResult<CharacterMigrationManifestV3> & { requiresPersistence: boolean };
+export type FinalizedCharacterManifestMigration = PreparedCharacterManifestMigration;
 
-/** 准备态以持久化标记区分；无需迁移的分支已经是可运行正式清单。 */
-export type PreparedCharacterManifestMigration =
-  | (CharacterMigrationResult<CharacterManifestV2> & { requiresPersistence: false })
-  | (CharacterMigrationResult<PreparedCharacterManifestV2> & { requiresPersistence: true });
-
-/** 资源校验与几何补齐完成后只允许返回正式清单。 */
-export type FinalizedCharacterManifestMigration =
-  CharacterMigrationResult<CharacterManifestV2> & { requiresPersistence: boolean };
-
-function sourceVersion(raw: unknown): 1 | 2 {
-  if (typeof raw !== 'object' || raw === null || !('version' in raw)) {
-    throw characterError('CHARACTER_MIGRATION_FAILED');
-  }
-  if (raw.version !== 1 && raw.version !== 2) {
-    throw characterError('CHARACTER_VERSION_UNSUPPORTED');
-  }
-  return raw.version;
+/** 旧契约只在迁移边界解析，问题随草稿返回，由 Main 持久保留。 */
+export function migrateCharacterDocument(raw: unknown): CharacterMigrationResult<CharacterDraftV3> {
+  try { return migrateCharacterDraftToV3(raw); }
+  catch { throw characterError('CHARACTER_MIGRATION_FAILED'); }
 }
 
-/** 将本地草稿统一解析为 V2，并保留来源版本供存储层决定是否落盘。 */
-export function migrateCharacterDocument(
-  raw: unknown
-): CharacterMigrationResult<CharacterDraftV2> {
-  const version = sourceVersion(raw);
-  if (version === 1) {
-    const parsed = characterDraftV1Schema.safeParse(raw);
-    if (!parsed.success) throw characterError('CHARACTER_MIGRATION_FAILED');
-    return {
-      sourceVersion: 1,
-      document: convertCharacterDraftV1ToV2(parsed.data).document
-    };
-  }
-
-  const parsed = characterDraftV2Schema.safeParse(raw);
-  if (!parsed.success) throw characterError('CHARACTER_MIGRATION_FAILED');
-  return { sourceVersion: 2, document: parsed.data };
+/** 准备阶段保留未决问题与完整资源目录，资源验证后才补几何；不得直接运行。 */
+export function prepareCharacterManifestMigration(raw: unknown): PreparedCharacterManifestMigration {
+  try {
+    if (typeof raw === 'object' && raw !== null && 'version' in raw && raw.version === 3) {
+      const strict = characterManifestV3Schema.safeParse(raw);
+      if (strict.success) return { document: strict.data, sourceVersion: 3, issues: [], requiresPersistence: false };
+      return { document: preparedCharacterManifestV3Schema.parse(raw), sourceVersion: 3, issues: [], requiresPersistence: true };
+    }
+    return { ...migrateCharacterManifestToV3(raw), requiresPersistence: true };
+  } catch { throw characterError('CHARACTER_MIGRATION_FAILED'); }
 }
-
-/** 将本地发布清单统一解析为 V2，并保留来源版本供原子转换使用。 */
-export function prepareCharacterManifestMigration(
-  raw: unknown
-): PreparedCharacterManifestMigration {
-  const version = sourceVersion(raw);
-  if (version === 1) {
-    const parsed = characterManifestV1Schema.safeParse(raw);
-    if (!parsed.success) throw characterError('CHARACTER_MIGRATION_FAILED');
-    const converted = convertCharacterManifestV1ToV2(parsed.data).document;
-    const prepared = preparedCharacterManifestV2Schema.safeParse(converted);
-    if (!prepared.success) throw characterError('CHARACTER_MIGRATION_FAILED');
-    return {
-      sourceVersion: 1,
-      document: prepared.data,
-      requiresPersistence: true
-    };
-  }
-
-  const strict = characterManifestV2Schema.safeParse(raw);
-  if (strict.success) {
-    return { sourceVersion: 2, document: strict.data, requiresPersistence: false };
-  }
-  const legacy = legacyPreparedCharacterManifestV2Schema.safeParse(raw);
-  if (!legacy.success) throw characterError('CHARACTER_MIGRATION_FAILED');
-  // 旧 V2 曾允许无播放意义的空表现；其余字段已由 legacy schema 完整验证。
-  const candidate = structuredClone(legacy.data);
-  for (const skin of candidate.skins) {
-    skin.presentations = skin.presentations.filter(
-      presentation => presentation.frames.length > 0
-    );
-  }
-  const parsed = preparedCharacterManifestV2Schema.safeParse(candidate);
-  if (!parsed.success) throw characterError('CHARACTER_MIGRATION_FAILED');
-  return { sourceVersion: 2, document: parsed.data, requiresPersistence: true };
-}
-
-/** 兼容既有纯结构调用；其 document 在 finalize 前不得进入运行态。 */
 export const migrateCharacterManifest = prepareCharacterManifestMigration;
 
+/** 只有全部迁移问题已由作者处理且发布结构严格合法，才能进入正式运行链。 */
+export function requirePublishedCharacterMigration(result: FinalizedCharacterManifestMigration): CharacterManifestV3 {
+  if (result.issues.length) throw characterError('CHARACTER_MIGRATION_REVIEW_REQUIRED');
+  const parsed = characterManifestV3Schema.safeParse(result.document);
+  if (!parsed.success) throw characterError('CHARACTER_MIGRATION_FAILED');
+  return parsed.data;
+}
+
 function resourceRevision(
-  presentation: PreparedCharacterManifestV2['skins'][number]['presentations'][number],
-  manifest: PreparedCharacterManifestV2
+  presentation: CharacterMigrationManifestV3['skins'][number]['presentations'][number],
+  manifest: CharacterMigrationManifestV3
 ): string {
   const resources = new Map(manifest.resources.map(resource => [resource.assetId, resource]));
   return [...new Set(presentation.frames.map(frame => resources.get(frame.assetId)!.sha256))]
@@ -137,7 +67,7 @@ export async function finalizeCharacterManifestMigration(
   if (!prepared.requiresPersistence) return prepared;
   const document = structuredClone(prepared.document);
   const resources = new Map(document.resources.map(resource => [resource.assetId, resource]));
-  type Presentation = PreparedCharacterManifestV2['skins'][number]['presentations'][number];
+  type Presentation = CharacterMigrationManifestV3['skins'][number]['presentations'][number];
   type Work = {
     presentation: Presentation;
     revision: string;
@@ -153,7 +83,12 @@ export async function finalizeCharacterManifestMigration(
 
   for (const skin of document.skins) {
     for (const presentation of skin.presentations) {
-      if (presentation.geometry) continue;
+      if (presentation.geometry) {
+        if (presentation.geometry.resourceRevision !== resourceRevision(presentation, document)
+          || presentation.geometry.groundAnchor.x !== presentation.anchors.ground.x
+          || presentation.geometry.groundAnchor.y !== presentation.anchors.ground.y) throw characterError('CHARACTER_MIGRATION_FAILED');
+        continue;
+      }
       const work: Work = {
         presentation,
         revision: resourceRevision(presentation, document),
@@ -228,7 +163,8 @@ export async function finalizeCharacterManifestMigration(
   }
   return {
     sourceVersion: prepared.sourceVersion,
-    document: characterManifestV2Schema.parse(document),
-    requiresPersistence: true
+    document: characterMigrationManifestV3Schema.parse(document),
+    requiresPersistence: true,
+    issues: prepared.issues
   };
 }

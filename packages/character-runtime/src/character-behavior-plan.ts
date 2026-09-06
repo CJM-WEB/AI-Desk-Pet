@@ -2,10 +2,8 @@ import { z } from 'zod';
 import { characterEmotionLabelSchema } from '@myself/shared-types';
 import { safeIdentifierSchema } from './character-v2-schema';
 import type { CharacterEmotionLabel } from '@myself/shared-types';
-import type { CharacterStandardSemantic } from './behavior-contracts';
 
 export type BehaviorTarget =
-  | Readonly<{ kind: 'semantic'; semantic: CharacterStandardSemantic }>
   | Readonly<{ kind: 'state_name'; name: string }>
   | Readonly<{ kind: 'action_name'; name: string }>
   | Readonly<{ kind: 'tag'; tag: string }>;
@@ -54,15 +52,15 @@ export type PublicCharacterIdentity = Readonly<{
 }>;
 
 export type PublicBehaviorAction = Readonly<{
+  actionId: string;
   name: string;
-  semantic: string;
   description?: string;
   tags: readonly string[];
 }>;
 
 export type PublicBehaviorState = Readonly<{
+  stateId: string;
   name: string;
-  semantic: string;
   description?: string;
   tags: readonly string[];
   actions: readonly PublicBehaviorAction[];
@@ -144,15 +142,15 @@ const publicIdentitySchema = z.object({
 }).strict();
 
 const publicBehaviorActionSchema = z.object({
+  actionId: safeIdentifierSchema,
   name: publicNameSchema,
-  semantic: characterBehaviorDescriptorSchema,
   description: z.string().trim().min(1).max(2_000).optional(),
   tags: z.array(safeIdentifierSchema).max(32)
 }).strict();
 
 const publicBehaviorStateSchema = z.object({
+  stateId: safeIdentifierSchema,
   name: publicNameSchema,
-  semantic: characterBehaviorDescriptorSchema,
   description: z.string().trim().min(1).max(2_000).optional(),
   tags: z.array(safeIdentifierSchema).max(32),
   actions: z.array(publicBehaviorActionSchema).max(128)

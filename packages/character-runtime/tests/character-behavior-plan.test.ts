@@ -70,8 +70,8 @@ describe('角色行为计划协议', () => {
         behavioralTendencies: ['主动陪伴']
       },
       states: [{
-        name: '休息', semantic: 'idle', description: '安静休息', tags: ['indoor'],
-        actions: [{ name: '眨眼', semantic: 'idle', description: '轻轻眨眼', tags: ['gentle'] }]
+        name: '休息', stateId: 'rest', description: '安静休息', tags: ['indoor'],
+        actions: [{ name: '眨眼', actionId: 'blink', description: '轻轻眨眼', tags: ['gentle'] }]
       }]
     });
 

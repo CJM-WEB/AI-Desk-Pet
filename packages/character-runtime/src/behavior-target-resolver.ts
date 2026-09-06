@@ -8,13 +8,18 @@ import type {
 } from './character-behavior-plan';
 import type { CharacterStandardSemantic } from './behavior-contracts';
 import {
-  type CharacterManifestV2
-} from './character-v2-schema';
+  type CharacterManifestV3
+} from './character-v3-schema';
+import { resolveCharacterPresentationV3 } from './character-playback-view';
 
 export type ResolvedBehaviorTarget =
   | Readonly<{ kind: 'semantic'; semantic: CharacterStandardSemantic }>
   | Readonly<{ kind: 'state'; stateId: string }>
   | Readonly<{ kind: 'action'; actionId: string }>
+  | Readonly<{ kind: 'state_action'; stateId: string; actionId: string }>;
+
+export type CharacterExpressionTarget =
+  | Readonly<{ kind: 'state'; stateId: string }>
   | Readonly<{ kind: 'state_action'; stateId: string; actionId: string }>;
 
 export type CharacterBehaviorAuthorization =
@@ -50,15 +55,15 @@ function firstCharacter(value: string): string {
 }
 
 type MutablePublicAction = {
+  actionId: string;
   name: string;
-  semantic: string;
   description?: string;
   tags: string[];
 };
 
 type MutablePublicState = {
+  stateId: string;
   name: string;
-  semantic: string;
   description?: string;
   tags: string[];
   actions: MutablePublicAction[];
@@ -166,7 +171,7 @@ export function boundPublicBehaviorCatalogForModel(
     if (publicCatalogEntryCount(bounded) >= PUBLIC_BEHAVIOR_CATALOG_ENTRY_BUDGET) return false;
     const projected: MutablePublicState = {
       name: source.name,
-      semantic: source.semantic,
+      stateId: source.stateId,
       tags: [],
       actions: []
     };
@@ -185,7 +190,7 @@ export function boundPublicBehaviorCatalogForModel(
     }
     const projected: MutablePublicAction = {
       name: action.name,
-      semantic: action.semantic,
+      actionId: action.actionId,
       tags: []
     };
     pair.projected.actions.push(projected);
@@ -279,21 +284,13 @@ function similarity(query: string, candidate: string): number {
   return shared / Math.max(queryCharacters.size, candidateCharacters.size);
 }
 
-function playableActionIds(manifest: CharacterManifestV2, skinId: string): Set<string> {
-  const skin = manifest.skins.find(candidate => candidate.id === skinId);
-  return new Set(skin?.presentations.flatMap(presentation => (
-    presentation.frames.length > 0 ? [presentation.actionId] : []
-  )) ?? []);
-}
-
-/** 自定义状态语义以公开值输出，避免向模型暴露内部判别结构。 */
-function publicSemantic(semantic: CharacterManifestV2['states'][number]['semantic']): string {
-  return typeof semantic === 'string' ? semantic : semantic.value;
+function playableActionIds(manifest: CharacterManifestV3, skinId: string): Set<string> {
+  return new Set(manifest.states.flatMap(state => state.actionIds.filter(id => resolveCharacterPresentationV3(manifest, skinId, state.id, id))));
 }
 
 /** 生成仅含有界人设与可播放层级的模型清单，绝不包含私有标识或素材数据。 */
 export function createPublicBehaviorCatalog(
-  manifest: CharacterManifestV2,
+  manifest: CharacterManifestV3,
   skinId: string
 ): PublicBehaviorCatalog {
   const playable = playableActionIds(manifest, skinId);
@@ -301,7 +298,7 @@ export function createPublicBehaviorCatalog(
     playable.has(action.id)
       ? [[action.id, {
           name: action.name,
-          semantic: action.semantic,
+          actionId: action.id,
           ...(action.description === undefined ? {} : { description: action.description }),
           tags: [...action.tags]
         } satisfies PublicBehaviorAction] as const]
@@ -323,7 +320,7 @@ export function createPublicBehaviorCatalog(
     },
     states: states.map(state => ({
       name: state.name,
-      semantic: publicSemantic(state.semantic),
+      stateId: state.id,
       ...(state.description === undefined ? {} : { description: state.description }),
       tags: [...state.tags],
       actions: state.actionIds.flatMap(actionId => {
@@ -332,7 +329,7 @@ export function createPublicBehaviorCatalog(
       })
     }))
   };
-  const defaultState = manifest.states.find(state => state.id === manifest.defaultStateId);
+  const defaultState = manifest.states.find(state => state.id === manifest.idleStateId);
   return boundPublicBehaviorCatalogForModel(catalog, defaultState?.name);
 }
 
@@ -340,7 +337,6 @@ type PublicCatalogCandidate = Readonly<{
   kind: 'state' | 'action';
   stateName: string;
   name: string;
-  semantic: string;
   description?: string;
   tags: readonly string[];
 }>;
@@ -352,7 +348,6 @@ function publicCatalogCandidates(catalog: PublicBehaviorCatalog): PublicCatalogC
       kind: 'action' as const,
       stateName: state.name,
       name: action.name,
-      semantic: action.semantic,
       ...(action.description === undefined ? {} : { description: action.description }),
       tags: action.tags
     }));
@@ -360,7 +355,6 @@ function publicCatalogCandidates(catalog: PublicBehaviorCatalog): PublicCatalogC
       kind: 'state' as const,
       stateName: state.name,
       name: state.name,
-      semantic: state.semantic,
       ...(state.description === undefined ? {} : { description: state.description }),
       tags: state.tags
     }, ...actions];
@@ -371,7 +365,6 @@ function scorePublicCandidate(candidate: PublicCatalogCandidate, inputs: readonl
   if (inputs.length === 0) return 0;
   const fields = [
     candidate.name,
-    candidate.semantic,
     ...(candidate.description === undefined ? [] : [candidate.description]),
     ...candidate.tags
   ].map(normalizePublicValue);
@@ -380,7 +373,6 @@ function scorePublicCandidate(candidate: PublicCatalogCandidate, inputs: readonl
 
 type SimilarityAction = Readonly<{
   name: string;
-  semantic: string;
   description?: string | undefined;
   tags: readonly string[];
 }>;
@@ -398,7 +390,6 @@ function selectStateActionBySimilarity<T extends SimilarityAction>(
       kind: 'action',
       stateName: '',
       name: action.name,
-      semantic: action.semantic,
       ...(action.description === undefined ? {} : { description: action.description }),
       tags: action.tags
     }, [normalizedQuery]);
@@ -478,11 +469,6 @@ export function isPublicBehaviorTarget(
     return selectStateActionBySimilarity(states[0]!.actions, target.action) !== null;
   }
   const candidates = publicCatalogCandidates(catalog);
-  if (target.kind === 'semantic') {
-    return candidates.some(candidate => (
-      candidate.kind === 'action' && candidate.semantic === target.semantic
-    ));
-  }
   if (target.kind === 'tag') {
     const normalizedTag = normalizePublicValue(target.tag);
     // 标签可能被用户同时分配给多个动作；只有唯一命中才可作为精确 Provider 计划。
@@ -498,10 +484,10 @@ export function isPublicBehaviorTarget(
 
 /** 解析唯一公开目标；未知、歧义和当前皮肤不可播放统一返回稳定能力错误。 */
 export function resolveBehaviorTarget(
-  manifest: CharacterManifestV2,
+  manifest: CharacterManifestV3,
   skinId: string,
   target: BehaviorTarget | Extract<CharacterBehaviorPlan, { kind: 'play_state' }>
-): ResolvedBehaviorTarget {
+): CharacterExpressionTarget {
   const playable = playableActionIds(manifest, skinId);
   const actions = manifest.actions.filter(action => playable.has(action.id));
   const states = manifest.states.filter(state => (
@@ -531,43 +517,28 @@ export function resolveBehaviorTarget(
     };
   }
 
-  if (target.kind === 'semantic') {
-    if (!actions.some(action => action.semantic === target.semantic)) {
-      throw new Error(ACTION_UNAVAILABLE);
-    }
-    return { kind: 'semantic', semantic: target.semantic };
-  }
-
   const normalizedTarget = normalizePublicValue(
     target.kind === 'tag' ? target.tag : target.name
   );
-  const candidates: Array<Exclude<ResolvedBehaviorTarget, { kind: 'semantic' }>> = target.kind === 'state_name'
+  const candidates: CharacterExpressionTarget[] = target.kind === 'state_name'
     ? states.flatMap(state => (
       normalizePublicValue(state.name) === normalizedTarget
         ? [{ kind: 'state' as const, stateId: state.id }]
         : []
     ))
     : target.kind === 'action_name'
-      ? actions.flatMap(action => (
-        normalizePublicValue(action.name) === normalizedTarget
-          ? [{ kind: 'action' as const, actionId: action.id }]
-          : []
-      ))
+      ? states.flatMap(state => actions.filter(action => state.actionIds.includes(action.id) && normalizePublicValue(action.name) === normalizedTarget).map(action => ({ kind: 'state_action' as const, stateId: state.id, actionId: action.id })))
       : [
           ...states.flatMap(state => (
             state.tags.some(tag => normalizePublicValue(tag) === normalizedTarget)
               ? [{ kind: 'state' as const, stateId: state.id }]
               : []
           )),
-          ...actions.flatMap(action => (
-            action.tags.some(tag => normalizePublicValue(tag) === normalizedTarget)
-              ? [{ kind: 'action' as const, actionId: action.id }]
-              : []
-          ))
+          ...states.flatMap(state => actions.filter(action => state.actionIds.includes(action.id) && action.tags.some(tag => normalizePublicValue(tag) === normalizedTarget)).map(action => ({ kind: 'state_action' as const, stateId: state.id, actionId: action.id })))
         ];
 
   const uniqueCandidates = new Map(candidates.map(candidate => [
-    candidate.kind === 'state' ? `state:${candidate.stateId}` : `action:${candidate.actionId}`,
+    candidate.kind === 'state' ? `state:${candidate.stateId}` : `action:${'stateId' in candidate ? candidate.stateId : ''}:${candidate.actionId}`,
     candidate
   ]));
   if (uniqueCandidates.size !== 1) throw new Error(ACTION_UNAVAILABLE);

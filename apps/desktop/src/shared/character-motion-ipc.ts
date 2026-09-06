@@ -28,16 +28,12 @@ export const characterMotionEventSchema = z.discriminatedUnion('type', [
     type: z.literal('snapshot'),
     snapshot: characterMotionSnapshotSchema
   }).strict(),
-  z.object({
-    type: z.literal('behavior-authority'),
-    characterId: characterMotionIdentifierSchema,
-    mode: z.literal('legacy-v1')
-  }).strict(),
+  z.object({ type: z.literal('behavior-interrupt'), playbackToken: characterPlaybackTokenSchema }).strict(),
   z.object({
     type: z.literal('behavior-action'),
     revision: z.number().int().nonnegative(),
     stateId: characterMotionIdentifierSchema,
-    modifierStateIds: z.array(characterMotionIdentifierSchema).optional(),
+    playback: z.object({ mode: z.enum(['once', 'loop', 'static']), durationMs: z.number().finite().nonnegative().nullable() }).strict(),
     actionId: characterMotionIdentifierSchema,
     playbackToken: characterPlaybackTokenSchema,
     commitFrameId: characterMotionIdentifierSchema.optional()
@@ -79,8 +75,7 @@ export type CharacterActionFeedbackInput = z.output<
 /** E2E 只读行为探针不包含播放令牌、素材标识或本地环境信息。 */
 export type CharacterBehaviorProbe = {
   revision: number;
-  primaryStateId: string;
-  modifierStateIds: string[];
+  stateId: string;
   actionId: string | null;
   playbackStatus: 'scheduled' | 'started' | 'completed' | 'interrupted' | 'failed' | null;
 };

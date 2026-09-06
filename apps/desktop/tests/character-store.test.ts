@@ -17,12 +17,19 @@ import { join } from 'node:path';
 import type {
   CharacterDraftV1,
   CharacterDraftV2,
+  CharacterDraftV3,
+  CharacterManifestV3,
+  CharacterPlaybackView,
   CharacterManifestV1,
   CharacterManifestV2,
   PreparedCharacterManifestV2
 } from '@myself/character-runtime';
 import {
   characterManifestV2Schema,
+  characterManifestV3Schema,
+  migrateCharacterDraftToV3,
+  migrateCharacterManifestToV3,
+  createCharacterPlaybackView,
   convertCharacterDraftV1ToV2,
   convertCharacterManifestV1ToV2,
   projectCharacterManifestV2ToLegacy
@@ -80,8 +87,8 @@ function createDraftV1(id = 'demo', name = '演示角色'): CharacterDraftV1 {
   };
 }
 
-function createDraft(id = 'demo', name = '演示角色'): CharacterDraftV2 {
-  return convertCharacterDraftV1ToV2(createDraftV1(id, name)).document;
+function createDraft(id = 'demo', name = '演示角色'): CharacterDraftV3 {
+  return migrateCharacterDraftToV3(createDraftV1(id, name)).document;
 }
 
 function createDraftV2(id = 'demo', name = '演示角色'): CharacterDraftV2 {
@@ -190,7 +197,7 @@ function createRuntime(
   atlasBytes = new Uint8Array([1, 2, 3]),
   thumbnailBytes = new Uint8Array([4, 5, 6])
 ): {
-  manifest: CharacterManifestV2;
+  manifest: CharacterManifestV3;
   assets: Readonly<Record<string, Uint8Array>>;
 } {
   const runtime = createRuntimeV1(id, name, atlasBytes, thumbnailBytes);
@@ -201,7 +208,7 @@ function createRuntime(
   };
 }
 
-function attachTestGeometry(manifest: PreparedCharacterManifestV2): CharacterManifestV2 {
+function attachTestGeometry(manifest: PreparedCharacterManifestV2): CharacterManifestV3 {
   const revisions = new Map(manifest.resources.map(resource => [resource.assetId, resource.sha256]));
   for (const skin of manifest.skins) {
     for (const presentation of skin.presentations) {
@@ -213,7 +220,7 @@ function attachTestGeometry(manifest: PreparedCharacterManifestV2): CharacterMan
       };
     }
   }
-  return characterManifestV2Schema.parse(manifest);
+  return characterManifestV3Schema.parse(migrateCharacterManifestToV3(characterManifestV2Schema.parse(manifest)).document);
 }
 
 function createCompleteRuntime(
@@ -250,14 +257,14 @@ function createCompleteRuntime(
   };
 }
 
-function runtimeView(manifest: CharacterManifestV2): CharacterManifestV1 {
-  return projectCharacterManifestV2ToLegacy(manifest);
+function runtimeView(manifest: CharacterManifestV3): CharacterPlaybackView {
+  return createCharacterPlaybackView(manifest, manifest.defaultSkinId);
 }
 
 async function writeRuntimeDirectory(
   directory: string,
   runtime: {
-    manifest: CharacterManifestV1 | CharacterManifestV2;
+    manifest: CharacterManifestV1 | CharacterManifestV2 | CharacterManifestV3;
     assets: Readonly<Record<string, Uint8Array>>;
   }
 ): Promise<void> {
@@ -424,7 +431,7 @@ describe('CharacterStore', () => {
     await store.create({ id: 'demo', name: '演示角色' });
 
     await expect(store.getDraft('demo')).resolves.toMatchObject({
-      version: 2,
+      version: 3,
       id: 'demo',
       name: '演示角色'
     });
@@ -921,7 +928,7 @@ describe('CharacterStore', () => {
     await expect(restartedStore.getActive()).resolves.toEqual(runtimeView(runtime.manifest));
   });
 
-  test('活动 V2 清单保留发布原文而旧运行接口继续返回 V1 投影', async () => {
+  test('活动 V3 清单保留发布原文而运行接口返回ID播放视图', async () => {
     const store = new CharacterStore(charactersDirectory);
     const runtime = createRuntime();
     await store.create({ id: 'demo', name: '演示角色' });
@@ -929,13 +936,13 @@ describe('CharacterStore', () => {
     await store.setActive('demo', true);
 
     const internalStore = store as CharacterStore & {
-      getActiveManifestV2?: () => Promise<CharacterManifestV2>;
+      getActiveManifestV3?: () => Promise<CharacterManifestV3>;
     };
-    expect(internalStore.getActiveManifestV2, 'Main 应能读取活动 V2 发布清单')
+    expect(internalStore.getActiveManifestV3, 'Main 应能读取活动 V2 发布清单')
       .toBeTypeOf('function');
-    if (!internalStore.getActiveManifestV2) return;
+    if (!internalStore.getActiveManifestV3) return;
 
-    await expect(internalStore.getActiveManifestV2()).resolves.toEqual(runtime.manifest);
+    await expect(internalStore.getActiveManifestV3()).resolves.toEqual(runtime.manifest);
     await expect(store.getActive()).resolves.toEqual(runtimeView(runtime.manifest));
   });
 
@@ -1486,7 +1493,7 @@ describe('CharacterStore', () => {
     await expect(access(join(charactersDirectory, 'demo'))).resolves.toBeUndefined();
 
     await writeFile(manifestFile, validManifestText, 'utf8');
-    await expect(store.getPublishedManifest('demo')).resolves.toMatchObject({ version: 2 });
+    await expect(store.getPublishedManifest('demo')).resolves.toMatchObject({ version: 3 });
   });
 
   test('损坏索引保留原内容并创建隔离副本且只返回内存空视图', async () => {
@@ -1542,17 +1549,14 @@ describe('CharacterStore', () => {
       .some(name => /^index\.json\.corrupt-/u.test(name))).toBe(true);
   });
 
-  test('迁移器把版本一草稿转换为版本二并原样接受版本二', () => {
+  test('迁移器把版本一和版本二草稿统一转换为版本三', () => {
     expect(migrateCharacterDocument(createDraftV1())).toMatchObject({
       sourceVersion: 1,
-      document: { version: 2, defaultSkinId: 'default' }
+      document: { version: 3, defaultSkinId: 'default' }
     });
-    expect(migrateCharacterDocument(createDraftV2())).toEqual({
-      sourceVersion: 2,
-      document: createDraftV2()
-    });
+    expect(migrateCharacterDocument(createDraftV2())).toEqual(migrateCharacterDraftToV3(createDraftV2()));
     expect(() => migrateCharacterDocument({ version: 3 }))
-      .toThrow('CHARACTER_VERSION_UNSUPPORTED');
+      .toThrow('CHARACTER_MIGRATION_FAILED');
     expect(() => migrateCharacterDocument({ ...createDraftV1(), script: 'run.exe' }))
       .toThrow('CHARACTER_MIGRATION_FAILED');
   });
@@ -1563,7 +1567,7 @@ describe('CharacterStore', () => {
     expect(prepared).toMatchObject({
       sourceVersion: 1,
       requiresPersistence: true,
-      document: { version: 2, defaultSkinId: 'default' }
+      document: { version: 3, defaultSkinId: 'default' }
     });
     const finalized = await finalizeCharacterManifestMigration(prepared, runtime.assets, {
       decodeAlpha: async () => ({
@@ -1578,7 +1582,7 @@ describe('CharacterStore', () => {
       resourceRevision: runtime.manifest.resources[0]!.sha256
     });
     expect(() => migrateCharacterManifest({ version: 3 }))
-      .toThrow('CHARACTER_VERSION_UNSUPPORTED');
+      .toThrow('CHARACTER_MIGRATION_FAILED');
   });
 
   test('旧 V2 已带不匹配资源修订时拒绝且不以重新解码覆盖', async () => {
@@ -1664,10 +1668,11 @@ describe('CharacterStore', () => {
     }));
 
     const prepared = prepareCharacterManifestMigration(manifest);
-    expect(prepared.document.skins[1]!.presentations).toEqual([]);
+    expect(prepared.document.skins[1]!.presentations[0]?.actionId).toBe('idle-main');
+    expect(prepared.issues).toEqual([]);
     await expect(finalizeCharacterManifestMigration(prepared, runtime.assets, {
       decodeAlpha
-    })).resolves.toMatchObject({ document: { version: 2 } });
+    })).resolves.toMatchObject({ document: { version: 3 } });
     expect(decodeAlpha).toHaveBeenCalledOnce();
   });
 
@@ -1831,7 +1836,7 @@ describe('CharacterStore', () => {
       .toThrow('CHARACTER_MIGRATION_FAILED');
   });
 
-  test('首次读取版本一草稿原子安装版本二并保留一次恢复备份', async () => {
+  test('首次读取版本一草稿原子安装版本三并保留一次恢复备份', async () => {
     const store = new CharacterStore(charactersDirectory);
     await store.create({ id: 'demo', name: '演示角色' });
     const draftDirectory = join(charactersDirectory, 'demo', 'draft');
@@ -1842,16 +1847,16 @@ describe('CharacterStore', () => {
       'utf8'
     );
 
-    await expect(store.getDraft('demo')).resolves.toMatchObject({ version: 2, id: 'demo' });
+    await expect(store.getDraft('demo')).resolves.toMatchObject({ version: 3, id: 'demo' });
     expect(JSON.parse(await readFile(join(draftDirectory, 'draft.json'), 'utf8')))
-      .toMatchObject({ version: 2 });
+      .toMatchObject({ version: 3 });
     expect(JSON.parse(await readFile(join(draftDirectory, 'draft.backup.json'), 'utf8')))
       .toMatchObject({ version: 1 });
     expect(JSON.parse(await readFile(join(charactersDirectory, 'index.json'), 'utf8')))
-      .toMatchObject({ characters: [{ id: 'demo', draftVersion: 2 }] });
+      .toMatchObject({ characters: [{ id: 'demo', draftVersion: 3 }] });
   });
 
-  test('首次读取版本一清单原子安装版本二且运行接口仍返回版本一投影', async () => {
+  test('首次读取版本一清单原子安装版本三且运行接口返回ID播放视图', async () => {
     const store = new CharacterStore(charactersDirectory, {
       geometryMigration: {
         decodeAlpha: async () => ({
@@ -1866,9 +1871,9 @@ describe('CharacterStore', () => {
       legacyRuntime
     );
 
-    await expect(store.getRuntimeManifest('demo')).resolves.toMatchObject({ version: 1 });
+    await expect(store.getRuntimeManifest('demo')).resolves.toMatchObject({ version: 3 });
     await expect(store.getPublishedManifest('demo')).resolves.toMatchObject({
-      version: 2,
+      version: 3,
       skins: [{ presentations: [{ geometry: {
         visualBounds: { x: 0, y: 0, width: 1, height: 1 }
       } }] }]
@@ -1876,7 +1881,7 @@ describe('CharacterStore', () => {
     expect(JSON.parse(await readFile(
       join(charactersDirectory, 'demo', 'compiled', 'manifest.json'),
       'utf8'
-    ))).toMatchObject({ version: 2 });
+    ))).toMatchObject({ version: 3 });
     expect(JSON.parse(await readFile(
       join(charactersDirectory, 'demo', 'compiled.backup', 'manifest.json'),
       'utf8'
@@ -1903,7 +1908,7 @@ describe('CharacterStore', () => {
     );
 
     await expect(restarted.getPublishedManifest('demo'))
-      .resolves.toMatchObject({ version: 2 });
+      .resolves.toMatchObject({ version: 3 });
     expect(await readFile(
       join(charactersDirectory, 'demo', 'compiled', 'manifest.json'),
       'utf8'
@@ -1925,7 +1930,7 @@ describe('CharacterStore', () => {
     await expect(store.getDraft('demo')).rejects.toThrow('TEST_INDEX_WRITE_FAILED');
     expect(await readFile(draftFile, 'utf8')).toBe(legacyText);
     await expect(new CharacterStore(charactersDirectory).getDraft('demo'))
-      .resolves.toMatchObject({ version: 2 });
+      .resolves.toMatchObject({ version: 3 });
   });
 
   test('草稿迁移写入 next 失败时不改动版本一原文且不留下事务文件', async () => {
@@ -1969,7 +1974,7 @@ describe('CharacterStore', () => {
     await store.create({ id: 'demo', name: '演示角色' });
     const draftDirectory = join(charactersDirectory, 'demo', 'draft');
     const legacyDraft = { ...createDraftV1(), thumbnailAssetId: undefined };
-    const migratedDraft = convertCharacterDraftV1ToV2(legacyDraft).document;
+    const migratedDraft = migrateCharacterDraftToV3(legacyDraft).document;
     await writeFile(
       join(draftDirectory, 'draft.backup.json'),
       `${JSON.stringify(legacyDraft, null, 2)}\n`,
@@ -1998,7 +2003,7 @@ describe('CharacterStore', () => {
     );
 
     const restarted = new CharacterStore(charactersDirectory);
-    await expect(restarted.getDraft('demo')).resolves.toMatchObject({ version: 2 });
+    await expect(restarted.getDraft('demo')).resolves.toMatchObject({ version: 3 });
     expect(JSON.parse(await readFile(join(draftDirectory, 'draft.backup.json'), 'utf8')))
       .toMatchObject({ version: 1 });
     await expect(access(join(draftDirectory, 'draft-transaction.json'))).rejects.toThrow();
@@ -2023,10 +2028,10 @@ describe('CharacterStore', () => {
     await expect(store.saveDraft('demo', changed))
       .rejects.toThrow('TEST_PERSISTENT_BACKUP_REMOVE_FAILED');
     expect(JSON.parse(await readFile(join(draftDirectory, 'draft.json'), 'utf8')))
-      .toMatchObject({ version: 2, identity: { background: migrated.identity.background } });
+      .toMatchObject({ version: 3, identity: { background: migrated.identity.background } });
     await expect(new CharacterStore(charactersDirectory).getDraft('demo'))
       .resolves.toMatchObject({
-        version: 2,
+        version: 3,
         identity: { background: migrated.identity.background }
       });
   });
@@ -2050,9 +2055,9 @@ describe('CharacterStore', () => {
     expect(JSON.parse(await readFile(
       join(charactersDirectory, 'demo', 'compiled', 'manifest.json'),
       'utf8'
-    ))).toMatchObject({ version: 2, compilerVersion: migrated.compilerVersion });
+    ))).toMatchObject({ version: 3, compilerVersion: migrated.compilerVersion });
     await expect(new CharacterStore(charactersDirectory).getPublishedManifest('demo'))
-      .resolves.toMatchObject({ version: 2, compilerVersion: migrated.compilerVersion });
+      .resolves.toMatchObject({ version: 3, compilerVersion: migrated.compilerVersion });
   });
 
   test('审查修复：列表迁移索引失败后不以污染的内存索引二次写盘', async () => {
@@ -2084,9 +2089,9 @@ describe('CharacterStore', () => {
     await writeFile(join(draftDirectory, 'draft.backup.json'), '{损坏恢复点', 'utf8');
 
     await expect(new CharacterStore(charactersDirectory).getDraft('demo'))
-      .resolves.toMatchObject({ version: 2, id: 'demo' });
+      .resolves.toMatchObject({ version: 3, id: 'demo' });
     expect(JSON.parse(await readFile(join(draftDirectory, 'draft.json'), 'utf8')))
-      .toMatchObject({ version: 2, id: 'demo' });
+      .toMatchObject({ version: 3, id: 'demo' });
   });
 
   test('审查修复：当前发布目录有效时损坏的可选永久恢复点不阻断读取', async () => {
@@ -2099,7 +2104,7 @@ describe('CharacterStore', () => {
     await writeFile(join(backupDirectory, 'manifest.json'), '{损坏恢复点', 'utf8');
 
     await expect(new CharacterStore(charactersDirectory).getPublishedManifest('demo'))
-      .resolves.toMatchObject({ version: 2, id: 'demo' });
+      .resolves.toMatchObject({ version: 3, id: 'demo' });
   });
 
   test('损坏草稿保留原文件并创建隔离副本', async () => {
@@ -2197,11 +2202,11 @@ describe('CharacterStore', () => {
       .resolves.toEqual(runtimeView(runtime.manifest));
     await expect(restarted.getPublishedManifest('demo')).resolves.toEqual(runtime.manifest);
     await expect(restarted.getActive()).resolves.toEqual(runtimeView(runtime.manifest));
-    await expect(restarted.getActiveManifestV2()).resolves.toEqual(runtime.manifest);
+    await expect(restarted.getActiveManifestV3()).resolves.toEqual(runtime.manifest);
     await expect(restarted.readActiveRuntimeAsset('atlas'))
       .resolves.toEqual(runtime.assets['atlas.png']);
     await expect(restarted.getDraft('demo')).resolves.toMatchObject({
-      version: 2,
+      version: 3,
       id: 'demo',
       name: '演示角色'
     });
@@ -2242,7 +2247,7 @@ describe('CharacterStore', () => {
       .rejects.toThrow('CHARACTER_PUBLISH_RECOVERY_BLOCKED');
     await expect(restarted.getActive())
       .rejects.toThrow('CHARACTER_PUBLISH_RECOVERY_BLOCKED');
-    await expect(restarted.getActiveManifestV2())
+    await expect(restarted.getActiveManifestV3())
       .rejects.toThrow('CHARACTER_PUBLISH_RECOVERY_BLOCKED');
     await expect(restarted.readActiveRuntimeAsset('atlas'))
       .rejects.toThrow('CHARACTER_PUBLISH_RECOVERY_BLOCKED');
@@ -2271,7 +2276,7 @@ describe('CharacterStore', () => {
     const restarted = new CharacterStore(charactersDirectory);
 
     await expect(restarted.getDraft('demo')).resolves.toMatchObject({
-      version: 2,
+      version: 3,
       id: 'demo'
     });
     expect(await readFile(draftFile)).toEqual(draftBytes);
@@ -2311,8 +2316,8 @@ describe('CharacterStore', () => {
     const restarted = new CharacterStore(charactersDirectory);
 
     await expect(restarted.list()).resolves.toHaveLength(1);
-    await expect(restarted.getRuntimeManifest('demo')).resolves.toMatchObject(runtime.manifest);
-    await expect(restarted.getPublishedManifest('demo')).resolves.toMatchObject({ version: 2 });
+    await expect(restarted.getRuntimeManifest('demo')).resolves.toMatchObject({ version: 3, id: runtime.manifest.id });
+    await expect(restarted.getPublishedManifest('demo')).resolves.toMatchObject({ version: 3 });
     expect(await readFile(manifestFile)).toEqual(manifestBytes);
     const compiledAfter = new Map(await Promise.all(
       (await readdir(compiledDirectory)).sort().map(async fileName => [

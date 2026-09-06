@@ -19,21 +19,24 @@ import {
   resolve
 } from 'node:path';
 import {
-  characterDraftV2Schema,
-  characterManifestV2Schema,
-  characterV2Completeness,
-  projectCharacterManifestV2ToLegacy,
-  type CharacterDraftV2,
-  type CharacterManifestV1,
-  type CharacterManifestV2,
-  type PreparedCharacterManifestV2,
-  type CharacterV2CompletenessIssue
+  characterDraftV3Schema,
+  characterManifestV3Schema,
+
+  createCharacterPlaybackView,
+  resolveCharacterPresentationV3,
+  type CharacterDraftV3,
+  type CharacterPlaybackView,
+  type CharacterManifestV3,
+  type CharacterMigrationManifestV3,
+  type CharacterMigrationIssueV3
 } from '@myself/character-runtime';
 import { z } from 'zod';
+import { characterMigrationReviewSchema, characterMigrationResolutionSchema, type CharacterMigrationReview, type CharacterMigrationResolution } from '../../shared/character-ipc';
 import { atomicWriteText } from '../storage/atomic-file-coordinator';
 import { characterError } from './character-errors';
 import {
   finalizeCharacterManifestMigration,
+  requirePublishedCharacterMigration,
   migrateCharacterDocument,
   prepareCharacterManifestMigration,
   type CharacterGeometryMigrationDependencies,
@@ -44,6 +47,14 @@ import {
   CharacterTransactionRecovery,
   type CharacterTransactionRecoveryReport
 } from './character-transaction-recovery';
+
+/** 每个皮肤必须具备同一 idle 状态的可播放动作。 */
+function characterCompleteness(draft: CharacterDraftV3): CharacterSummary['missingRequirements'] {
+  const idle = draft.states.find(state => state.id === draft.idleStateId);
+  if (!idle?.actionIds.length) return ['default-state-action-missing'];
+  return draft.skins.every(skin => idle.actionIds.some(id => resolveCharacterPresentationV3(draft, skin.id, idle.id, id)))
+    ? [] : ['default-presentation-unplayable'];
+}
 
 const DEFAULT_CHARACTER_ID = 'builtin-default';
 const SAFE_CHARACTER_ID = /^[a-z0-9][a-z0-9_-]{0,119}$/u;
@@ -64,8 +75,9 @@ const indexEntrySchema = z.object({
   name: z.string().trim().min(1).max(120),
   thumbnailAssetId: z.string().regex(SAFE_CHARACTER_ID).nullable(),
   draftRevision: z.string().regex(DRAFT_REVISION).optional(),
-  draftVersion: z.literal(2).optional(),
-  compiledVersion: z.literal(2).optional(),
+  draftVersion: z.union([z.literal(2), z.literal(3)]).optional(),
+  compiledVersion: z.union([z.literal(2), z.literal(3)]).optional(),
+  migrationReview: characterMigrationReviewSchema.optional(),
   migrationErrorCode: z.literal('CHARACTER_MIGRATION_FAILED').optional()
 }).strict();
 
@@ -150,7 +162,7 @@ export type CharacterSummary = {
   thumbnailAssetId: string | null;
   active: boolean;
   completeness: 'complete' | 'incomplete' | 'broken';
-  missingRequirements: CharacterV2CompletenessIssue[];
+  missingRequirements: Array<'default-state-action-missing' | 'default-presentation-unplayable'>;
   migrationErrorCode?: 'CHARACTER_MIGRATION_FAILED';
   migrationRecoveryAvailable: boolean;
   activationConfirmationRequired: boolean;
@@ -238,7 +250,7 @@ function sha256(bytes: Uint8Array | string): string {
   return createHash('sha256').update(bytes).digest('hex');
 }
 
-function activationFingerprint(manifest: CharacterManifestV2): string {
+function activationFingerprint(manifest: CharacterManifestV3): string {
   // 指纹绑定当前发布清单；重新发布后必须重新确认不完整状态。
   return sha256(JSON.stringify(manifest));
 }
@@ -252,13 +264,13 @@ function indexEntry(
   name: string,
   thumbnailAssetId: string | null,
   versions: Pick<CharacterIndexEntry, 'draftVersion' | 'compiledVersion'> = {
-    draftVersion: 2
+    draftVersion: 3
   }
 ): CharacterIndexEntry {
   return { id: characterId, name, thumbnailAssetId, ...versions };
 }
 
-function entryMatchesDraft(entry: CharacterIndexEntry, draft: CharacterDraftV2): boolean {
+function entryMatchesDraft(entry: CharacterIndexEntry, draft: CharacterDraftV3): boolean {
   return (
     entry.id === draft.id
     && entry.name === draft.name
@@ -268,7 +280,7 @@ function entryMatchesDraft(entry: CharacterIndexEntry, draft: CharacterDraftV2):
 
 function entryMatchesManifest(
   entry: CharacterIndexEntry,
-  manifest: Pick<CharacterManifestV2, 'id' | 'name' | 'thumbnailAssetId'>
+  manifest: Pick<CharacterManifestV3, 'id' | 'name' | 'thumbnailAssetId'>
 ): boolean {
   return (
     entry.id === manifest.id
@@ -494,8 +506,8 @@ export class CharacterStore {
 
       const characterDirectory = this.characterDirectory(input.id);
       await this.assertSafePath(characterDirectory);
-      const draft = characterDraftV2Schema.parse({
-        version: 2,
+      const draft = characterDraftV3Schema.parse({
+        version: 3,
         id: input.id,
         name,
         identity: {
@@ -511,23 +523,18 @@ export class CharacterStore {
           exampleLines: []
         },
         defaultSkinId: 'default',
-        defaultStateId: 'idle',
+        idleStateId: 'idle',
         skins: [{
           id: 'default',
           name: '默认皮肤',
-          presentations: [],
-          semanticFallbacks: []
+          presentations: []
         }],
         states: [{
           id: 'idle',
           name: '待机',
-          kind: 'primary',
-          semantic: 'idle',
           tags: [],
           intensity: 0.5,
           suggestedDurationMs: 3000,
-          coexistWithStateIds: [],
-          forbiddenStateIds: [],
           enterConditions: [],
           exitConditions: [],
           agentInferable: true,
@@ -733,8 +740,9 @@ export class CharacterStore {
 
   saveDraft(
     characterId: string,
-    draft: CharacterDraftV2,
-    draftRevision?: string
+    draft: CharacterDraftV3,
+    draftRevision?: string,
+    migrationResolutions?: readonly CharacterMigrationResolution[]
   ): Promise<void> {
     const parsedRevision = draftRevision === undefined
       ? undefined
@@ -756,7 +764,7 @@ export class CharacterStore {
       if (revisionReservation?.reused) {
         throw characterError('CHARACTER_DRAFT_REVISION_CONFLICT');
       }
-      const parsed = characterDraftV2Schema.safeParse(draft);
+      const parsed = characterDraftV3Schema.safeParse(draft);
       if (!parsed.success) throw characterError('CHARACTER_MIGRATION_FAILED');
       if (parsed.data.id !== characterId) {
         throw characterError('CHARACTER_ID_MISMATCH');
@@ -771,27 +779,112 @@ export class CharacterStore {
         revisionReservation.reused = true;
         throw characterError('CHARACTER_DRAFT_REVISION_CONFLICT');
       }
+      await this.ensureDraftV3(characterId, index);
+      const resolvedIndex = cloneIndex(index);
+      this.applyMigrationResolutions(resolvedIndex, characterId, parsed.data, migrationResolutions);
       await this.assertSafeCharacterPath(characterId, join('draft'));
       await this.installDraftTransaction(
         characterId,
         index,
         parsed.data,
-        parsedRevision?.success ? { draftRevision: parsedRevision.data } : {}
+        { ...(parsedRevision?.success ? { draftRevision: parsedRevision.data } : {}),
+          migrationReview: this.entry(resolvedIndex, characterId).migrationReview }
       );
     });
   }
 
-  getDraft(characterId: string): Promise<CharacterDraftV2> {
+
+  /** 导入边界保留原始文档及素材；有问题的包仅供编辑，不安装正式清单。 */
+  retainImportedMigration(characterId: string, evidence: { draftText: string; manifestText: string; issues: CharacterMigrationIssueV3[]; assets: Readonly<Record<string, Uint8Array>> }): Promise<void> {
+    return this.enqueue(async () => {
+      const index = await this.requireCharacter(characterId);
+      await this.recordMigrationReview(characterId, index, evidence.issues);
+      await this.preserveMigrationOriginal(characterId, 'draft', evidence.draftText);
+      await this.preserveMigrationOriginal(characterId, 'manifest', evidence.manifestText);
+      if (!evidence.issues.length) return;
+      const raw: unknown = JSON.parse(evidence.manifestText);
+      const migrated = prepareCharacterManifestMigration(raw);
+      this.validateAssets(migrated.document, evidence.assets);
+      if (typeof raw !== 'object' || raw === null) throw characterError('CHARACTER_MIGRATION_FAILED');
+      await this.safeWriteText(join(this.compiledDirectory(characterId), 'manifest.json'), json({ ...raw, id: characterId }));
+      for (const resource of migrated.document.resources) {
+        const target = join(this.compiledDirectory(characterId), resource.fileName);
+        await this.assertSafePath(target);
+        await durableWrite(target, evidence.assets[resource.fileName]!);
+      }
+    });
+  }
+
+  getMigrationReview(characterId: string): Promise<CharacterMigrationReview> {
+    return this.enqueue(async () => {
+      const index = await this.requireCharacter(characterId);
+      await this.ensureDraftV3(characterId, index);
+      await this.refreshPublishedMigrationReview(characterId, index);
+      return structuredClone(this.entry(index, characterId).migrationReview ?? { issues: [], resolutions: [] });
+    });
+  }
+
+  /** 迁移问题只追加；保存与重启不能清除尚未确认的原规则。 */
+  private async recordMigrationReview(characterId: string, index: CharacterIndex, issues: readonly CharacterMigrationIssueV3[]): Promise<void> {
+    if (!issues.length) return;
+    const entry = this.entry(index, characterId);
+    const review = entry.migrationReview ?? { issues: [], resolutions: [] };
+    for (const issue of issues) {
+      const issueId = sha256(new TextEncoder().encode(JSON.stringify(issue)));
+      if (!review.issues.some(item => item.issueId === issueId)) review.issues.push({ ...issue, issueId });
+    }
+    entry.migrationReview = characterMigrationReviewSchema.parse(review);
+    await this.writeIndex(index);
+  }
+
+  private applyMigrationResolutions(index: CharacterIndex, characterId: string, draft: CharacterDraftV3, resolutions?: readonly CharacterMigrationResolution[]): void {
+    if (!resolutions?.length) return;
+    const entry = this.entry(index, characterId);
+    const review = structuredClone(entry.migrationReview ?? { issues: [], resolutions: [] });
+    for (const resolution of resolutions) {
+      const issue = review.issues.find(issue => issue.issueId === resolution.issueId);
+      if (!issue || (issue.code.startsWith('idle-') && draft.idleStateId === null)) throw characterError('CHARACTER_MIGRATION_REVIEW_REQUIRED');
+      const parsed = characterMigrationResolutionSchema.parse(resolution);
+      review.resolutions = [...review.resolutions.filter(item => item.issueId !== parsed.issueId), parsed];
+    }
+    entry.migrationReview = review;
+  }
+
+  private async refreshPublishedMigrationReview(characterId: string, index: CharacterIndex): Promise<void> {
+    const file = join(this.compiledDirectory(characterId), 'manifest.json');
+    await this.assertSafePath(file);
+    if (!(await exists(file))) return;
+    const migrated = await this.readPublishedFrom(this.compiledDirectory(characterId), characterId);
+    if (migrated.sourceVersion < 3) {
+      await this.preserveMigrationOriginal(characterId, 'manifest', await readFile(file, 'utf8'));
+      await this.recordMigrationReview(characterId, index, migrated.issues);
+    }
+  }
+
+  private assertMigrationReviewed(index: CharacterIndex, characterId: string): void {
+    const review = this.entry(index, characterId).migrationReview;
+    if (review?.issues.some(issue => !review.resolutions.some(item => item.issueId === issue.issueId))) {
+      throw characterError('CHARACTER_MIGRATION_REVIEW_REQUIRED');
+    }
+  }
+
+  private async preserveMigrationOriginal(characterId: string, kind: 'draft' | 'manifest' | 'draft-v1' | 'draft-v2', text: string): Promise<void> {
+    const file = join(this.characterDirectory(characterId), `migration-original-${kind}.json`);
+    await this.assertSafePath(file);
+    if (!(await exists(file))) await this.safeWriteText(file, text);
+  }
+
+  getDraft(characterId: string): Promise<CharacterDraftV3> {
     return this.enqueue(async () => {
       assertCharacterId(characterId);
       const index = await this.requireCharacter(characterId);
-      return this.ensureDraftV2(characterId, index);
+      return this.ensureDraftV3(characterId, index);
     });
   }
 
   publishCompiled(
     characterId: string,
-    manifest: CharacterManifestV2,
+    manifest: CharacterManifestV3,
     assets: Readonly<Record<string, Uint8Array>>,
     draftRevision?: string
   ): Promise<void> {
@@ -809,6 +902,9 @@ export class CharacterStore {
         z.string().regex(DRAFT_REVISION).parse(draftRevision);
         this.assertDraftRevision(characterId, index, draftRevision);
       }
+      await this.ensureDraftV3(characterId, index);
+      await this.refreshPublishedMigrationReview(characterId, index);
+      this.assertMigrationReviewed(index, characterId);
       const parsedManifest = this.parseManifest(manifest);
       if (parsedManifest.id !== characterId) {
         throw characterError('CHARACTER_ID_MISMATCH');
@@ -826,23 +922,22 @@ export class CharacterStore {
     });
   }
 
-  getRuntimeManifest(characterId: string): Promise<CharacterManifestV1> {
+  getRuntimeManifest(characterId: string): Promise<CharacterPlaybackView> {
     return this.enqueue(async () => {
       assertCharacterId(characterId);
       const index = await this.requireCharacter(characterId, false);
       this.transactionRecovery.assertRuntimeAllowed(characterId);
-      return projectCharacterManifestV2ToLegacy(
-        await this.ensurePublishedV2(characterId, index)
-      );
+      const manifest = await this.ensurePublishedV3(characterId, index);
+      return createCharacterPlaybackView(manifest, manifest.defaultSkinId);
     });
   }
 
-  getPublishedManifest(characterId: string): Promise<CharacterManifestV2> {
+  getPublishedManifest(characterId: string): Promise<CharacterManifestV3> {
     return this.enqueue(async () => {
       assertCharacterId(characterId);
       const index = await this.requireCharacter(characterId, false);
       this.transactionRecovery.assertRuntimeAllowed(characterId);
-      return this.ensurePublishedV2(characterId, index);
+      return this.ensurePublishedV3(characterId, index);
     });
   }
 
@@ -851,8 +946,8 @@ export class CharacterStore {
       assertCharacterId(characterId);
       const index = await this.requireCharacter(characterId, false);
       this.transactionRecovery.assertRuntimeAllowed(characterId);
-      const manifest = await this.ensurePublishedV2(characterId, index);
-      const missing = characterV2Completeness(manifest);
+      const manifest = await this.ensurePublishedV3(characterId, index);
+      const missing = characterCompleteness(manifest);
       const fingerprint = activationFingerprint(manifest);
       const confirmed = index.incompleteActivationConfirmations[characterId];
       if (missing.length > 0 && confirmed !== fingerprint && !confirmIncomplete) {
@@ -869,28 +964,27 @@ export class CharacterStore {
     });
   }
 
-  getActive(): Promise<CharacterManifestV1> {
+  getActive(): Promise<CharacterPlaybackView> {
     return this.enqueue(async () => {
       const loaded = await this.requireWritableIndex();
       if (loaded.activeCharacterId === null) {
         throw characterError('CHARACTER_RUNTIME_UNAVAILABLE');
       }
       this.transactionRecovery.assertRuntimeAllowed(loaded.activeCharacterId);
-      return projectCharacterManifestV2ToLegacy(
-        await this.ensurePublishedV2(loaded.activeCharacterId, loaded)
-      );
+      const manifest = await this.ensurePublishedV3(loaded.activeCharacterId, loaded);
+      return createCharacterPlaybackView(manifest, manifest.defaultSkinId);
     });
   }
 
-  /** 仅供 Main 行为引擎读取发布后的 V2 清单，不经过 Renderer 边界。 */
-  getActiveManifestV2(): Promise<CharacterManifestV2> {
+  /** 仅供 Main 行为引擎读取发布后的 V3 清单，不经过 Renderer 边界。 */
+  getActiveManifestV3(): Promise<CharacterManifestV3> {
     return this.enqueue(async () => {
       const loaded = await this.requireWritableIndex();
       if (loaded.activeCharacterId === null) {
         throw characterError('CHARACTER_RUNTIME_UNAVAILABLE');
       }
       this.transactionRecovery.assertRuntimeAllowed(loaded.activeCharacterId);
-      return this.ensurePublishedV2(loaded.activeCharacterId, loaded);
+      return this.ensurePublishedV3(loaded.activeCharacterId, loaded);
     });
   }
 
@@ -902,7 +996,7 @@ export class CharacterStore {
         throw characterError('CHARACTER_RUNTIME_UNAVAILABLE');
       }
       this.transactionRecovery.assertRuntimeAllowed(index.activeCharacterId);
-      await this.ensurePublishedV2(index.activeCharacterId, index);
+      await this.ensurePublishedV3(index.activeCharacterId, index);
       try {
         return await this.readRuntimeAssetFrom(
           this.compiledDirectory(index.activeCharacterId),
@@ -1100,12 +1194,12 @@ export class CharacterStore {
     Object.assign(index, cloneIndex(nextIndex));
   }
 
-  /** 复用草稿事务安装 V2；迁移时仅在提交成功后保留 V1 恢复点。 */
+  /** 复用草稿事务安装 V3；迁移时仅在提交成功后保留旧版本恢复点。 */
   private async installDraftTransaction(
     characterId: string,
     index: CharacterIndex,
-    draft: CharacterDraftV2,
-    options: { keepBackup?: boolean; draftRevision?: string } = {}
+    draft: CharacterDraftV3,
+    options: { keepBackup?: boolean; draftRevision?: string; migrationReview?: CharacterMigrationReview | undefined } = {}
   ): Promise<void> {
     const originalIndex = cloneIndex(index);
     const previousEntry = this.entry(index, characterId);
@@ -1113,9 +1207,10 @@ export class CharacterStore {
       characterId,
       draft.name,
       draft.thumbnailAssetId ?? null,
-      { draftVersion: 2, compiledVersion: previousEntry.compiledVersion }
+      { draftVersion: 3, compiledVersion: previousEntry.compiledVersion }
     );
     nextEntry.draftRevision = options.draftRevision ?? previousEntry.draftRevision;
+    nextEntry.migrationReview = options.migrationReview ?? previousEntry.migrationReview;
     const transaction: DraftTransaction = {
       version: 1,
       phase: 'prepared',
@@ -1142,16 +1237,30 @@ export class CharacterStore {
     await this.cleanupDraftTransaction(characterId, transaction.keepBackup);
   }
 
-  private async ensureDraftV2(
+  private async ensureDraftV3(
     characterId: string,
     index: CharacterIndex
-  ): Promise<CharacterDraftV2> {
+  ): Promise<CharacterDraftV3> {
     const migrated = await this.readDraftMigration(
       this.draftFile(characterId),
       characterId,
       true
     );
-    if (migrated.sourceVersion === 2) return migrated.document;
+    if (this.transactionRecovery.resultFor(characterId).draftErrorCode !== null) return migrated.document;
+    await this.recordMigrationReview(characterId, index, migrated.issues);
+    if (migrated.sourceVersion === 3) return migrated.document;
+    await this.preserveMigrationOriginal(characterId, 'draft', await readFile(this.draftFile(characterId), 'utf8'));
+    const previousBackup = this.draftBackupFile(characterId);
+    await this.assertSafePath(previousBackup);
+    if (await exists(previousBackup)) {
+      const text = await readFile(previousBackup, 'utf8');
+      try {
+        const backup = migrateCharacterDocument(JSON.parse(text));
+        if (backup.sourceVersion < migrated.sourceVersion && backup.sourceVersion !== 3) {
+          await this.preserveMigrationOriginal(characterId, backup.sourceVersion === 1 ? 'draft-v1' : 'draft-v2', text);
+        }
+      } catch { /* 损坏的可选恢复点继续由原事务恢复规则处理。 */ }
+    }
     if (this.transactionRecovery.resultFor(characterId).draftErrorCode !== null) {
       return migrated.document;
     }
@@ -1161,21 +1270,22 @@ export class CharacterStore {
     return migrated.document;
   }
 
-  /** 复用发布事务安装 V2 清单及原资源字节，不复制 source 目录。 */
+  /** 复用发布事务安装 V3 清单及原资源字节，不复制 source 目录。 */
   private async installPublishedTransaction(
     characterId: string,
     index: CharacterIndex,
-    manifest: CharacterManifestV2,
+    manifest: CharacterManifestV3,
     assets: Readonly<Record<string, Uint8Array>>,
     options: { keepBackup?: boolean; expectedDraftRevision?: string } = {}
   ): Promise<void> {
     const originalIndex = cloneIndex(index);
     const previousEntry = structuredClone(this.entry(index, characterId));
     const nextEntry = indexEntry(characterId, manifest.name, manifest.thumbnailAssetId, {
-      draftVersion: previousEntry.draftVersion ?? 2,
-      compiledVersion: 2
+      draftVersion: previousEntry.draftVersion ?? 3,
+      compiledVersion: 3
     });
     nextEntry.draftRevision = previousEntry.draftRevision;
+    nextEntry.migrationReview = previousEntry.migrationReview;
     const transaction: PublishTransaction = {
       version: 2,
       phase: 'prepared',
@@ -1245,30 +1355,33 @@ export class CharacterStore {
     await this.cleanupPublishTransaction(characterId, transaction.keepBackup);
   }
 
-  private async ensurePublishedV2(
+  private async ensurePublishedV3(
     characterId: string,
     index: CharacterIndex
-  ): Promise<CharacterManifestV2> {
+  ): Promise<CharacterManifestV3> {
     const migrated = await this.readPublishedFrom(
       this.compiledDirectory(characterId),
       characterId
     );
-    if (!migrated.requiresPersistence) return migrated.document;
+    await this.recordMigrationReview(characterId, index, migrated.issues);
+    if (migrated.sourceVersion < 3) await this.preserveMigrationOriginal(characterId, 'manifest', await readFile(join(this.compiledDirectory(characterId), 'manifest.json'), 'utf8'));
+    const manifest = requirePublishedCharacterMigration(migrated);
+    if (!migrated.requiresPersistence) return manifest;
     const recoveryResult = this.transactionRecovery.resultFor(characterId);
     if (
       recoveryResult.draftErrorCode !== null
       || recoveryResult.publishErrorCode !== null
     ) {
-      return migrated.document;
+      return manifest;
     }
     await this.installPublishedTransaction(
       characterId,
       index,
-      migrated.document,
+      manifest,
       migrated.assets,
       { keepBackup: true }
     );
-    return migrated.document;
+    return manifest;
   }
 
   private async recoverDeleteTombstones(index: CharacterIndex): Promise<void> {
@@ -1314,7 +1427,7 @@ export class CharacterStore {
         const current = await this.readDraftMigration(currentFile, characterId);
         try {
           const backup = await this.readDraftMigration(backupFile, characterId);
-          if (!(current.sourceVersion === 2 && backup.sourceVersion === 1)) {
+          if (!(current.sourceVersion > backup.sourceVersion)) {
             await this.removePath(backupFile, { force: true });
           }
         } catch {
@@ -1444,16 +1557,16 @@ export class CharacterStore {
         let preserveBackup = false;
         try {
           const backupManifest = await this.readPublishedFrom(backup, characterId);
-          preserveBackup = current.sourceVersion === 2 && backupManifest.sourceVersion === 1;
+          preserveBackup = current.sourceVersion > backupManifest.sourceVersion;
         } catch {
           // 无 marker 的 backup 只是可选恢复点，损坏时不得阻断有效 current。
           preserveBackup = true;
         }
 
-        if (current.sourceVersion === 2) {
+        if (current.sourceVersion === 3) {
           const manifest = current.document;
           if (!(
-            previousEntry.compiledVersion === 2
+            previousEntry.compiledVersion === 3
             && entryMatchesManifest(previousEntry, manifest)
           )) {
             await this.commitIndexUpdate(index, nextIndex => {
@@ -1461,7 +1574,7 @@ export class CharacterStore {
                 characterId,
                 manifest.name,
                 manifest.thumbnailAssetId,
-                { draftVersion: previousEntry.draftVersion ?? 2, compiledVersion: 2 }
+                { draftVersion: previousEntry.draftVersion ?? 3, compiledVersion: 3 }
               ));
               delete nextIndex.incompleteActivationConfirmations[characterId];
             });
@@ -1605,7 +1718,7 @@ export class CharacterStore {
   private async readDraftFrom(
     file: string,
     characterId: string
-  ): Promise<CharacterDraftV2> {
+  ): Promise<CharacterDraftV3> {
     return (await this.readDraftMigration(file, characterId)).document;
   }
 
@@ -1641,8 +1754,8 @@ export class CharacterStore {
     }
   }
 
-  private parseManifest(raw: unknown): CharacterManifestV2 {
-    const parsed = characterManifestV2Schema.safeParse(raw);
+  private parseManifest(raw: unknown): CharacterManifestV3 {
+    const parsed = characterManifestV3Schema.safeParse(raw);
     if (!parsed.success) {
       throw characterError('CHARACTER_MANIFEST_INVALID');
     }
@@ -1650,7 +1763,7 @@ export class CharacterStore {
   }
 
   private validateAssets(
-    manifest: PreparedCharacterManifestV2,
+    manifest: Pick<CharacterManifestV3, 'resources'>,
     assets: Readonly<Record<string, Uint8Array>>
   ): void {
     const expectedFiles = new Set(manifest.resources.map(resource => resource.fileName));
@@ -1678,9 +1791,8 @@ export class CharacterStore {
   private async readRuntimeFrom(
     directory: string,
     characterId: string
-  ): Promise<CharacterManifestV1> {
-    const migrated = await this.readPublishedFrom(directory, characterId);
-    return projectCharacterManifestV2ToLegacy(migrated.document);
+  ): Promise<CharacterManifestV3> {
+    return requirePublishedCharacterMigration(await this.readPublishedFrom(directory, characterId));
   }
 
   private async readPublishedFrom(
@@ -1749,7 +1861,7 @@ export class CharacterStore {
       directoryIdentity,
       'runtime:manifest-after-open'
     );
-    const manifest = characterManifestV2Schema.parse(JSON.parse(manifestBytes.toString('utf8')));
+    const manifest = characterManifestV3Schema.parse(JSON.parse(manifestBytes.toString('utf8')));
     if (manifest.id !== characterId) {
       throw characterError('CHARACTER_RUNTIME_UNAVAILABLE');
     }
@@ -1866,8 +1978,8 @@ export class CharacterStore {
     const compiledManifest = join(this.compiledDirectory(entry.id), 'manifest.json');
     if (await exists(compiledManifest)) {
       try {
-        const manifest = await this.ensurePublishedV2(entry.id, index);
-        const missing = characterV2Completeness(manifest);
+        const manifest = await this.ensurePublishedV3(entry.id, index);
+        const missing = characterCompleteness(manifest);
         if (this.transactionRecovery.resultFor(entry.id).draftErrorCode === null) {
           delete this.entry(index, entry.id).migrationErrorCode;
         }
@@ -1904,14 +2016,14 @@ export class CharacterStore {
     }
 
     try {
-      const draft = await this.ensureDraftV2(entry.id, index);
+      const draft = await this.ensureDraftV3(entry.id, index);
       if (this.transactionRecovery.resultFor(entry.id).draftErrorCode === null) {
         delete this.entry(index, entry.id).migrationErrorCode;
       }
       return {
         ...base(),
         completeness: 'incomplete',
-        missingRequirements: characterV2Completeness(draft),
+        missingRequirements: characterCompleteness(draft),
         migrationRecoveryAvailable: false,
         activationConfirmationRequired: true
       };

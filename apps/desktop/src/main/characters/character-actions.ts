@@ -3,11 +3,13 @@ import { rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type {
-  CharacterDraftV2,
-  CharacterManifestV1
+  CharacterDraftV3,
+  CharacterPlaybackView
 } from '@myself/character-runtime';
 import type {
   CharacterEvent,
+  CharacterMigrationReview,
+  CharacterMigrationResolution,
   CharacterPublishInput,
   CharacterRuntimeSnapshot,
   CharacterWorkshopSourceDto
@@ -24,6 +26,7 @@ type CharacterStorePort = Pick<
   | 'list'
   | 'create'
   | 'getDraft'
+  | 'getMigrationReview'
   | 'saveDraft'
   | 'publishCompiled'
   | 'setActive'
@@ -68,7 +71,7 @@ export class CharacterActions {
     return this.dependencies.store.list();
   }
 
-  async createCharacter(input: { name: string }): Promise<CharacterDraftV2> {
+  async createCharacter(input: { name: string }): Promise<CharacterDraftV3> {
     const characterId = randomUUID();
     await this.dependencies.store.create({ id: characterId, name: input.name });
     const draft = await this.dependencies.store.getDraft(characterId);
@@ -76,7 +79,7 @@ export class CharacterActions {
     return draft;
   }
 
-  async duplicateCharacter(characterId: string): Promise<CharacterDraftV2> {
+  async duplicateCharacter(characterId: string): Promise<CharacterDraftV3> {
     const packagePath = join(
       tmpdir(),
       `ai-pet-character-copy-${randomUUID()}.zip`
@@ -92,16 +95,21 @@ export class CharacterActions {
     }
   }
 
-  getCharacterDraft(characterId: string): Promise<CharacterDraftV2> {
+  getCharacterDraft(characterId: string): Promise<CharacterDraftV3> {
     return this.dependencies.store.getDraft(characterId);
+  }
+
+  getCharacterMigrationReview(characterId: string): Promise<CharacterMigrationReview> {
+    return this.dependencies.store.getMigrationReview(characterId);
   }
 
   async saveCharacterDraft(
     characterId: string,
-    draft: CharacterDraftV2,
-    draftRevision: string
+    draft: CharacterDraftV3,
+    draftRevision: string,
+    migrationResolutions?: readonly CharacterMigrationResolution[]
   ): Promise<void> {
-    await this.dependencies.store.saveDraft(characterId, draft, draftRevision);
+    await this.dependencies.store.saveDraft(characterId, draft, draftRevision, migrationResolutions);
     this.emit({ type: 'index-changed' });
   }
 

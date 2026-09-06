@@ -45,8 +45,7 @@ import { workshopLayoutSettingsSchema } from '../shared/workshop-layout-ipc';
 const e2eProbeEnabled = process.argv.includes('--myself-e2e-probe');
 let behaviorProbe: CharacterBehaviorProbe = {
   revision: 0,
-  primaryStateId: '',
-  modifierStateIds: [],
+  stateId: '',
   actionId: null,
   playbackStatus: null
 };
@@ -67,8 +66,7 @@ if (e2eProbeEnabled) {
       behaviorProbePlaybackToken = parsed.data.playbackToken;
       behaviorProbe = {
         revision: parsed.data.revision,
-        primaryStateId: parsed.data.stateId,
-        modifierStateIds: [...(parsed.data.modifierStateIds ?? [])],
+        stateId: parsed.data.stateId,
         actionId: parsed.data.actionId,
         playbackStatus: 'scheduled'
       };
@@ -194,11 +192,16 @@ const api: MyselfApi = {
     const result = await ipcRenderer.invoke(ipcChannels.characterDraftGet, { characterId });
     return result.draft;
   },
-  saveCharacterDraft: async (characterId, draft, draftRevision) => {
+  getCharacterMigrationReview: async characterId => {
+    const result = await ipcRenderer.invoke(ipcChannels.characterDraftGet, { characterId });
+    return result.migrationReview ?? { issues: [], resolutions: [] };
+  },
+  saveCharacterDraft: async (characterId, draft, draftRevision, migrationResolutions) => {
     await ipcRenderer.invoke(ipcChannels.characterDraftSave, {
       characterId,
       draft,
-      draftRevision
+      draftRevision,
+      ...(migrationResolutions === undefined ? {} : { migrationResolutions })
     });
   },
   chooseCharacterSources: (characterId): Promise<CharacterSourceChoiceResult> => (

@@ -1,7 +1,7 @@
 import {
-  characterDraftV2Schema,
-  characterManifestV1Schema,
-  characterManifestV2Schema
+  characterDraftV3Schema,
+  characterPlaybackViewSchema,
+  characterManifestV3Schema
 } from '@myself/character-runtime';
 import { z } from 'zod';
 
@@ -25,10 +25,26 @@ export const characterActivateInputSchema = z.object({
 export const characterCreateInputSchema = z.object({
   name: z.string().trim().min(1).max(120)
 }).strict();
+// 原规则由 Main 持久保存；客户端只能逐项提交处置。
+export const characterMigrationResolutionSchema = z.object({
+  issueId: z.string().regex(/^[a-f0-9]{64}$/u), decision: z.enum(['revised', 'discarded'])
+}).strict();
+export const characterMigrationReviewSchema = z.object({
+  issues: z.array(z.object({
+    issueId: z.string().regex(/^[a-f0-9]{64}$/u),
+    code: z.enum(['idle-missing', 'idle-ambiguous', 'modifier-state', 'state-combination', 'unsupported-condition', 'action-constraint', 'presentation-fallback', 'presentation-budget', 'v1-trigger']),
+    objectId: z.string().max(120), message: z.string().max(2000), originalRule: z.string().max(100000)
+  }).strict()).max(20000),
+  resolutions: z.array(characterMigrationResolutionSchema).max(20000)
+}).strict();
+export type CharacterMigrationReview = z.output<typeof characterMigrationReviewSchema>;
+export type CharacterMigrationResolution = z.output<typeof characterMigrationResolutionSchema>;
+
 export const characterDraftSaveInputSchema = z.object({
   characterId: characterIdSchema,
-  draft: characterDraftV2Schema,
-  draftRevision: z.string().regex(UUID_PATTERN)
+  draft: characterDraftV3Schema,
+  draftRevision: z.string().regex(UUID_PATTERN),
+  migrationResolutions: z.array(characterMigrationResolutionSchema).max(20000).optional()
 }).strict();
 export const characterSourceReadInputSchema = z.object({
   characterId: characterIdSchema,
@@ -37,7 +53,7 @@ export const characterSourceReadInputSchema = z.object({
 export const characterPublishInputSchema = z.object({
   characterId: characterIdSchema,
   draftRevision: z.string().regex(UUID_PATTERN),
-  manifest: characterManifestV2Schema,
+  manifest: characterManifestV3Schema,
   resources: z.array(z.object({
     assetId: characterAssetIdSchema,
     bytes: z.instanceof(Uint8Array)
@@ -75,14 +91,15 @@ export const characterWorkshopSourceSchema = characterSourceSchema.pick({
 });
 export const characterRuntimeSnapshotSchema = z.object({
   activeCharacterId: characterIdSchema,
-  manifest: characterManifestV1Schema
+  manifest: characterPlaybackViewSchema
 }).strict();
 
 export const characterListResultSchema = z.object({
   characters: z.array(characterSummarySchema)
 }).strict();
 export const characterDraftResultSchema = z.object({
-  draft: characterDraftV2Schema
+  draft: characterDraftV3Schema,
+  migrationReview: characterMigrationReviewSchema.optional()
 }).strict();
 export const characterMutationResultSchema = z.object({
   ok: z.literal(true)
@@ -106,6 +123,7 @@ export const characterRecoveryFallbackErrorCodeSchema = z.enum([
   'CHARACTER_RECOVERY_DEFERRED',
   'CHARACTER_MANIFEST_INVALID',
   'CHARACTER_MIGRATION_FAILED',
+  'CHARACTER_MIGRATION_REVIEW_REQUIRED',
   'CHARACTER_RESOURCE_INTEGRITY_FAILED',
   'CHARACTER_RESOURCE_NOT_FOUND',
   'CHARACTER_RUNTIME_UNAVAILABLE',
