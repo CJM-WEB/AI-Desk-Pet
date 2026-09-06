@@ -1,6 +1,6 @@
 # AI Pet 自定义状态、持续心情与自主表现设计
 
-日期：2026-09-05；补充：2026-09-06。状态：**用户已确认文件能力验收并授权本阶段实施，开发中**。
+日期：2026-09-05；补充：2026-09-06。状态：**本阶段功能、基本自动化验证及获批旧文件清理已完成，用户持续体验待确认**。实际证据见[开发与验收记录](../../operations/2026-09-06-custom-state-autonomy.md)。
 
 本文将已确认的产品方向与推荐的工程取舍分开记录。源码调查基线为本仓库 `d7abbef`；没有把旧测试报告当成本轮效果证明。本规格依赖[编程助手规格第 9 节](2026-09-05-ai-pet-coding-assistant-design.md)定义的真实任务事实。
 
@@ -43,16 +43,16 @@
 
 本次不包含主动聊天、长期人格记忆、任意脚本、角色取得文件权限、新增本地模型、复杂生理仿真、多人关系模型或全新动画渲染框架。
 
-当前可复用与必须调整的证据：
+以下为调查基线的历史证据，不代表当前实现。表中已退役源码可通过 `git show 6d9e8847:文件路径` 查阅；当前状态以开发与验收记录为准。
 
 | 来源 | 当前事实与影响 |
 | --- | --- |
 | [V2 Schema](../../../packages/character-runtime/src/character-v2-schema.ts) | 已有人设、描述、标签、动作与皮肤；同时固定主／修饰状态、八种标准语义及组合约束 |
 | [公共契约](../../../packages/shared-types/src/contracts.ts) | 情绪仍是固定 `happy/sad/angry/surprised/calm`；只删除工作台语义栏会留下另一套官方分类 |
-| [状态推断](../../../packages/character-runtime/src/behavior-state-inference.ts) | 可信事件先转标准语义，再选主状态与修饰状态 |
-| [行为引擎](../../../packages/character-runtime/src/character-behavior-engine.ts) | 已有动作生命周期、冷却与反馈；推进时间尚不等于持续心情演进 |
+| 旧状态推断：`packages/character-runtime/src/behavior-state-inference.ts`（已退役） | 可信事件先转标准语义，再选主状态与修饰状态 |
+| 旧行为引擎：`packages/character-runtime/src/character-behavior-engine.ts`（已退役） | 已有动作生命周期、冷却与反馈；推进时间尚不等于持续心情演进 |
 | [目录解析](../../../packages/character-runtime/src/behavior-target-resolver.ts) | 固定公开预算、目录顺序与文本相似度会影响候选可见性，不能作为任意自定义状态的最终判断 |
-| [旧运行投影](../../../packages/character-runtime/src/legacy-runtime-projection.ts) | 按语义合并或改写状态；播放器再跨状态找动作，无法忠实表达原始状态 ID |
+| 旧运行投影：`packages/character-runtime/src/legacy-runtime-projection.ts`（已退役） | 按语义合并或改写状态；播放器再跨状态找动作，无法忠实表达原始状态 ID |
 | [行为导演](../../../apps/desktop/src/main/characters/character-behavior-director.ts) | 某些分支因选中 `move` 语义动作而启动真实运动，表现与窗口控制仍有反向耦合 |
 | [主动运行入口](../../../apps/desktop/src/main/characters/character-proactivity-runtime.ts) | 现有定时器主要服务间歇移动，不能声称已经有自主情绪决策 |
 

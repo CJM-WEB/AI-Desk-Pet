@@ -1,8 +1,8 @@
 # 自定义状态与持续心情开发记录
 
-日期：2026-09-06。依据[角色规格](../superpowers/specs/2026-09-05-ai-pet-custom-state-autonomy-design.md)与[实施计划](../superpowers/plans/2026-09-06-ai-pet-custom-state-autonomy.md)。状态：开发中，不能据此宣称整套角色能力已完成。
+日期：2026-09-06。依据[角色规格](../superpowers/specs/2026-09-05-ai-pet-custom-state-autonomy-design.md)与[实施计划](../superpowers/plans/2026-09-06-ai-pet-custom-state-autonomy.md)。状态：本轮角色功能、基本自动化验证及获批旧文件清理已完成，持续体验待用户人工确认。
 
-当前进度：Task 1–5 已完成，真实 DeepSeek／Qwen 代表场景均通过；限定审查发现的“修复回复覆盖首次计划无更新”已修复并复核通过。Task 6 清理交付尚未完成。下表按证据产生时点保留中间失败及其后续修复，不以中间状态覆盖当前结论。
+当前进度：Task 1–6 已实现；实际单帧播放问题已修复，构建和唯一工作台闭环通过，限定复审 Approved。真实 DeepSeek／Qwen 代表场景均通过；14 个旧文件已按二次批准逐个移入回收站。最后重启观察发现运行期重复播放反馈拒绝，正在单独定位，不能先断言无影响；持续体验仍待用户反馈。下表按证据产生时点保留中间失败及其后续修复，不以中间状态覆盖当前结论。
 
 用户已确认文件能力实际验收并授权本阶段；工作台锚点与区域保留现有入口，本轮不扩展。保留三态运动，重点接通人设系统提示词、描述决策、自定义状态及随时间变化的心情。MCP 继续禁用，官网链不进入本轮，暂不打包、不 push。
 
@@ -33,6 +33,13 @@
 | Qwen 决策字段与当次请求约束 | 提交 `0023eb90`；26个直接定向用例、runtime／agent-core／desktop typecheck 通过 | 心情和计划必填可 null；Main 已处理的指令限制运动建议，并取消重复显式播放建议；限定审查另发现修复轮的 null 计划冻结缺口，已接管 |
 | 正式代码真实 Qwen 代表场景 | `0023eb90` 重新生成诊断 bundle，真实内置模型、Vulkan 33/33；1次HTTP／Provider调用通过，心情强度0.95，选择 `cheer` 及其 `spin/wave` 动作，Main明确令牌保留；动作后仍可喜悦，虚拟2小时后回 `rest`（idle） | 使用真实 Main prepare／complete 入口，实际运动调用0、工具为空、运行时清理和Electron退出通过；临时隔离实例，无真实窗口、未观察连续分钟动画 |
 | 修复轮冻结首次 null 计划 | `2e5bd423`；1项 RED 复现，直接决策文件11项、desktop typecheck 通过，限定复核 Approved | 仅改修复轮合并及直接测试；请求 Schema／提示不变，不重复真实模型场景 |
+| Task 6 V3 夹具与整合 | `73738074`、`17c59ff3`；17个直接场景通过；合并安全／集成70项中65通过，另5个旧测试接缝失败修复后定向通过；固定差异复审 Approved | 安全16项全通过；修复仅涉及测试，未重跑整个矩阵；素材导入出现一次原恢复扫描诊断，未宣称完全无警告 |
+| 开发构建 | `2e5bd423` 的 Main／Preload／Renderer 及产物边界检查通过 | 未打安装包；后续播放器修复会使该构建需要更新 |
+| 唯一角色工作台 E2E | 两次分别34秒、32.3秒失败；第二次附带安全诊断，证实按真实ID依次收到原动作 loop、明确动作 once、恢复原动作 loop，发布单帧为1200毫秒 | Gate／Engine内存诊断正常；实际 BrowserPixiScene 对单帧 once 在微任务中立刻完成，跳过作者时长。已接管产品修复，尚不能称实际播放通过 |
+| 单帧一次播放修复 | `6d9e8847`；真实 Pixi 8.19.0 先 RED 微任务提前完成，修复后1199毫秒未完成、1201毫秒唯一完成，中断无晚回调；播放器81项与desktop typecheck通过，限定复审 Approved | 仅复用原 AnimatedSprite／Ticker，删除立即完成分支，未新增计时器；单元环境有 jsdom Canvas 未实现诊断，真实画面由下行 E2E 补充 |
+| 最终构建与工作台闭环 | `6d9e8847` 开发构建及产物边界检查通过；唯一 E2E **1 passed，用例49.0秒** | 实际表单创建有描述状态及两个动作，发布启用、模型请求人设／描述／零工具、明确一次播放后无新消息返回、重启、导出回导及恶意包保护均通过；不是全套 E2E 或长期人工体验 |
+| 获批旧文件清理 | `2e695803`；清单 14 个普通文件、187,873 字节逐个移入 Windows 回收站；旧导出与残余引用已清理；运行时定向42项、桌面存储和播放器120项，以及运行时和4个直接消费者类型检查通过 | 保留 V1/V2 输入与迁移、角色包、素材和锚点；按用户二次批准执行，详见[精确清单与结果](2026-09-06-character-legacy-retirement.md)；未重复模型或 E2E 矩阵 |
+| 开发版重启观察 | 清理后 Main／Preload 开发构建完成并启动 Electron；退出前观察到反复 `CHARACTER_PLAYBACK_UNAUTHORIZED` | 删除前实例亦出现；Renderer 没有重试循环，但正常旧令牌回报与真实播放更替的影响仍待定位，未按正常关闭噪声处理 |
 
 实际命令：
 
@@ -43,16 +50,49 @@ pnpm.cmd --filter @myself/character-runtime typecheck
 git diff --check
 ```
 
+最后整合采用以下命令，未运行安装包命令或重复完整验证矩阵：
+
+```powershell
+pnpm.cmd exec vitest run --config tests/vitest.config.ts tests/security tests/integration
+pnpm.cmd exec vitest run --config tests/vitest.config.ts tests/integration/desktop-agent.test.ts -t '正式任务读取随机正文|无授权根可连续普通聊天|跨 Provider 仅发送当前消息|跨 Provider 单次共享|Renderer 真实图集编译'
+pnpm.cmd --filter @myself/desktop test pixi-character-player.test.ts character-player.test.tsx
+pnpm.cmd --filter @myself/desktop typecheck
+pnpm.cmd --filter @myself/desktop build
+pnpm.cmd exec playwright test --config tests/playwright.config.ts --grep "V3 人设、自定义状态动作与有限播放在发布重启回导中保持一致"
+```
+
+第一行的70项中65通过、5个旧夹具失败，第二行证明修正后的5项定向通过；不将它写成修后重跑70项全绿。最后一个命令只在修复后通过一次，前两次失败如实列在表中。本阶段相对基线 `d8a25f47`，官网、CloudBase、scanner 和锁文件差异均为空。
+
+获批清理后的必要命令如下，均通过；仅检查共享运行时的直接消费者，没有修改 scanner 业务。
+
+```powershell
+pnpm.cmd --filter @myself/character-runtime exec vitest run --config vitest.config.ts tests/behavior-scheduler.test.ts tests/character-expression-engine.test.ts tests/character-v3-migration.test.ts
+pnpm.cmd --filter @myself/desktop test pixi-character-player.test.ts character-store.test.ts
+pnpm.cmd --filter @myself/character-runtime typecheck
+pnpm.cmd --filter @myself/desktop typecheck
+pnpm.cmd --filter @myself/agent-core typecheck
+pnpm.cmd --filter @myself/character-assets typecheck
+pnpm.cmd --filter @myself/package-scanner typecheck
+git diff --check
+```
+
 Task 1 保留 V1/V2 输入 Schema 的既有含义，只新增必要复用导出。V3 草稿可明确表示尚未选择 idle；正式发布必须有有效兜底及素材几何。迁移返回的独立问题报告不能因文档结构可解析而被忽略。
 
 Task 2 先由缺失接口的 4 项失败进入实现，之后用 3 项失败定位空计划停止、冷却恢复及跨实例令牌问题。最终定向命令使用 `pnpm.cmd --filter @myself/character-runtime exec vitest run --config vitest.config.ts tests/character-expression-engine.test.ts tests/behavior-scheduler.test.ts`；原 `test -- 文件` 写法实际运行整个包，不能误记为定向运行。引擎不调用模型、系统或文件，Main 接线仍待完成。
 
-Task 3 Main 的定向命令为 `pnpm.cmd --filter @myself/desktop test character-v3-cutover.test.ts character-store.test.ts`，以及 `pnpm.cmd --filter @myself/desktop test character-package-service.test.ts -t 'V3 导出|V1 角色包|复杂旧包|旧包资源校验|旧包图片结构'`。后者还有 69 项未运行，既有临时目录恢复扫描日志 `CHARACTER_IMPORT_RECOVERY_SCAN_FAILED` 仍出现，本轮未据该日志断言导入恢复失败或完全正常。正式开发实例在跨进程切换期间已结束，尚未在真实用户数据上启动新版本。
+Task 3 Main 的定向命令为 `pnpm.cmd --filter @myself/desktop test character-v3-cutover.test.ts character-store.test.ts`，以及 `pnpm.cmd --filter @myself/desktop test character-package-service.test.ts -t 'V3 导出|V1 角色包|复杂旧包|旧包资源校验|旧包图片结构'`。后者还有 69 项未运行，既有临时目录恢复扫描日志 `CHARACTER_IMPORT_RECOVERY_SCAN_FAILED` 仍出现，本轮未据该日志断言导入恢复失败或完全正常。跨进程切换期间已结束旧开发实例；上述测试均使用隔离数据。
 
 Task 4 实际代表性模型命令为私有诊断入口 `node .superpowers/sdd/2026-09-06-ai-pet-custom-state-autonomy/run-character-live-smoke.cjs deepseek` 与同入口 `qwen`。只发送合成人设、状态及获奖场景，不读取真实会话或修改用户角色；DeepSeek原设置文件哈希保持一致。Qwen使用现有资源和Provider，Vulkan卸载33/33层，所有尝试最终均执行runtime清理。其首个问题由HTTP错误及[官方Qwen模板](https://huggingface.co/Qwen/Qwen3.5-4B/blob/main/chat_template.jinja)共同确证：模板只接受开头一条system；本地适配合并段落，未修改模型或资源模板。随后完整JSON回包证明模型会省略可选的心情或计划；单纯强化提示未解决。将两项改为必须明确评估、允许 null 表示无更新，并收紧已处理指令的当次 Schema 后，正式 `0023eb90` 代表场景通过。分阶段私有实验仅用于定位，最终通过结果来自重新编译的正式源码。
 
-## 尚未完成
+## 开始体验
 
-- 旧正式路径清理及整体基本体验验证。
+1. 在工作台填写人设、状态和动作描述；希望模型自主选择的状态须勾选“允许智能体推断”，并配置可播放素材。只有 idle 承担兜底职责。
+2. 编译发布并启用角色后，分享日常消息观察模型匹配。明确动作可使用“播放向你挥手动作”这类包含真实动作名的语句；默认一遍后恢复有效心情计划或 idle。
+3. 保持“自主心情”开启且当前 Provider 可用，首次5分钟未互动可重新评估，此后至少间隔15分钟、每小时最多4次；只改变心情与表现，不发自主消息。关闭开关后已有心情仍随时间变化。
 
-真实 Windows 动画连续性、三态位移及真实人设效果尚待实际观察。当前开发记录不替代用户人工验收。
+运动0／1／2分别保留静止、持续和间断模式，与情绪动画独立；锚点与区域仍使用原编辑入口，本轮没有扩展。
+
+## 仍待处理
+
+- 定位重启实例运行期重复播放反馈拒绝的来源与实际影响；保留令牌校验，不通过放宽授权掩盖问题。
+- 真实 Windows 长时间动画连续性、闲置感受、三态位移及不同自定义人设的自然程度，待用户实际体验反馈。本记录不代替人工验收，也不宣称其他 Provider 或所有语言指令均已验证。
