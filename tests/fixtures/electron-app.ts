@@ -234,8 +234,7 @@ export interface ElectronAppFixture {
   }>;
   getCharacterBehaviorProbe(): Promise<{
     revision: number;
-    primaryStateId: string;
-    modifierStateIds: string[];
+    stateId: string;
     actionId: string | null;
     playbackStatus: 'scheduled' | 'started' | 'completed' | 'interrupted' | 'failed' | null;
   }>;
@@ -1740,12 +1739,10 @@ export async function createElectronAppFixture(
           !probe
           || !Number.isInteger(probe.revision)
           || probe.revision < 0
-          || typeof probe.primaryStateId !== 'string'
-          || !Array.isArray(probe.modifierStateIds)
-          || !probe.modifierStateIds.every(value => typeof value === 'string')
+          || typeof probe.stateId !== 'string'
           || (probe.actionId !== null && typeof probe.actionId !== 'string')
           || !statuses.has(probe.playbackStatus)
-          || Object.keys(probe).length !== 5
+          || Object.keys(probe).length !== 4
         ) {
           throw new Error('ELECTRON_E2E_BEHAVIOR_PROBE_RESULT_INVALID');
         }

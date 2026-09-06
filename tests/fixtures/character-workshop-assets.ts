@@ -12,11 +12,11 @@ import { join, resolve } from 'node:path';
 import type { Readable } from 'node:stream';
 import { finished } from 'node:stream/promises';
 import type {
-  CharacterActionDefinitionV2,
-  CharacterActionPresentationV2,
-  CharacterDraftV2,
-  CharacterManifestV2,
-  CharacterStateDefinitionV2
+  CharacterActionDefinitionV3,
+  CharacterActionPresentationV3,
+  CharacterDraftV3,
+  CharacterManifestV3,
+  CharacterStateDefinitionV3
 } from '@myself/character-runtime';
 import { CharacterAssetService } from '../../apps/desktop/src/main/characters/character-asset-service';
 import { CharacterPackageService } from '../../apps/desktop/src/main/characters/character-package-service';
@@ -112,7 +112,7 @@ export async function materializeCharacterWorkshopFixtures(
   const presentation = (
     actionId: string,
     assetId: string
-  ): CharacterActionPresentationV2 => ({
+  ): CharacterActionPresentationV3 => ({
     actionId,
     fps: actionId === 'safe-carry-action' ? 1 : 8,
     ...(actionId === 'safe-carry-action' ? { commitFrameId: 'frame-4' } : {}),
@@ -132,39 +132,32 @@ export async function materializeCharacterWorkshopFixtures(
   const action = (
     id: string,
     name: string,
-    semantic: CharacterActionDefinitionV2['semantic'],
-    loopPolicy: CharacterActionDefinitionV2['loopPolicy'] = 'presentation'
-  ): CharacterActionDefinitionV2 => ({
+    description: string,
+    loopPolicy: CharacterActionDefinitionV3['loopPolicy'] = 'presentation'
+  ): CharacterActionDefinitionV3 => ({
     id,
     name,
-    semantic,
+    description,
     tags: [],
     preference: 1,
     cooldownMs: 0,
     repeatSuppressionMs: 0,
     loopPolicy,
     interrupt: 'normal',
-    allowedPrimaryStateIds: [],
-    forbiddenPrimaryStateIds: [],
-    requiredModifierStateIds: [],
-    forbiddenModifierStateIds: [],
     direction: 'any'
   });
   const state = (
     id: string,
     name: string,
-    semantic: CharacterStateDefinitionV2['semantic'],
+    description: string,
     actionId: string,
-    enterConditions: CharacterStateDefinitionV2['enterConditions'] = []
-  ): CharacterStateDefinitionV2 => ({
+    enterConditions: CharacterStateDefinitionV3['enterConditions'] = []
+  ): CharacterStateDefinitionV3 => ({
     id,
     name,
-    kind: typeof semantic === 'string' ? 'primary' : 'modifier',
-    semantic,
+    description,
     tags: [],
     intensity: 50,
-    coexistWithStateIds: [],
-    forbiddenStateIds: [],
     enterConditions,
     exitConditions: [],
     agentInferable: true,
@@ -183,72 +176,70 @@ export async function materializeCharacterWorkshopFixtures(
     exampleLines: ['测试已就绪。']
   };
   const states = [
-    state('idle', '待机', 'idle', 'safe-idle-action'),
-    state('listening', '倾听', 'listen', 'safe-listen-action'),
-    state('thinking', '思考', 'think', 'safe-think-action'),
-    state('moving', '移动', 'move', 'safe-move-action'),
-    state('success', '成功', 'celebrate', 'safe-celebrate-action'),
-    state('error', '失败', 'fail', 'safe-fail-action'),
-    state('carrying', '搬运', 'carry', 'safe-carry-action'),
-    state('custom-wave', '挥手', { kind: 'custom', value: 'wave' }, 'safe-wave-action', [{
+    state('idle', '待机', '安静陪伴时的兜底表现。', 'safe-idle-action'),
+    state('listening', '倾听', '专心听伙伴说话。', 'safe-listen-action'),
+    state('thinking', '思考', '认真琢磨一个问题。', 'safe-think-action'),
+    state('moving', '移动', '在原地展示轻快步伐。', 'safe-move-action'),
+    state('success', '成功', '为伙伴的好消息感到欣喜。', 'safe-celebrate-action'),
+    state('error', '失败', '对遇到挫折的伙伴表示关切。', 'safe-fail-action'),
+    state('carrying', '搬运', '在原地展示抱起物品的动作。', 'safe-carry-action'),
+    state('custom-wave', '挥手', '向刚互动的伙伴招手。', 'safe-wave-action', [{
       mode: 'all' as const,
-      clauses: [{ kind: 'signal' as const, signal: 'user-interaction' }]
+      clauses: [{ kind: 'event' as const, event: 'user-interaction' }]
     }])
   ];
   const actions = [
-    action('safe-idle-action', '待机', 'idle', 'until-interrupted'),
-    action('safe-listen-action', '倾听', 'listen'),
-    action('safe-think-action', '思考', 'think'),
-    action('safe-move-action', '移动', 'move'),
-    action('safe-celebrate-action', '庆祝', 'celebrate'),
-    action('safe-fail-action', '失败', 'fail'),
-    action('safe-carry-action', '搬运', 'carry'),
-    action('safe-wave-action', '挥手', 'celebrate')
+    action('safe-idle-action', '待机', '轻轻呼吸。', 'until-interrupted'),
+    action('safe-listen-action', '倾听', '侧耳倾听。'),
+    action('safe-think-action', '思考', '托腮思考。'),
+    action('safe-move-action', '移动', '原地踏步，不控制桌面位移。'),
+    action('safe-celebrate-action', '庆祝', '轻快庆祝。'),
+    action('safe-fail-action', '失败', '轻轻低头。'),
+    action('safe-carry-action', '搬运', '展示抱起物品。'),
+    action('safe-wave-action', '挥手', '抬手招呼伙伴。')
   ];
   /** 双皮肤夹具复用同一安全素材，仅用默认皮肤的播放属性证明兼容链未丢字段。 */
   const presentations = (
     assetId: string,
     useWinterPlayback = false
-  ): CharacterActionPresentationV2[] => actions.map(item => ({
+  ): CharacterActionPresentationV3[] => actions.map(item => ({
     ...presentation(item.id, assetId),
     ...(useWinterPlayback && item.id === 'safe-idle-action'
       ? { playbackRate: 1.5, mirrorX: true }
       : {})
   }));
-  const draft: CharacterDraftV2 = {
-    version: 2,
+  const draft: CharacterDraftV3 = {
+    version: 3,
     id: characterId,
     name: 'E2E 安全角色',
     thumbnailAssetId: source.assetId,
     identity,
     defaultSkinId: 'winter',
-    defaultStateId: 'idle',
+    idleStateId: 'idle',
     skins: [
       {
         id: 'default',
         name: '默认皮肤',
-        presentations: presentations(source.assetId),
-        semanticFallbacks: []
+        presentations: presentations(source.assetId)
       },
       {
         id: 'winter',
         name: '冬装',
         description: '用于验证隐藏编辑界面后的多皮肤兼容。',
-        presentations: presentations(source.assetId, true),
-        semanticFallbacks: []
+        presentations: presentations(source.assetId, true)
       }
     ],
     states,
     actions
   };
-  const manifest: CharacterManifestV2 = {
-    version: 2,
+  const manifest: CharacterManifestV3 = {
+    version: 3,
     id: characterId,
     name: 'E2E 安全角色',
     thumbnailAssetId: 'atlas',
     identity,
     defaultSkinId: 'winter',
-    defaultStateId: 'idle',
+    idleStateId: 'idle',
     skins: [
       {
         id: 'default',
@@ -260,8 +251,7 @@ export async function materializeCharacterWorkshopFixtures(
             groundAnchor: { x: 0.5, y: 1 },
             resourceRevision: sha256(bytes)
           }
-        })),
-        semanticFallbacks: []
+        }))
       },
       {
         id: 'winter',
@@ -274,8 +264,7 @@ export async function materializeCharacterWorkshopFixtures(
             groundAnchor: { x: 0.5, y: 1 },
             resourceRevision: sha256(bytes)
           }
-        })),
-        semanticFallbacks: []
+        }))
       }
     ],
     states,

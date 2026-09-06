@@ -164,8 +164,7 @@ if (-not [MyselfCursorInterop]::SetWindowPos(
 
 type CharacterBehaviorProbe = {
   revision: number;
-  primaryStateId: string;
-  modifierStateIds: string[];
+  stateId: string;
   actionId: string | null;
   playbackStatus: 'scheduled' | 'started' | 'completed' | 'interrupted' | 'failed' | null;
 };
@@ -522,10 +521,9 @@ function characterChatResponse(
     type: 'text',
     text,
     structured_output: {
-      activity: '安静陪伴',
-      status: 'idle',
+      moodUpdate: null,
+      expressionPlan: null,
       movementControl: { kind: 'keep' },
-      behaviorPlan: { kind: 'none' },
       capabilityPlan: { kind: 'chat' },
       ...control
     }
@@ -3819,7 +3817,7 @@ test.describe('真实桌宠像素命中与左键拖拽', () => {
 });
 
 test.describe('真实角色工作室闭环', () => {
-  test('V2 人设、状态动作和精确表现重启后保留且导出回导等价', async () => {
+  test('V3 人设、自定义状态动作与有限播放在发布重启回导中保持一致', async () => {
     test.setTimeout(300_000);
     const fixtureModule = await loadElectronFixtureModule();
 
@@ -3839,11 +3837,14 @@ test.describe('真实角色工作室闭环', () => {
     let exportedPackage = '';
     let exportedBytes: Uint8Array | null = null;
     let recoverySnapshot = '';
+    let characterProvider: Awaited<ReturnType<typeof startProviderServer>> | null = null;
+    let publishedCustomState: { id: string; actionIds: string[] } | null = null;
     const sanitizeDiagnostic = (text: string): string => sanitizeCapturedDiagnostic(
       text,
       apiKey,
       recoverySnapshot,
       exportedPackage,
+      ...(characterProvider ? [characterProvider.apiKey] : []),
       ...sensitiveFixtures.flatMap(candidate => [
         candidate.authorizedRootDirectory,
         candidate.userDataDirectory,
@@ -4064,28 +4065,34 @@ test.describe('真实角色工作室闭环', () => {
       await workshop.getByLabel('ground Y').fill('0.95');
       await expectExactIdlePresentation(workshop);
 
-      // 保留旧闭环的非 idle 投影价值：通过正式 V2 UI 建立搬运状态及可播放动作。
+      // 作者定义一个状态和两个动作，名称、描述与有限播放均沿正式编辑表单保存。
       await workshop.getByRole('button', { name: '添加扩展状态' }).click();
-      const extensionNameInput = workshop.getByLabel('状态名称');
-      await expect(extensionNameInput).toBeFocused();
-      const createExtensionButton = workshop.getByRole('button', {
-        name: '创建扩展状态'
-      });
-      await expect(createExtensionButton).toBeDisabled();
-      await extensionNameInput.fill('搬运状态');
-      await expect(createExtensionButton).toBeEnabled();
-      await workshop.getByLabel('状态类别').selectOption('modifier');
-      await workshop.getByLabel('标准语义').selectOption('carry');
-      await createExtensionButton.click();
-      const carryingState = workshop.getByRole('list', { name: '状态与动作列表' })
+      const stateNameInput = workshop.getByLabel('状态名称');
+      await expect(stateNameInput).toBeFocused();
+      const createStateButton = workshop.getByRole('button', { name: '创建自定义状态' });
+      await expect(createStateButton).toBeDisabled();
+      await stateNameInput.fill('星光时刻');
+      await workshop.getByLabel('状态描述（可选）').fill('收到好消息后轻快而安心地陪伴伙伴。');
+      await createStateButton.click();
+      await workshop.getByLabel('允许智能体推断').check();
+      const customState = workshop.getByRole('list', { name: '状态与动作列表' })
         .getByRole('listitem')
-        .filter({ has: workshop.getByRole('button', { name: /^搬运状态/ }) });
-      await carryingState.getByRole('button', { name: '向“搬运状态”添加动作' }).click();
-      await workshop.getByLabel('动作名称').fill('搬运行走');
-      await workshop.getByLabel('已导入素材').selectOption({ label: 'idle.png' });
-      await workshop.getByRole('button', { name: '应用到当前动作' }).click();
-      await expect(workshop.getByText('精灵图网格已应用到当前动作。')).toBeVisible();
-      await closeWorkshopToast(workshop, '精灵图网格已应用到当前动作。');
+        .filter({ has: workshop.getByRole('button', { name: /^星光时刻/u }) });
+      for (const [name, description] of [
+        ['轻轻摇摆', '喜悦持续时轻轻摇摆。'],
+        ['向你挥手', '短暂抬手，向伙伴打个招呼。']
+      ]) {
+        await customState.getByRole('button', { name: '向“星光时刻”添加动作' }).click();
+        await workshop.getByLabel('动作名称').fill(name);
+        await workshop.getByLabel('动作详细描述').fill(description);
+        await workshop.getByLabel('循环策略').selectOption('until-interrupted');
+        await workshop.getByLabel('已导入素材').selectOption({ label: 'idle.png' });
+        await workshop.getByRole('button', { name: '应用到当前动作' }).click();
+        await expect(workshop.getByText('精灵图网格已应用到当前动作。')).toBeVisible();
+        await closeWorkshopToast(workshop, '精灵图网格已应用到当前动作。');
+        // 首帧作者时长让一次明确动作稳定可观察；无限循环素材仍须在一次播放后返回。
+        await workshop.getByLabel('当前帧时长').fill('1200');
+      }
       await selectIdleAction(workshop, /^动作 1/u, '初始启动：恢复待机精确表现');
       await expectExactIdlePresentation(workshop);
       await workshop.getByRole('button', { name: '编译并发布' }).click();
@@ -4109,25 +4116,105 @@ test.describe('真实角色工作室闭环', () => {
           `${String(error)}\n角色播放器诊断：${petDiagnostics.join(' | ')}`
         ));
       }
-      const legacyRuntime = await pet.evaluate(async () => {
-        const snapshot = await window.myself.getCharacterRuntimeSnapshot();
-        return snapshot ? {
-          version: snapshot.manifest.version,
-          idleActionCount: snapshot.manifest.states
-            .find(state => state.id === 'idle')?.actions.length ?? 0,
-          carryingActionCount: snapshot.manifest.states
-            .find(state => state.id === 'carrying')?.actions.length ?? 0
-        } : null;
+      const runtime = await pet.evaluate(async () => (
+        (await window.myself.getCharacterRuntimeSnapshot())?.manifest ?? null
+      ));
+      expect(runtime?.version).toBe(3);
+      const authoredState = runtime?.states.find(state => state.name === '星光时刻');
+      expect(authoredState?.actionIds).toHaveLength(2);
+      if (!runtime || !authoredState) throw new Error('E2E_V3_AUTHORED_STATE_MISSING');
+      publishedCustomState = { id: authoredState.id, actionIds: [...authoredState.actionIds] };
+      const moodActionId = authoredState.actionIds[0]!;
+      const explicitActionId = authoredState.actionIds[1]!;
+      expect(runtime.states.find(state => state.id === runtime.idleStateId)?.actionIds).toHaveLength(1);
+      for (const actionId of authoredState.actionIds) {
+        expect(runtime.presentations.find(item => item.actionId === actionId))
+          .toMatchObject({ skinId: runtime.skinId, source: 'skin-action' });
+      }
+
+      characterProvider = await startProviderServer([
+        { response: characterChatResponse('我会原地陪伴你。'), inspect: expectCharacterChatRequest },
+        {
+          response: characterChatResponse('听到你的好消息，我也很开心。', {
+            moodUpdate: { summary: '轻快而安心', strength: 0.8 },
+            expressionPlan: { states: [{ stateId: authoredState.id, score: 1,
+              minStrength: 0, maxStrength: 1, actions: [{ actionId: moodActionId, score: 1 }] }],
+              validForMs: 60_000 }
+          }),
+          inspect: request => {
+            expectCharacterChatRequest(request);
+            const system = request.messages.filter(message => message.role === 'system')
+              .map(message => message.content).join('\n');
+            for (const text of [
+              '喜欢整理桌面的伙伴', '从冬日窗边来到桌面的伙伴', '温和而简洁', '细心',
+              '收到好消息后轻快而安心地陪伴伙伴。', '喜悦持续时轻轻摇摆。',
+              '短暂抬手，向伙伴打个招呼。', authoredState.id, moodActionId, explicitActionId
+            ]) expect(system).toContain(text);
+          }
+        },
+        {
+          response: characterChatResponse('向你挥手后，继续陪你开心。'),
+          inspect: expectCharacterChatRequest
+        }
+      ]);
+      await pet.evaluate(async ({ baseUrl, apiKey }) => {
+        await window.myself.saveProviderProfile({
+          profile: { id: 'workshop-v3', displayName: 'V3 工作室闭环', mode: 'custom',
+            protocol: 'openai-compatible', baseUrl, modelId: 'workshop-v3',
+            additionalParameters: {}, capabilities: ['chat', 'tools'] },
+          secret: apiKey, persistSecret: false
+        });
+        await window.myself.saveModelRoute({
+          primaryProfileId: 'workshop-v3', chatProfileId: 'workshop-v3',
+          agentProfileId: 'workshop-v3', visionProfileId: null,
+          fallbackProfileIds: [], allowCrossProviderFallback: false
+        });
+        await window.myself.savePrivacySettings({
+          dataCategories: { memory: false }, longTermMemory: false,
+          proactivityMode: 'passive', autonomousMoodEnabled: false
+        });
+        await window.myself.openChat();
+      }, { baseUrl: characterProvider.baseUrl, apiKey: characterProvider.apiKey });
+      const chat = await waitForPage(fixture, 'chat', '初始启动：验证自定义表现');
+      await waitForVisibleView(chat, '初始启动：聊天就绪');
+      await submitChatMessage(chat, '停下');
+      await expect(chat.getByText('我会原地陪伴你。')).toBeVisible();
+      await pet.evaluate(() => {
+        const scope = globalThis as typeof globalThis & {
+          __workshopPlays?: Array<{ stateId: string; actionId: string; mode: string }>;
+        };
+        scope.__workshopPlays = [];
+        window.myself.subscribeCharacterMotion(event => {
+          if (event.type === 'behavior-action') scope.__workshopPlays?.push({
+            stateId: event.stateId, actionId: event.actionId, mode: event.playback.mode
+          });
+        });
       });
-      expect(legacyRuntime).toEqual({
-        version: 1,
-        idleActionCount: 1,
-        carryingActionCount: 1
+      await submitChatMessage(chat, '今天我的小目标完成了，你也开心吗？');
+      await expect(chat.getByText('听到你的好消息，我也很开心。')).toBeVisible();
+      await expect.poll(() => fixture.getCharacterBehaviorProbe()).toMatchObject({
+        stateId: authoredState.id, actionId: moodActionId, playbackStatus: 'started'
       });
-      await pet.evaluate(() => window.myself.openChat());
-      const chat = await waitForPage(fixture, 'chat', '初始启动：验证聊天降级');
-      await submitChatMessage(chat, 'thinking 降级期间继续验证 Agent');
-      await expect(chat.getByText('请先完成模型服务设置。')).toBeVisible();
+      await submitChatMessage(chat, '播放向你挥手动作');
+      await expect.poll(() => fixture.getCharacterBehaviorProbe(), { intervals: [50, 100, 200] })
+        .toMatchObject({ stateId: authoredState.id, actionId: explicitActionId, playbackStatus: 'started' });
+      await expect(chat.getByText('向你挥手后，继续陪你开心。')).toBeVisible();
+      // 不发送下一条消息，真实 Renderer 完成一次动作后恢复仍有效的心情动作。
+      await expect.poll(() => fixture.getCharacterBehaviorProbe(), { timeout: 15_000 })
+        .toMatchObject({ stateId: authoredState.id, actionId: moodActionId, playbackStatus: 'started' });
+      const plays = await pet.evaluate(() => (
+        (globalThis as typeof globalThis & {
+          __workshopPlays?: Array<{ stateId: string; actionId: string; mode: string }>;
+        }).__workshopPlays ?? []
+      ));
+      expect(plays).toEqual([
+        { stateId: authoredState.id, actionId: moodActionId, mode: 'loop' },
+        { stateId: authoredState.id, actionId: explicitActionId, mode: 'once' },
+        { stateId: authoredState.id, actionId: moodActionId, mode: 'loop' }
+      ]);
+      expect((await pet.evaluate(() => window.myself.getCharacterMotionSnapshot())).moving).toBe(false);
+      characterProvider.assertComplete();
+      expect(characterProvider.inspectionErrors).toEqual([]);
 
       await workshop.getByRole('button', { name: '导出角色包' }).click();
       await expect(workshop.getByText('角色包已导出。')).toBeVisible();
@@ -4149,7 +4236,7 @@ test.describe('真实角色工作室闭环', () => {
         { recursive: true }
       );
     } finally {
-      await fixture.dispose();
+      try { await fixture.dispose(); } finally { await characterProvider?.close(); }
     }
 
     const recovered = await fixtureModule.createElectronAppFixture({
@@ -4210,6 +4297,10 @@ test.describe('真实角色工作室闭环', () => {
         (await window.myself.getCharacterRuntimeSnapshot())?.activeCharacterId
       ));
       expect(active).not.toBe('builtin-default');
+      expect(await pet.evaluate(async () => (
+        (await window.myself.getCharacterRuntimeSnapshot())?.manifest.states
+          .find(state => state.name === '星光时刻')
+      ))).toMatchObject(publishedCustomState!);
     } finally {
       await recovered.dispose();
     }
@@ -4582,9 +4673,7 @@ test.describe('自主行为最小闭环', () => {
         })
       },
       {
-        response: characterChatResponse('停止期间仍可挥手回应', {
-          behaviorPlan: { kind: 'play_state', state: '挥手', action: '挥手' }
-        })
+        response: characterChatResponse('停止期间仍可挥手回应')
       },
       {
         response: characterChatResponse('停止期间移动请求已处理', {
@@ -4719,9 +4808,7 @@ test.describe('自主行为最小闭环', () => {
     const chattingGate = createProviderResponseGate();
     const provider = await startProviderServer([
       {
-        response: characterChatResponse('聊天阻塞已释放并挥手', {
-          behaviorPlan: { kind: 'play_state', state: '挥手', action: '挥手' }
-        }),
+        response: characterChatResponse('聊天阻塞已释放并挥手'),
         gate: chattingGate,
         inspect: request => {
           expectCharacterChatRequest(request);
@@ -4819,14 +4906,10 @@ test.describe('自主行为最小闭环', () => {
       expect(await fixture.getCharacterMotionDeltaProbe()).toEqual(passiveMotion);
       expect(provider.requests).toEqual([]);
 
-      // chatting 持续超过本地计时上限，期间只允许已进入的可信聊天动作。
+      // chatting 持续超过本地计时上限，期间不得因计时发起自主动作或位移。
       await saveMode(pet, 'assistive');
       await submitChatMessage(chat, '请陪我聊一会再挥手');
       await expect.poll(() => chattingGate.isWaiting()).toBe(true);
-      await expect.poll(() => fixture.getCharacterBehaviorProbe()).toMatchObject({
-        primaryStateId: 'thinking',
-        actionId: 'safe-think-action'
-      });
       const chattingOffset = (await behaviorActions(pet)).length;
       const chattingMotion = await fixture.getCharacterMotionDeltaProbe();
       await pet.waitForTimeout(blockerWindowMs);
@@ -4907,217 +4990,23 @@ test.describe('自主行为最小闭环', () => {
 
     try {
       await expect.poll(() => fixture.getCharacterBehaviorProbe()).toMatchObject({
-        primaryStateId: 'idle',
+        stateId: 'idle',
         actionId: 'idle-main',
         playbackStatus: expect.stringMatching(/^(started|completed)$/u)
       });
       const probe = await fixture.getCharacterBehaviorProbe();
       expect(probe.revision).toBeGreaterThan(0);
-      expect(probe.modifierStateIds).toEqual([]);
       expect(Object.keys(probe).sort()).toEqual([
         'actionId',
-        'modifierStateIds',
         'playbackStatus',
-        'primaryStateId',
-        'revision'
+        'revision',
+        'stateId'
       ]);
     } finally {
       await fixture.dispose();
     }
   });
 
-  test('聊天阶段、情绪、错误降级与角色切换保持 Main 到 Renderer 闭环', async () => {
-    test.setTimeout(120_000);
-    const fixtureModule = await loadElectronFixtureModule();
-    const firstResponseGate = createProviderResponseGate();
-    const provider = await startProviderServer([
-      {
-        response: characterChatResponse('无意图本地降级完成'),
-        gate: firstResponseGate
-      },
-      {
-        response: characterChatResponse('情绪标签已安全处理', {
-          behaviorPlan: { kind: 'none', emotion: 'happy' }
-        })
-      }
-    ]);
-    const fixture = await fixtureModule.createElectronAppFixture({
-      workspaceRoot: resolve(process.cwd()),
-      apiKey: provider.apiKey,
-      launchTimeoutMs: 15_000,
-      enableSoftwareRasterizer: true
-    });
-    try {
-      await expect.poll(() => Boolean(
-        rendererPage(fixture, 'pet') && rendererPage(fixture, 'chat')
-      )).toBe(true);
-      const pet = rendererPage(fixture, 'pet');
-      if (!pet) throw new Error('缺少 pet Renderer');
-      const chat = rendererPage(fixture, 'chat');
-      if (!chat) throw new Error('缺少 chat Renderer');
-      await pet.evaluate(() => {
-        const scope = globalThis as typeof globalThis & {
-          __behaviorActions?: Array<{ stateId: string; actionId: string }>;
-        };
-        scope.__behaviorActions = [];
-        window.myself.subscribeCharacterMotion(event => {
-          if (event.type !== 'behavior-action') return;
-          scope.__behaviorActions?.push({ stateId: event.stateId, actionId: event.actionId });
-        });
-      });
-      await chat.evaluate(() => {
-        const scope = globalThis as typeof globalThis & {
-          __taskPhases?: string[];
-          __emotionLabels?: string[];
-        };
-        scope.__taskPhases = [];
-        scope.__emotionLabels = [];
-        window.myself.onTaskEvent(event => {
-          if (event.type === 'phase') scope.__taskPhases?.push(event.phase);
-          if (event.type === 'character_emotion') scope.__emotionLabels?.push(event.label);
-        });
-      });
-      const imported = await pet.evaluate(async () => window.myself.importCharacterPackage());
-      expect(imported.kind).toBe('imported');
-      if (imported.kind !== 'imported') return;
-      await pet.evaluate(async characterId => {
-        await window.myself.activateCharacter(characterId);
-      }, imported.characterId);
-      await expect.poll(() => fixture.getCharacterBehaviorProbe()).toMatchObject({
-        primaryStateId: 'idle',
-        actionId: 'safe-idle-action',
-        playbackStatus: 'started'
-      });
-
-      await pet.evaluate(async ({ baseUrl, apiKey }) => {
-        await window.myself.saveProviderProfile({
-          profile: {
-            id: 'behavior-e2e',
-            displayName: '自主行为 E2E',
-            mode: 'custom',
-            protocol: 'openai-compatible',
-            baseUrl,
-            modelId: 'behavior-e2e-model',
-            additionalParameters: {},
-            capabilities: ['chat', 'tools']
-          },
-          secret: apiKey,
-          persistSecret: false
-        });
-        await window.myself.saveModelRoute({
-          primaryProfileId: 'behavior-e2e',
-          chatProfileId: 'behavior-e2e',
-          agentProfileId: 'behavior-e2e',
-          visionProfileId: null,
-          fallbackProfileIds: [],
-          allowCrossProviderFallback: false
-        });
-        await window.myself.chooseAuthorizedRoot();
-      }, { baseUrl: provider.baseUrl, apiKey: provider.apiKey });
-      await pet.evaluate(() => window.myself.openChat());
-      await expect.poll(() => chat.evaluate(() => document.visibilityState)).toBe('visible');
-
-      const phaseOffset = await chat.evaluate(() => (
-        (globalThis as typeof globalThis & { __taskPhases?: string[] }).__taskPhases?.length ?? 0
-      ));
-      const conversationActionOffset = await pet.evaluate(() => (
-        (globalThis as typeof globalThis & { __behaviorActions?: unknown[] })
-          .__behaviorActions?.length ?? 0
-      ));
-      await submitChatMessage(chat, '验证模型无意图降级');
-      await expect.poll(() => firstResponseGate.isWaiting()).toBe(true);
-      await expect.poll(() => fixture.getCharacterBehaviorProbe(), {
-        intervals: [10, 20, 50, 100]
-      }).toMatchObject({
-        primaryStateId: 'thinking',
-        actionId: 'safe-think-action'
-      });
-      firstResponseGate.release();
-      await expect(chat.getByText('无意图本地降级完成')).toBeVisible();
-      await expect.poll(() => fixture.getCharacterBehaviorProbe()).toMatchObject({
-        primaryStateId: 'success',
-        actionId: 'safe-celebrate-action',
-        playbackStatus: expect.stringMatching(/^(started|completed)$/u)
-      });
-      const phases = await chat.evaluate(offset => (
-        (globalThis as typeof globalThis & { __taskPhases?: string[] })
-          .__taskPhases?.slice(offset) ?? []
-      ), phaseOffset);
-      expect(phases.indexOf('listening')).toBeGreaterThanOrEqual(0);
-      expect(phases.indexOf('thinking')).toBeGreaterThan(phases.indexOf('listening'));
-      const conversationActions = await pet.evaluate(offset => (
-        (globalThis as typeof globalThis & {
-          __behaviorActions?: Array<{ stateId: string; actionId: string }>;
-        }).__behaviorActions?.slice(offset) ?? []
-      ), conversationActionOffset);
-      expect(conversationActions).toEqual(expect.arrayContaining([
-        { stateId: 'listening', actionId: 'safe-listen-action' },
-        { stateId: 'thinking', actionId: 'safe-think-action' },
-        { stateId: 'success', actionId: 'safe-celebrate-action' }
-      ]));
-
-      const emotionActionOffset = await pet.evaluate(() => (
-        (globalThis as typeof globalThis & { __behaviorActions?: unknown[] })
-          .__behaviorActions?.length ?? 0
-      ));
-      const emotionEventOffset = await chat.evaluate(() => (
-        (globalThis as typeof globalThis & { __emotionLabels?: string[] })
-          .__emotionLabels?.length ?? 0
-      ));
-      await submitChatMessage(chat, '验证安全情绪标签');
-      await expect(chat.getByText('情绪标签已安全处理')).toBeVisible();
-      await expect.poll(() => chat.evaluate(offset => (
-        (globalThis as typeof globalThis & { __emotionLabels?: string[] })
-          .__emotionLabels?.slice(offset) ?? []
-      ), emotionEventOffset)).toEqual(['happy']);
-      const emotionActions = await pet.evaluate(offset => (
-        (globalThis as typeof globalThis & {
-          __behaviorActions?: Array<{ stateId: string; actionId: string }>;
-        }).__behaviorActions?.slice(offset) ?? []
-      ), emotionActionOffset);
-      expect(emotionActions).toEqual(expect.arrayContaining([
-        { stateId: 'thinking', actionId: 'safe-think-action' },
-        { stateId: 'success', actionId: 'safe-celebrate-action' }
-      ]));
-      await expect.poll(() => fixture.getCharacterBehaviorProbe()).toMatchObject({
-        primaryStateId: 'success',
-        actionId: 'safe-celebrate-action',
-        playbackStatus: expect.stringMatching(/^(started|completed)$/u)
-      });
-
-      await expect(chat.getByLabel('和我说点什么')).toBeEnabled();
-      await submitChatMessage(chat, '验证模型不可用');
-      await expect(chat.getByText('模型服务发生错误，请稍后重试。')).toBeVisible();
-      await expect.poll(() => fixture.getCharacterBehaviorProbe()).toMatchObject({
-        primaryStateId: 'error',
-        actionId: 'safe-fail-action',
-        playbackStatus: expect.stringMatching(/^(started|completed)$/u)
-      });
-
-      const characters = await pet.evaluate(() => window.myself.listCharacters());
-      const builtin = characters.find(character => character.id === 'builtin-default');
-      expect(builtin).toBeDefined();
-      await pet.evaluate(async characterId => {
-        await window.myself.activateCharacter(characterId);
-      }, builtin!.id);
-      await expect(pet.locator('.character-player')).toHaveAttribute(
-        'data-status', 'ready', { timeout: 20_000 }
-      );
-      await expect.poll(() => fixture.getCharacterBehaviorProbe(), {
-        timeout: 20_000
-      }).toMatchObject({
-        primaryStateId: 'idle',
-        actionId: 'idle-main',
-        playbackStatus: expect.stringMatching(/^(started|completed)$/u)
-      });
-      expect((await fixture.getCharacterBehaviorProbe()).actionId).not.toBe('safe-fail-action');
-      expect(provider.inspectionErrors).toEqual([]);
-    } finally {
-      firstResponseGate.release();
-      await fixture.dispose();
-      await provider.close();
-    }
-  });
 });
 
 test.describe('Explorer 动态图层自动验收', () => {

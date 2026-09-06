@@ -92,10 +92,9 @@ function completeSecurityChatResponse(response: ModelResponse): ModelResponse {
   return {
     ...response,
     structured_output: {
-      activity: '安全聊天',
-      status: 'idle',
+      moodUpdate: null,
+      expressionPlan: null,
       movementControl: { kind: 'keep' },
-      behaviorPlan: { kind: 'none' },
       capabilityPlan: { kind: 'chat' },
       ...response.structured_output
     }
@@ -179,9 +178,11 @@ function securityBehaviorDouble(
     })),
     getChatContext: vi.fn(() => ({
       character: {
+        idleStateId: 'idle',
         identity: {
           name: '安全角色', description: '安全测试角色', background: '测试环境', traits: [],
-          languageStyle: '简洁', likes: [], behavioralTendencies: []
+          languageStyle: '简洁', formsOfAddress: [], likes: [], dislikes: [],
+          behavioralTendencies: [], boundaries: [], exampleLines: []
         },
         states: []
       },
@@ -191,9 +192,12 @@ function securityBehaviorDouble(
       proactivityMode: 'assistive',
       recentActions: []
     })),
+    captureExpressionContext: vi.fn(() => null),
     completeUserPrompt: vi.fn(),
+    handleChatResponseFinished: vi.fn(),
     handleTaskEvent: vi.fn(),
     applyPlaybackFeedback: vi.fn(),
+    cancelActive: vi.fn(),
     reset: vi.fn(),
     close: vi.fn(async () => undefined),
     ...overrides
@@ -203,19 +207,26 @@ function securityBehaviorDouble(
 function movementLockDirector() {
   const saveMovementMode = vi.fn<(mode: 0 | 1 | 2) => Promise<void>>();
   const behavior = {
+    context: vi.fn(() => null),
+    snapshot: vi.fn(() => null),
+    applyDecision: vi.fn(() => ({ kind: 'none' as const })),
+    invalidateContext: vi.fn(),
+    recordTrustedEvent: vi.fn(),
+    handleUserInteraction: vi.fn(),
     getPublicBehaviorCatalog: vi.fn(() => ({
+      idleStateId: 'idle',
       identity: {
         name: '安全角色', description: '安全测试角色', background: '测试环境', traits: [],
-        languageStyle: '简洁', likes: [], behavioralTendencies: []
+        languageStyle: '简洁', formsOfAddress: [], likes: [], dislikes: [],
+        behavioralTendencies: [], boundaries: [], exampleLines: []
       },
       states: []
     })),
     getRecentPublicActions: vi.fn(() => []),
     resolveBehaviorTarget: vi.fn(() => { throw new Error('CHARACTER_ACTION_UNAVAILABLE'); }),
-    isMovementBehaviorTarget: vi.fn(() => false),
+    resolveBehaviorStatePlan: vi.fn(() => { throw new Error('CHARACTER_ACTION_UNAVAILABLE'); }),
     requestDirectedBehavior: vi.fn(() => ({ kind: 'none' as const })),
     requestProactiveBehavior: vi.fn(() => ({ kind: 'none' as const })),
-    isMovementAgentIntent: vi.fn(() => false),
     handleAgentIntent: vi.fn(() => ({ kind: 'none' as const })),
     handleTaskEvent: vi.fn(() => ({ kind: 'none' as const })),
     applyPlaybackFeedback: vi.fn(),

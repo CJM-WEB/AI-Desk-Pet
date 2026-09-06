@@ -2,13 +2,11 @@ import {
 type ModelProvider,
 type ModelResponse
 } from '@myself/agent-core';
-import type {
-BehaviorTarget,
-CharacterBehaviorAuthorization,
-CharacterBehaviorPlan,
-CharacterManifestV2,
-ResolvedBehaviorTarget
-} from '@myself/character-runtime';
+import {
+characterManifestV3Schema,
+createPublicBehaviorCatalog,
+type CharacterManifestV3
+} from '../../packages/character-runtime/src';
 import type { ProviderCatalogEntry,ProviderProfileV2,TaskEvent } from '@myself/shared-types';
 import { fork,type ChildProcess } from 'node:child_process';
 import { readFile,readdir,writeFile } from 'node:fs/promises';
@@ -28,7 +26,7 @@ type MainConversationCodingTaskFactoryInput
 } from '../../apps/desktop/src/main/conversation/main-conversation-composition';
 import { OpenAICompatibleProvider } from '../../apps/desktop/src/main/providers/openai-provider';
 import type { ProviderSettingsSnapshot } from '../../apps/desktop/src/main/storage/settings-store';
-import { characterManifestV2Schema } from '../../packages/character-runtime/src/character-v2-schema';
+import { resourceFields,v3Fixture } from '../../packages/character-runtime/tests/character-v3-fixture';
 import { createAuthorizedRoot,createCodingConversation,type AuthorizedRootFixture } from '../fixtures/authorized-root';
 import { parseMainE2eState } from '../fixtures/electron-app';
 import {
@@ -216,94 +214,24 @@ function collectNestedStrings(value: unknown, collected: string[] = []): string[
   return collected;
 }
 
-const behaviorSemantics = ['idle', 'listen', 'think', 'move', 'celebrate', 'fail'] as const;
-
-/** 固定 V2 角色让集成断言独立于生产默认角色的素材与命名。 */
-function createBehaviorManifest(): CharacterManifestV2 {
-  const states: CharacterManifestV2['states'] = behaviorSemantics.map(semantic => ({
-    id: `${semantic}-state`,
-    name: `${semantic} 状态`,
-    kind: 'primary',
-    semantic,
-    tags: [],
-    intensity: 10,
-    coexistWithStateIds: [],
-    forbiddenStateIds: [],
-    enterConditions: [],
-    exitConditions: [],
-    agentInferable: semantic === 'think',
-    actionIds: [`${semantic}-action`]
-  }));
-  states.push({
-    id: 'agent-focus',
-    name: 'Agent 专注',
-    kind: 'primary',
-    semantic: { kind: 'custom', value: 'focus' },
-    tags: [],
-    intensity: 80,
-    coexistWithStateIds: [],
-    forbiddenStateIds: [],
-    enterConditions: [],
-    exitConditions: [],
-    agentInferable: true,
-    actionIds: ['focus-action']
+/** 复用既有 V3 作者夹具，只增加本闭环的自定义状态及两个动作。 */
+function createBehaviorManifest(): CharacterManifestV3 {
+  const draft = v3Fixture();
+  draft.id = 'integration-behavior-v3';
+  draft.name = '集成角色';
+  draft.states.push({
+    ...draft.states[0]!, id: 'agent-focus', name: 'Agent 专注',
+    description: '认真思考并为伙伴的小进展感到欣喜。', agentInferable: true,
+    actionIds: ['focus-action', 'celebrate-action']
   });
-  const actions: CharacterManifestV2['actions'] = behaviorSemantics.map(semantic => ({
-    id: `${semantic}-action`,
-    name: `${semantic} 动作`,
-    semantic,
-    tags: [],
-    preference: 1,
-    cooldownMs: 0,
-    repeatSuppressionMs: 0,
-    loopPolicy: 'never',
-    interrupt: 'normal',
-    allowedPrimaryStateIds: [],
-    forbiddenPrimaryStateIds: [],
-    requiredModifierStateIds: [],
-    forbiddenModifierStateIds: [],
-    direction: 'any'
-  }));
-  actions.push({
-    ...actions.find(action => action.semantic === 'think')!,
-    id: 'focus-action',
-    name: '专注动作'
-  });
-  return characterManifestV2Schema.parse({
-    version: 2,
-    id: 'integration-behavior-v2',
-    name: '集成行为角色',
-    thumbnailAssetId: 'atlas',
-    compilerVersion: 'task-9',
-    identity: {
-      description: '自主行为闭环集成角色', background: '固定测试夹具', traits: [],
-      languageStyle: '简洁', formsOfAddress: [], likes: [], dislikes: [],
-      behavioralTendencies: [], boundaries: [], exampleLines: []
-    },
-    defaultSkinId: 'default',
-    defaultStateId: 'idle-state',
-    states,
-    actions,
-    skins: [{
-      id: 'default',
-      name: '默认皮肤',
-      presentations: actions.map(action => ({
-        actionId: action.id,
-        fps: 8,
-        frames: [{ assetId: 'atlas', x: 0, y: 0, width: 1, height: 1 }],
-        anchors: { ground: { x: 0.5, y: 1 } },
-        geometry: {
-          visualBounds: { x: 0, y: 0, width: 1, height: 1 },
-          groundAnchor: { x: 0.5, y: 1 },
-          resourceRevision: 'a'.repeat(64)
-        }
-      })),
-      semanticFallbacks: []
-    }],
-    resources: [{
-      assetId: 'atlas', fileName: 'atlas.png', sha256: 'a'.repeat(64), byteLength: 1
-    }]
-  });
+  for (const [id, name, description] of [
+    ['focus-action', '专注动作', '托腮认真思考。'],
+    ['celebrate-action', '庆祝动作', '为伙伴的小进展轻轻鼓掌。']
+  ]) {
+    draft.actions.push({ ...draft.actions[0]!, id, name, description, loopPolicy: 'never' });
+    draft.skins[0]!.presentations.push({ ...draft.skins[0]!.presentations[0]!, actionId: id });
+  }
+  return characterManifestV3Schema.parse({ ...draft, ...resourceFields });
 }
 
 function scriptedProvider(responses: ModelResponse[]): ModelProvider {
@@ -348,10 +276,9 @@ function completeIntegrationChatResponse(response: ModelResponse): ModelResponse
   return {
     ...response,
     structured_output: {
-      activity: '集成聊天',
-      status: 'idle',
+      moodUpdate: null,
+      expressionPlan: null,
       movementControl: { kind: 'keep' },
-      behaviorPlan: { kind: 'none' },
       capabilityPlan: { kind: 'chat' },
       ...response.structured_output
     }
@@ -456,144 +383,51 @@ function conversationBehaviorDouble(
 ): ConversationBehaviorPort {
   return {
     prepareUserPrompt: vi.fn(async text => ({
-      originalText: text,
-      capabilityText: text,
-      explicitDirective: null
+      originalText: text, capabilityText: text, explicitDirective: null
     })),
     getChatContext: vi.fn(() => ({
-      character: {
-        identity: {
-          name: '集成角色', description: '集成测试角色', background: '测试环境', traits: [],
-          languageStyle: '简洁', likes: [], behavioralTendencies: []
-        },
-        states: [{
-          name: 'Agent 专注', semantic: 'focus', tags: [],
-          actions: [
-            { name: '专注动作', semantic: 'think', tags: [] },
-            { name: '庆祝动作', semantic: 'celebrate', tags: [] }
-          ]
-        }]
-      },
-      runtime: {
-        moving: false,
-        dragging: false,
-        carrying: false,
-        movementMode: 2
-      },
-      proactivityMode: 'assistive',
-      recentActions: []
+      character: createPublicBehaviorCatalog(createBehaviorManifest(), 'base'),
+      runtime: { moving: false, dragging: false, carrying: false, movementMode: 2 },
+      proactivityMode: 'assistive', recentActions: []
     })),
+    captureExpressionContext: vi.fn(() => null),
     completeUserPrompt: vi.fn(),
+    handleChatResponseFinished: vi.fn(),
     handleTaskEvent: vi.fn(),
     applyPlaybackFeedback: vi.fn(),
+    cancelActive: vi.fn(),
     reset: vi.fn(),
     close: vi.fn(async () => undefined),
     ...overrides
   };
 }
 
-/** B7 纵向用例只伪造既有 Service/Motion 端口，真实执行 Coordinator、Adapter 与 Director。 */
-function behaviorDirectorIntegrationFixture() {
-  let token = 0;
+/** 沿用 Coordinator、Adapter、Director 和真实 V3 Service，仅隔离窗口位移与持久设置。 */
+async function behaviorDirectorIntegrationFixture() {
+  let target = 0;
   const notices: Array<{ code: string; message: string }> = [];
-  const behavior = {
-    getPublicBehaviorCatalog: vi.fn(() => ({
-      identity: {
-        name: '集成角色', description: '集成测试角色', background: '测试环境', traits: [],
-        languageStyle: '简洁', likes: [], behavioralTendencies: []
-      },
-      states: [{
-        name: 'Agent 专注', semantic: 'focus', tags: [],
-        actions: [
-          { name: '专注动作', semantic: 'think', tags: [] },
-          { name: '庆祝动作', semantic: 'celebrate', tags: [] }
-        ]
-      }]
-    })),
-    getRecentPublicActions: vi.fn(() => []),
-    resolveBehaviorTarget: vi.fn((target: BehaviorTarget): ResolvedBehaviorTarget => {
-      if (target.kind === 'semantic') return target;
-      if (target.kind === 'action_name' && target.name === '专注动作') {
-        return { kind: 'action', actionId: 'focus-action' };
-      }
-      throw new Error('CHARACTER_ACTION_UNAVAILABLE');
-    }),
-    resolveBehaviorStatePlan: vi.fn((plan: Extract<CharacterBehaviorPlan, { kind: 'play_state' }>): ResolvedBehaviorTarget => {
-      if (plan.state !== 'Agent 专注') throw new Error('CHARACTER_ACTION_UNAVAILABLE');
-      if (plan.action === undefined) return { kind: 'state', stateId: 'agent-focus' };
-      if (plan.action === '专注动作' || plan.action === 'think') {
-        return { kind: 'state_action', stateId: 'agent-focus', actionId: 'focus-action' };
-      }
-      if (plan.action === '庆祝动作' || plan.action === 'celebrate') {
-        return { kind: 'state_action', stateId: 'agent-focus', actionId: 'celebrate-action' };
-      }
-      throw new Error('CHARACTER_ACTION_UNAVAILABLE');
-    }),
-    isMovementBehaviorTarget: vi.fn((target: ResolvedBehaviorTarget) => (
-      target.kind === 'semantic' && target.semantic === 'move'
-    )),
-    requestDirectedBehavior: vi.fn((target: ResolvedBehaviorTarget): CharacterBehaviorAuthorization => ({
-      kind: 'play',
-      actionId: target.kind === 'action'
-        ? target.actionId
-        : target.kind === 'state_action'
-          ? target.actionId
-          : target.kind === 'state'
-          ? `${target.stateId}-action`
-          : `${target.semantic}-action`,
-      playbackToken: `integration-chat-token-${++token}`,
-      semantic: target.kind === 'semantic'
-        ? target.semantic
-        : target.kind === 'state_action' && target.actionId === 'celebrate-action'
-          ? 'celebrate'
-          : 'think'
-    })),
-    requestProactiveBehavior: vi.fn((target: BehaviorTarget): CharacterBehaviorAuthorization => (
-      target.kind === 'semantic' && target.semantic === 'move'
-        ? {
-            kind: 'play', actionId: 'move-action',
-            playbackToken: `integration-proactive-token-${++token}`, semantic: 'move'
-          }
-        : { kind: 'none' }
-    )),
-    isMovementAgentIntent: vi.fn(() => false),
-    handleAgentIntent: vi.fn((): CharacterBehaviorAuthorization => ({ kind: 'none' })),
-    handleTaskEvent: vi.fn((): CharacterBehaviorAuthorization => ({ kind: 'none' })),
-    applyPlaybackFeedback: vi.fn(),
-    advance: vi.fn(() => []),
-    cancelStateLifecycle: vi.fn(),
-    handleActiveCharacterChanged: vi.fn(async () => undefined),
-    close: vi.fn()
-  };
   const motion = {
     getSnapshot: vi.fn(() => ({
-      revision: 1,
-      timestampMs: 0,
-      position: { x: 0, y: 0 },
-      target: null,
-      direction: 'right' as const,
-      moving: false,
-      carrying: false
+      revision: 1, timestampMs: 0, position: { x: 0, y: 0 }, target: { x: 0, y: 0 },
+      direction: 'right' as const, moving: false, carrying: false
     })),
     requestIntent: vi.fn(() => ({
-      revision: 1,
-      timestampMs: 0,
-      position: { x: 0, y: 0 },
-      target: { x: ++token, y: 0 },
-      direction: 'right' as const,
-      moving: true,
-      carrying: false
+      revision: 1, timestampMs: 0, position: { x: 0, y: 0 }, target: { x: ++target, y: 0 },
+      direction: 'right' as const, moving: true, carrying: false
     })),
+    applyTaskEvent: vi.fn(),
     stop: vi.fn()
   };
+  const behavior = new CharacterBehaviorService({
+    store: { getActiveManifestV3: async () => createBehaviorManifest() },
+    motion, random: () => 0
+  });
+  await behavior.initialize();
   const saveMovementMode = vi.fn<(mode: 0 | 1 | 2) => Promise<void>>();
   const director = new CharacterBehaviorDirector({
-    behavior,
-    motion,
-    initialGeneration: 'integration-chat-generation',
+    behavior, motion, initialGeneration: 'integration-chat-generation',
     initialSettings: { movementMode: 2, proactivityMode: 'assistive' },
-    saveMovementMode,
-    publishNotice: notice => notices.push(notice)
+    saveMovementMode, publishNotice: notice => notices.push(notice)
   });
   saveMovementMode.mockImplementation(async movementMode => {
     director.applyBehaviorSettings({ movementMode, proactivityMode: 'assistive' });
@@ -883,40 +717,43 @@ describe('桌面会话分流纵向集成', () => {
     await fixture.composition.close();
   });
 
-  test.each([
-    ['标准语义', { kind: 'play_state', state: 'Agent 专注', action: 'celebrate' }],
-    ['当前角色自定义动作名', { kind: 'play_state', state: 'Agent 专注', action: '专注动作' }]
-  ] as const)('同一次普通聊天 Provider 响应同时提交正文与%s', async (_label, behaviorPlan) => {
-    const behaviorFixture = behaviorDirectorIntegrationFixture();
-    const fixture = conversationIntegrationHarness({
-      responses: [{
-        type: 'text',
-        text: '正文与动作来自同一次响应',
-        structured_output: { behaviorPlan }
-      }],
-      behavior: behaviorFixture.director
-    });
+  test.each(['focus-action', 'celebrate-action'])(
+    '同一次普通聊天按自定义状态与动作 ID %s 提交正文和表现', async actionId => {
+      const behaviorFixture = await behaviorDirectorIntegrationFixture();
+      const fixture = conversationIntegrationHarness({
+        responses: [{
+          type: 'text', text: '正文与动作来自同一次响应',
+          structured_output: {
+            moodUpdate: { summary: '认真而欣喜', strength: 0.8 },
+            expressionPlan: { states: [{ stateId: 'agent-focus', score: 1,
+              minStrength: 0, maxStrength: 1, actions: [{ actionId, score: 1 }] }] }
+          }
+        }],
+        behavior: behaviorFixture.director
+      });
 
-    await fixture.composition.coordinator.submit('请自然回应并配合动作');
+      await fixture.composition.coordinator.submit('请自然回应并配合动作');
 
-    expect(fixture.chatRequests).toHaveLength(1);
-    expect(fixture.chatRequests[0]?.request).toMatchObject({
-      tools: [],
-      toolChoice: 'none',
-      responseContract: { type: 'json_object', name: 'character_chat' }
-    });
-    expect(fixture.events).toContainEqual({
-      type: 'message', role: 'assistant', text: '正文与动作来自同一次响应'
-    });
-    expect(behaviorFixture.behavior.requestDirectedBehavior).toHaveBeenCalledOnce();
-    await fixture.composition.close();
-  });
+      expect(fixture.chatRequests).toHaveLength(1);
+      expect(fixture.chatRequests[0]?.request).toMatchObject({
+        tools: [], toolChoice: 'none',
+        responseContract: { type: 'json_object', name: 'character_chat' }
+      });
+      expect(fixture.events).toContainEqual({
+        type: 'message', role: 'assistant', text: '正文与动作来自同一次响应'
+      });
+      expect(behaviorFixture.behavior.snapshot()).toMatchObject({
+        stateId: 'agent-focus', schedule: { current: { actionId } }
+      });
+      await fixture.composition.close();
+    }
+  );
 
   test.each([
     ['向左一点', { kind: 'region', region: 'left' }],
     ['去右下角', { kind: 'region', region: 'bottom_right' }]
-  ] as const)('明确移动“%s”在普通聊天 Provider 前取得动作授权并提交对象化运动', async (text, expectedIntent) => {
-    const behaviorFixture = behaviorDirectorIntegrationFixture();
+  ] as const)('明确移动“%s”在普通聊天 Provider 前直接提交对象化运动', async (text, expectedIntent) => {
+    const behaviorFixture = await behaviorDirectorIntegrationFixture();
     const providerRespond = vi.fn(async (): Promise<ModelResponse> => ({
       type: 'text', text: '移动指令已处理', structured_output: {}
     }));
@@ -928,26 +765,24 @@ describe('桌面会话分流纵向集成', () => {
 
     await fixture.composition.coordinator.submit(text);
 
-    expect(behaviorFixture.behavior.requestDirectedBehavior).toHaveBeenCalledWith(
-      { kind: 'semantic', semantic: 'move' },
-      { urgency: 100, systemForced: true }
-    );
+    expect(behaviorFixture.behavior.snapshot()?.stateId).toBe('rest');
     expect(behaviorFixture.motion.requestIntent).toHaveBeenCalledExactlyOnceWith(expectedIntent);
     expect(behaviorFixture.motion.requestIntent.mock.invocationCallOrder[0])
       .toBeLessThan(providerRespond.mock.invocationCallOrder[0]!);
     await fixture.composition.close();
   });
 
-  test('Provider 建议不存在动作时保留正文、发布稳定提示且不以 idle 冒充', async () => {
-    const behaviorFixture = behaviorDirectorIntegrationFixture();
+  test('Provider 建议不存在动作时保留正文且不播放非法动作', async () => {
+    const behaviorFixture = await behaviorDirectorIntegrationFixture();
     const fixture = conversationIntegrationHarness({
       responses: [{
         type: 'text',
         text: '仍然保留的自然正文',
         structured_output: {
-          behaviorPlan: { kind: 'play_state', state: 'Agent 专注', action: '不存在动作' }
+          expressionPlan: { states: [{ stateId: 'agent-focus', score: 1,
+            minStrength: 0, maxStrength: 1, actions: [{ actionId: 'missing-action', score: 1 }] }] }
         }
-      }],
+      }, { type: 'text', text: '修复中的正文', structured_output: { expressionPlan: null } }],
       behavior: behaviorFixture.director
     });
 
@@ -956,11 +791,8 @@ describe('桌面会话分流纵向集成', () => {
     expect(fixture.events).toContainEqual({
       type: 'message', role: 'assistant', text: '仍然保留的自然正文'
     });
-    expect(behaviorFixture.notices).toEqual([{
-      code: 'CHARACTER_ACTION_UNAVAILABLE',
-      message: '当前角色没有可播放的对应动作。'
-    }]);
-    expect(behaviorFixture.behavior.requestDirectedBehavior).not.toHaveBeenCalled();
+    expect(fixture.chatRequests).toHaveLength(2);
+    expect(behaviorFixture.behavior.snapshot()?.schedule.current?.actionId).toBe('breathe');
     await fixture.composition.close();
   });
 
@@ -968,7 +800,7 @@ describe('桌面会话分流纵向集成', () => {
     ['停下', 0],
     ['恢复活动', 2]
   ] as const)('本地明确“%s”在 Provider 前持久化运动模式', async (text, movementMode) => {
-    const behaviorFixture = behaviorDirectorIntegrationFixture();
+    const behaviorFixture = await behaviorDirectorIntegrationFixture();
     const providerRespond = vi.fn(async (): Promise<ModelResponse> => ({
       type: 'text', text: '普通回复', structured_output: {}
     }));
@@ -989,13 +821,12 @@ describe('桌面会话分流纵向集成', () => {
   });
 
   test('普通聊天 set_mode(1) 经唯一控制入口持久化，并由 Scheduler 请求持续运动', async () => {
-    const behaviorFixture = behaviorDirectorIntegrationFixture();
+    const behaviorFixture = await behaviorDirectorIntegrationFixture();
     const fixture = conversationIntegrationHarness({
       responses: [{
         type: 'text',
         text: '我会继续活动。',
         structured_output: {
-          behaviorPlan: { kind: 'none' },
           movementControl: { kind: 'set_mode', mode: 1 }
         }
       }],
@@ -1030,7 +861,7 @@ describe('桌面会话分流纵向集成', () => {
 
   test('Provider 的 mode=2 在 passive 主动性下仍由 10 秒时钟请求真实运动', async () => {
     vi.useFakeTimers();
-    const behaviorFixture = behaviorDirectorIntegrationFixture();
+    const behaviorFixture = await behaviorDirectorIntegrationFixture();
     behaviorFixture.director.applyBehaviorSettings({ movementMode: 2, proactivityMode: 'passive' });
     const scheduler = new CharacterProactivityScheduler({
       director: behaviorFixture.director,
@@ -1041,7 +872,6 @@ describe('桌面会话分流纵向集成', () => {
         type: 'text',
         text: '我会偶尔走动。',
         structured_output: {
-          behaviorPlan: { kind: 'none' },
           movementControl: { kind: 'set_mode', mode: 2 }
         }
       }],
@@ -1066,13 +896,7 @@ describe('桌面会话分流纵向集成', () => {
     let movementMode: 0 | 2 = 2;
     const behavior = conversationBehaviorDouble({
       getChatContext: vi.fn(() => ({
-        character: {
-          identity: {
-            name: '披露角色', description: '披露测试角色', background: '测试环境', traits: [],
-            languageStyle: '简洁', likes: [], behavioralTendencies: []
-          },
-          states: []
-        },
+        character: createPublicBehaviorCatalog(createBehaviorManifest(), 'base'),
         runtime: {
           moving: false, dragging: false, carrying: false, movementMode
         },
@@ -1094,8 +918,8 @@ describe('桌面会话分流纵向集成', () => {
       'share_once'
     );
 
-    expect(fixture.chatRequests[1]?.request.messages[0]?.content)
-      .toContain('"movementMode":0');
+    expect(fixture.chatRequests[1]?.request.messages.filter(message => message.role === 'system')
+      .map(message => message.content).join('\n')).toContain('"movementMode":0');
     expect(behavior.getChatContext).toHaveBeenCalledTimes(2);
     await fixture.composition.close();
   });
@@ -1106,16 +930,16 @@ describe('桌面会话分流纵向集成', () => {
         type: 'text',
         text: 'fixture 同次正文',
         structured_output: {
-          activity: '庆祝',
-          status: 'celebrate',
+          moodUpdate: { summary: '认真而欣喜', strength: 0.8 },
           movementControl: { kind: 'keep' },
-          behaviorPlan: { kind: 'play_state', state: 'Agent 专注', action: 'celebrate' },
+          expressionPlan: { states: [{ stateId: 'agent-focus', score: 1,
+            minStrength: 0, maxStrength: 1, actions: [{ actionId: 'celebrate-action', score: 1 }] }] },
           capabilityPlan: { kind: 'chat' }
         }
       }
     }]);
     servers.push(providerServer);
-    const behaviorFixture = behaviorDirectorIntegrationFixture();
+    const behaviorFixture = await behaviorDirectorIntegrationFixture();
     const provider = new OpenAICompatibleProvider({
       providerId: 'openai-compatible',
       modelId: 'behavior-json-model',
@@ -1132,19 +956,15 @@ describe('桌面会话分流纵向集成', () => {
     expect(fixture.events).toContainEqual({
       type: 'message', role: 'assistant', text: 'fixture 同次正文'
     });
-    expect(behaviorFixture.behavior.requestDirectedBehavior).toHaveBeenCalledOnce();
+    expect(behaviorFixture.behavior.snapshot()).toMatchObject({
+      stateId: 'agent-focus', schedule: { current: { actionId: 'celebrate-action' } }
+    });
     await fixture.composition.close();
   });
 });
 
 describe('桌面 Agent 真实服务集成', () => {
-  test('行为集成清单经严格 Schema 自证', () => {
-    const manifest = createBehaviorManifest();
-
-    expect(characterManifestV2Schema.parse(manifest)).toEqual(manifest);
-  });
-
-  test('自主行为最小闭环保持 Main 行为与窗口运动', async () => {
+  test('自定义心情表现与真实窗口运动独立且旧播放令牌失效', async () => {
     let now = 0;
     let bounds = { x: 10, y: 20, width: 256, height: 256 };
     const positions: Array<{ x: number; y: number }> = [];
@@ -1157,99 +977,64 @@ describe('桌面 Agent 真实服务集成', () => {
         }
       },
       getDisplays: () => [{
-        id: 'integration-display',
-        workAreaDip: { x: 0, y: 0, width: 1_024, height: 768 }
+        id: 'integration-display', workAreaDip: { x: 0, y: 0, width: 1_024, height: 768 }
       }],
       getGeometrySnapshot: () => ({
-        revision: 1,
-        characterId: 'integration-character',
-        scale: 1,
+        revision: 1, characterId: 'integration-character', scale: 1,
         footAnchorDip: { x: bounds.x + 128, y: bounds.y + 256 },
         visualBoundsInWindowDip: { x: 0, y: 0, width: 256, height: 256 },
-        windowBoundsDip: bounds,
-        displayId: 'integration-display'
+        windowBoundsDip: bounds, displayId: 'integration-display'
       }),
-      now: () => now,
-      random: () => 0.75
+      now: () => now, random: () => 0.75
     });
-    let token = 0;
     const behavior = new CharacterBehaviorService({
-      store: {
-        getActiveManifestV2: async () => createBehaviorManifest(),
-        getActive: async () => { throw new Error('不应读取 V1 回退'); }
-      },
-      motion,
-      now: () => now,
-      random: () => 0,
-      createPlaybackToken: () => `integration-token-${++token}`,
-      idleIntervalMs: 100
-    });
-    const behaviorEvents: Array<{
-      revision: number;
-      stateId?: string;
-      actionId: string;
-      playbackToken: string;
-    }> = [];
-    behavior.subscribe(event => {
-      if (event.type !== 'behavior-authority') behaviorEvents.push(event);
+      store: { getActiveManifestV3: async () => createBehaviorManifest() },
+      motion, now: () => now, random: () => 0
     });
     motion.subscribe(snapshot => behavior.handleMovement(snapshot));
     await behavior.initialize();
-
-    const initialIdle = behaviorEvents.at(-1)!;
-    expect(initialIdle).toMatchObject({ stateId: 'idle-state', actionId: 'idle-action' });
+    const initialIdle = behavior.snapshot()!.schedule.current!;
+    expect(initialIdle).toMatchObject({ stateId: 'rest', actionId: 'breathe' });
     behavior.applyPlaybackFeedback({
-      playbackToken: initialIdle.playbackToken,
-      actionId: initialIdle.actionId,
-      status: 'started',
-      occurredAtMs: now
+      playbackToken: initialIdle.playbackToken, actionId: initialIdle.actionId,
+      status: 'started', occurredAtMs: now
     });
     behavior.handleUserInteraction();
-    expect(behaviorEvents.at(-1)).toMatchObject({ actionId: 'idle-action' });
-    expect(behaviorEvents.at(-1)?.playbackToken).not.toBe(initialIdle.playbackToken);
-
-    const autonomousDirector = new CharacterBehaviorDirector({
-      behavior,
-      motion,
-      initialGeneration: 'integration-autonomous',
+    expect(behavior.snapshot()?.schedule.current?.playbackToken).toBe(initialIdle.playbackToken);
+    behavior.applyDecision({
+      context: behavior.context()!, eventId: 'mood', source: 'chat',
+      moodUpdate: { summary: '安心陪伴', strength: 0.8 },
+      expressionPlan: { states: [{ stateId: 'agent-focus', score: 1,
+        minStrength: 0, maxStrength: 1, actions: [{ actionId: 'focus-action', score: 1 }] }] }
+    });
+    const director = new CharacterBehaviorDirector({
+      behavior, motion, initialGeneration: 'integration-autonomous',
       initialSettings: { movementMode: 2, proactivityMode: 'autonomous' },
       saveMovementMode: async () => undefined
     });
-    expect(autonomousDirector.requestBehaviorPlan({
-      kind: 'move', direction: 'right', distance: 'near'
-    }, 'local-idle')).toMatchObject({ kind: 'play', semantic: 'move' });
-    let motionSnapshot = motion.getSnapshot();
-    for (let step = 1; step <= 100 && (step === 1 || motionSnapshot.moving); step += 1) {
-      now = step * 100;
-      motionSnapshot = motion.tick();
+    try {
+      // 清单没有移动状态；明确位移不需要动画授权，也不取消已接纳的心情。
+      await director.prepareUserPrompt('向右一点');
+      let snapshot = motion.getSnapshot();
+      for (let step = 1; step <= 100 && (step === 1 || snapshot.moving); step += 1) {
+        now = step * 100;
+        snapshot = motion.tick();
+      }
+      expect(positions.length).toBeGreaterThan(0);
+      expect(snapshot.moving).toBe(false);
+      expect(Math.hypot(snapshot.position.x - snapshot.target.x, snapshot.position.y - snapshot.target.y))
+        .toBeLessThanOrEqual(24);
+      expect(behavior.snapshot()).toMatchObject({
+        stateId: 'agent-focus', mood: { summary: '安心陪伴' },
+        schedule: { current: { actionId: 'focus-action' } }
+      });
+      expect(() => behavior.applyPlaybackFeedback({
+        playbackToken: initialIdle.playbackToken, actionId: initialIdle.actionId,
+        status: 'completed', occurredAtMs: now
+      })).toThrow('CHARACTER_PLAYBACK_UNAUTHORIZED');
+    } finally {
+      await director.close();
     }
-    expect(behaviorEvents).toContainEqual(expect.objectContaining({ actionId: 'move-action' }));
-    expect(positions.length).toBeGreaterThan(0);
-    expect(motionSnapshot.moving).toBe(false);
-    expect(Math.hypot(
-      motionSnapshot.position.x - motionSnapshot.target.x,
-      motionSnapshot.position.y - motionSnapshot.target.y
-    )).toBeLessThanOrEqual(24);
-    expect(behaviorEvents.at(-1)).toMatchObject({ actionId: 'idle-action' });
-
-    behavior.handleTaskEvent({ type: 'phase', phase: 'error' });
-    expect(behaviorEvents.at(-1)).toMatchObject({ actionId: 'fail-action' });
-    const failure = behaviorEvents.at(-1)!;
-    behavior.applyPlaybackFeedback({
-      playbackToken: failure.playbackToken,
-      actionId: failure.actionId,
-      status: 'started',
-      occurredAtMs: now
-    });
-    behavior.applyPlaybackFeedback({
-      playbackToken: failure.playbackToken,
-      actionId: failure.actionId,
-      status: 'completed',
-      occurredAtMs: now + 1
-    });
-    behavior.handleTaskEvent({ type: 'phase', phase: 'idle' });
-    expect(behaviorEvents.at(-1)).toMatchObject({ actionId: 'idle-action' });
-    await autonomousDirector.close();
   });
 
   test('Renderer 真实图集编译挂起时 Main Agent 请求仍先完成', async () => {

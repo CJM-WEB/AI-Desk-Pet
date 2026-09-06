@@ -132,7 +132,9 @@ describe('脚本化 Provider 生命周期', () => {
         text: '向左移动',
         structured_output: {
           text: '向左移动',
-          behaviorPlan: { kind: 'move', direction: 'left', distance: 'near' }
+          moodUpdate: null,
+          expressionPlan: null,
+          movementControl: { kind: 'move_once', target: 'left', distance: 'near' }
         }
       },
       inspect: request => {
@@ -158,7 +160,9 @@ describe('脚本化 Provider 生命周期', () => {
       };
       expect(JSON.parse(payload.choices[0]!.message.content)).toEqual({
         text: '向左移动',
-        behaviorPlan: { kind: 'move', direction: 'left', distance: 'near' }
+        moodUpdate: null,
+        expressionPlan: null,
+        movementControl: { kind: 'move_once', target: 'left', distance: 'near' }
       });
       expect(payload.choices[0]!.message).not.toHaveProperty('metadata');
       provider.assertComplete();

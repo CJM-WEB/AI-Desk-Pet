@@ -78,10 +78,9 @@ const server = createServer(async (request, response) => {
     : {
         content: JSON.stringify({
           text: '本地模型 fixture 回复',
-          activity: '安静陪伴',
-          status: 'idle',
+          moodUpdate: null,
+          expressionPlan: null,
           movementControl: { kind: 'keep' },
-          behaviorPlan: { kind: 'none' },
           capabilityPlan: { kind: 'chat' }
         })
       };
