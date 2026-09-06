@@ -330,6 +330,8 @@ try {
 
 ## 任务 5A：隔离验证原生任务申请与聊天表现共存
 
+**2026-09-06实际裁决：实验未通过，禁止进入任务5B。** 私有HTTP、装配与诊断分别通过独立审查；最终有限回归49/49通过。首次两模型均在首条请求失败；修正私有Electron启动时序后，DeepSeek固定两轮22条均有HTTP响应，但只有4/12任务正例申请、负例9/10满足正文和表现条件，合计13/22符合。Qwen后续仅执行一次窄诊断，HTTP400/OTHER，未重跑矩阵。源配置、预算、generation、owner和清理均保持。下方未勾选的整体兼容条件不得据有限测试改成通过；具体结果以[验收记录](../../operations/2026-09-05-deepseek-qwen-coding-tasks.md)为准。任何新协议须另行批准，不能继续在本协议上临时改提示、重试择优或接正式入口。
+
 **依赖与目标：**任务4B复审和完整门禁完成后执行。适用已获批的[入口与重复保护调整](../specs/2026-09-06-ai-pet-task-entry-and-loop-proposal.md)。先证明现有 DeepSeek／内置 Qwen 能在同一个请求契约中选择严格申请或正常聊天；本任务不切换正式入口、不产生文件或命令能力，不把实验通过写成文件任务完成。
 
 **文件职责：**
@@ -337,7 +339,7 @@ try {
 - 私有实验目录沿用本计划的 `.superpowers/sdd/2026-09-05-deepseek-qwen-coding-tasks/`；新增 `task-5a-native-probe.cjs`（限定源码和矩阵哈希的bundle构建与启动）、`task-5a-native-probe-main.ts`（Electron内的Provider/Runtime装配、固定矩阵与清理）、`task-5a-native-probe.test.cjs`（Node测试入口，通过同一bundle的有限HTTP模式检查兼容与接纳边界）。代码只服务本次实验，正式源码和公共类型不改，不新增Vitest配置。
 - 只读复用 `apps/desktop/src/main/providers/openai-provider.ts`、`local-model-provider.ts`、`provider-registry.ts`、`openai-tool-name-codec.ts`、`apps/desktop/src/main/conversation/conversation-chat-adapter.ts`、`capability-intent-router.ts`、`packages/character-runtime/src/character-behavior-plan.ts`。
 - 运行装配复用 `apps/desktop/scripts/deepseek-acceptance-main.ts`、`local-model-acceptance-runner.ts`、`run-local-model-acceptance.mjs` 的现有接口和最小构建设置；不修改这三个正式入口、不调用其实际文件验收主体。
-- 实际结果由主控写入 `docs/operations/2026-09-05-deepseek-qwen-coding-tasks.md`；详细私有报告为 `task-5a-report.md`。已有 `task-5-native-entry-seams.md` 给出精确源码符号和安全装配证据。
+- 实际结果由主控写入 `docs/operations/2026-09-05-deepseek-qwen-coding-tasks.md`；最初有限HTTP阶段为 `task-5a-report.md`，后续实际运行及指纹为 `task-5a-first-live-evidence.json`、`task-5a-followup-live-evidence.json`，各阶段独立审查另存私有报告。已有 `task-5-native-entry-seams.md` 给出精确源码符号和安全装配证据。
 
 **实验接口：**使用现成 `ModelRequest`、原生 codec 和基础 `characterChatResponseJsonSchema`。申请函数只声明协议，不附加 execute handler：
 
@@ -403,7 +405,7 @@ type NativeProbeObservation = {
 
 报告另以严格有限字段记录模型ID、实际后端、Router类别、稳定错误码及清理结果。不得序列化原Provider返回、参数、工具metadata、错误cause、密钥或私有路径。严格申请允许 `tool_only`，如实记为没有表现；`text_only` 普通聊天必须正文和表现合法。`mixed` 的申请独立校验，表现只按现有Schema接受，模型口头执行成功不发布界面。本实验不启动Renderer。
 
-- [ ] **RED：**先用现有 `OpenAICompatibleProvider` 与有限HTTP响应获得可判定失败：唯一申请工具＋基础聊天契约在当前guard前被拒绝，零HTTP调用；这是待适配点，不是模型失败。同时创建正确原生回包，预期能选取严格申请，当前不能得到该结果。
+- [x] **RED：**先用现有 `OpenAICompatibleProvider` 与有限HTTP响应获得可判定失败：唯一申请工具＋基础聊天契约在当前guard前被拒绝，零HTTP调用；这是待适配点，不是模型失败。同时创建正确原生回包，预期能选取严格申请，当前不能得到该结果。
 
 ```ts
 const reply = {
@@ -417,15 +419,15 @@ expect(observation.application).toBe('valid');
 expect(observation.responseKind).toBe('tool_only');
 ```
 
-- [ ] **GREEN：**构建前固定源码SHA和唯一替换片段，以 `esbuild.onLoad` 对精确绝对路径进行私有转换。只在严格唯一函数、空参数Schema、`auto`、基础聊天契约全部匹配时放行原冲突检查；其他工具组合保留拒绝。仅这一路对原 `normalizeResponse` 增加私有观察输出，保留通用响应shape、单调用、codec、ID与原JSON参数解码，再严格检查参数为空普通对象。借现有导出/精确bundle导出接缝复用系统构造器和表现Schema，不复制Provider、人物上下文裁剪或HTTP实现。
-- [ ] 实验提示从当前聊天提示中删除被替代的 `capabilityPlan` 分类要求和例子；只替换为原生申请语义，不保留双重判断，不删角色指令。固定实验提示和Schema哈希之后不随矩阵结果调整。首次及可能的原控制修复system均不超过4800 UTF-8字节，Qwen输入仍不超过现有6400 token预算；当前用户正文完整、历史规则不放宽。
-- [ ] 先通过本地HTTP的严格 `{}`、合法/坏可选表现mixed、未知名、多调用、非function、空ID、缺失/非JSON/非空/数组/null参数、无表现裸文本、blocked时零工具及伪造申请拒绝、取消/迟到响应和Local generation变化。普通参数错误只作为拒绝，不输出其原值。取消计时器和服务器均在finally清理；有限回包与硬期限防止红测挂死。
-- [ ] 执行 `node --test .superpowers/sdd/2026-09-05-deepseek-qwen-coding-tasks/task-5a-native-probe.test.cjs`，记录每项RED/GREEN命令和计数。测试入口驱动临时bundle的HTTP模式，只配置本地夹具Provider，不读取真实凭据或启动Qwen；正例必须经过实际Provider请求/解码，不能只调用观察值分类函数。先由主控核对实验范围、实际HTTP捕获和私有bundle源码差异，再调用真实模型。纯文字/Schema测试不算Provider兼容通过，不扩大正式源码guard。
-- [ ] 原DeepSeek配置来自已授权源userData和profile；复用副本 `SettingsStore`／`Local State`／原 `SecretStore.readForProviderCall`，源配置前后SHA相同。Qwen复用固定资源、`LocalModelRuntime`、`LocalModelProvider`和 `vulkan-only`；保留本地非思考、JSON schema、8192上下文、单slot、6400输入预算与generation检查。两个模型串行，不与完整E2E竞争资源。
-- [ ] 主控核对后分别执行 `node .superpowers/sdd/2026-09-05-deepseek-qwen-coding-tasks/task-5a-native-probe.cjs --model deepseek` 和同命令 `--model qwen`，各完成固定两轮矩阵；选择值仅允许这两个常量，源userData与profile沿当前私有授权配置传入子进程且不打印。只发一次语义判定；保留Provider现有最多两次空正文同请求尝试时记录实际HTTP次数，不增加前置分类调用或表现修复后的再次申请判断。语义失败继续收集预定行，传输/Runtime硬错误使后续行记录未运行；两轮不能择优合并。整次运行复用15分钟期限与30秒清理期限，不更改真实任务的产品预算。
-- [ ] 结束先中止在途请求并等待自身Runtime/Electron退出，再清理已核对的精确临时叶子文件及空目录。源设置不得写入；不按进程名称强杀、不批量删其他目录。运行结果必须同时列源/矩阵/bundle哈希、实际后端、每行判断与cleanup，不以主控后续手工清理倒改失败。
+- [x] **GREEN：**构建前固定源码SHA和唯一替换片段，以 `esbuild.onLoad` 对精确绝对路径进行私有转换。只在严格唯一函数、空参数Schema、`auto`、基础聊天契约全部匹配时放行原冲突检查；其他工具组合保留拒绝。仅这一路对原 `normalizeResponse` 增加私有观察输出，保留通用响应shape、单调用、codec、ID与原JSON参数解码，再严格检查参数为空普通对象。借现有导出/精确bundle导出接缝复用系统构造器和表现Schema，不复制Provider、人物上下文裁剪或HTTP实现。
+- [x] 实验提示从当前聊天提示中删除被替代的 `capabilityPlan` 分类要求和例子；只替换为原生申请语义，不保留双重判断，不删角色指令。固定实验提示和Schema哈希之后不随矩阵结果调整。首次及可能的原控制修复system均不超过4800 UTF-8字节，Qwen输入仍不超过现有6400 token预算；当前用户正文完整、历史规则不放宽。
+- [x] 先通过本地HTTP的严格 `{}`、合法/坏可选表现mixed、未知名、多调用、非function、空ID、缺失/非JSON/非空/数组/null参数、无表现裸文本、blocked时零工具及伪造申请拒绝、取消/迟到响应和Local generation变化。普通参数错误只作为拒绝，不输出其原值。取消计时器和服务器均在finally清理；有限回包与硬期限防止红测挂死。
+- [x] 执行 `node --test .superpowers/sdd/2026-09-05-deepseek-qwen-coding-tasks/task-5a-native-probe.test.cjs`，记录每项RED/GREEN命令和计数。测试入口驱动临时bundle的HTTP模式，只配置本地夹具Provider，不读取真实凭据或启动Qwen；正例必须经过实际Provider请求/解码，不能只调用观察值分类函数。先由主控核对实验范围、实际HTTP捕获和私有bundle源码差异，再调用真实模型。纯文字/Schema测试不算Provider兼容通过，不扩大正式源码guard。
+- [x] 原DeepSeek配置来自已授权源userData和profile；复用副本 `SettingsStore`／`Local State`／原 `SecretStore.readForProviderCall`，源配置前后SHA相同。Qwen复用固定资源、`LocalModelRuntime`、`LocalModelProvider`和 `vulkan-only`；保留本地非思考、JSON schema、8192上下文、单slot、6400输入预算与generation检查。两个模型串行，不与完整E2E竞争资源。
+- [x] **固定运行已执行，包含硬失败未运行项，非全矩阵通过。** 主控核对后分别执行 `node .superpowers/sdd/2026-09-05-deepseek-qwen-coding-tasks/task-5a-native-probe.cjs --model deepseek` 和同命令 `--model qwen`，各完成固定两轮矩阵；选择值仅允许这两个常量，源userData与profile沿当前私有授权配置传入子进程且不打印。只发一次语义判定；保留Provider现有最多两次空正文同请求尝试时记录实际HTTP次数，不增加前置分类调用或表现修复后的再次申请判断。语义失败继续收集预定行，传输/Runtime硬错误使后续行记录未运行；两轮不能择优合并。整次运行复用15分钟期限与30秒清理期限，不更改真实任务的产品预算。
+- [x] 结束先中止在途请求并等待自身Runtime/Electron退出，再清理已核对的精确临时叶子文件及空目录。源设置不得写入；不按进程名称强杀、不批量删其他目录。运行结果必须同时列源/矩阵/bundle哈希、实际后端、每行判断与cleanup，不以主控后续手工清理倒改失败。
 - [ ] **条件门：**44项逻辑输入全部按预期，所有负例正文/表现合法、原预算/原句/generation/清理全部符合，才标本实验通过并交独立审查。任何失败保留具体类别和未运行项，正式入口保持原样；不改成两次分类或关键词兜底。实验成功也不能代替实际文件读写、编程闭环和取消验收。
-- [ ] 独立规格/质量审查后主控更新公开验收记录和条件门状态，提交已核实的规格/计划/记录，暂不push。本任务没有正式产品源码差异；临时实验目录留到最终批准清理。
+- [x] 独立规格/质量审查后主控更新公开验收记录和条件门状态。本任务没有正式产品源码差异；临时实验目录留到最终批准清理。经核实的规格/计划/记录按用户授权提交，暂不push；提交结果另记进度日志。
 
 **完成标准：**得到不可择优拼接的协议/语义实验结论，并明确允许或禁止进入任务5B；失败本身是有效实验结果，不是新入口实现完成。
 
