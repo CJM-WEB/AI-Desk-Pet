@@ -122,6 +122,44 @@ function readyPort(getReadyConnection = () => connection): LocalModelConnectionP
 }
 
 describe('LocalModelProvider', () => {
+  test('角色首次及修复请求合并全部 system 到首条，内容字节和非 system 顺序保真，普通工具请求保持原样', async () => {
+    const requests: ModelRequest[] = [];
+    let responseNumber = 0;
+    const fetchClient = vi.fn<FetchLike>(async () => jsonResponse({ choices: [{ message: { content: JSON.stringify({
+      text: '  **保留正文😀**\n', movementControl: { kind: 'keep' }, capabilityPlan: { kind: 'chat' },
+      expressionPlan: ++responseNumber === 1 ? { states: 'bad' } : { states: [] }
+    }) } }] }));
+    const local = new LocalModelProvider(readyPort(), fetchClient);
+    const adapter = new ConversationChatAdapter({ respond: (input, signal) => {
+      requests.push(input);
+      return local.respond(input, signal);
+    } }, () => undefined, { inputByteBudget: 19_200 });
+    const history: ModelRequest['messages'] = [
+      { role: 'user', content: '历史用户🐾\n\n保留段落' },
+      { role: 'assistant', content: '  历史答复  \r\n```text\n  原始缩进\n```' }
+    ];
+    const reply = await adapter.respond({ history, text: '  今天获奖了😀\n聊聊吧。  ',
+      behaviorContext: localBehaviorContext, signal: new AbortController().signal });
+    expect(reply.text).toBe('  **保留正文😀**\n');
+    expect(fetchClient).toHaveBeenCalledTimes(2);
+    for (const [index, original] of requests.entries()) {
+      const body = JSON.parse(String(fetchClient.mock.calls[index]?.[1]?.body));
+      const systems = original.messages.filter(message => message.role === 'system');
+      expect(systems).toHaveLength(index === 0 ? 3 : 4);
+      expect(body.messages).toEqual([
+        { role: 'system', content: systems.map(message => message.content).join('\n\n') },
+        ...original.messages.filter(message => message.role !== 'system')
+      ]);
+      expect(body.tools).toEqual([]);
+      expect(body.tool_choice).toBe('none');
+      const bytes = Buffer.byteLength(JSON.stringify({ messages: body.messages, tools: body.tools, responseSchema: body.response_format.schema }));
+      const originalBytes = Buffer.byteLength(JSON.stringify({ messages: original.messages, tools: original.tools, responseSchema: original.responseContract?.jsonSchema }));
+      expect(bytes).toBeLessThanOrEqual(originalBytes);
+      expect(bytes).toBeLessThanOrEqual(19_200);
+    }
+    await local.respond({ ...request, messages: requests[0]!.messages }, new AbortController().signal);
+    expect(JSON.parse(String(fetchClient.mock.calls[2]?.[1]?.body)).messages).toEqual(requests[0]!.messages);
+  });
   test('本地模型工具参数损坏时返回稳定子码且绝不重放已开始的工具协议回合', async () => {
     const fetchClient = vi.fn<FetchLike>(async () => jsonResponse({
       choices: [{

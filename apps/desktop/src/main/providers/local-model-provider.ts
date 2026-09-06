@@ -33,6 +33,20 @@ const LOCAL_INPUT_TOKEN_BUDGET = 6_400;
 const CONSERVATIVE_UTF8_BYTES_PER_TOKEN = 3;
 const LOCAL_READ_RESULT_CHARACTER_BUDGET = 4_000;
 
+/** Qwen 角色模板只允许首条 system；各段保留系统身份，文件工具请求不改布局。 */
+function mergeCharacterSystemMessages(request: ModelRequest): ModelRequest {
+  if (request.responseContract === undefined) return request;
+  const systems = request.messages.filter(message => message.role === 'system');
+  if (systems.length === 0 || systems.length === 1 && request.messages[0]?.role === 'system') return request;
+  return {
+    ...request,
+    messages: [
+      { role: 'system', content: systems.map(message => message.content).join('\n\n') },
+      ...request.messages.filter(message => message.role !== 'system')
+    ]
+  };
+}
+
 function boundLocalReadResult(content: string): Readonly<{ content: string; lineCount: number }> {
   if (content.length <= LOCAL_READ_RESULT_CHARACTER_BUDGET) {
     return { content, lineCount: content.length === 0 ? 0 : content.split('\n').length };
@@ -229,7 +243,7 @@ export class LocalModelProvider implements ModelProvider {
   ) {}
 
   async respond(request: ModelRequest, signal: AbortSignal): Promise<ModelResponse> {
-    const budgetedRequest = applyLocalContextBudget(request);
+    const budgetedRequest = applyLocalContextBudget(mergeCharacterSystemMessages(request));
     const connection = this.connectionPort.getReadyConnection();
     const provider = new OpenAICompatibleProvider(
       {

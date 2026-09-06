@@ -126,7 +126,8 @@ function parseChinese(text: string): ParsedDirective | null {
     };
   }
 
-  const play = /^(?:请)?(?:做一个|播放|表演)\s*(.{1,120}?)\s*(动作|状态)/u.exec(text);
+  // 终止词必须紧接既有句尾／组合边界，名称中的“状态”等字样才不会提前截断。
+  const play = /^(?:请)?(?:做一个|播放|表演)\s*(.{1,120}?)\s*(动作|状态)(?=\s*(?:$|[，。！？,.!?]|并且?|然后|再|(?:and|then)\s))/iu.exec(text);
   const targetName = play?.[1] ? validExplicitTargetName(play[1]) : null;
   if (play && targetName) {
     return {
@@ -193,7 +194,7 @@ function parseEnglish(text: string): ParsedDirective | null {
     };
   }
 
-  const play = /^(?:please\s+)?(?:(?:play|perform)\s+|do\s+(?:an?\s+)?)(.{1,120}?)\s+(animation|action|state)/iu.exec(text);
+  const play = /^(?:please\s+)?(?:(?:play|perform)\s+|do\s+(?:an?\s+)?)(.{1,120}?)\s+(animation|action|state)(?=\s*(?:$|[，。！？,.!?]|并且?|然后|再|(?:and|then)\s))/iu.exec(text);
   const targetName = play?.[1] ? validExplicitTargetName(play[1]) : null;
   if (play && targetName) {
     return {

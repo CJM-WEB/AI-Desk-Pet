@@ -177,6 +177,17 @@ describe('显式桌宠行为 Gate', () => {
     });
   });
 
+  test('动作名称内部包含状态终止词时继续匹配合法动作结尾', () => {
+    for (const [text, name] of [
+      ['播放恢复状态动作', '恢复状态'],
+      ['play recovery state action', 'recovery state']
+    ] as const) expect(parseExplicitCharacterBehavior(text)).toEqual({
+      capabilityText: text,
+      explicitDirective: { kind: 'play', target: { kind: 'action_name', name } },
+      movementControl: { kind: 'keep' }
+    });
+  });
+
   test.each([
     '请做一个动作',
     '不要播放飞扬状态',
