@@ -364,7 +364,7 @@ describe('ConversationCoordinator', () => {
             type: 'text',
             text: '文件已经创建完成。',
             structured_output: 完整聊天控制({
-              capabilityPlan: { kind: 'agent_task', preferredTool: 'create_file' }
+              capabilityPlan: { kind: 'agent_task' }
             })
           };
         }
@@ -403,7 +403,7 @@ describe('ConversationCoordinator', () => {
         type: 'text',
         text: '需要进入本地任务。',
         structured_output: 完整聊天控制({
-          capabilityPlan: { kind: 'agent_task', preferredTool: 'powershell' }
+          capabilityPlan: { kind: 'agent_task' }
         })
       });
       const harness = createHarness([{
@@ -432,7 +432,7 @@ describe('ConversationCoordinator', () => {
       type: 'text',
       text: '文件已经成功删除。',
       structured_output: 完整聊天控制({
-        capabilityPlan: { kind: 'agent_task', preferredTool: 'delete_file' }
+        capabilityPlan: { kind: 'agent_task' }
       })
     });
     const harness = createHarness([{
@@ -453,7 +453,7 @@ describe('ConversationCoordinator', () => {
   test('Main 阻断证据不能被模型 agent_task 建议绕过', async () => {
     const script = scriptedProvider({
       type: 'text', text: '不执行。',
-      structured_output: { capabilityPlan: { kind: 'agent_task', preferredTool: 'powershell' } }
+      structured_output: { capabilityPlan: { kind: 'agent_task' } }
     });
     const harness = createHarness([{
       profileId: 'chat-profile', providerIdentity: 'openai', providerName: 'Chat', script

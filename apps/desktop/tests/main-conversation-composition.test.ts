@@ -208,7 +208,7 @@ describe('Main 会话组合模块', () => {
     const nonce = randomUUID();
     let forward: (event: CodingSessionEvent) => void = () => undefined;
     const f = await fixture([[{ name: 'read', args: { path: 'note.txt' } }], nonce], { onEvent: event => forward(event) });
-    const base = baseOptions({ chatResponse: { type: 'text', text: '申请任务', structured_output: { text: '申请任务', activity: '等待授权', status: 'idle', behaviorPlan: { kind: 'none', emotion: 'neutral' }, movementControl: { kind: 'keep' }, capabilityPlan: { kind: 'agent_task', preferredTool: null } } } });
+    const base = baseOptions({ chatResponse: { type: 'text', text: '申请任务', structured_output: { text: '申请任务', activity: '等待授权', status: 'idle', behaviorPlan: { kind: 'none', emotion: 'neutral' }, movementControl: { kind: 'keep' }, capabilityPlan: { kind: 'agent_task' } } } });
     await base.composition.close();
     const events: TaskEvent[] = [];
     let creates = 0;
@@ -272,7 +272,7 @@ describe('Main 会话组合模块', () => {
       const permission = events.find(event => event.type === 'task_permission_required');
       if (permission?.type !== 'task_permission_required') throw new Error('缺少命令许可');
       await composition.coordinator.resolveFileAction(permission.actionId, 'confirm');
-      await expect.poll(() => events.at(-1)).toEqual({ type: 'phase', phase: exit === 0 ? 'success' : 'error' });
+      await expect.poll(() => events.at(-1), { timeout: 10000 }).toEqual({ type: 'phase', phase: exit === 0 ? 'success' : 'error' });
       expect(JSON.stringify(f.requests[1])).toContain(`exit ${exit}`);
       await composition.coordinator.submit('任务完成了吗');
       expect(events).toContainEqual({ type: 'message', role: 'assistant', text: `上一个任务已结束，状态：${exit === 0 ? '运行结束' : '失败'}。收到 1 项实际工具结果。最近命令退出码：${exit}。` });

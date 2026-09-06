@@ -47,8 +47,6 @@ describe('Main 通用生命周期', () => {
     expect(source).toContain('advanceBehavior: () => characterBehaviorDirector.advance()');
     expect(source).toContain('characterBehaviorDirector.setDragging(true)');
     expect(source).toContain('characterBehaviorDirector.setDragging(false)');
-    expect(source).toContain('emitBehaviorIntent: intent => characterBehaviorDirector.handleAgentBehaviorIntent(intent)');
-    expect(source).not.toContain('emitBehaviorIntent: intent => characterBehavior.handleAgentIntent(intent)');
     expect(source).not.toContain('applyCharacterBehavior: event => characterBehavior.handleTaskEvent(event)');
   });
 

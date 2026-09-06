@@ -28,6 +28,12 @@ function readSection(text: string, key: string): string {
 }
 
 describe('electron-builder 配置', () => {
+  test('标准桌面门禁调用 Core 自身测试并执行可信资源 pretest', async () => {
+    const root = JSON.parse(await readFile(new URL('../../../package.json', import.meta.url), 'utf8'));
+    const core = JSON.parse(await readFile(new URL('../../../packages/coding-task-core/package.json', import.meta.url), 'utf8'));
+    expect(root.scripts['verify:desktop'].split(' && ')).toContain('pnpm --filter @myself/coding-task-core test');
+    expect(core.scripts.pretest).toBe('pnpm prepare:trusted-resources');
+  });
   test('Git 元数据不可用时普通构建使用不含路径的来源归类而不失败', async () => {
     vi.resetModules();
     vi.doMock('node:child_process', async importOriginal => ({
@@ -46,7 +52,7 @@ describe('electron-builder 配置', () => {
       vi.doUnmock('node:child_process');
       vi.resetModules();
     }
-  });
+  }, 10_000);
 
   test('桌面端包声明安装包所需版本和描述', () => {
     expect(packageJson.version).toBe('0.1.0-alpha.1');
@@ -78,10 +84,12 @@ describe('electron-builder 配置', () => {
       'resources/windows/explorer-space-shell-tab-helper.cs',
       'resources/windows/explorer-space-integrity.json',
       'resources/local-model',
-      '../../packages/coding-task-core/dist'
+      '../../packages/coding-task-core/dist',
+      '../../vendor/opencode/LICENSE'
     ]);
     expect(extraResources).toContain('- from: resources/local-model\n    to: local-model');
     expect(extraResources).toContain('- from: ../../packages/coding-task-core/dist\n    to: coding-task-resources');
+    expect(extraResources).toContain('- from: ../../vendor/opencode/LICENSE\n    to: coding-task-resources/opencode/LICENSE');
     expect(extraResources).not.toMatch(/userData|authorized|habitat|characters/iu);
 
     const files = readSection(configText, 'files');

@@ -1,7 +1,7 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { EventEmitter } from 'node:events';
-import { access, cp, lstat, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { access, cp, lstat, mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -9,11 +9,11 @@ import { PassThrough } from 'node:stream';
 import { pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
 import { expect, test, type Page } from '@playwright/test';
+import type { TaskEvent } from '@myself/shared-types';
 import { CharacterStore } from '../../apps/desktop/src/main/characters/character-store';
-import { createOpenAIToolNameCodec } from
-  '../../apps/desktop/src/main/providers/openai-tool-name-codec';
 import { SettingsStore } from '../../apps/desktop/src/main/storage/settings-store';
 import {
+  codingResponse,
   createProviderResponseGate,
   startProviderServer,
   type ProviderStep
@@ -460,44 +460,8 @@ function emitFakeExit(process: FakeElectronProcess | FakeCommandProcess, code: n
   process.emit('exit', code, null);
 }
 
-const journeyToolNames = [
-  'builtin.files.list_files',
-  'builtin.files.create_file',
-  'builtin.files.move_file',
-  'builtin.files.apply_patch',
-  'builtin.files.edit_file',
-  'builtin.files.delete_file',
-  'builtin.powershell.run'
-] as const;
-type JourneyToolName = (typeof journeyToolNames)[number];
-const journeyToolNameCodec = createOpenAIToolNameCodec(journeyToolNames.map(name => ({
-  type: 'function' as const,
-  function: { name, description: '', parameters: {} }
-})));
-
 function runtimeDiagnosticKey(): string {
   return `myself-e2e-${randomBytes(24).toString('hex')}`;
-}
-
-function toolResponse(
-  requestId: string,
-  toolName: JourneyToolName,
-  arguments_: Record<string, unknown>
-): ProviderStep['response'] {
-  return {
-    type: 'tool_request',
-    request: {
-      requestId,
-      toolName: journeyToolNameCodec.encode(toolName),
-      arguments: arguments_
-    }
-  };
-}
-
-function lastToolResult(request: Parameters<NonNullable<ProviderStep['inspect']>>[0]): unknown {
-  const message = request.messages.at(-1);
-  if (!message || message.role !== 'tool') throw new Error('缺少工具结果消息');
-  return JSON.parse(message.content) as unknown;
 }
 
 async function pathExistsForAssertion(path: string): Promise<boolean> {
@@ -584,6 +548,174 @@ async function loadElectronFixtureModule(): Promise<ElectronFixtureModule> {
 }
 
 type AppFixture = Awaited<ReturnType<ElectronFixtureModule['createElectronAppFixture']>>;
+
+/** 只通过正式设置 IPC 配置隔离模型与授权根，后续任务必须由可见聊天 UI 发起。 */
+async function configureCodingApp(fixture: AppFixture, provider: Awaited<ReturnType<typeof startProviderServer>>) {
+  const pet = await waitForRendererPage(fixture, 'pet');
+  const chat = await waitForRendererPage(fixture, 'chat');
+  await pet.evaluate(async input => {
+    await window.myself.saveProviderProfile({ profile: { id: 'coding-e2e', displayName: '正式任务 E2E', mode: 'custom', protocol: 'openai-compatible', baseUrl: input.baseUrl, modelId: 'coding-e2e-model', additionalParameters: {}, capabilities: ['chat', 'tools'] }, secret: input.apiKey, persistSecret: false });
+    await window.myself.saveModelRoute({ primaryProfileId: 'coding-e2e', chatProfileId: 'coding-e2e', agentProfileId: 'coding-e2e', visionProfileId: null, fallbackProfileIds: [], allowCrossProviderFallback: false });
+    await window.myself.savePrivacySettings({ dataCategories: { memory: false }, longTermMemory: false, proactivityMode: 'passive' });
+    await window.myself.chooseAuthorizedRoot();
+    await window.myself.openChat();
+  }, { baseUrl: provider.baseUrl, apiKey: provider.apiKey });
+  await expect.poll(() => chat.evaluate(() => document.visibilityState)).toBe('visible');
+  return { pet, chat };
+}
+
+async function approveCodingScope(chat: Page) {
+  const scope = chat.getByRole('article', { name: '本地任务授权' });
+  await expect(scope).toBeVisible();
+  await scope.getByRole('button', { name: '授权并开始任务' }).click();
+}
+
+async function recordCodingEvents(page: Page) {
+  await page.evaluate(() => {
+    const state = globalThis as typeof globalThis & { __task4bEvents?: TaskEvent[] };
+    state.__task4bEvents = [];
+    window.myself.onTaskEvent(event => state.__task4bEvents?.push(event));
+  });
+}
+
+async function readCodingEvents(page: Page): Promise<TaskEvent[]> {
+  return page.evaluate(() => (globalThis as typeof globalThis & { __task4bEvents?: TaskEvent[] }).__task4bEvents ?? []);
+}
+
+test.describe('正式 Core 任务 UI', () => {
+  test('自然读取随机正文经真实工具回注显示在聊天并结束', async () => {
+    test.setTimeout(120000);
+    const nonce = `读取正文-${randomBytes(16).toString('hex')}`;
+    const provider = await startProviderServer([
+      { response: characterChatResponse('申请读取文件', { capabilityPlan: { kind: 'agent_task' } }), inspect: expectCharacterChatRequest },
+      { response: codingResponse([{ name: 'read', args: { path: 'note.txt' }, id: 'ui-read' }]) },
+      { response: request => { const messages = request.messages as Array<{ role: string; tool_call_id?: string; content: string }>; const result = messages.find(message => message.tool_call_id === 'ui-read'); expect(result?.content).toContain(nonce); return codingResponse(nonce); } }
+    ]);
+    let fixture: AppFixture | undefined;
+    try {
+      fixture = await (await loadElectronFixtureModule()).createElectronAppFixture({ workspaceRoot: resolve(process.cwd()), apiKey: provider.apiKey, logSentinels: [nonce] });
+      await writeFile(join(fixture.authorizedRootDirectory, 'note.txt'), nonce);
+      const { chat } = await configureCodingApp(fixture, provider);
+      await submitChatMessage(chat, '请读取 note.txt 并告诉我里面的内容');
+      const scope = chat.getByRole('article', { name: '本地任务授权' });
+      await expect(scope).toContainText('coding-e2e-model');
+      await expect(scope).toContainText(await realpath(fixture.authorizedRootDirectory));
+      expect(provider.requests).toHaveLength(1);
+      expect(provider.requests[0]?.toolCount).toBe(0);
+      await approveCodingScope(chat);
+      await expect(chat.getByText(nonce, { exact: true })).toBeVisible();
+      await expect(chat.locator('.phase-pill')).toHaveClass(/phase-success/u);
+      provider.assertComplete();
+      expect(provider.inspectionErrors).toEqual([]);
+      expect(fixture.capturedLogEvidence).toEqual({ apiKey: false, authorizedRoot: false, authorizationHeader: false, sentinels: [false] });
+    } finally { try { await fixture?.dispose(); } finally { await provider.close(); } }
+  });
+
+  test('scope 后具体删除许可可点击并经真实回收站与工具回注结束', async () => {
+    test.setTimeout(120000);
+    const nonce = `回收站正文-${randomBytes(16).toString('hex')}`;
+    const finalText = `删除完成-${randomBytes(16).toString('hex')}`;
+    const provider = await startProviderServer([
+      { response: codingResponse([{ name: 'apply_patch', args: { patchText: '*** Begin Patch\n*** Delete File: target.txt\n*** End Patch' }, id: 'ui-delete' }]) },
+      { response: request => { const messages = request.messages as Array<{ tool_call_id?: string; content: string }>; expect(messages.find(message => message.tool_call_id === 'ui-delete')?.content).toContain('target.txt'); return codingResponse(finalText); } }
+    ]);
+    let fixture: AppFixture | undefined;
+    try {
+      fixture = await (await loadElectronFixtureModule()).createElectronAppFixture({ workspaceRoot: resolve(process.cwd()), apiKey: provider.apiKey, logSentinels: [nonce, finalText] });
+      const target = join(fixture.authorizedRootDirectory, 'target.txt');
+      await writeFile(target, nonce);
+      const { chat, pet } = await configureCodingApp(fixture, provider);
+      const settings = await waitForRendererPage(fixture, 'settings');
+      await pet.evaluate(() => window.myself.openCharacterWorkshop());
+      const characters = await waitForRendererPage(fixture, 'characters');
+      await pet.evaluate(() => window.myself.openChat());
+      for (const page of [pet, chat, settings, characters]) await recordCodingEvents(page);
+      await submitChatMessage(chat, '删除 target.txt 文件');
+      await expect(chat.getByRole('article', { name: '本地任务授权' })).toBeVisible();
+      expect(provider.requests).toHaveLength(0);
+      expect(await pathExistsForAssertion(target)).toBe(true);
+      await approveCodingScope(chat);
+      const permission = chat.getByRole('region', { name: '具体操作许可' });
+      await expect(permission).toContainText('target.txt');
+      const confirm = permission.getByRole('button', { name: '确认移入回收站' });
+      await expect(confirm).toBeEnabled();
+      expect(await pathExistsForAssertion(target)).toBe(true);
+      const event = (await readCodingEvents(chat)).find(event => event.type === 'task_permission_required');
+      if (event?.type !== 'task_permission_required') throw new Error('未收到具体许可');
+      const id = event.actionId;
+      expect(Object.keys(event).sort()).toEqual(['actionId', 'request', 'summary', 'type']);
+      for (const page of [pet, settings, characters]) await expect(page.evaluate(id => window.myself.confirmAction(id), id)).rejects.toThrow(/AGENT_IPC_SENDER_INVALID/u);
+      await confirm.click();
+      await expect(chat.getByText(finalText, { exact: true })).toBeVisible();
+      await expect(chat.locator('.phase-pill')).toHaveClass(/phase-success/u);
+      expect(await pathExistsForAssertion(target)).toBe(false);
+      expect((await readdir(fixture.recycleBinDirectory!)).filter(name => name.startsWith('.attempt-'))).toEqual(['.attempt-1']);
+      const petEvents = await readCodingEvents(pet);
+      expect(petEvents.length).toBeGreaterThan(0);
+      for (const event of petEvents) expect(Object.keys(event).sort()).toEqual(['phase', 'type']);
+      expect(await readCodingEvents(settings)).toEqual([]);
+      expect(await readCodingEvents(characters)).toEqual([]);
+      provider.assertComplete();
+      expect(provider.inspectionErrors).toEqual([]);
+      expect(fixture.capturedLogEvidence).toEqual({ apiKey: false, authorizedRoot: false, authorizationHeader: false, sentinels: [false, false] });
+    } finally { try { await fixture?.dispose(); } finally { await provider.close(); } }
+  });
+  for (const mode of ['新对话', '配置变更'] as const) {
+    test(`具体许可等待中${mode}使旧 ID 失效且保留文件`, async () => {
+      test.setTimeout(120000);
+      const provider = await startProviderServer([
+        { response: codingResponse([{ name: 'write', args: { path: 'existing.txt', content: '不应覆盖' } }]) },
+        { response: characterChatResponse('新的普通聊天正常'), inspect: expectCharacterChatRequest }
+      ]);
+      let fixture: AppFixture | undefined;
+      try {
+        fixture = await (await loadElectronFixtureModule()).createElectronAppFixture({ workspaceRoot: resolve(process.cwd()), apiKey: provider.apiKey });
+        await writeFile(join(fixture.authorizedRootDirectory, 'existing.txt'), '原文件正文');
+        const { chat, pet } = await configureCodingApp(fixture, provider);
+        await chat.evaluate(() => { const state = globalThis as typeof globalThis & { __permissionId?: string }; window.myself.onTaskEvent(event => { if (event.type === 'task_permission_required') state.__permissionId = event.actionId; }); });
+        await submitChatMessage(chat, '修改 existing.txt 文件');
+        await approveCodingScope(chat);
+        await expect(chat.getByRole('button', { name: '确认覆盖文件' })).toBeEnabled();
+        const id = await chat.evaluate(() => (globalThis as typeof globalThis & { __permissionId?: string }).__permissionId!);
+        if (mode === '配置变更') await pet.evaluate(() => window.myself.saveModelRoute({ primaryProfileId: 'coding-e2e', chatProfileId: 'coding-e2e', agentProfileId: 'coding-e2e', visionProfileId: null, fallbackProfileIds: [], allowCrossProviderFallback: false }));
+        else await chat.getByRole('button', { name: mode, exact: true }).click();
+        await expect(chat.getByRole('region', { name: '具体操作许可' })).toHaveCount(0);
+        await expect(chat.evaluate(id => window.myself.confirmAction(id), id)).rejects.toThrow();
+        expect(await readFile(join(fixture.authorizedRootDirectory, 'existing.txt'), 'utf8')).toBe('原文件正文');
+        await submitChatMessage(chat, '现在聊聊天');
+        await expect(chat.getByText('新的普通聊天正常', { exact: true })).toBeVisible();
+        provider.assertComplete();
+        expect(provider.inspectionErrors).toEqual([]);
+      } finally { try { await fixture?.dispose(); } finally { await provider.close(); } }
+    });
+  }
+  test('停止运行中的 SSE 任务清理旧请求，迟到正文不进入新聊天', async () => {
+    test.setTimeout(120000);
+    const gate = createProviderResponseGate();
+    const provider = await startProviderServer([
+      { response: codingResponse([{ name: 'read', args: { path: 'note.txt' } }]) },
+      { response: codingResponse('迟到正文不应显示'), gate },
+      { response: characterChatResponse('取消后普通聊天正常'), inspect: expectCharacterChatRequest }
+    ]);
+    let fixture: AppFixture | undefined;
+    try {
+      fixture = await (await loadElectronFixtureModule()).createElectronAppFixture({ workspaceRoot: resolve(process.cwd()), apiKey: provider.apiKey });
+      await writeFile(join(fixture.authorizedRootDirectory, 'note.txt'), '取消任务正文');
+      const { chat } = await configureCodingApp(fixture, provider);
+      await submitChatMessage(chat, '读取 note.txt');
+      await approveCodingScope(chat);
+      await expect.poll(() => gate.isWaiting()).toBe(true);
+      await chat.getByRole('button', { name: '停止当前任务' }).click();
+      await expect(chat.locator('.phase-pill')).toHaveClass(/phase-cancelled/u);
+      await expect.poll(() => gate.isWaiting()).toBe(false);
+      await submitChatMessage(chat, '现在聊聊天');
+      await expect(chat.getByText('取消后普通聊天正常', { exact: true })).toBeVisible();
+      await expect(chat.getByText('迟到正文不应显示', { exact: true })).toHaveCount(0);
+      provider.assertComplete();
+      expect(provider.inspectionErrors).toEqual([]);
+    } finally { gate.release(); try { await fixture?.dispose(); } finally { await provider.close(); } }
+  });
+});
 
 type PetPlacementForE2e = Readonly<{
   characterId: string;
@@ -4517,13 +4649,7 @@ test.describe('自主行为最小闭环', () => {
           expect(request.toolChoiceWasExplicit).toBe(true);
         }
       },
-      {
-        response: toolResponse(
-          'b7-long-create',
-          'builtin.files.create_file',
-          { relativePath: 'b7-long-pending.txt', content: '不应落盘' }
-        )
-      }
+
     ]);
     const fixture = await fixtureModule.createElectronAppFixture({
       workspaceRoot: resolve(process.cwd()),
@@ -4645,13 +4771,11 @@ test.describe('自主行为最小闭环', () => {
 
       // 文件确认卡使 Scheduler 继续暂停，取消后才恢复同一剩余时间。
       await submitChatMessage(chat, '创建文件 b7-long-pending.txt');
-      const confirmation = chat.getByRole('region', {
-        name: '创建文件 b7-long-pending.txt'
-      });
+      const confirmation = chat.getByRole('article', { name: '本地任务授权' });
       await expect(confirmation).toBeVisible();
       await expect.poll(() => fixture.getConversationProbe()).toMatchObject({
         phase: 'awaiting_confirmation',
-        fileConfirmationVisible: true
+        fileConfirmationVisible: false
       });
       const confirmationOffset = (await behaviorActions(pet)).length;
       const confirmationMotion = await fixture.getCharacterMotionDeltaProbe();
@@ -4659,7 +4783,7 @@ test.describe('自主行为最小闭环', () => {
       await expect(confirmation).toBeVisible();
       expect((await behaviorActions(pet)).slice(confirmationOffset)).toEqual([]);
       expect(await fixture.getCharacterMotionDeltaProbe()).toEqual(confirmationMotion);
-      await confirmation.getByRole('button', { name: '先不创建' }).click();
+      await confirmation.getByRole('button', { name: '取消', exact: true }).click();
       await expect(confirmation).toHaveCount(0);
 
       // autonomous 解除阻塞后在 10–30 秒内发起当前单屏随机移动。
@@ -5106,8 +5230,9 @@ test.describe('真实 Provider 业务闭环', () => {
       expect(cloud.requests).toHaveLength(0);
 
       await submitChatMessage(chat, pendingPrompt);
-      const pendingCard = chat.getByRole('region', { name: '创建文件 switch-stale.txt' });
+      const pendingCard = chat.getByRole('article', { name: '本地任务授权' });
       await expect(pendingCard).toBeVisible();
+      await expect(pendingCard).toContainText('builtin-local');
       await expect(lstat(join(fixture.authorizedRootDirectory, 'switch-stale.txt')))
         .rejects.toMatchObject({ code: 'ENOENT' });
 
@@ -5267,27 +5392,8 @@ test.describe('真实 Provider 业务闭环', () => {
       { response: { type: 'text', text: connectionReplies[0] } },
       { response: { type: 'text', text: connectionReplies[1] } },
       ...chatSteps,
-      {
-        response: toolResponse(
-          'acceptance-list-root',
-          'builtin.files.list_files',
-          { relativePath: '.' }
-        )
-      },
-      {
-        response: { type: 'text', text: fileReply },
-        inspect: request => {
-          const result = lastToolResult(request) as {
-            toolName?: string;
-            entries?: Array<{ relativePath?: string; type?: string }>;
-          };
-          if (result.toolName !== 'list_files'
-            || !result.entries?.some(entry => entry.relativePath === 'docs'
-              && entry.type === 'directory')) {
-            throw new Error('文件列表结果未保持授权边界');
-          }
-        }
-      }
+      { response: codingResponse([{ name: 'read', args: { path: '.' } }]) },
+      { response: codingResponse(fileReply), inspectRaw: request => { expect(JSON.stringify(request.messages)).toContain('docs'); } }
     ]);
     let fixture: Awaited<ReturnType<ElectronFixtureModule['createElectronAppFixture']>>;
     try {
@@ -5416,6 +5522,7 @@ test.describe('真实 Provider 业务闭环', () => {
       await settings.getByRole('button', { name: '关闭设置', exact: true }).click();
 
       await submitChatMessage(chat, fileRequestAfterAuthorization);
+      await approveCodingScope(chat);
       await expect(chat.getByText(fileReply, { exact: true })).toBeVisible();
       await expect.poll(() => fixture.getConversationProbe()).toMatchObject({
         historyDisclosureVisible: false,
@@ -5688,53 +5795,12 @@ test.describe('真实 Provider 业务闭环', () => {
       }
     ]);
     const targetProvider = await startProviderServer([
-      {
-        // 跨 Provider 的能力请求先由目标 Agent 预检，再在用户选定披露范围后续跑。
-        response: { type: 'text', text: '仅当前文件任务预检完成' },
-        inspect: request => {
-          if (request.tools.length === 0
-            || request.messages.some(message => message.content === privateMessages[0])
-            || request.messages.some(message => message.content === sourceReplies[0])
-            || request.messages.at(-1)?.content !== privateMessages[1]) {
-            throw new Error('仅当前消息决策向文件 Agent 携带了旧历史');
-          }
-        }
-      },
-      {
-        response: { type: 'text', text: '仅当前文件任务已结束' },
-        inspect: request => {
-          if (request.tools.length === 0
-            || request.messages.some(message => message.content === privateMessages[0])
-            || request.messages.some(message => message.content === sourceReplies[0])
-            || request.messages.length !== 3
-            || request.messages.at(-1)?.role !== 'system') {
-            throw new Error('仅当前消息确认续跑向文件 Agent 携带了旧历史');
-          }
-        }
-      },
-      {
-        response: { type: 'text', text: '共享文件任务预检完成' },
-        inspect: request => {
-          if (request.tools.length === 0
-            || !request.messages.some(message => message.content === privateMessages[2])
-            || !request.messages.some(message => message.content === sourceReplies[1])
-            || request.messages.at(-1)?.content !== privateMessages[3]) {
-            throw new Error('单次共享没有把可见历史交给文件 Agent');
-          }
-        }
-      },
-      {
-        response: { type: 'text', text: '共享文件任务已结束' },
-        inspect: request => {
-          if (request.tools.length === 0
-            || !request.messages.some(message => message.content === privateMessages[2])
-            || !request.messages.some(message => message.content === sourceReplies[1])
-            || request.messages.length !== 5
-            || request.messages.at(-1)?.role !== 'system') {
-            throw new Error('单次共享确认续跑没有把可见历史交给文件 Agent');
-          }
-        }
-      }
+      { response: codingResponse('仅当前文件任务已结束'), inspectRaw: request => {
+        const text = JSON.stringify(request.messages); expect(text).not.toContain(privateMessages[0]); expect(text).not.toContain(sourceReplies[0]); expect(text).toContain(privateMessages[1]);
+      } },
+      { response: codingResponse('共享文件任务已结束'), inspectRaw: request => {
+        const text = JSON.stringify(request.messages); expect(text).toContain(privateMessages[2]); expect(text).toContain(sourceReplies[1]); expect(text).toContain(privateMessages[3]);
+      } }
     ]);
     const fixture = await fixtureModule.createElectronAppFixture({
       workspaceRoot: resolve(process.cwd()),
@@ -5815,6 +5881,7 @@ test.describe('真实 Provider 业务闭环', () => {
         historyDisclosureVisible: true
       });
       await chat.getByRole('button', { name: '仅发送当前消息' }).click();
+      await approveCodingScope(chat);
       await expect.poll(() => fixture.getConversationProbe()).toMatchObject({
         visibleMessageCount: 4,
         historyDisclosureVisible: false
@@ -5848,6 +5915,7 @@ test.describe('真实 Provider 业务闭环', () => {
         historyDisclosureVisible: true
       });
       await chat.getByRole('button', { name: '仅本次共享历史' }).click();
+      await approveCodingScope(chat);
       await expect.poll(() => fixture.getConversationProbe()).toMatchObject({
         visibleMessageCount: 4,
         historyDisclosureVisible: false
@@ -5864,8 +5932,8 @@ test.describe('真实 Provider 业务闭环', () => {
       });
 
       expect(sourceProvider.requests).toHaveLength(2);
-      // 两种披露决定均必须经历“预检 + 依据用户决定续跑”两个目标 Provider 请求。
-      expect(targetProvider.requests).toHaveLength(4);
+      // 两种披露决定各只启动获准后的正式 Core 请求。
+      expect(targetProvider.requests).toHaveLength(2);
 
       sourceProvider.assertComplete();
       targetProvider.assertComplete();
@@ -5965,8 +6033,9 @@ test.describe('真实 Provider 业务闭环', () => {
         fileConfirmationVisible: false
       });
 
+      // 重置已经中止旧连接，解除门闩不能把取消的 HTTP 误算成完成响应。
+      await expect.poll(() => oldGate.isWaiting()).toBe(false);
       oldGate.release();
-      await provider.waitForCompletedResponses(1);
       await expect.poll(() => fixture.getConversationProbe()).toMatchObject({
         phase: 'idle',
         visibleMessageCount: 0,
@@ -5975,7 +6044,7 @@ test.describe('真实 Provider 业务闭环', () => {
       });
 
       await submitChatMessage(chat, newText);
-      await provider.waitForCompletedResponses(2);
+      await provider.waitForCompletedResponses(1);
       await expect.poll(() => fixture.getConversationProbe()).toMatchObject({
         visibleMessageCount: 2,
         historyDisclosureVisible: false,
@@ -5999,986 +6068,6 @@ test.describe('真实 Provider 业务闭环', () => {
     }
   });
 
-  test('文件动作待确认时新建对话会使旧确认失效且不改文件', async () => {
-    test.setTimeout(120_000);
-    const fixtureModule = await loadElectronFixtureModule();
-    const fileName = `待确认-${randomBytes(12).toString('hex')}.txt`;
-    const newText = `重置后正文-${randomBytes(12).toString('hex')}`;
-    const provider = await startProviderServer([
-      {
-        response: toolResponse(
-          'reset-pending-create',
-          'builtin.files.create_file',
-          { relativePath: fileName }
-        ),
-        inspect: request => {
-          if (request.tools.length === 0) throw new Error('文件 Agent 未收到工具白名单');
-        }
-      },
-      {
-        response: characterChatResponse('重置后新会话回复'),
-        inspect: request => {
-          const visible = request.messages.slice(1);
-          if (request.tools.length !== 0
-            || visible.length !== 1
-            || visible[0]?.content !== newText) {
-            throw new Error('重置后新会话携带了旧文件任务上下文');
-          }
-        }
-      }
-    ]);
-    const fixture = await fixtureModule.createElectronAppFixture({
-      workspaceRoot: resolve(process.cwd()),
-      apiKey: provider.apiKey,
-      launchTimeoutMs: 15_000
-    });
-    try {
-      await expect.poll(() => Boolean(
-        rendererPage(fixture, 'pet') && rendererPage(fixture, 'chat')
-      )).toBe(true);
-      const pet = rendererPage(fixture, 'pet');
-      if (!pet) throw new Error('缺少 pet Renderer');
-      const chat = rendererPage(fixture, 'chat');
-      if (!chat) throw new Error('缺少 chat Renderer');
-      await pet.evaluate(async ({ baseUrl, apiKey }) => {
-        await window.myself.saveProviderProfile({
-          profile: {
-            id: 'pending-reset-e2e',
-            displayName: '确认重置 E2E',
-            mode: 'custom',
-            protocol: 'openai-compatible',
-            baseUrl,
-            modelId: 'pending-reset-e2e-model',
-            additionalParameters: {},
-            capabilities: ['chat', 'tools']
-          },
-          secret: apiKey,
-          persistSecret: false
-        });
-        await window.myself.saveModelRoute({
-          primaryProfileId: 'pending-reset-e2e',
-          chatProfileId: 'pending-reset-e2e',
-          agentProfileId: 'pending-reset-e2e',
-          visionProfileId: null,
-          fallbackProfileIds: [],
-          allowCrossProviderFallback: false
-        });
-        await window.myself.savePrivacySettings({
-          dataCategories: { memory: false },
-          longTermMemory: false,
-          proactivityMode: 'passive'
-        });
-        await window.myself.chooseAuthorizedRoot();
-        await window.myself.openChat();
-      }, { baseUrl: provider.baseUrl, apiKey: provider.apiKey });
-
-      const target = join(fixture.authorizedRootDirectory, fileName);
-      expect(await pathExistsForAssertion(target)).toBe(false);
-      await submitChatMessage(chat, `创建 ${fileName}`);
-      await expect.poll(() => fixture.getConversationProbe()).toMatchObject({
-        phase: 'awaiting_confirmation',
-        visibleMessageCount: 1,
-        historyDisclosureVisible: false,
-        fileConfirmationVisible: true
-      });
-      const oldConfirmation = chat.getByRole('button', { name: '确认创建文件' });
-      await expect(oldConfirmation).toBeVisible();
-      await chat.getByRole('button', { name: '新对话' }).click();
-      await expect.poll(() => fixture.getConversationProbe()).toMatchObject({
-        phase: 'idle',
-        visibleMessageCount: 0,
-        historyDisclosureVisible: false,
-        fileConfirmationVisible: false
-      });
-      await expect(oldConfirmation).toHaveCount(0);
-      expect(await pathExistsForAssertion(target)).toBe(false);
-
-      await submitChatMessage(chat, newText);
-      await expect.poll(() => fixture.getConversationProbe()).toMatchObject({
-        visibleMessageCount: 2,
-        historyDisclosureVisible: false,
-        fileConfirmationVisible: false
-      });
-      expect(await pathExistsForAssertion(target)).toBe(false);
-      provider.assertComplete();
-      expect(provider.inspectionErrors).toEqual([]);
-
-      const captured = fixture.logs.join('\n');
-      for (const privateText of [fileName, newText, provider.apiKey, target]) {
-        expect(captured.includes(privateText), '待确认重置诊断不得泄露私密数据').toBe(false);
-      }
-    } finally {
-      await fixture.dispose();
-      await provider.close();
-    }
-  });
-
-  test('默认无搬运动作角色确认后立即执行真实回收站删除', async () => {
-    test.setTimeout(120_000);
-    const fixtureModule = await loadElectronFixtureModule();
-    const provider = await startProviderServer([
-      {
-        response: toolResponse(
-          'recycle-success',
-          'builtin.files.delete_file',
-          { relativePath: 'success.txt' }
-        )
-      },
-      {
-        response: { type: 'text', text: 'success.txt 已移入回收站。' },
-        inspect: request => {
-          const result = lastToolResult(request) as {
-            toolName?: string;
-            targetRelativePath?: string;
-          };
-          if (
-            result.toolName !== 'delete_file'
-            || result.targetRelativePath !== 'success.txt'
-          ) throw new Error('回收站结果不符合脚本预期');
-        }
-      }
-    ]);
-    const fixture = await fixtureModule.createElectronAppFixture({
-      workspaceRoot: resolve(process.cwd()),
-      apiKey: provider.apiKey,
-      launchTimeoutMs: 15_000,
-      enableSoftwareRasterizer: true
-    });
-    const recycleBinDirectory = fixture.recycleBinDirectory;
-    if (!recycleBinDirectory) throw new Error('缺少隔离回收站目录');
-    try {
-      await expect.poll(() => Boolean(
-        rendererPage(fixture, 'pet') && rendererPage(fixture, 'chat')
-      )).toBe(true);
-      const pet = rendererPage(fixture, 'pet');
-      if (!pet) throw new Error('缺少 pet Renderer');
-      const chat = rendererPage(fixture, 'chat');
-      if (!chat) throw new Error('缺少 chat Renderer');
-      await pet.evaluate(async ({ baseUrl, apiKey }) => {
-        await window.myself.saveProviderProfile({
-          profile: {
-            id: 'recycle-e2e',
-            displayName: '回收站 E2E',
-            mode: 'custom',
-            protocol: 'openai-compatible',
-            baseUrl,
-            modelId: 'recycle-e2e-model',
-            additionalParameters: {},
-            capabilities: ['chat', 'tools']
-          },
-          secret: apiKey,
-          persistSecret: false
-        });
-        await window.myself.saveModelRoute({
-          primaryProfileId: 'recycle-e2e',
-          chatProfileId: 'recycle-e2e',
-          agentProfileId: 'recycle-e2e',
-          visionProfileId: null,
-          fallbackProfileIds: [],
-          allowCrossProviderFallback: false
-        });
-        await window.myself.savePrivacySettings({
-          dataCategories: { memory: false },
-          longTermMemory: false,
-          proactivityMode: 'passive'
-        });
-        await window.myself.chooseAuthorizedRoot();
-        await window.myself.openChat();
-      }, { baseUrl: provider.baseUrl, apiKey: provider.apiKey });
-      await expect.poll(() => chat.evaluate(() => document.visibilityState)).toBe('visible');
-
-      const source = join(fixture.authorizedRootDirectory, 'success.txt');
-      await writeFile(source, 'success.txt 内容', 'utf8');
-      await submitChatMessage(chat, '把 success.txt 移动到回收站');
-      const card = chat.getByRole('region', { name: '删除文件 success.txt' });
-      await expect(card).toBeVisible();
-      await expect(card.getByText('success.txt', { exact: true })).toBeVisible();
-      await expect(card.getByText('将移入 Windows 回收站，可从回收站恢复；执行前还会再次检查。'))
-        .toBeVisible();
-      expect(await pathExistsForAssertion(source)).toBe(true);
-      await card.getByRole('button', { name: '确认删除' }).click();
-      await expect.poll(() => pathExistsForAssertion(source)).toBe(false);
-      await expect(chat.getByText('success.txt 已移入回收站。')).toBeVisible();
-      expect((await readdir(recycleBinDirectory)).filter(name => name.startsWith('.attempt-')))
-        .toEqual(['.attempt-1']);
-      provider.assertComplete();
-      expect(provider.requests).toHaveLength(2);
-      expect(provider.inspectionErrors).toEqual([]);
-      const captured = fixture.logs.join('\n');
-      expect(captured).not.toContain(fixture.authorizedRootDirectory);
-      expect(captured).not.toContain(recycleBinDirectory);
-      expect(captured).not.toContain('success.txt 内容');
-    } finally {
-      await fixture.dispose();
-      await provider.close();
-    }
-  });
-
-  test('文件移动确认前无副作用，确认后在真实授权根保留内容并移除源文件', async () => {
-    test.setTimeout(120_000);
-    const fixtureModule = await loadElectronFixtureModule();
-    const provider = await startProviderServer([
-      {
-        response: toolResponse(
-          'move-file-success',
-          'builtin.files.move_file',
-          { sourceRelativePath: 'A', targetDirectoryRelativePath: 'B' }
-        ),
-        inspect: request => {
-          const names = request.tools.map(tool => tool.function.name);
-          const expectedNames = [
-            'builtin__files__list_files',
-            'builtin__files__read_file',
-            'builtin__files__glob_files',
-            'builtin__files__grep_files',
-            'builtin__files__create_file',
-            'builtin__files__move_file',
-            'builtin__files__create_directory',
-            'builtin__files__apply_patch',
-            'builtin__files__edit_file',
-            'builtin__files__delete_file',
-            'builtin__capability__request_clarification'
-          ];
-          if (JSON.stringify(names) !== JSON.stringify(expectedNames)
-            || names.includes('builtin__powershell__run')) {
-            throw new Error('文件任务没有公开完整受控文件工具面，或意外包含 PowerShell');
-          }
-        }
-      },
-      {
-        response: { type: 'text', text: '文件已移动到 B/A。' },
-        inspect: request => {
-          const result = lastToolResult(request) as { toolName?: string; targetRelativePath?: string };
-          if (result.toolName !== 'move_file' || result.targetRelativePath !== 'B/A') {
-            throw new Error('移动结果不符合脚本预期');
-          }
-        }
-      }
-    ]);
-    const fixture = await fixtureModule.createElectronAppFixture({
-      workspaceRoot: resolve(process.cwd()),
-      apiKey: provider.apiKey,
-      launchTimeoutMs: 15_000,
-      enableSoftwareRasterizer: true
-    });
-    try {
-      await expect.poll(() => Boolean(
-        rendererPage(fixture, 'pet') && rendererPage(fixture, 'chat')
-      )).toBe(true);
-      const pet = rendererPage(fixture, 'pet');
-      const chat = rendererPage(fixture, 'chat');
-      if (!pet || !chat) throw new Error('缺少桌宠或聊天 Renderer');
-      await pet.evaluate(async ({ baseUrl, apiKey }) => {
-        await window.myself.saveProviderProfile({
-          profile: {
-            id: 'move-file-e2e',
-            displayName: '文件移动 E2E',
-            mode: 'custom',
-            protocol: 'openai-compatible',
-            baseUrl,
-            modelId: 'move-file-e2e-model',
-            additionalParameters: {},
-            capabilities: ['chat', 'tools']
-          },
-          secret: apiKey,
-          persistSecret: false
-        });
-        await window.myself.saveModelRoute({
-          primaryProfileId: 'move-file-e2e',
-          chatProfileId: 'move-file-e2e',
-          agentProfileId: 'move-file-e2e',
-          visionProfileId: null,
-          fallbackProfileIds: [],
-          allowCrossProviderFallback: false
-        });
-        await window.myself.savePrivacySettings({
-          dataCategories: { memory: false },
-          longTermMemory: false,
-          proactivityMode: 'passive'
-        });
-        await window.myself.chooseAuthorizedRoot();
-        await window.myself.openChat();
-      }, { baseUrl: provider.baseUrl, apiKey: provider.apiKey });
-      await expect.poll(() => chat.evaluate(() => document.visibilityState)).toBe('visible');
-
-      const source = join(fixture.authorizedRootDirectory, 'A');
-      const target = join(fixture.authorizedRootDirectory, 'B', 'A');
-      await mkdir(join(fixture.authorizedRootDirectory, 'B'), { recursive: true });
-      await writeFile(source, '移动 E2E 正文', 'utf8');
-
-      await submitChatMessage(chat, '把 A 移动到 B');
-      const card = chat.getByRole('region', { name: '移动文件 A 到 B/A' });
-      await expect(card).toBeVisible();
-      await expect(card.getByText('A', { exact: true })).toBeVisible();
-      await expect(card.getByText('B/A', { exact: true })).toBeVisible();
-      expect(await pathExistsForAssertion(source)).toBe(true);
-      expect(await pathExistsForAssertion(target)).toBe(false);
-
-      await card.getByRole('button', { name: '确认移动文件' }).click();
-      await expect.poll(() => pathExistsForAssertion(source)).toBe(false);
-      await expect.poll(() => pathExistsForAssertion(target)).toBe(true);
-      expect(await readTextForAssertion(target)).toBe('移动 E2E 正文');
-      await expect(chat.getByText('文件已移动到 B/A。')).toBeVisible();
-      provider.assertComplete();
-      expect(provider.inspectionErrors).toEqual([]);
-      const captured = fixture.logs.join('\n');
-      expect(captured).not.toContain(fixture.authorizedRootDirectory);
-      expect(captured).not.toContain('移动 E2E 正文');
-    } finally {
-      await fixture.dispose();
-      await provider.close();
-    }
-  });
-
-  test('会话任务事件只向 chat 完整投递、向 pet 只投递 phase 且非 chat 不能执行票据', async () => {
-    const fixtureModule = await loadElectronFixtureModule();
-
-    const providerProfileName = '投影隐私专用 Provider';
-    const bodySentinel = 'projection-private-body-sentinel';
-    const provider = await startProviderServer([
-      { response: characterChatResponse(bodySentinel), inspect: expectCharacterChatRequest },
-      {
-        response: toolResponse(
-          'projection-file-action',
-          'builtin.files.create_file',
-          { relativePath: 'projection-privacy.txt', content: bodySentinel }
-        )
-      },
-      { response: { type: 'text', text: '投影文件已创建。' } },
-      {
-        response: toolResponse(
-          'projection-powershell-action',
-          'builtin.powershell.run',
-          { command: `Write-Output ${bodySentinel}` }
-        )
-      }
-    ]);
-    let fixture: Awaited<ReturnType<ElectronFixtureModule['createElectronAppFixture']>>;
-    try {
-      fixture = await fixtureModule.createElectronAppFixture({
-        workspaceRoot: resolve(process.cwd()),
-        apiKey: provider.apiKey,
-        logSentinels: [bodySentinel]
-      });
-    } catch (error) {
-      await provider.close();
-      throw error;
-    }
-
-    const readEvents = (page: Page, view: string): Promise<unknown[]> => page.evaluate(key => (
-      globalThis as typeof globalThis & {
-        __projectedTaskEvents?: Record<string, unknown[]>;
-      }
-    ).__projectedTaskEvents?.[key] ?? [], view);
-
-    try {
-      const petPage = await waitForRendererPage(fixture, 'pet');
-      const chatPage = await waitForRendererPage(fixture, 'chat');
-      const settingsPage = await waitForRendererPage(fixture, 'settings');
-
-      await petPage.evaluate(() => window.myself.openChat());
-      await expect.poll(() => chatPage.evaluate(() => document.visibilityState)).toBe('visible');
-      await chatPage.getByRole('button', { name: '设置' }).click();
-      await expect.poll(() => settingsPage.evaluate(() => document.visibilityState))
-        .toBe('visible');
-      await settingsPage.getByLabel('自定义').check();
-      await settingsPage.getByText('高级设置', { exact: true }).click();
-      await settingsPage.getByLabel('档案名称').fill(providerProfileName);
-      await settingsPage.getByLabel('Base URL').fill(provider.baseUrl);
-      await settingsPage.getByLabel('Model ID').fill('projection-privacy-model');
-      await settingsPage.getByLabel('API Key', { exact: true }).fill(provider.apiKey);
-      await settingsPage.getByRole('button', { name: '保存档案' }).click();
-      await expect(settingsPage.getByText('模型档案已保存。')).toBeVisible();
-      await settingsPage.getByRole('combobox', { name: '主模型', exact: true })
-        .selectOption({ label: providerProfileName });
-      await settingsPage.getByRole('combobox', { name: 'Agent 模型', exact: true })
-        .selectOption({ label: providerProfileName });
-      await settingsPage.getByRole('button', { name: '保存路由' }).click();
-      await expect(settingsPage.getByText('模型路由已保存。')).toBeVisible();
-      await settingsPage.getByRole('button', { name: '隐私', exact: true }).click();
-      await settingsPage.getByRole('button', { name: '保存隐私设置' }).click();
-      await expect(settingsPage.getByText('隐私设置已保存。')).toBeVisible();
-      await settingsPage.getByRole('button', { name: '选择目录' }).click();
-      await expect(settingsPage.getByText('授权目录已更新。')).toBeVisible();
-
-      await settingsPage.getByRole('button', { name: '角色工作室' }).click();
-      const charactersPage = await waitForRendererPage(fixture, 'characters');
-      await expect.poll(() => charactersPage.evaluate(() => document.visibilityState))
-        .toBe('visible');
-
-      // 四个真实 Renderer 各自持有观测数组，避免共享状态掩盖跨窗口泄漏。
-      for (const [view, page] of [
-        ['pet', petPage],
-        ['chat', chatPage],
-        ['settings', settingsPage],
-        ['characters', charactersPage]
-      ] as const) {
-        await page.evaluate(key => {
-          const scope = globalThis as typeof globalThis & {
-            __projectedTaskEvents?: Record<string, unknown[]>;
-          };
-          scope.__projectedTaskEvents ??= {};
-          scope.__projectedTaskEvents[key] = [];
-          window.myself.onTaskEvent(event => scope.__projectedTaskEvents?.[key]?.push(event));
-        }, view);
-      }
-
-      await submitChatMessage(chatPage, '请和我普通聊天');
-      await expect(chatPage.getByText(bodySentinel, { exact: true })).toBeVisible();
-
-      await submitChatMessage(chatPage, '创建 projection-privacy.txt');
-      const fileConfirmation = chatPage.getByRole('region', {
-        name: '创建文件 projection-privacy.txt'
-      });
-      await expect(fileConfirmation).toBeVisible();
-      await expect.poll(() => chatPage.evaluate(() => {
-        const events = (globalThis as typeof globalThis & {
-          __projectedTaskEvents?: Record<string, unknown[]>;
-        }).__projectedTaskEvents?.chat ?? [];
-        return events.some(event => (
-          event !== null
-          && typeof event === 'object'
-          && (event as { type?: unknown; action?: { actionId?: unknown } }).type === 'pending_action'
-          && typeof (event as { action?: { actionId?: unknown } }).action?.actionId === 'string'
-        ));
-      })).toBe(true);
-      const actionId = await chatPage.evaluate(() => {
-        const events = (globalThis as typeof globalThis & {
-          __projectedTaskEvents?: Record<string, unknown[]>;
-        }).__projectedTaskEvents?.chat ?? [];
-        const pendingAction = events.find(event => (
-          event !== null
-          && typeof event === 'object'
-          && (event as { type?: unknown; action?: { actionId?: unknown } }).type === 'pending_action'
-          && typeof (event as { action?: { actionId?: unknown } }).action?.actionId === 'string'
-        )) as { action: { actionId: string } } | undefined;
-        return pendingAction?.action.actionId ?? null;
-      });
-      expect(actionId).toBeTruthy();
-      const target = join(fixture.authorizedRootDirectory, 'projection-privacy.txt');
-      for (const page of [petPage, settingsPage, charactersPage]) {
-        await expect(page.evaluate(async id => {
-          await window.myself.confirmAction(id);
-        }, actionId!)).rejects.toThrow(/AGENT_IPC_SENDER_INVALID/u);
-      }
-
-      await expect(fileConfirmation).toBeVisible();
-      expect(await pathExistsForAssertion(target)).toBe(false);
-      await fileConfirmation.getByRole('button', { name: '确认创建文件' }).click();
-      await expect.poll(() => pathExistsForAssertion(target)).toBe(true);
-      await expect(chatPage.getByText('投影文件已创建。', { exact: true })).toBeVisible();
-
-      await submitChatMessage(chatPage, `运行 Write-Output ${bodySentinel}`);
-      const powershellConfirmation = chatPage.getByRole('region', {
-        name: '运行 PowerShell 命令'
-      });
-      await expect(powershellConfirmation).toBeVisible();
-      await powershellConfirmation.getByRole('button', { name: '先不运行' }).click();
-      await expect(powershellConfirmation).toHaveCount(0);
-
-      const chatEvents = await readEvents(chatPage, 'chat');
-      const petEvents = await readEvents(petPage, 'pet');
-      const settingsEvents = await readEvents(settingsPage, 'settings');
-      const charactersEvents = await readEvents(charactersPage, 'characters');
-
-      expect(chatEvents).toContainEqual({
-        type: 'message',
-        role: 'assistant',
-        text: bodySentinel
-      });
-      expect(chatEvents.some(event => (
-        event !== null
-        && typeof event === 'object'
-        && (event as { type?: unknown }).type === 'phase'
-      ))).toBe(true);
-      const pendingActions = chatEvents.flatMap(event => {
-        if (event === null
-          || typeof event !== 'object'
-          || (event as { type?: unknown }).type !== 'pending_action') return [];
-        const action = (event as { action?: Record<string, unknown> }).action;
-        return action ? [action] : [];
-      });
-      expect(pendingActions.map(action => action['category'])).toEqual(['file', 'powershell']);
-      expect(pendingActions[0]).toMatchObject({
-        category: 'file',
-        contentPreview: bodySentinel
-      });
-      expect(pendingActions[1]).toMatchObject({
-        category: 'powershell',
-        command: `Write-Output ${bodySentinel}`
-      });
-
-      expect(petEvents.length).toBeGreaterThan(0);
-      for (const event of petEvents) {
-        expect(event).not.toBeNull();
-        expect(typeof event).toBe('object');
-        expect((event as { type?: unknown }).type).toBe('phase');
-        expect(Object.keys(event as object).sort()).toEqual(['phase', 'type']);
-      }
-      expect(settingsEvents).toEqual([]);
-      expect(charactersEvents).toEqual([]);
-
-      // 非 chat 投影不得携带票据、命令、预览、Provider、正文或授权根事实。
-      const forbiddenValues = [
-        'actionId',
-        'command',
-        'contentPreview',
-        'diffPreview',
-        'requestId',
-        providerProfileName,
-        bodySentinel,
-        fixture.authorizedRootDirectory
-      ];
-      for (const serialized of [
-        JSON.stringify(petEvents),
-        JSON.stringify(settingsEvents),
-        JSON.stringify(charactersEvents)
-      ]) {
-        for (const forbidden of forbiddenValues) expect(serialized).not.toContain(forbidden);
-      }
-
-      provider.assertComplete();
-      expect(provider.inspectionErrors).toEqual([]);
-    } finally {
-      try {
-        await fixture.dispose();
-      } finally {
-        await provider.close();
-      }
-    }
-  });
-
-  test('通过正式白名单完成设置、文件操作与聊天窗口状态', async () => {
-    test.setTimeout(120_000);
-    const fixtureModule = await loadElectronFixtureModule();
-
-    const privacyLogSentinels = [
-      'task6-user-body-sentinel',
-      'task6-model-body-sentinel',
-      'task6-file-body-sentinel',
-      "Write-Output task6-stdout-sentinel; [Console]::Error.Write('task6-stderr-sentinel')",
-      'task6-stdout-sentinel',
-      'task6-stderr-sentinel'
-    ] as const;
-    const providerSteps: ProviderStep[] = [
-      { response: { type: 'text', text: '本地连接正常' } },
-      {
-        response: {
-          type: 'text',
-          text: '准备列出当前目录。',
-          structured_output: {
-            activity: '协助处理文件',
-            status: 'working',
-            movementControl: { kind: 'keep' },
-            behaviorPlan: { kind: 'none' },
-            capabilityPlan: { kind: 'agent_task', preferredTool: 'list_files' }
-          }
-        }
-      },
-      {
-        response: toolResponse(
-          'list-root',
-          'builtin.files.list_files',
-          { relativePath: '.' }
-        ),
-        inspect: request => {
-          const names = request.tools.map(
-            (tool: { function: { name: string } }) => tool.function.name
-          );
-          const mcpToolNames = names.filter(name => name.startsWith('mcp__'));
-
-          if (mcpToolNames.length > 0) {
-            throw new Error('MCP 禁用时不得向 Provider 暴露 mcp.* 工具');
-          }
-          const expectedNames = [
-            'builtin__files__list_files',
-            'builtin__files__read_file',
-            'builtin__files__glob_files',
-            'builtin__files__grep_files',
-            'builtin__files__create_file',
-            'builtin__files__move_file',
-            'builtin__files__create_directory',
-            'builtin__files__apply_patch',
-            'builtin__files__edit_file',
-            'builtin__files__delete_file',
-            'builtin__capability__request_clarification'
-          ];
-          if (JSON.stringify(names) !== JSON.stringify(expectedNames)
-            || names.includes('builtin__powershell__run')) {
-            throw new Error('Provider 未收到完整受控文件工具白名单，或文件任务意外包含 PowerShell');
-          }
-        }
-      },
-      {
-        response: { type: 'text', text: 'task6-model-body-sentinel' },
-        inspect: request => {
-          const result = lastToolResult(request) as {
-            toolName?: string;
-            entries?: Array<{ relativePath?: string; type?: string }>;
-          };
-          if (result.toolName !== 'list_files'
-            || !result.entries?.some(entry => entry.relativePath === 'docs' && entry.type === 'directory')) {
-            throw new Error('列目录工具结果不符合脚本预期');
-          }
-        }
-      },
-      {
-        response: toolResponse(
-          'create-file',
-          'builtin.files.create_file',
-          { relativePath: 'ab.txt', content: 'task6-file-body-sentinel\n' }
-        )
-      },
-      {
-        response: { type: 'text', text: '文件已创建。' },
-        inspect: request => {
-          const result = lastToolResult(request) as { toolName?: string; targetRelativePath?: string };
-          if (result.toolName !== 'create_file' || result.targetRelativePath !== 'ab.txt') {
-            throw new Error('创建文件结果不符合脚本预期');
-          }
-        }
-      },
-      {
-        response: toolResponse('edit-file', 'builtin.files.edit_file', {
-          relativePath: 'ab.txt',
-          oldString: 'task6-file-body-sentinel\n',
-          newString: 'patched content\n',
-          replaceAll: false
-        })
-      },
-      {
-        response: { type: 'text', text: '补丁已应用。' },
-        inspect: request => {
-          const result = lastToolResult(request) as {
-            toolName?: string;
-            targetRelativePath?: string;
-          };
-          if (result.toolName !== 'edit_file'
-            || result.targetRelativePath !== 'ab.txt') {
-            throw new Error('精确编辑结果不符合脚本预期');
-          }
-        }
-      },
-      {
-        response: {
-          type: 'text',
-          text: '准备创建文件，等待你的逐次确认。',
-          structured_output: {
-            activity: '协助处理文件',
-            status: 'working',
-            movementControl: { kind: 'keep' },
-            behaviorPlan: { kind: 'none' },
-            capabilityPlan: { kind: 'agent_task', preferredTool: 'create_file' }
-          }
-        }
-      },
-      {
-        response: toolResponse(
-          'cancel-file',
-          'builtin.files.create_file',
-          { relativePath: 'cancelled.txt' }
-        )
-      },
-      {
-        response: toolResponse(
-          'powershell-success',
-          'builtin.powershell.run',
-          { command: "Write-Output task6-stdout-sentinel; [Console]::Error.Write('task6-stderr-sentinel')" }
-        ),
-        inspect: request => {
-          const names = request.tools.map(
-            (tool: { function: { name: string } }) => tool.function.name
-          );
-          if (names.length !== 1
-            || names[0] !== 'builtin__powershell__run') {
-            throw new Error(`PowerShell 会话工具白名单不符合预期：${JSON.stringify(names)}`);
-          }
-        }
-      },
-      {
-        response: { type: 'text', text: '命令成功。' },
-        inspect: request => {
-          const result = lastToolResult(request) as {
-            toolName?: string;
-            ok?: boolean;
-            status?: string;
-            exitCode?: number | null;
-            stdout?: string;
-            stderr?: string;
-          };
-          if (result.toolName !== 'powershell' || result.ok !== true
-            || result.status !== 'succeeded' || result.exitCode !== 0
-            || !result.stdout?.includes('task6-stdout-sentinel')
-            || !result.stderr?.includes('task6-stderr-sentinel')) {
-            throw new Error('PowerShell 成功结果不符合脚本预期');
-          }
-        }
-      },
-      {
-        response: toolResponse(
-          'powershell-failure',
-          'builtin.powershell.run',
-          { command: 'exit 7' }
-        )
-      },
-      {
-        response: { type: 'text', text: '命令失败。' },
-        inspect: request => {
-          const result = lastToolResult(request) as {
-            ok?: boolean;
-            status?: string;
-            exitCode?: number | null;
-          };
-          if (result.ok !== false || result.status !== 'failed' || result.exitCode !== 7) {
-            throw new Error('PowerShell 非零退出结果不符合脚本预期');
-          }
-        }
-      },
-      {
-        response: toolResponse(
-          'powershell-cancel',
-          'builtin.powershell.run',
-          { command: 'Write-Output should-not-run' }
-        )
-      }
-    ];
-
-    const provider = await startProviderServer(providerSteps);
-    let fixture: Awaited<ReturnType<ElectronFixtureModule['createElectronAppFixture']>>;
-    try {
-      fixture = await fixtureModule.createElectronAppFixture({
-        workspaceRoot: resolve(process.cwd()),
-        apiKey: provider.apiKey,
-        logSentinels: privacyLogSentinels,
-        launchTimeoutMs: 15_000
-      });
-    } catch (error) {
-      await provider.close();
-      throw error;
-    }
-    const userDataDirectory = fixture.userDataDirectory;
-    const authorizedRootDirectory = fixture.authorizedRootDirectory;
-    const rendererDiagnostics: string[] = [];
-
-    const captureRendererDiagnostics = (pages: Page[]): void => {
-      for (const page of pages) {
-        page.on('console', message => {
-          rendererDiagnostics.push(sanitizeCapturedDiagnostic(
-            message.text(),
-            provider.apiKey,
-            authorizedRootDirectory
-          ));
-        });
-        page.on('pageerror', error => {
-          rendererDiagnostics.push(sanitizeCapturedDiagnostic(
-            error.message,
-            provider.apiKey,
-            authorizedRootDirectory
-          ));
-        });
-      }
-    };
-
-    let primaryError: unknown;
-    try {
-      await mkdir(join(authorizedRootDirectory, 'docs'), { recursive: true });
-
-      const petPage = await waitForRendererPage(fixture, 'pet');
-      const chatPage = await waitForRendererPage(fixture, 'chat');
-      const settingsPage = await waitForRendererPage(fixture, 'settings');
-      captureRendererDiagnostics(rendererPages(fixture));
-
-      const apiMemberNames = new Set(
-        await settingsPage.evaluate(() => Object.keys(window.myself))
-      );
-      const removedMcpKeys = [
-        'upsertMcpServer',
-        'confirmMcpLaunch',
-        'testMcpServer',
-        'setMcpServerEnabled',
-        'setMcpToolEnabled',
-        'authorizeMcpToolReadOnly',
-        'revokeMcpToolReadOnly',
-        'deleteMcpServer'
-      ] as const;
-      for (const key of removedMcpKeys) expect(apiMemberNames.has(key)).toBe(false);
-      expect(removedMcpKeys.filter(key => apiMemberNames.has(key))).toEqual([]);
-
-      await expect(petPage.getByRole('main', { name: 'AI Pet 桌宠' })).toBeVisible();
-      await petPage.evaluate(() => window.myself.openChat());
-      await expect.poll(() => chatPage.evaluate(() => document.visibilityState)).toBe('visible');
-
-      await submitChatMessage(chatPage, '请列出工作目录');
-      await expect(chatPage.getByText('请先在设置中授权文件目录。')).toBeVisible();
-
-      await chatPage.getByRole('button', { name: '打开设置' }).click();
-      await expect.poll(() => settingsPage.evaluate(() => document.visibilityState)).toBe('visible');
-      await settingsPage.getByLabel('自定义').check();
-      await settingsPage.getByText('高级设置', { exact: true }).click();
-      await settingsPage.getByLabel('档案名称').fill('任务九本地服务');
-      await settingsPage.getByLabel('Base URL').fill(provider.baseUrl);
-      await settingsPage.getByLabel('Model ID').fill('task-9b2-model');
-      await settingsPage.getByLabel('API Key', { exact: true }).fill(provider.apiKey);
-      await settingsPage.getByRole('button', { name: '保存档案' }).click();
-      await expect(settingsPage.getByText('模型档案已保存。')).toBeVisible();
-
-      await settingsPage.getByRole('button', { name: '测试 任务九本地服务 连接' }).click();
-      await expect(settingsPage.getByText('连接测试完成。')).toBeVisible();
-      await settingsPage.getByRole('combobox', { name: '主模型', exact: true })
-        .selectOption({ label: '任务九本地服务' });
-      await settingsPage.getByRole('combobox', { name: 'Agent 模型', exact: true })
-        .selectOption({ label: '任务九本地服务' });
-      await settingsPage.getByRole('button', { name: '保存路由' }).click();
-      await expect(settingsPage.getByText('模型路由已保存。')).toBeVisible();
-
-      await settingsPage.getByRole('button', { name: '隐私' }).click();
-      await settingsPage.getByRole('button', { name: '保存隐私设置' }).click();
-      await expect(settingsPage.getByText('隐私设置已保存。')).toBeVisible();
-      await settingsPage.getByRole('button', { name: '选择目录' }).click();
-      await expect(settingsPage.getByText('授权目录已更新。')).toBeVisible();
-      await expect(settingsPage.getByText('authorized-root', { exact: true })).toBeVisible();
-      await settingsPage.getByRole('button', { name: '关闭设置', exact: true }).click();
-
-      await submitChatMessage(chatPage, '列出当前目录 task6-user-body-sentinel');
-      const capabilityCard = chatPage.getByRole('article', { name: '本地任务授权' });
-      await expect(capabilityCard).toBeVisible();
-      await capabilityCard.getByRole('button', { name: '允许规划' }).click();
-      await expect(chatPage.getByText('task6-model-body-sentinel')).toBeVisible();
-
-      await submitChatMessage(chatPage, '帮我在当前目录下创建ab.txt文件');
-      const createCard = chatPage.getByRole('region', { name: '创建文件 ab.txt' });
-      await expect(createCard).toBeVisible();
-      await createCard.getByRole('button', { name: '确认创建文件' }).click();
-      await expect(chatPage.getByText('文件已创建。')).toBeVisible();
-      expect(await pathExistsForAssertion(join(authorizedRootDirectory, 'ab.txt'))).toBe(true);
-      expect(await readTextForAssertion(join(authorizedRootDirectory, 'ab.txt')))
-        .toBe('task6-file-body-sentinel\n');
-
-      await submitChatMessage(chatPage, '修改 ab.txt');
-      const patchCard = chatPage.getByRole('region', {
-        name: '修改文件 ab.txt'
-      });
-      await expect(patchCard).toBeVisible();
-      await patchCard.getByRole('button', { name: '确认应用补丁' }).click();
-      await expect(chatPage.getByText('补丁已应用。')).toBeVisible();
-      expect(await readTextForAssertion(join(authorizedRootDirectory, 'ab.txt')))
-        .toBe('patched content\n');
-
-      await submitChatMessage(chatPage, '创建 cancelled.txt，但先让我确认');
-      const cancelCapabilityCard = chatPage.getByRole('article', { name: '本地任务授权' });
-      await expect(cancelCapabilityCard).toBeVisible();
-      await cancelCapabilityCard.getByRole('button', { name: '允许规划' }).click();
-      const cancelCard = chatPage.getByRole('region', { name: '创建文件 cancelled.txt' });
-      await expect(cancelCard).toBeVisible();
-      await cancelCard.getByRole('button', { name: '先不创建' }).click();
-      await expect(cancelCard).toHaveCount(0);
-      expect(await pathExistsForAssertion(join(authorizedRootDirectory, 'cancelled.txt'))).toBe(false);
-
-      await submitChatMessage(
-        chatPage,
-        '执行 PowerShell 测试'
-      );
-      const successPowerShellCard = chatPage.getByRole('region', { name: '运行 PowerShell 命令' });
-      await expect(successPowerShellCard).toBeVisible();
-      await expect(successPowerShellCard.getByText('工作目录：已授权工作目录')).toBeVisible();
-      await expect(successPowerShellCard.getByText(
-        "Write-Output task6-stdout-sentinel; [Console]::Error.Write('task6-stderr-sentinel')",
-        { exact: true }
-      )).toBeVisible();
-      await successPowerShellCard.getByRole('button', { name: '确认运行命令' }).click();
-      await expect(chatPage.getByText('命令成功。')).toBeVisible();
-
-      await submitChatMessage(chatPage, '运行 exit 7');
-      const failurePowerShellCard = chatPage.getByRole('region', { name: '运行 PowerShell 命令' });
-      await expect(failurePowerShellCard).toBeVisible();
-      await failurePowerShellCard.getByRole('button', { name: '确认运行命令' }).click();
-      // 真实工具失败必须覆盖模型自定义总结，避免模型用任意正文改写本地失败事实。
-      await expect(chatPage.getByText('本地能力操作失败，未完成请求。')).toBeVisible();
-      await expect.poll(() => fixture.getConversationProbe()).toMatchObject({ phase: 'error' });
-
-      await submitChatMessage(chatPage, '运行 Write-Output should-not-run');
-      const cancelPowerShellCard = chatPage.getByRole('region', { name: '运行 PowerShell 命令' });
-      await expect(cancelPowerShellCard).toBeVisible();
-      await cancelPowerShellCard.getByRole('button', { name: '先不运行' }).click();
-      await expect(cancelPowerShellCard).toHaveCount(0);
-      await expect.poll(() => fixture.getConversationProbe()).toMatchObject({ phase: 'cancelled' });
-
-      await chatPage.getByRole('button', { name: '关闭聊天气泡' }).click();
-      expect(chatPage.isClosed()).toBe(false);
-      await expect(chatPage.getByText('补丁已应用。')).toBeVisible();
-      await petPage.evaluate(() => window.myself.openChat());
-      expect(chatPage.isClosed()).toBe(false);
-      await expect(chatPage.getByText('补丁已应用。')).toBeVisible();
-      const reopenedComposer = chatPage.getByLabel('和我说点什么');
-      await reopenedComposer.fill('聊天重开命令路径验证');
-      await expect(reopenedComposer).toHaveValue('聊天重开命令路径验证');
-      await reopenedComposer.fill('');
-
-      expect(provider.inspectionErrors).toEqual([]);
-      expect(provider.remainingSteps()).toBe(0);
-      provider.assertComplete();
-      expect(provider.requests).toHaveLength(15);
-      for (const request of provider.requests) {
-        expect(request).toMatchObject({
-          method: 'POST',
-          model: 'task-9b2-model'
-        });
-        expect(request.toolCount).toBeGreaterThanOrEqual(0);
-      }
-
-      const captured = [...rendererDiagnostics, ...fixture.logs].join('\n');
-      expect(fixture.capturedLogEvidence).toEqual({
-        apiKey: false,
-        authorizedRoot: false,
-        authorizationHeader: false,
-        sentinels: privacyLogSentinels.map(() => false)
-      });
-      expect(captured).not.toContain(provider.apiKey);
-      expect(captured).not.toContain(authorizedRootDirectory);
-      expect(captured).not.toMatch(/authorization\s*:/iu);
-    } catch (error) {
-      primaryError = error;
-    }
-
-    const supplementalErrors: unknown[] = [];
-    if (provider.remainingSteps() > 0) {
-      try {
-        provider.assertComplete();
-      } catch (error) {
-        supplementalErrors.push(error);
-      }
-    }
-    try {
-      await fixture.dispose();
-    } catch (error) {
-      supplementalErrors.push(error);
-    }
-    try {
-      await provider.close();
-    } catch (error) {
-      supplementalErrors.push(error);
-    }
-    try {
-      expect(await pathExistsForAssertion(userDataDirectory)).toBe(false);
-      expect(await pathExistsForAssertion(authorizedRootDirectory)).toBe(false);
-    } catch (error) {
-      supplementalErrors.push(error);
-    }
-
-    if (primaryError) {
-      if (primaryError instanceof Error && supplementalErrors.length > 0) {
-        const diagnostics = supplementalErrors.map(error => sanitizeCapturedDiagnostic(
-          error instanceof Error ? error.message : String(error),
-          provider.apiKey,
-          authorizedRootDirectory
-        ));
-        primaryError.message += `\n附加清理诊断：${diagnostics.join('；')}`;
-      }
-      throw primaryError;
-    }
-    if (supplementalErrors[0]) throw supplementalErrors[0];
-  });
-
   test('MCP 正式链在普通聊天与只读文件任务的重启周期保持保留数据原始字节不变', async () => {
     test.setTimeout(120_000);
     const fixtureModule = await loadElectronFixtureModule();
@@ -6991,28 +6080,8 @@ test.describe('真实 Provider 业务闭环', () => {
           }
         }
       },
-      {
-        response: toolResponse(
-          'mcp-lifecycle-list-root',
-          'builtin.files.list_files',
-          { relativePath: '.' }
-        ),
-        inspect: request => {
-          const names = request.tools.map(tool => tool.function.name);
-          if (names.some(name => name.startsWith('mcp__'))) {
-            throw new Error('只读文件任务不得获得 MCP 工具');
-          }
-        }
-      },
-      {
-        response: { type: 'text', text: '只读目录已列出。' },
-        inspect: request => {
-          const result = lastToolResult(request) as { toolName?: string };
-          if (result.toolName !== 'list_files') {
-            throw new Error('只读文件任务未返回 list_files 结果');
-          }
-        }
-      }
+      { response: codingResponse([{ name: 'read', args: { path: '.' } }]) },
+      { response: codingResponse('只读目录已列出。'), inspectRaw: request => { expect(JSON.stringify(request.messages)).toContain('docs'); } }
     ]);
     let restartCount = 0;
     let baselineSettingsBuffer: Buffer | undefined;
@@ -7127,6 +6196,7 @@ test.describe('真实 Provider 业务闭环', () => {
       expect(provider.inspectionErrors).toEqual([]);
       await expect(chatPage.getByText('你好呀，我在。', { exact: true })).toBeVisible();
       await submitChatMessage(chatPage, '列出当前目录');
+      await approveCodingScope(chatPage);
       await expect(chatPage.getByText('只读目录已列出。', { exact: true })).toBeVisible();
 
       provider.assertComplete();

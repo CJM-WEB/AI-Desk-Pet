@@ -15,7 +15,7 @@
     "test:e2e:website": "pnpm build:website:e2e && node node_modules/@playwright/test/cli.js test --config tests/playwright.website.config.ts",
     "build:cloudbase": "pnpm --filter @myself/cloudbase-api build",
     "verify:cloudbase": "pnpm build:cloudbase && pnpm --filter @myself/cloudbase-api typecheck && pnpm --filter @myself/cloudbase-api test && pnpm --filter @myself/package-scanner typecheck && pnpm --filter @myself/package-scanner test",
-    "verify:desktop": "pnpm typecheck && pnpm test:unit && pnpm test:security && pnpm test:integration && pnpm test:e2e:desktop",
+    "verify:desktop": "pnpm typecheck && pnpm --filter @myself/coding-task-core test && pnpm test:unit && pnpm test:security && pnpm test:integration && pnpm test:e2e:desktop",
     "verify:behavior": "pnpm --filter @myself/character-runtime test && pnpm --filter @myself/agent-core test && pnpm --filter @myself/desktop typecheck && pnpm --filter @myself/desktop test && pnpm test:security && pnpm test:integration && pnpm test:e2e:desktop",
     "verify:characters": "pnpm --filter @myself/character-runtime test && pnpm --filter @myself/character-assets test && pnpm --filter @myself/desktop typecheck && pnpm --filter @myself/desktop test && pnpm test:security && pnpm test:integration && pnpm test:e2e:desktop",
     "verify:website": "pnpm --filter @myself/website typecheck && pnpm --filter @myself/website test && pnpm --filter @myself/website build && pnpm test:e2e:website"

@@ -179,7 +179,7 @@ describe('LocalModelProvider', () => {
       status: 'thinking',
       movementControl: { kind: 'keep' },
       behaviorPlan: { kind: 'none' },
-      capabilityPlan: { kind: 'agent_task', preferredTool: 'create_file' }
+      capabilityPlan: { kind: 'agent_task' }
     });
     const fetchClient = vi.fn<FetchLike>(async () => sseResponse([payload]));
     const adapter = new ConversationChatAdapter(new LocalModelProvider(readyPort(), fetchClient));
@@ -203,7 +203,7 @@ describe('LocalModelProvider', () => {
       onTextDelta: vi.fn()
     })).resolves.toMatchObject({
       text: '需要进入本地任务。',
-      capabilityPlan: { kind: 'agent_task', preferredTool: 'create_file' }
+      capabilityPlan: { kind: 'agent_task' }
     });
   });
 

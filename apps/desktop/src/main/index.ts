@@ -1,6 +1,9 @@
 import { createHash } from 'node:crypto';
 import { access, mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { basename, join } from 'node:path';
+
+// Main 使用 ESM 构建，所有相邻资源继续相对实际模块目录解析。
+const __dirname = import.meta.dirname;
 import { ModelRouter } from '@myself/agent-core';
 import {
   providerCatalog,
@@ -1021,7 +1024,7 @@ async function createApplicationWindows(
             readSecret: () => secrets.readForProviderCall(primaryProfile.id),
             localModel: localModelRuntime
           }),
-          ...await resolveCodingTaskResources({ appPath: app.getAppPath(), isPackaged: app.isPackaged, resourcesPath: process.resourcesPath }),
+          ...await resolveCodingTaskResources({ appPath: app.isPackaged ? app.getAppPath() : join(__dirname, '../..'), isPackaged: app.isPackaged, resourcesPath: process.resourcesPath }),
           trashFile: absolutePath => e2eBoundary
             ? moveToE2eRecycleBin(absolutePath)
             : shell.trashItem(absolutePath)

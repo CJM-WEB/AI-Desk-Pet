@@ -77,28 +77,63 @@ function 取得请求(provider: ModelProvider): ModelRequest {
 }
 
 describe('ConversationChatAdapter', () => {
-  test('实际发给聊天模型的契约包含本地内容问答和缺少位置时的能力边界', async () => {
-    const provider = 响应为({ type: 'text', text: '请指定文件位置。', structured_output: 完整控制字段() });
-    await new ConversationChatAdapter(provider).respond({ history: [], text: '说明文件里记录的编号是多少。', behaviorContext, signal: new AbortController().signal });
-    const system = 取得请求(provider).messages.find(message => message.role === 'system')?.content;
-    expect(system).toMatch(/本地文件.{0,30}实际信息.{0,80}agent_task/u);
-    expect(system).toMatch(/文件名.{0,20}位置/u);
-    expect(system).toMatch(/不能.{0,30}粘贴.{0,20}全文/u);
-    expect(取得请求(provider)).toMatchObject({ tools: [], toolChoice: 'none' });
+  test.each(['首次', '修复'])('%s完整控制字段含未知外层时只保留首次正文，不产出任务建议', async stage => {
+    const unknownOuter = 完整控制字段({
+      capabilityPlan: { kind: 'agent_task' }, permission: 'approved'
+    });
+    const responses: ModelResponse[] = [
+      { type: 'text', text: '首次正文', structured_output: stage === '首次'
+        ? unknownOuter
+        : 完整控制字段({ behaviorPlan: { kind: 'none', emotion: 'neutral' } }) },
+      { type: 'text', text: '修复正文', structured_output: stage === '修复' ? unknownOuter : {} }
+    ];
+    const provider: ModelProvider = { respond: vi.fn(async () => responses.shift()!) };
+    await expect(new ConversationChatAdapter(provider).respond({
+      history: [], text: '帮我看看 note.txt', behaviorContext, signal: new AbortController().signal
+    })).resolves.toEqual({ text: '首次正文' });
+    expect(provider.respond).toHaveBeenCalledTimes(2);
+  });
+
+  test.each(['合法任务', '非法能力', '未知外层', '修复任务'])('控制修复保留合法独立建议且不提升非法候选：%s', async kind => {
+    const first = 完整控制字段({
+      behaviorPlan: { kind: 'none', emotion: 'neutral' },
+      capabilityPlan: kind === '修复任务' ? { kind: 'chat' } : {
+        kind: 'agent_task', ...(kind === '非法能力' ? { authorized: true } : {})
+      },
+      ...(kind === '未知外层' ? { permission: 'approved' } : {})
+    });
+    const responses: ModelResponse[] = [
+      { type: 'text', text: '首次正文', structured_output: first },
+      { type: 'text', text: '修复正文', structured_output: 完整控制字段({
+        behaviorPlan: { kind: 'none', emotion: 'calm' },
+        capabilityPlan: { kind: kind === '修复任务' ? 'agent_task' : 'chat' }
+      }) }
+    ];
+    const provider: ModelProvider = { respond: vi.fn(async () => responses.shift()!) };
+    const reply = await new ConversationChatAdapter(provider).respond({ history: [], text: '帮我看看 note.txt', behaviorContext, signal: new AbortController().signal });
+    expect(reply).toEqual({
+      text: '首次正文', activity: '安静陪伴', status: 'idle', movementControl: { kind: 'keep' },
+      behaviorPlan: { kind: 'none', emotion: 'calm' }, emotion: 'calm',
+      capabilityPlan: { kind: kind === '合法任务' || kind === '修复任务' ? 'agent_task' : 'chat' }
+    });
+    expect(provider.respond).toHaveBeenCalledTimes(2);
+    for (const [request] of vi.mocked(provider.respond).mock.calls) {
+      expect(request).toMatchObject({ tools: [], toolChoice: 'none' });
+    }
   });
 
   test('表现情绪无效且修复仍失败时保留严格任务建议，不提交任何表现控制', async () => {
     const provider = 响应为({ type: 'text', text: '准备读取。', structured_output: 完整控制字段({
       behaviorPlan: { kind: 'none', emotion: 'neutral' },
-      capabilityPlan: { kind: 'agent_task', preferredTool: 'read_file' }
+      capabilityPlan: { kind: 'agent_task' }
     }) });
     const reply = await new ConversationChatAdapter(provider).respond({ history: [], text: '帮我看看 note.txt 里写了什么，把内容显示给我。', behaviorContext, signal: new AbortController().signal });
-    expect(reply).toEqual({ text: '准备读取。', capabilityPlan: { kind: 'agent_task', preferredTool: 'read_file' } });
+    expect(reply).toEqual({ text: '准备读取。', capabilityPlan: { kind: 'agent_task' } });
   });
 
   test.each(['capability', 'outer'])('表现降级不接纳带未知字段的%s候选', async kind => {
     const output = 完整控制字段({ behaviorPlan: { kind: 'none', emotion: 'neutral' },
-      capabilityPlan: { kind: 'agent_task', preferredTool: 'read_file', ...(kind === 'capability' ? { authorized: true } : {}) },
+      capabilityPlan: { kind: 'agent_task', ...(kind === 'capability' ? { authorized: true } : {}) },
       ...(kind === 'outer' ? { permission: 'approved' } : {})
     });
     const reply = await new ConversationChatAdapter(响应为({ type: 'text', text: '准备读取。', structured_output: output })).respond({ history: [], text: '帮我看看 note.txt', behaviorContext, signal: new AbortController().signal });
@@ -293,7 +328,7 @@ describe('ConversationChatAdapter', () => {
       type: 'text',
       text: '需要进入本地任务。',
       structured_output: 完整控制字段({
-        capabilityPlan: { kind: 'agent_task', preferredTool: 'create_file' }
+        capabilityPlan: { kind: 'agent_task' }
       })
     });
 
@@ -303,7 +338,7 @@ describe('ConversationChatAdapter', () => {
       behaviorContext,
       signal: new AbortController().signal
     })).resolves.toMatchObject({
-      capabilityPlan: { kind: 'agent_task', preferredTool: 'create_file' }
+      capabilityPlan: { kind: 'agent_task' }
     });
     expect(取得请求(provider)).toMatchObject({ tools: [], toolChoice: 'none' });
   });
@@ -314,7 +349,7 @@ describe('ConversationChatAdapter', () => {
       text: '普通回复。',
       structured_output: {
         capabilityPlan: {
-          kind: 'agent_task', preferredTool: 'powershell', command: 'Remove-Item -Recurse C:\\'
+          kind: 'agent_task', command: 'Remove-Item -Recurse C:\\'
         }
       }
     });
@@ -480,12 +515,12 @@ describe('ConversationChatAdapter', () => {
     expect(serializedContext.character).not.toHaveProperty('tags');
   });
 
-  test('云端与本地共用的聊天 system 会再次裁剪过大公开目录并原样保留用户正文', async () => {
+  test('首次与修复请求在最大公开上下文下均守住系统预算并保留完整历史和当前正文', async () => {
     const provider = 响应为({ type: 'text', text: '好的' });
     const text = '甲'.repeat(4_000);
 
     await new ConversationChatAdapter(provider).respond({
-      history: [],
+      history: [{ role: 'user', content: '先前问题' }, { role: 'assistant', content: '先前回答' }],
       text,
       behaviorContext: {
         ...behaviorContext,
@@ -499,8 +534,16 @@ describe('ConversationChatAdapter', () => {
     const system = request.messages[0]?.content ?? '';
     const contextStart = system.lastIndexOf('{"character":');
     const context = JSON.parse(system.slice(contextStart)) as typeof behaviorContext;
-    expect(new TextEncoder().encode(system).byteLength)
-      .toBeLessThanOrEqual(PUBLIC_CHARACTER_CHAT_SYSTEM_UTF8_BYTE_BUDGET);
+    expect(provider.respond).toHaveBeenCalledTimes(2);
+    for (const [actual] of vi.mocked(provider.respond).mock.calls) {
+      expect(new TextEncoder().encode(actual.messages[0]?.content ?? '').byteLength)
+        .toBeLessThanOrEqual(PUBLIC_CHARACTER_CHAT_SYSTEM_UTF8_BYTE_BUDGET);
+      expect(actual.messages.slice(1)).toEqual([
+        { role: 'user', content: '先前问题' }, { role: 'assistant', content: '先前回答' },
+        { role: 'user', content: text }
+      ]);
+      expect(actual).toMatchObject({ tools: [], toolChoice: 'none' });
+    }
     expect(new TextEncoder().encode(JSON.stringify(context.character)).byteLength)
       .toBeLessThanOrEqual(PUBLIC_BEHAVIOR_CATALOG_UTF8_BYTE_BUDGET);
     expect(request.messages.at(-1)).toEqual({ role: 'user', content: text });
@@ -679,5 +722,18 @@ describe('ConversationChatAdapter', () => {
       behaviorContext,
       signal: new AbortController().signal
     })).rejects.toBe(timeoutError);
+  });
+
+  test('控制修复被取消时传播取消而不返回首次任务建议', async () => {
+    const abortError = new DOMException('取消', 'AbortError');
+    const provider: ModelProvider = { respond: vi.fn()
+      .mockResolvedValueOnce({ type: 'text', text: '准备读取。', structured_output: 完整控制字段({
+        behaviorPlan: { kind: 'none', emotion: 'neutral' }, capabilityPlan: { kind: 'agent_task' }
+      }) })
+      .mockRejectedValueOnce(abortError) };
+    await expect(new ConversationChatAdapter(provider).respond({
+      history: [], text: '帮我看看 note.txt', behaviorContext, signal: new AbortController().signal
+    })).rejects.toBe(abortError);
+    expect(provider.respond).toHaveBeenCalledTimes(2);
   });
 });

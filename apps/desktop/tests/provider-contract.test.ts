@@ -149,7 +149,6 @@ function characterChatJson(
   text: string,
   capabilityPlan: { kind: 'chat' } | {
     kind: 'agent_task';
-    preferredTool: 'create_file';
   } = { kind: 'chat' }
 ): string {
   return JSON.stringify({
@@ -921,7 +920,7 @@ describe('ConversationChatAdapter 三类 Provider 协议契约', () => {
     async contract => {
       const plans = [
         { kind: 'chat' } as const,
-        { kind: 'agent_task', preferredTool: 'create_file' } as const
+        { kind: 'agent_task' } as const
       ];
 
       for (const capabilityPlan of plans) {

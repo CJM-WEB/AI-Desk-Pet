@@ -10,9 +10,26 @@ export type ProviderInspectionRequest = ModelRequest & Readonly<{
 }>;
 
 export interface ProviderStep {
-  response: ModelResponse;
+  response: ModelResponse | ProviderSseResponse | ((request: Record<string, unknown>) => ProviderSseResponse);
   inspect?: (request: ProviderInspectionRequest) => void;
+  inspectRaw?: (request: Record<string, unknown>) => void;
   gate?: ProviderResponseGate;
+}
+
+export interface ProviderSseResponse {
+  type: 'sse';
+  chunks: unknown[];
+}
+
+/** 原 OpenAI Chat SSE；仅脚本化模型输出，执行与结果回注由正式 Core 完成。 */
+export function codingResponse(value: string | Array<{ name: string; args: Record<string, unknown>; id?: string }>): ProviderSseResponse {
+  const delta = typeof value === 'string' ? { content: value } : {
+    tool_calls: value.map((tool, index) => ({ index, id: tool.id ?? `call_${index}`, type: 'function', function: { name: tool.name, arguments: JSON.stringify(tool.args) } }))
+  };
+  return { type: 'sse', chunks: [
+    { id: 'fixture', choices: [{ index: 0, delta, finish_reason: null }] },
+    { id: 'fixture', choices: [{ index: 0, delta: {}, finish_reason: typeof value === 'string' ? 'stop' : 'tool_calls' }] }
+  ] };
 }
 
 export interface ProviderResponseGate {
@@ -140,17 +157,34 @@ export async function startProviderServer(
       markResponseCompleted();
       return;
     }
-    if (step.inspect) {
+    if (step.inspect || step.inspectRaw) {
       try {
-        step.inspect(parsed);
+        step.inspect?.(parsed);
+        step.inspectRaw?.(rawRequest as Record<string, unknown>);
       } catch {
         inspectionErrors.push('脚本化 Provider 请求检查失败');
       }
     }
+    // 客户端取消或 fixture 关闭时解除门闩，不留下等待响应的服务协程。
+    const release = () => step.gate?.release();
+    response.once('close', release);
     if (step.gate) await step.gate.waitForRelease();
-
-    response.writeHead(200, { 'content-type': 'application/json' });
-    response.end(JSON.stringify(compatibleResponse(step.response)));
+    response.off('close', release);
+    if (response.destroyed) return;
+    try {
+      const result = typeof step.response === 'function' ? step.response(rawRequest as Record<string, unknown>) : step.response;
+      if (result.type === 'sse') {
+        response.writeHead(200, { 'content-type': 'text/event-stream' });
+        for (const chunk of result.chunks) response.write(`data: ${JSON.stringify(chunk)}\n\n`);
+        response.end('data: [DONE]\n\n');
+      } else {
+        response.writeHead(200, { 'content-type': 'application/json' });
+        response.end(JSON.stringify(compatibleResponse(result)));
+      }
+    } catch {
+      inspectionErrors.push('脚本化 Provider 响应构造失败');
+      response.destroy();
+    }
     // reset 会主动中止客户端连接；以脚本步骤执行完 response.end 作为确定性完成屏障。
     markResponseCompleted();
   });
@@ -183,6 +217,7 @@ export async function startProviderServer(
       return new Promise<void>(resolve => completionWaiters.push({ count, resolve }));
     },
     async close() {
+      server.closeAllConnections();
       await new Promise<void>((resolve, reject) => {
         server.close(error => error ? reject(error) : resolve());
       });
@@ -219,10 +254,10 @@ function normalizeAssistantToolRequest(message: Record<string, unknown>) {
 }
 
 function normalizeRequest(value: unknown): ProviderInspectionRequest {
-  if (!isRecord(value) || !Array.isArray(value.messages) || !Array.isArray(value.tools)) {
+  if (!isRecord(value) || !Array.isArray(value.messages) || (value.tools !== undefined && !Array.isArray(value.tools))) {
     throw new Error('请求格式无效');
   }
-  const tools = value.tools as ModelRequest['tools'];
+  const tools = (value.tools ?? []) as ModelRequest['tools'];
   const rawToolChoice = value.tool_choice;
   const toolChoiceWasExplicit = rawToolChoice !== undefined;
   const toolChoice = rawToolChoice === undefined
@@ -262,7 +297,7 @@ function normalizeRequest(value: unknown): ProviderInspectionRequest {
     if (role !== 'system' && role !== 'user' && role !== 'assistant') {
       throw new Error('消息角色无效');
     }
-    if (role === 'assistant' && message.tool_calls !== undefined) {
+    if (role === 'assistant' && message.tool_calls !== undefined && value.stream !== true) {
       return {
         role,
         content: typeof message.content === 'string' ? message.content : '',
