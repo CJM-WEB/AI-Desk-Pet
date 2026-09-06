@@ -1588,12 +1588,13 @@ export class CharacterStore {
             && entryMatchesManifest(previousEntry, manifest)
           )) {
             await this.commitIndexUpdate(index, nextIndex => {
-              this.replaceEntry(nextIndex, indexEntry(
+              // 恢复发布元数据不撤销已保存草稿的修订与迁移审阅。
+              this.replaceEntry(nextIndex, { ...previousEntry, ...indexEntry(
                 characterId,
                 manifest.name,
                 manifest.thumbnailAssetId,
                 { draftVersion: previousEntry.draftVersion ?? 3, compiledVersion: 3 }
-              ));
+              ) });
               delete nextIndex.incompleteActivationConfirmations[characterId];
             });
           }

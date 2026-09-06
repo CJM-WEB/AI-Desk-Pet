@@ -750,6 +750,32 @@ describe('CharacterStore', () => {
     });
   });
 
+  test('保留 V2 发布备份时未编辑草稿的保存修订仍可编译发布', async () => {
+    const store = new CharacterStore(charactersDirectory);
+    const runtime = createRuntime();
+    const legacy = convertCharacterManifestV1ToV2(createRuntimeV1().manifest).document;
+    legacy.skins[0]!.presentations[0]!.geometry = runtime.manifest.skins[0]!.presentations[0]!.geometry;
+    await store.create({ id: 'demo', name: '演示角色' });
+    await store.publishCompiled('demo', runtime.manifest, runtime.assets);
+    await writeRuntimeDirectory(join(charactersDirectory, 'demo', 'compiled.backup'), {
+      manifest: characterManifestV2Schema.parse(legacy), assets: runtime.assets
+    });
+    // 草稿缩略图引用源素材，已发布缩略图引用图集；重新保存不等于作者再次编辑。
+    const sourceDraft = createDraft();
+    sourceDraft.thumbnailAssetId = 'source-thumbnail';
+    await store.saveDraft('demo', sourceDraft);
+    const unchangedDraft = await store.getDraft('demo');
+    const revision = '33333333-3333-4333-8333-333333333333';
+    await store.saveDraft('demo', unchangedDraft, revision);
+    // 正式工作台会在保存的 index-changed 事件后读取列表。
+    await store.list();
+
+    await expect(store.publishCompiled('demo', runtime.manifest, runtime.assets, revision))
+      .resolves.toBeUndefined();
+    expect(await store.getDraft('demo')).toEqual(unchangedDraft);
+    expect(await store.getPublishedManifest('demo')).toEqual(runtime.manifest);
+  });
+
   test('发布在途时拒绝用同一修订令牌保存不同草稿并回滚旧编译结果', async () => {
     let manifestWriteStarted!: () => void;
     let releaseManifestWrite!: () => void;
