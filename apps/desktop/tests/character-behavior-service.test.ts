@@ -171,6 +171,47 @@ test('V3 初始化保留真实 ID，公开目录不暴露旧语义', async () =>
   service.close();
 });
 
+test.each([true, false])('真实多候选裁决可同步=%s：只有实际活动播放才提前提交，否则原截止降级', async matches => {
+  const f = fixture(); const manifest = createManifest();
+  // 长片段隔离两秒保持与优先级；不存在动作自然结束带来的偶然切换。
+  manifest.states.find(state => state.id === 'celebrate-state')!.suggestedDurationMs = 20_000;
+  manifest.actions.find(action => action.id === 'celebrate-action')!.loopPolicy = 'until-interrupted';
+  f.store.getActiveManifestV3.mockResolvedValue(manifest);
+  await f.service.initialize(); let now = 0;
+  const time = (value: number) => { now = value; f.setNow(value); };
+  const notices = vi.fn();
+  const director = new CharacterBehaviorDirector({ behavior: f.service, motion: { ...f.motion, stop: vi.fn() },
+    now: () => now, initialGeneration: 'real', initialSettings: { movementMode: 0, proactivityMode: 'assistive' },
+    saveMovementMode: async () => undefined, publishNotice: notices });
+  const prepared = await director.prepareUserPrompt('向右走一点');
+  f.motion.requestIntent.mockImplementation(() => {
+    expect(director.getChatContext().runtime).not.toHaveProperty('pendingMovement');
+    const snapshot = { ...f.motion.getSnapshot(), moving: true };
+    f.service.handleMovement(snapshot); director.handleMotionSnapshot(snapshot);
+    expect(f.service.snapshot()?.schedule.current?.actionId).toBe(matches ? 'move-action' : 'celebrate-action');
+    return snapshot;
+  });
+  await director.completeUserPrompt({ generation: 'real', eventId: 'competition', context: director.captureExpressionContext(),
+    explicitDirective: prepared.explicitDirective, expressionPlan: { states: [
+      { stateId: 'celebrate-state', score: matches ? .5 : 1, minStrength: 0, maxStrength: 1, lifetime: 'episode', actions: [] },
+      { stateId: 'move-state', score: matches ? 1 : .8, minStrength: 0, maxStrength: 1,
+        when: { moving: true }, lifetime: 'condition', actions: [{ actionId: 'move-action', score: 1 }] }
+    ] } });
+  const current = f.service.snapshot()!.schedule.current!;
+  f.service.applyPlaybackFeedback({ actionId: current.actionId, playbackToken: current.playbackToken, status: 'started', occurredAtMs: 0 });
+  director.handleTaskEvent({ type: 'phase', phase: 'success' });
+  expect(f.motion.requestIntent).not.toHaveBeenCalled();
+  expect(director.getChatContext().runtime.pendingMovement).toBe(true);
+  time(1999); director.advance();
+  expect(f.motion.requestIntent).not.toHaveBeenCalled();
+  time(matches ? 2000 : 7999); director.advance();
+  expect(f.motion.requestIntent).toHaveBeenCalledTimes(matches ? 1 : 0);
+  if (!matches) { expect(notices).not.toHaveBeenCalled(); time(8000); director.advance(); }
+  expect(f.motion.requestIntent).toHaveBeenCalledExactlyOnceWith({ kind: 'relative', direction: 'right', distance: 'near' });
+  expect(notices).toHaveBeenCalledTimes(matches ? 0 : 1);
+  await director.close();
+});
+
 test.each([true, false])('成功响应后按剩余预算等待真实心情资格（可匹配=%s），同步位移只提交一次', async matches => {
   const f = fixture(); await f.service.initialize(); let now = 0;
   const time = (value: number) => { now = value; f.setNow(value); };

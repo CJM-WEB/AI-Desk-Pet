@@ -26,6 +26,58 @@ const movingPlan = { states: [{ ...plan.states[0]!, minStrength: 0,
   ] }] };
 
 describe('通用情境条件与有限表现', () => {
+  it.each([
+    { plainScore: 1, activeScore: .8, at: 2100, eligible: false },
+    { plainScore: .5, activeScore: 1, at: 100, eligible: false },
+    { plainScore: .5, activeScore: 1, at: 2100, eligible: true }
+  ])('同步资格遵守分数竞争与两秒保持：%j', ({ plainScore, activeScore, at, eligible }) => {
+    let now = 0;
+    const engine = new runtime.CharacterExpressionEngine({ manifest: fixture(), now: () => now, random: () => 0 });
+    engine.applyDecision({ context: engine.context(), eventId: 'competition', source: 'chat', expressionPlan: { states: [
+      { stateId: 'bright', score: plainScore, minStrength: 0, maxStrength: 1, actions: [] },
+      { stateId: 'soft', score: activeScore, minStrength: 0, maxStrength: 1, when: { moving: true }, lifetime: 'condition', actions: [] }
+    ] } });
+    now = at;
+    expect(engine.hasEligibleExpressionFor({ moving: true }, 'moving')).toBe(eligible);
+    expect(engine.updateRuntimeFacts({ moving: true }).snapshot.stateId).toBe(eligible ? 'soft' : 'bright');
+  });
+  it('明确播放锁仍生效时不宣称另一条件候选会同步', () => {
+    const engine = new runtime.CharacterExpressionEngine({ manifest: fixture(), now: () => 0 });
+    engine.applyDecision({ context: engine.context(), eventId: 'plan', source: 'chat', expressionPlan: movingPlan });
+    const current = engine.playExplicit('soft').snapshot.schedule.current!;
+    expect(engine.hasEligibleExpressionFor({ moving: true }, 'moving')).toBe(false);
+    expect(engine.updateRuntimeFacts({ moving: true }).snapshot.schedule.current?.playbackToken).toBe(current.playbackToken);
+  });
+  it('同状态当前无条件动作仍会保留时不能把另一活动动作算作同步', () => {
+    const engine = new runtime.CharacterExpressionEngine({ manifest: fixture(), now: () => 0, random: () => 0 });
+    engine.applyDecision({ context: engine.context(), eventId: 'mixed', source: 'chat', expressionPlan: { states: [
+      { stateId: 'bright', score: 1, minStrength: 0, maxStrength: 1, actions: [
+        { actionId: 'bright-a', score: 1 }, { actionId: 'bright-b', score: 1, when: { moving: true } }
+      ] }
+    ] } });
+    expect(engine.hasEligibleExpressionFor({ moving: true }, 'moving')).toBe(false);
+    expect(engine.updateRuntimeFacts({ moving: true }).snapshot.schedule.current?.actionId).toBe('bright-a');
+  });
+  it.each(['weight', 'suppression', 'cooldown'] as const)('同状态混合动作经过%s仍可能选无条件动作时保守等待', reason => {
+    let randomCalls = 0; let tokens = 0;
+    const manifest = fixture();
+    const active = manifest.actions.find(action => action.id === 'bright-a')!;
+    if (reason === 'suppression') active.repeatSuppressionMs = 5000;
+    if (reason === 'cooldown') active.cooldownMs = 5000;
+    const engine = new runtime.CharacterExpressionEngine({ manifest, now: () => 0,
+      random: () => { randomCalls++; return .99; }, createPlaybackToken: () => String(++tokens) });
+    if (reason !== 'weight') engine.playExplicit('bright', 'bright-a');
+    engine.applyDecision({ context: engine.context(), eventId: 'mixed', source: 'chat', moodUpdate: { summary: '平静', strength: 1 },
+      expressionPlan: { states: [{ stateId: 'bright', score: 1, minStrength: 0, maxStrength: 1, when: { carrying: true },
+        lifetime: 'condition', actions: [
+          { actionId: 'bright-a', score: .1, when: { taskRunning: true } }, { actionId: 'bright-b', score: 1 }
+        ] }] } });
+    const before = engine.snapshot(); const calls = randomCalls; const serial = tokens;
+    expect(engine.hasEligibleExpressionFor({ carrying: true, taskRunning: true }, 'taskRunning')).toBe(false);
+    expect(engine.hasEligibleExpressionFor({ carrying: true, taskRunning: true }, 'taskRunning')).toBe(false);
+    expect(engine.snapshot()).toEqual(before); expect(randomCalls).toBe(calls); expect(tokens).toBe(serial);
+    expect(engine.updateRuntimeFacts({ carrying: true, taskRunning: true }).snapshot.schedule.current?.actionId).toBe('bright-b');
+  });
   it('明确截止后失败反馈先结束生命周期，不能新发零时长回退播放', () => {
     let now = 0;
     const manifest = fixture();

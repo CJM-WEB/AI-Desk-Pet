@@ -86,15 +86,26 @@ export class CharacterExpressionEngine {
     this.facts = { ...this.facts, ...facts };
     return this.advanceWith([], false, true);
   }
-  /** 查询和执行共用资格过滤，但查询不抽样、不消费事件，也不更新冷却或时间记录。 */
+  /** 共用实际择态和抽样前筛选；只有所有可能播放均有事实依据才承诺同步，查询不修改运行记录。 */
   hasEligibleExpressionFor(facts: Partial<CharacterRuntimeFacts>, requiredFact?: keyof CharacterRuntimeFacts): boolean {
     const projected = { ...this.facts, ...facts };
-    return this.plan?.states.some(candidate => this.eligibleState(candidate, projected)
-      && !this.episodeDue(candidate)
-      && !(candidate.stateId === this.stateId && this.conditionEvents(this.manifest.states.find(state => state.id === this.stateId)!, true))
-      && this.actionCandidates(candidate.stateId, projected).some(action => action.due <= this.now()
-        && (!requiredFact || candidate.when?.[requiredFact] === true
-          || candidate.actions.find(item => item.actionId === action.id)?.when?.[requiredFact] === true))) ?? false;
+    const currentCandidate = this.plan?.states.find(candidate => candidate.stateId === this.stateId);
+    // 截止与明确播放的释放由正式推进完成；纯查询不模拟休息期或消费生命周期。
+    if (this.explicit || currentCandidate && this.episodeDue(currentCandidate)
+      || reduceCharacterActionSchedule(this.schedule, { type: 'expire', nowMs: this.now() }, this.manifest.actions).schedule !== this.schedule) return false;
+    const force = this.currentInvalid(projected);
+    const target = this.chooseState(force, projected);
+    const candidate = this.plan?.states.find(candidate => candidate.stateId === target);
+    if (target === this.manifest.idleStateId || !candidate || !this.eligibleState(candidate, projected)) return false;
+    const qualified = (id: string) => !requiredFact || candidate.when?.[requiredFact] === true
+      || candidate.actions.find(action => action.actionId === id)?.when?.[requiredFact] === true;
+    const candidates = this.actionCandidates(target, projected);
+    const staticDue = this.staticPlayback && this.nextEligibleAtMs !== null && this.now() >= this.nextEligibleAtMs;
+    if (this.schedule.current && target === this.stateId && !force && !staticDue) {
+      return candidates.some(action => action.id === this.schedule.current!.actionId && action.due <= this.now() && qualified(action.id));
+    }
+    const selectable = this.selectableActions(candidates).filter(action => action.weight > 0);
+    return selectable.length > 0 && selectable.every(action => qualified(action.id));
   }
   /** 合法心情独立接受；配套计划按新修订绑定，非法计划不能保留旧心情的循环。 */
   applyDecision(decision: CharacterExpressionDecision): CharacterExpressionResult {
@@ -175,13 +186,13 @@ export class CharacterExpressionEngine {
       feedback: { playbackToken: current.playbackToken, actionId: current.actionId, status: 'interrupted', occurredAtMs: this.now() } }, this.manifest.actions).schedule;
     return [{ type: 'interrupt', playbackToken: current.playbackToken, fallbackActionId: null }];
   }
-  private chooseState(force: boolean): string {
+  private chooseState(force: boolean, facts = this.facts): string {
     if (this.explicit) return this.stateId;
     const current = this.manifest.states.find(state => state.id === this.stateId)!;
     const exit = this.conditionEvents(current, true);
-    const candidates = this.plan?.states.filter(candidate => this.eligibleState(candidate, this.facts)
+    const candidates = this.plan?.states.filter(candidate => this.eligibleState(candidate, facts)
       && !(exit && candidate.stateId === this.stateId)
-      && this.actionCandidates(candidate.stateId, this.facts).some(action => action.due <= this.now()
+      && this.actionCandidates(candidate.stateId, facts).some(action => action.due <= this.now()
         || candidate.stateId === this.stateId && this.schedule.current?.actionId === action.id)) ?? [];
     if (!force && !exit && candidates.some(candidate => candidate.stateId === this.stateId) && this.now() - this.enteredAtMs < 2_000) return this.stateId;
     candidates.sort((a, b) => (b.score + (b.stateId === this.stateId ? .05 : 0)) - (a.score + (a.stateId === this.stateId ? .05 : 0)));
@@ -208,6 +219,13 @@ export class CharacterExpressionEngine {
       && candidate.lifetime !== 'condition' && this.now() - this.enteredAtMs
         >= Math.max(2000, this.manifest.states.find(state => state.id === this.stateId)!.suggestedDurationMs ?? 3000);
   }
+  /** 事实变化的强制撤销条件同时供预检与正式推进使用，避免两秒保持掩盖不适用动作。 */
+  private currentInvalid(facts: CharacterRuntimeFacts): boolean {
+    const candidate = this.plan?.states.find(state => state.stateId === this.stateId);
+    return !this.explicit && this.stateId !== this.manifest.idleStateId
+      && (!candidate || !this.eligibleState(candidate, facts)
+        || this.schedule.current !== null && !this.actionCandidates(this.stateId, facts).some(action => action.id === this.schedule.current!.actionId));
+  }
   private actionCandidates(stateId: string, facts: CharacterRuntimeFacts, selectedActionId?: string, bypass = false) {
     const state = this.manifest.states.find(state => state.id === stateId);
     if (!state) return [];
@@ -223,15 +241,19 @@ export class CharacterExpressionEngine {
       return score > 0 ? [{ id, due, weight: score * resolved.action.preference, suppressed: last !== undefined && this.now() < last + resolved.action.repeatSuppressionMs }] : [];
     });
   }
+  /** 随机抽样前的唯一候选集合；纯筛选不改变冷却等待记录。 */
+  private selectableActions(actions: ReturnType<CharacterExpressionEngine['actionCandidates']>) {
+    let candidates = actions.filter(action => action.due <= this.now());
+    if (candidates.some(candidate => !candidate.suppressed)) candidates = candidates.filter(candidate => !candidate.suppressed);
+    if (candidates.some(candidate => candidate.id !== this.lastActionId)) candidates = candidates.filter(candidate => candidate.id !== this.lastActionId);
+    return candidates;
+  }
   private chooseAction(stateId: string, selectedActionId?: string, bypass = this.explicit || stateId === this.manifest.idleStateId): string | null {
     const candidate = this.plan?.states.find(state => state.stateId === stateId);
     if (!bypass && (!candidate || !this.eligibleState(candidate, this.facts) || this.episodeDue(candidate))) return null;
-    let candidates = this.actionCandidates(stateId, this.facts, selectedActionId, bypass).filter(action => {
-      if (action.due <= this.now()) return true;
-      this.nextEligibleAtMs = Math.min(this.nextEligibleAtMs ?? Infinity, action.due); return false;
-    });
-    if (candidates.some(candidate => !candidate.suppressed)) candidates = candidates.filter(candidate => !candidate.suppressed);
-    if (candidates.some(candidate => candidate.id !== this.lastActionId)) candidates = candidates.filter(candidate => candidate.id !== this.lastActionId);
+    const actions = this.actionCandidates(stateId, this.facts, selectedActionId, bypass);
+    for (const action of actions) if (action.due > this.now()) this.nextEligibleAtMs = Math.min(this.nextEligibleAtMs ?? Infinity, action.due);
+    const candidates = this.selectableActions(actions);
     if (!candidates.length) return null;
     let pick = Math.max(0, Math.min(.999999, this.options.random?.() ?? .5)) * candidates.reduce((sum, candidate) => sum + candidate.weight, 0);
     for (const candidate of candidates) { pick -= candidate.weight; if (pick < 0) return candidate.id; }
@@ -287,10 +309,7 @@ export class CharacterExpressionEngine {
       this.restingUntil.set(this.stateId, now + 10_000); force = true;
     }
     // 已失去事实资格的播放立即撤销，不等待两秒保持或作者抗中断策略。
-    const currentInvalid = !this.explicit && this.stateId !== this.manifest.idleStateId
-      && (!candidate || !this.eligibleState(candidate, this.facts)
-        || this.schedule.current !== null && !this.actionCandidates(this.stateId, this.facts).some(action => action.id === this.schedule.current!.actionId));
-    if (currentInvalid) { effects.push(...this.stop()); force = true; }
+    if (this.currentInvalid(this.facts)) { effects.push(...this.stop()); force = true; }
     const target = this.chooseState(force);
     const staticDue = this.staticPlayback && this.nextEligibleAtMs !== null && now >= this.nextEligibleAtMs;
     if (this.schedule.current && target === this.stateId && !force && !staticDue) return this.result(effects);
