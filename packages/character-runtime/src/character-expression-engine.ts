@@ -3,7 +3,7 @@ import { resolveCharacterPresentationV3 } from './character-playback-view';
 import { characterPlaybackFeedbackSchema, type CharacterPlaybackFeedback } from './behavior-contracts';
 import { reduceCharacterActionSchedule, type CharacterBehaviorSchedule, type CharacterScheduleEffect } from './behavior-scheduler';
 import { characterMoodUpdateSchema, sampleMood, type CharacterMood, type CharacterMoodSnapshot } from './character-mood';
-import { characterExpressionPlanSchema, characterExplicitPlaybackSchema, type CharacterExpressionPlan } from './character-expression-plan';
+import { characterExpressionPlanSchema, characterExplicitPlaybackSchema, type CharacterExpressionPlan, type CharacterRuntimeFacts } from './character-expression-plan';
 
 export type CharacterExpressionContext = Readonly<{ contextRevision: number; moodRevision: number; instance: symbol }>;
 export type CharacterExpressionEffect = Exclude<CharacterScheduleEffect, { type: 'play' } | { type: 'none' }>
@@ -25,6 +25,9 @@ export type CharacterExpressionEngineOptions = {
   manifest: CharacterManifestV3; skinId?: string; now: () => number; random?: () => number; createPlaybackToken?: () => string;
 };
 let nextEngineId = 0;
+const emptyFacts = (): CharacterRuntimeFacts => ({ moving: false, dragging: false, carrying: false,
+  chatting: false, taskRunning: false, awaitingConfirmation: false });
+type StateCandidate = CharacterExpressionPlan['states'][number];
 
 /** 只管理角色时间、合法 ID 和播放生命周期；宿主独立注入真实事件与时钟。 */
 export class CharacterExpressionEngine {
@@ -38,6 +41,11 @@ export class CharacterExpressionEngine {
   private readonly instance = Symbol('character-expression');
   private readonly engineId = ++nextEngineId;
   private plan: CharacterExpressionPlan | null = null;
+  private facts = emptyFacts();
+  /** 记录只属于当前计划；明确播放仅保留最近一次，允许同轮迟到响应识别已结束 token。 */
+  private readonly restingUntil = new Map<string, number>();
+  private lastExplicit: { token: string; stateId: string } | null = null;
+  private blockedPlanState: string | null = null;
   private schedule: CharacterBehaviorSchedule = { revision: 0, current: null, history: [] };
   private readonly events = new Map<string, CharacterExpressionEvent>();
   private readonly consumed = new Set<string>();
@@ -74,6 +82,20 @@ export class CharacterExpressionEngine {
   private matches(context: CharacterExpressionContext): boolean {
     return context.instance === this.instance && context.contextRevision === this.contextRevision && context.moodRevision === this.moodRevision;
   }
+  updateRuntimeFacts(facts: Partial<CharacterRuntimeFacts>): CharacterExpressionResult {
+    this.facts = { ...this.facts, ...facts };
+    return this.advanceWith([], false, true);
+  }
+  /** 查询和执行共用资格过滤，但查询不抽样、不消费事件，也不更新冷却或时间记录。 */
+  hasEligibleExpressionFor(facts: Partial<CharacterRuntimeFacts>, requiredFact?: keyof CharacterRuntimeFacts): boolean {
+    const projected = { ...this.facts, ...facts };
+    return this.plan?.states.some(candidate => this.eligibleState(candidate, projected)
+      && !this.episodeDue(candidate)
+      && !(candidate.stateId === this.stateId && this.conditionEvents(this.manifest.states.find(state => state.id === this.stateId)!, true))
+      && this.actionCandidates(candidate.stateId, projected).some(action => action.due <= this.now()
+        && (!requiredFact || candidate.when?.[requiredFact] === true
+          || candidate.actions.find(item => item.actionId === action.id)?.when?.[requiredFact] === true))) ?? false;
+  }
   /** 合法心情独立接受；配套计划按新修订绑定，非法计划不能保留旧心情的循环。 */
   applyDecision(decision: CharacterExpressionDecision): CharacterExpressionResult {
     if (!this.matches(decision.context) || this.decisions.has(decision.eventId)) return this.result();
@@ -88,18 +110,25 @@ export class CharacterExpressionEngine {
     if (this.decisions.size > 1024) this.decisions.delete(this.decisions.values().next().value!);
     let effects: CharacterExpressionEffect[] = [];
     const preserveExplicit = this.explicit && decision.preserveExplicitPlaybackToken !== undefined
-      && this.schedule.current?.playbackToken === decision.preserveExplicitPlaybackToken;
+      && this.lastExplicit?.token === decision.preserveExplicitPlaybackToken;
+    const sameExplicit = decision.preserveExplicitPlaybackToken !== undefined
+      && this.lastExplicit?.token === decision.preserveExplicitPlaybackToken;
     if (mood?.success) {
       this.moodRevision++;
       this.mood = { summary: mood.data.summary, targetStrength: mood.data.strength, startedAtMs: this.now(),
         fadeInMs: mood.data.fadeInMs ?? (decision.source === 'chat' ? 0 : 60_000), halfLifeMs: mood.data.halfLifeMs,
         revision: this.moodRevision, sourceEventId: decision.eventId };
       this.plan = null;
+      this.restingUntil.clear(); this.blockedPlanState = null;
+      if (!sameExplicit) this.lastExplicit = null;
       if (!preserveExplicit) { this.explicit = false; effects = this.stop(); }
     }
     if (legal && parsed?.success) {
       this.plan = { ...parsed.data, contextRevision: this.contextRevision, moodRevision: this.moodRevision,
         expiresAtMs: this.now() + parsed.data.validForMs };
+      this.restingUntil.clear();
+      this.blockedPlanState = sameExplicit ? this.lastExplicit!.stateId : null;
+      if (!sameExplicit) this.lastExplicit = null;
       if (!preserveExplicit) this.explicit = false;
     }
     if (preserveExplicit) return this.result();
@@ -110,7 +139,7 @@ export class CharacterExpressionEngine {
         return { ...result, effects: [...effects, ...result.effects] };
       }
     }
-    return this.advanceWith(effects, !!mood?.success || !!(legal && parsed?.success && !parsed.data.states.length));
+    return this.advanceWith(effects, !!mood?.success || !!legal);
   }
   invalidateContext(): CharacterExpressionResult {
     this.contextRevision++;
@@ -148,13 +177,12 @@ export class CharacterExpressionEngine {
   }
   private chooseState(force: boolean): string {
     if (this.explicit) return this.stateId;
-    const strength = sampleMood(this.mood, this.now())?.strength ?? 0;
     const current = this.manifest.states.find(state => state.id === this.stateId)!;
     const exit = this.conditionEvents(current, true);
-    const candidates = this.plan?.states.filter(candidate => candidate.score > 0 && strength >= candidate.minStrength && strength <= candidate.maxStrength
+    const candidates = this.plan?.states.filter(candidate => this.eligibleState(candidate, this.facts)
       && !(exit && candidate.stateId === this.stateId)
-      && (candidate.stateId === this.stateId || this.conditionEvents(this.manifest.states.find(state => state.id === candidate.stateId)!) !== null)
-      && this.manifest.states.find(state => state.id === candidate.stateId)!.actionIds.some(id => this.resolve(candidate.stateId, id))) ?? [];
+      && this.actionCandidates(candidate.stateId, this.facts).some(action => action.due <= this.now()
+        || candidate.stateId === this.stateId && this.schedule.current?.actionId === action.id)) ?? [];
     if (!force && !exit && candidates.some(candidate => candidate.stateId === this.stateId) && this.now() - this.enteredAtMs < 2_000) return this.stateId;
     candidates.sort((a, b) => (b.score + (b.stateId === this.stateId ? .05 : 0)) - (a.score + (a.stateId === this.stateId ? .05 : 0)));
     return candidates[0]?.stateId ?? this.manifest.idleStateId;
@@ -162,23 +190,49 @@ export class CharacterExpressionEngine {
   private resolve(stateId: string, actionId: string) {
     return this.failed.has(actionId) ? null : resolveCharacterPresentationV3(this.manifest, this.skinId, stateId, actionId);
   }
-  private chooseAction(stateId: string, explicitActionId?: string): string | null {
+  private matchesFacts(when: StateCandidate['when'], facts: CharacterRuntimeFacts): boolean {
+    return !when || (Object.keys(when) as (keyof CharacterRuntimeFacts)[]).every(key => when[key] === facts[key]);
+  }
+  private eligibleState(candidate: StateCandidate, facts: CharacterRuntimeFacts): boolean {
+    const strength = sampleMood(this.mood, this.now())?.strength ?? 0;
+    const state = this.manifest.states.find(state => state.id === candidate.stateId);
+    return !!this.plan && this.now() < this.plan.expiresAtMs && this.plan.moodRevision === this.moodRevision
+      && (!this.mood || sampleMood(this.mood, this.now()) !== null) && !!state?.agentInferable
+      && candidate.stateId !== this.blockedPlanState && (this.restingUntil.get(candidate.stateId) ?? 0) <= this.now()
+      && candidate.score > 0 && strength >= candidate.minStrength && strength <= candidate.maxStrength
+      && this.matchesFacts(candidate.when, facts)
+      && (candidate.stateId === this.stateId || this.conditionEvents(state) !== null);
+  }
+  private episodeDue(candidate: StateCandidate): boolean {
+    return !this.explicit && candidate.stateId === this.stateId && this.stateId !== this.manifest.idleStateId
+      && candidate.lifetime !== 'condition' && this.now() - this.enteredAtMs
+        >= Math.max(2000, this.manifest.states.find(state => state.id === this.stateId)!.suggestedDurationMs ?? 3000);
+  }
+  private actionCandidates(stateId: string, facts: CharacterRuntimeFacts, selectedActionId?: string, bypass = false) {
     const state = this.manifest.states.find(state => state.id === stateId);
-    if (!state) return null;
+    if (!state) return [];
     const suggestions = this.plan?.states.find(state => state.stateId === stateId)?.actions;
-    let candidates = state.actionIds.flatMap(id => {
+    return state.actionIds.flatMap(id => {
       const resolved = this.resolve(stateId, id);
-      if (!resolved || (explicitActionId && explicitActionId !== id)) return [];
+      if (!resolved || (selectedActionId && selectedActionId !== id)) return [];
+      const suggestion = suggestions?.find(action => action.actionId === id);
+      if (!bypass && !this.matchesFacts(suggestion?.when, facts)) return [];
       const last = this.recency.get(id);
       const due = last === undefined ? 0 : last + resolved.action.cooldownMs;
-      if (due > this.now()) {
-        this.nextEligibleAtMs = Math.min(this.nextEligibleAtMs ?? Infinity, due); return [];
-      }
-      const score = explicitActionId || !suggestions?.length ? 1 : suggestions.find(action => action.actionId === id)?.score ?? 0;
-      return score > 0 ? [{ id, weight: score * resolved.action.preference, suppressed: last !== undefined && this.now() < last + resolved.action.repeatSuppressionMs }] : [];
+      const score = bypass || !suggestions?.length ? 1 : suggestion?.score ?? 0;
+      return score > 0 ? [{ id, due, weight: score * resolved.action.preference, suppressed: last !== undefined && this.now() < last + resolved.action.repeatSuppressionMs }] : [];
+    });
+  }
+  private chooseAction(stateId: string, selectedActionId?: string, bypass = this.explicit || stateId === this.manifest.idleStateId): string | null {
+    const candidate = this.plan?.states.find(state => state.stateId === stateId);
+    if (!bypass && (!candidate || !this.eligibleState(candidate, this.facts) || this.episodeDue(candidate))) return null;
+    let candidates = this.actionCandidates(stateId, this.facts, selectedActionId, bypass).filter(action => {
+      if (action.due <= this.now()) return true;
+      this.nextEligibleAtMs = Math.min(this.nextEligibleAtMs ?? Infinity, action.due); return false;
     });
     if (candidates.some(candidate => !candidate.suppressed)) candidates = candidates.filter(candidate => !candidate.suppressed);
     if (candidates.some(candidate => candidate.id !== this.lastActionId)) candidates = candidates.filter(candidate => candidate.id !== this.lastActionId);
+    if (!candidates.length) return null;
     let pick = Math.max(0, Math.min(.999999, this.options.random?.() ?? .5)) * candidates.reduce((sum, candidate) => sum + candidate.weight, 0);
     for (const candidate of candidates) { pick -= candidate.weight; if (pick < 0) return candidate.id; }
     return null;
@@ -213,11 +267,12 @@ export class CharacterExpressionEngine {
       : [effect]);
   }
   advance(): CharacterExpressionResult { return this.advanceWith([]); }
-  private advanceWith(effects: CharacterExpressionEffect[], force = false): CharacterExpressionResult {
+  private advanceWith(effects: CharacterExpressionEffect[], force = false, factsChanged = false): CharacterExpressionResult {
     const now = this.now();
     for (const [id, event] of this.events) if (now - event.occurredAtMs >= 120_000) { this.events.delete(id); this.consumed.delete(id); }
     if (this.mood && !sampleMood(this.mood, now)) { this.mood = null; this.moodRevision++; this.plan = null; force = true; }
     if (this.plan && (now >= this.plan.expiresAtMs || this.plan.moodRevision !== this.moodRevision)) { this.plan = null; force = true; }
+    if (!this.plan) { this.restingUntil.clear(); this.blockedPlanState = null; }
     const before = this.schedule.current;
     this.schedule = reduceCharacterActionSchedule(this.schedule, { type: 'expire', nowMs: now }, this.manifest.actions).schedule;
     if (before && !this.schedule.current) effects.push({ type: 'interrupt', playbackToken: before.playbackToken, fallbackActionId: null });
@@ -226,17 +281,24 @@ export class CharacterExpressionEngine {
       this.explicit = false; this.explicitUntilMs = null; force = true;
       effects.push(...this.stop());
     }
+    const candidate = this.plan?.states.find(state => state.stateId === this.stateId);
+    // episode 从进入状态计时，动作轮换不续命；condition 则由实时条件持续性决定。
+    if (candidate && this.episodeDue(candidate)) {
+      this.restingUntil.set(this.stateId, now + 10_000); force = true;
+    }
+    // 已失去事实资格的播放立即撤销，不等待两秒保持或作者抗中断策略。
+    const currentInvalid = !this.explicit && this.stateId !== this.manifest.idleStateId
+      && (!candidate || !this.eligibleState(candidate, this.facts)
+        || this.schedule.current !== null && !this.actionCandidates(this.stateId, this.facts).some(action => action.id === this.schedule.current!.actionId));
+    if (currentInvalid) { effects.push(...this.stop()); force = true; }
     const target = this.chooseState(force);
     const staticDue = this.staticPlayback && this.nextEligibleAtMs !== null && now >= this.nextEligibleAtMs;
-    const stateDuration = this.manifest.states.find(state => state.id === this.stateId)?.suggestedDurationMs;
-    const stateDue = !this.explicit && stateDuration !== undefined && this.schedule.current !== null
-      && now - this.schedule.current.scheduledAtMs >= Math.max(2000, stateDuration);
-    if (this.schedule.current && target === this.stateId && !force && !staticDue && !stateDue) return this.result(effects);
+    if (this.schedule.current && target === this.stateId && !force && !staticDue) return this.result(effects);
     // 状态寿命独立于动作寿命；自然结束或完成反馈清空 current 也不能绕过保持时限。
-    if (!force && target !== this.stateId && now - this.enteredAtMs < 2_000) return this.result(effects);
+    if (!force && !factsChanged && target !== this.stateId && now - this.enteredAtMs < 2_000) return this.result(effects);
     this.nextEligibleAtMs = null;
     const actionId = this.chooseAction(target);
-    if (actionId) effects.push(...this.play(target, actionId, force));
+    if (actionId) effects.push(...this.play(target, actionId, force || factsChanged));
     else {
       const idle = this.manifest.idleStateId;
       const idleAction = this.chooseAction(idle);
@@ -252,15 +314,18 @@ export class CharacterExpressionEngine {
   playExplicit(stateId: string, actionId?: string): CharacterExpressionResult {
     if (!this.manifest.states.some(state => state.id === stateId) || (actionId && !this.resolve(stateId, actionId))) return this.result();
     this.nextEligibleAtMs = null;
-    const selected = this.chooseAction(stateId, actionId);
+    const selected = this.chooseAction(stateId, actionId, true);
     if (!selected) return this.result();
     const resolved = this.resolve(stateId, selected)!;
     this.invalidateContext(); this.explicit = true; this.explicitSingleAction = actionId !== undefined;
     this.explicitUntilMs = null;
+    this.enteredAtMs = this.now();
     this.explicitDurationMs = actionId !== undefined
       ? resolved.presentation.frames.reduce((sum, frame) => sum + (frame.durationMs ?? 1000 / resolved.presentation.fps), 0) / (resolved.presentation.playbackRate ?? 1)
       : this.manifest.states.find(state => state.id === stateId)!.suggestedDurationMs ?? 3000;
-    return this.result(this.play(stateId, selected, true));
+    const effects = this.play(stateId, selected, true);
+    this.lastExplicit = { token: this.schedule.current!.playbackToken, stateId };
+    return this.result(effects);
   }
   applyFeedback(feedback: CharacterPlaybackFeedback): CharacterExpressionResult {
     const parsed = characterPlaybackFeedbackSchema.safeParse(feedback);
@@ -288,6 +353,8 @@ export class CharacterExpressionEngine {
         const selected = this.chooseAction(this.stateId);
         if (selected) return this.result(this.play(this.stateId, selected, true));
       }
+      if (feedback.status === 'failed') return this.advanceWith([], true);
+      if (feedback.status === 'completed' && !this.explicit && this.stateId !== this.manifest.idleStateId) return this.advanceWith([]);
       return this.result();
     } catch { return this.result(); }
   }
@@ -295,6 +362,7 @@ export class CharacterExpressionEngine {
     const effects = this.stop();
     this.contextRevision++; this.moodRevision++; this.mood = null; this.plan = null; this.explicit = false;
     this.explicitUntilMs = null; this.explicitDurationMs = 0; this.explicitSingleAction = false;
+    this.facts = emptyFacts(); this.restingUntil.clear(); this.lastExplicit = null; this.blockedPlanState = null;
     this.events.clear(); this.consumed.clear(); this.decisions.clear(); this.recency.clear(); this.failed.clear();
     this.stateId = this.manifest.idleStateId; this.enteredAtMs = this.now(); this.lastActionId = null;
     this.schedule = { revision: this.schedule.revision + 1, current: null, history: [] };

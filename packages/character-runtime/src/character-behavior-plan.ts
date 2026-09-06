@@ -69,6 +69,9 @@ export const characterChatResponseSchema = z.object({
 }).strict();
 const identifier = { type: 'string', pattern: '^[a-z0-9][a-z0-9_-]{0,119}$' };
 const score = { type: 'number', minimum: 0, maximum: 1 };
+const factNames = ['moving', 'dragging', 'carrying', 'chatting', 'taskRunning', 'awaitingConfirmation'] as const;
+const when = { type: 'object', additionalProperties: false,
+  properties: Object.fromEntries(factNames.map(name => [name, { type: 'boolean' }])) };
 /** JSON 协议与执行 Schema 对应；生命周期修订和保留令牌不能由模型提供。 */
 export const characterChatResponseJsonSchema = {
   type: 'object', additionalProperties: false, required: ['text', 'moodUpdate', 'expressionPlan', 'movementControl'],
@@ -81,9 +84,12 @@ export const characterChatResponseJsonSchema = {
       properties: { validForMs: { type: 'integer', minimum: 1, maximum: 1800000 },
         states: { type: 'array', maxItems: 8, items: { type: 'object', additionalProperties: false,
           required: ['stateId', 'score', 'minStrength', 'maxStrength', 'actions'],
+          allOf: [{ if: { required: ['lifetime'], properties: { lifetime: { const: 'condition' } } },
+            then: { required: ['when'], properties: { when: { anyOf: factNames.map(name => ({ required: [name], properties: { [name]: { const: true } } })) } } } }],
           properties: { stateId: identifier, score, minStrength: score, maxStrength: score,
+            when, lifetime: { enum: ['episode', 'condition'] },
             actions: { type: 'array', maxItems: 32, items: { type: 'object', additionalProperties: false,
-              required: ['actionId', 'score'], properties: { actionId: identifier, score } } } } } } } }, { type: 'null' }] },
+              required: ['actionId', 'score'], properties: { actionId: identifier, score, when } } } } } } } }, { type: 'null' }] },
     explicitPlayback: { type: 'object', additionalProperties: false, required: ['stateId'],
       properties: { stateId: identifier, actionId: identifier } },
     movementControl: { oneOf: [

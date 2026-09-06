@@ -19,6 +19,147 @@ const plan = { states: [
   { stateId: 'soft', score: 1, minStrength: .02, maxStrength: .59, actions: [] }
 ] };
 
+const movingPlan = { states: [{ ...plan.states[0]!, minStrength: 0,
+  when: { moving: true }, lifetime: 'condition', actions: [
+    { actionId: 'bright-a', score: 1, when: { carrying: false } },
+    { actionId: 'bright-b', score: 1, when: { carrying: true } }
+  ] }] };
+
+describe('通用情境条件与有限表现', () => {
+  it('presentation 条件动作完成后立即续播合法动作，无需等待宿主 tick', () => {
+    let now = 0;
+    const manifest = fixture();
+    manifest.actions.find(action => action.id === 'bright-a')!.loopPolicy = 'presentation';
+    const engine = new runtime.CharacterExpressionEngine({ manifest, now: () => now });
+    engine.updateRuntimeFacts({ moving: true });
+    const current = engine.applyDecision({ context: engine.context(), eventId: 'moving', source: 'chat', expressionPlan: movingPlan }).snapshot.schedule.current!;
+    engine.applyFeedback({ playbackToken: current.playbackToken, actionId: current.actionId, status: 'started', occurredAtMs: now });
+    now = 100;
+    const result = engine.applyFeedback({ playbackToken: current.playbackToken, actionId: current.actionId, status: 'completed', occurredAtMs: now });
+    expect(result.effects).toContainEqual(expect.objectContaining({ type: 'play' }));
+    expect(result.snapshot.schedule.current?.actionId).toBe('bright-a');
+    expect(result.snapshot.schedule.current?.playbackToken).not.toBe(current.playbackToken);
+  });
+  it('真实事实即时切换自定义状态及动作，条件结束越过保持和抗中断，恢复无需休息', () => {
+    let now = 0;
+    const manifest = fixture();
+    manifest.actions.find(action => action.id === 'bright-a')!.interrupt = 'resistant';
+    const engine = new runtime.CharacterExpressionEngine({ manifest, now: () => now });
+    engine.applyDecision({ context: engine.context(), eventId: 'moving', source: 'chat', expressionPlan: movingPlan });
+    expect(engine.snapshot().stateId).toBe('rest');
+    const context = engine.context();
+    expect(engine.updateRuntimeFacts({ moving: true }).snapshot.schedule.current?.actionId).toBe('bright-a');
+    now = 50;
+    expect(engine.updateRuntimeFacts({ carrying: true }).snapshot.schedule.current?.actionId).toBe('bright-b');
+    now = 100;
+    expect(engine.updateRuntimeFacts({ moving: false }).snapshot.stateId).toBe('rest');
+    expect(engine.updateRuntimeFacts({ moving: true }).snapshot.stateId).toBe('bright');
+    expect(engine.context()).toEqual(context);
+    const current = engine.snapshot().schedule.current!;
+    engine.applyFeedback({ playbackToken: current.playbackToken, actionId: current.actionId, status: 'started', occurredAtMs: now });
+    now = 20_000;
+    expect(engine.advance().snapshot.stateId).toBe('bright');
+  });
+  it('停止后接纳旧推断仍按现在事实过滤，其他事实使用同一引擎', () => {
+    const engine = new runtime.CharacterExpressionEngine({ manifest: fixture(), now: () => 0 });
+    engine.updateRuntimeFacts({ moving: true });
+    const context = engine.context();
+    engine.updateRuntimeFacts({ moving: false });
+    expect(engine.applyDecision({ context, eventId: 'late', source: 'chat', expressionPlan: movingPlan }).snapshot.stateId).toBe('rest');
+    engine.applyDecision({ context, eventId: 'task', source: 'chat', expressionPlan: {
+      states: [{ ...plan.states[0]!, stateId: 'soft', minStrength: 0, lifetime: 'condition', when: { taskRunning: true } }]
+    } });
+    expect(engine.updateRuntimeFacts({ taskRunning: true }).snapshot.stateId).toBe('soft');
+    expect(engine.updateRuntimeFacts({ taskRunning: false }).snapshot.stateId).toBe('rest');
+  });
+  it('失败回退也必须满足动作条件，明确播放可以越过模型条件', () => {
+    const manifest = fixture();
+    manifest.actions.find(action => action.id === 'bright-a')!.failureFallbackActionId = 'bright-b';
+    const engine = new runtime.CharacterExpressionEngine({ manifest, now: () => 0 });
+    engine.updateRuntimeFacts({ moving: true });
+    const current = engine.applyDecision({ context: engine.context(), eventId: 'moving', source: 'chat', expressionPlan: movingPlan }).snapshot.schedule.current!;
+    const failed = engine.applyFeedback({ playbackToken: current.playbackToken, actionId: current.actionId, status: 'failed', occurredAtMs: 0 });
+    expect(failed.snapshot.stateId).toBe('rest');
+    expect(failed.snapshot.schedule.current?.actionId).not.toBe('bright-b');
+    expect(engine.playExplicit('bright', 'bright-b').snapshot.schedule.current?.actionId).toBe('bright-b');
+  });
+  it('计划失效后到达的失败反馈不能绕过状态资格播放回退动作', () => {
+    let now = 0;
+    const manifest = fixture();
+    manifest.actions.find(action => action.id === 'bright-a')!.failureFallbackActionId = 'bright-b';
+    const engine = new runtime.CharacterExpressionEngine({ manifest, now: () => now, random: () => 0 });
+    const current = engine.applyDecision({ context: engine.context(), eventId: 'plan', source: 'chat', expressionPlan: {
+      validForMs: 100, states: [{ ...plan.states[0]!, minStrength: 0 }]
+    } }).snapshot.schedule.current!;
+    now = 100;
+    expect(engine.applyFeedback({ playbackToken: current.playbackToken, actionId: current.actionId, status: 'failed', occurredAtMs: now }).snapshot.stateId).toBe('rest');
+  });
+  it('资格查询纯读，要求明确 true 条件，尊重事件、冷却、有效期和推断开关', () => {
+    let now = 0; let randomCalls = 0;
+    const manifest = fixture();
+    manifest.states[1]!.enterConditions = [{ mode: 'all', clauses: [{ kind: 'event', event: 'user-interaction' }] }];
+    manifest.actions.find(action => action.id === 'bright-a')!.cooldownMs = 5000;
+    const engine = new runtime.CharacterExpressionEngine({ manifest, now: () => now, random: () => { randomCalls++; return 0; } });
+    expect(engine.hasEligibleExpressionFor({ moving: true }, 'moving')).toBe(false);
+    engine.applyDecision({ context: engine.context(), eventId: 'plan', source: 'chat', expressionPlan: { ...movingPlan, validForMs: 20_000 } });
+    expect(engine.hasEligibleExpressionFor({ moving: true }, 'moving')).toBe(false);
+    engine.recordEvent({ id: 'touch', type: 'user-interaction', occurredAtMs: now });
+    const snapshot = engine.snapshot(); const calls = randomCalls;
+    expect(engine.hasEligibleExpressionFor({ moving: true }, 'moving')).toBe(true);
+    expect(engine.hasEligibleExpressionFor({ moving: true }, 'moving')).toBe(true);
+    expect(engine.snapshot()).toEqual(snapshot); expect(randomCalls).toBe(calls);
+    const current = engine.updateRuntimeFacts({ moving: true }).snapshot.schedule.current!;
+    engine.applyFeedback({ playbackToken: current.playbackToken, actionId: current.actionId, status: 'started', occurredAtMs: now });
+    expect(engine.hasEligibleExpressionFor({ moving: true }, 'moving')).toBe(false);
+    now = 20_000;
+    expect(engine.hasEligibleExpressionFor({ moving: true }, 'moving')).toBe(false);
+    const plain = new runtime.CharacterExpressionEngine({ manifest: fixture(), now: () => 0 });
+    plain.applyDecision({ context: plain.context(), eventId: 'plain', source: 'chat', expressionPlan: { states: [{ ...plan.states[0]!, minStrength: 0 }] } });
+    expect(plain.hasEligibleExpressionFor({ moving: true }, 'moving')).toBe(false);
+    const disabled = fixture(); disabled.states[1]!.agentInferable = false;
+    const noInfer = new runtime.CharacterExpressionEngine({ manifest: disabled, now: () => 0 });
+    noInfer.applyDecision({ context: noInfer.context(), eventId: 'disabled', source: 'chat', expressionPlan: movingPlan });
+    expect(noInfer.hasEligibleExpressionFor({ moving: true }, 'moving')).toBe(false);
+  });
+  it.each([undefined, 500, 4000])('episode 使用进入时间与作者时长 %s，动作轮换不续命，休息后心情仍可表达', duration => {
+    let now = 0;
+    const manifest = fixture();
+    if (duration !== undefined) manifest.states[1]!.suggestedDurationMs = duration;
+    const engine = new runtime.CharacterExpressionEngine({ manifest, now: () => now, random: () => 0 });
+    const episodePlan = { states: [{ ...plan.states[0]!, minStrength: 0 }] };
+    let current = engine.applyDecision({ context: engine.context(), eventId: 'episode', source: 'chat', moodUpdate: { summary: '喜悦', strength: 1 }, expressionPlan: episodePlan }).snapshot.schedule.current!;
+    engine.applyFeedback({ playbackToken: current.playbackToken, actionId: current.actionId, status: 'started', occurredAtMs: now });
+    now = 1000;
+    engine.applyFeedback({ playbackToken: current.playbackToken, actionId: current.actionId, status: 'completed', occurredAtMs: now });
+    current = engine.advance().snapshot.schedule.current!;
+    expect(current.actionId).toBe('bright-b');
+    engine.applyFeedback({ playbackToken: current.playbackToken, actionId: current.actionId, status: 'started', occurredAtMs: now });
+    now = duration === undefined ? 3000 : Math.max(2000, duration);
+    expect(engine.advance().snapshot.stateId).toBe('rest');
+    expect(engine.snapshot().mood?.summary).toBe('喜悦');
+    expect(engine.hasEligibleExpressionFor({})).toBe(false);
+    now += 9999; expect(engine.advance().snapshot.stateId).toBe('rest');
+    now += 1; expect(engine.hasEligibleExpressionFor({})).toBe(true);
+    expect(engine.advance().snapshot.stateId).toBe('bright');
+  });
+  it.each([false, true])('同轮明确播放结束不被保留计划复活（计划迟到：%s），新互动仍可再次播放', late => {
+    let now = 0;
+    const engine = new runtime.CharacterExpressionEngine({ manifest: fixture(), now: () => now });
+    const current = engine.playExplicit('bright', 'bright-a').snapshot.schedule.current!;
+    engine.applyFeedback({ playbackToken: current.playbackToken, actionId: current.actionId, status: 'started', occurredAtMs: now });
+    const decision = { context: engine.context(), eventId: 'same-turn', source: 'chat' as const,
+      moodUpdate: { summary: '喜悦', strength: 1 }, expressionPlan: { states: [{ ...plan.states[0]!, minStrength: 0 }] },
+      preserveExplicitPlaybackToken: current.playbackToken };
+    if (!late) engine.applyDecision(decision);
+    now = 100;
+    expect(engine.advance().snapshot.stateId).toBe('rest');
+    if (late) expect(engine.applyDecision(decision).snapshot.stateId).toBe('rest');
+    now = 20_000;
+    expect(engine.advance().snapshot.stateId).toBe('rest');
+    expect(engine.playExplicit('bright', 'bright-a').snapshot.stateId).toBe('bright');
+  });
+});
+
 describe('V3 心情与表现', () => {
   it('同轮明确动作不中断或重播，结束后进入新心情计划', () => {
     let now = 0;
