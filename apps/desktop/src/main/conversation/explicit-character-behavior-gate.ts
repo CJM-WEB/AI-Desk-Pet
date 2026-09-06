@@ -127,7 +127,9 @@ function parseChinese(text: string): ParsedDirective | null {
   }
 
   // 终止词必须紧接既有句尾／组合边界，名称中的“状态”等字样才不会提前截断。
-  const play = /^(?:请)?(?:做一个|播放|表演)\s*(.{1,120}?)\s*(动作|状态)(?=\s*(?:$|[，。！？,.!?]|并且?|然后|再|(?:and|then)\s))/iu.exec(text);
+  // 进入／切换到只接受状态目标，沿用明确播放授权，不由名称推导真实运动。
+  const play = /^(?:请)?(?:做一个|播放|表演)\s*(.{1,120}?)\s*(动作|状态)(?=\s*(?:$|[，。！？,.!?]|并且?|然后|再|(?:and|then)\s))/iu.exec(text)
+    ?? /^(?:请)?(?:你)?(?:进入|切换到)\s*(.{1,120}?)\s*(状态)(?=\s*(?:$|[，。！？,.!?]|并且?|然后|再|(?:and|then)\s))/iu.exec(text);
   const targetName = play?.[1] ? validExplicitTargetName(play[1]) : null;
   if (play && targetName) {
     return {

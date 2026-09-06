@@ -1363,6 +1363,27 @@ describe('Main 角色行为 Director', () => {
     expect(fixture.notices).toEqual([]);
   });
 
+  test('进入运动状态只播放状态并忽略同轮模型持续移动建议', async () => {
+    const fixture = createRealMotionFixture();
+    fixture.behavior.resolveBehaviorTarget.mockReturnValue({ kind: 'state', stateId: 'move-state' });
+    fixture.setDirectedAuthorization({ kind: 'play', stateId: 'move-state', actionId: 'move-action', playbackToken: 'state-token' });
+
+    const prepared = await fixture.director.prepareUserPrompt('进入运动状态');
+    expect(prepared.explicitDirective).toEqual({ kind: 'play', target: { kind: 'state_name', name: '运动' } });
+    expect(prepared.explicitPlaybackToken).toBe('state-token');
+    expect(fixture.behavior.requestDirectedBehavior).toHaveBeenCalledExactlyOnceWith(
+      { kind: 'state', stateId: 'move-state' }, { urgency: 100, systemForced: true }
+    );
+
+    // 名称包含运动不构成位移授权；真实 Director 必须保留原模式与窗口位置。
+    await fixture.director.completeUserPrompt({ generation: 'generation-1', eventId: String(++completionSequence),
+      context: fixture.director.captureExpressionContext(), explicitDirective: prepared.explicitDirective,
+      explicitPlaybackToken: prepared.explicitPlaybackToken!, movementControl: { kind: 'set_mode', mode: 1 } });
+    fixture.director.handleTaskEvent({ type: 'phase', phase: 'success' });
+    expect(fixture.director.getDiagnosticSnapshot().movementMode).toBe(2);
+    expect(fixture.tick(1000)).toMatchObject({ moving: false, position: { x: 100, y: 100 } });
+  });
+
   test('停止立即撤销运动且 500ms poll 始终只推进令牌清理', async () => {
     const fixture = createFixture();
     fixture.director.advance();
