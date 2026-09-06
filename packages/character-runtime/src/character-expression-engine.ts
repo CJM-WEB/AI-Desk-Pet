@@ -135,7 +135,6 @@ export class CharacterExpressionEngine {
     const strength = sampleMood(this.mood, this.now())?.strength ?? 0;
     const current = this.manifest.states.find(state => state.id === this.stateId)!;
     const exit = this.conditionEvents(current, true);
-    if (exit) exit.forEach(id => this.consumed.add(id));
     const candidates = this.plan?.states.filter(candidate => candidate.score > 0 && strength >= candidate.minStrength && strength <= candidate.maxStrength
       && !(exit && candidate.stateId === this.stateId)
       && (candidate.stateId === this.stateId || this.conditionEvents(this.manifest.states.find(state => state.id === candidate.stateId)!) !== null)
@@ -181,6 +180,8 @@ export class CharacterExpressionEngine {
     this.staticPlayback = mode === 'static';
     if (mode === 'static' && this.schedule.current) this.schedule.current.durationMs = null;
     if (stateId !== this.stateId) {
+      // 只有切态真正提交后才消费退出边沿，等待保持时限或中断策略不会丢事件。
+      this.conditionEvents(this.manifest.states.find(state => state.id === this.stateId)!, true)?.forEach(id => this.consumed.add(id));
       this.conditionEvents(this.manifest.states.find(state => state.id === stateId)!)?.forEach(id => this.consumed.add(id));
       this.stateId = stateId; this.enteredAtMs = this.now();
     }
@@ -205,7 +206,8 @@ export class CharacterExpressionEngine {
     const stateDue = !this.explicit && stateDuration !== undefined && this.schedule.current !== null
       && now - this.schedule.current.scheduledAtMs >= Math.max(2000, stateDuration);
     if (this.schedule.current && target === this.stateId && !force && !staticDue && !stateDue) return this.result(effects);
-    if (this.schedule.current && !force && target !== this.stateId && now - this.enteredAtMs < 2_000) return this.result(effects);
+    // 状态寿命独立于动作寿命；自然结束或完成反馈清空 current 也不能绕过保持时限。
+    if (!force && target !== this.stateId && now - this.enteredAtMs < 2_000) return this.result(effects);
     this.nextEligibleAtMs = null;
     const actionId = this.chooseAction(target);
     if (actionId) effects.push(...this.play(target, actionId, force));

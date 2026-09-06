@@ -122,5 +122,21 @@ describe('V3 心情与表现', () => {
     expect(one.advance().snapshot.schedule.current!.playbackToken).not.toBe(two.advance().snapshot.schedule.current!.playbackToken);
     expect(one.applyDecision({ context: one.context(), eventId: 'invalid', source: 'chat', expressionPlan: { states: [{ ...plan.states[0], actions: [{ actionId: 'breathe', score: 1 }] }] } }).snapshot.stateId).toBe('rest');
   });
+  it.each([false, true])('退出事件等待两秒状态保持后仍生效（动作提前完成：%s）', completed => {
+    let now = 0;
+    const manifest = fixture();
+    manifest.states[1]!.exitConditions = [{ mode: 'any', clauses: [{ kind: 'event', event: 'drag-end' }] }];
+    const engine = new runtime.CharacterExpressionEngine({ manifest, now: () => now });
+    engine.applyDecision({ context: engine.context(), eventId: 'feeling', source: 'chat',
+      moodUpdate: { summary: '感受', strength: 1 }, expressionPlan: plan });
+    const current = engine.snapshot().schedule.current!;
+    const feedback = { playbackToken: current.playbackToken, actionId: current.actionId };
+    engine.applyFeedback({ ...feedback, status: 'started', occurredAtMs: now });
+    now = 500;
+    if (completed) engine.applyFeedback({ ...feedback, status: 'completed', occurredAtMs: now });
+    expect(engine.recordEvent({ id: 'drop', type: 'drag-end', occurredAtMs: now }).snapshot.stateId).toBe('bright');
+    now = 2_000;
+    expect(engine.advance().snapshot.stateId).toBe('rest');
+  });
 });
 
