@@ -229,15 +229,20 @@ export class CharacterBehaviorDirector {
     this.proactivityMode = options.initialSettings.proactivityMode;
   }
 
-  /** Gate 在能力路由与 Provider 前执行，本地明确移动仍须先通过动作授权。 */
+  /** Gate 在能力路由与 Provider 前执行，明确移动复用 Main 的运动与生命周期边界。 */
   async prepareUserPrompt(text: string): Promise<PreparedBehaviorPrompt> {
     const turnEpoch = ++this.turnEpoch;
     this.options.behavior.handleUserInteraction();
     this.options.behavior.recordTrustedEvent('conversation-start');
     const originalText = text.trim();
     const parsed = parseExplicitCharacterBehavior(originalText);
-    await this.applyMovementControl(parsed?.movementControl ?? { kind: 'keep' }, 'explicit', turnEpoch);
     const directive = parsed?.explicitDirective ?? null;
+    if (directive?.kind === 'move' && directive.motion.kind === 'relative') {
+      // Main 已解析的相对方向和距离不能经区域协议降级为屏幕边缘。
+      this.requestBehaviorPlan({ kind: 'move', direction: directive.motion.direction, distance: directive.motion.distance }, 'explicit');
+    } else {
+      await this.applyMovementControl(parsed?.movementControl ?? { kind: 'keep' }, 'explicit', turnEpoch);
+    }
     const authorization = directive?.kind === 'play' ? this.requestBehaviorTarget(directive.target, 'explicit', false) : NONE;
     return { originalText, capabilityText: parsed?.capabilityText ?? originalText, explicitDirective: directive,
       ...(authorization.kind === 'play' ? { explicitPlaybackToken: authorization.playbackToken } : {}) };
@@ -379,7 +384,8 @@ export class CharacterBehaviorDirector {
     if (this.closed) return;
     this.updateTrustedBlock(event);
     this.updateActivityFromTaskEvent(event);
-    if (this.trustedRuntimeBlocked || this.capabilityTask || this.awaitingConfirmation) {
+    // 正文不是新的阻塞边沿，不能沿用 thinking 事实撤销本轮已接纳的明确运动。
+    if (event.type === 'phase' && (this.trustedRuntimeBlocked || this.capabilityTask || this.awaitingConfirmation)) {
       this.clearContinuousMotion();
     }
     const explicitPlaybackActive = this.active?.source === 'explicit';

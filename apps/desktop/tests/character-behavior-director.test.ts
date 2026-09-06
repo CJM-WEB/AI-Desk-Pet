@@ -14,6 +14,7 @@ import {
   type CharacterBehaviorNotice
 } from '../src/main/characters/character-behavior-director';
 import { CharacterMotionService } from '../src/main/characters/character-motion-service';
+import { ConversationEventProjection } from '../src/main/conversation/conversation-event-projection';
 import { CharacterProactivityScheduler } from
   '../src/main/characters/character-proactivity-scheduler';
 import {
@@ -1251,7 +1252,46 @@ describe('Main 角色行为 Director', () => {
 
     expect(fixture.behavior.requestDirectedBehavior).not.toHaveBeenCalled();
     expect(fixture.motion.requestIntent).toHaveBeenCalledExactlyOnceWith({
-      kind: 'region', region: 'left'
+      kind: 'relative', direction: 'left', distance: 'near'
+    });
+  });
+
+  test('真实聊天相对移动保留近距离而不是走到屏幕边缘', async () => {
+    const fixture = createRealMotionFixture();
+    // 复用正式聊天顺序：先进入思考，再由明确入口接受本轮运动。
+    fixture.director.handleTaskEvent({ type: 'phase', phase: 'listening' });
+    fixture.director.handleTaskEvent({ type: 'phase', phase: 'thinking' });
+    await fixture.director.prepareUserPrompt('向右走一点');
+
+    // 可见宽度为 100 DIP，near 应只向右移动半个角色宽度。
+    expect(fixture.motion.getSnapshot().target).toEqual({ x: 150, y: 100 });
+    expect(fixture.tick(1_000)).toMatchObject({
+      position: { x: 150, y: 100 }, moving: false
+    });
+  });
+
+  test.each([
+    { type: 'assistant_message_start', turnId: 'assistant-live-regression' },
+    { type: 'message', role: 'assistant', text: '好的，我往右挪一点。' }
+  ] as const)('真实聊天正文事件 $type 不截停已接纳的明确移动', async replyEvent => {
+    const fixture = createRealMotionFixture();
+    const projection = new ConversationEventProjection({
+      behavior: fixture.director,
+      getChatTarget: () => null,
+      getPetTarget: () => null
+    });
+    projection.publish({ type: 'phase', phase: 'listening' });
+    projection.publish({ type: 'phase', phase: 'thinking' });
+    // 使用区域指令隔离相对距离缺陷，目标应完整保持到右边缘。
+    await fixture.director.prepareUserPrompt('去右边');
+    expect(fixture.tick(100)).toMatchObject({
+      position: { x: 116, y: 100 }, target: { x: 900, y: 100 }, moving: true
+    });
+
+    projection.publish(replyEvent);
+
+    expect(fixture.tick(100)).toMatchObject({
+      position: { x: 132, y: 100 }, target: { x: 900, y: 100 }, moving: true
     });
   });
 
