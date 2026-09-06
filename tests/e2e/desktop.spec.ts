@@ -4196,8 +4196,34 @@ test.describe('真实角色工作室闭环', () => {
         stateId: authoredState.id, actionId: moodActionId, playbackStatus: 'started'
       });
       await submitChatMessage(chat, '播放向你挥手动作');
-      await expect.poll(() => fixture.getCharacterBehaviorProbe(), { intervals: [50, 100, 200] })
-        .toMatchObject({ stateId: authoredState.id, actionId: explicitActionId, playbackStatus: 'started' });
+      try {
+        await expect.poll(() => fixture.getCharacterBehaviorProbe(), { intervals: [50, 100, 200] })
+          .toMatchObject({ stateId: authoredState.id, actionId: explicitActionId, playbackStatus: 'started' });
+      } catch (error) {
+        // 失败时只投影合成角色的动作与时序字段，不输出完整草稿、资源或设置。
+        const explicitPlaybackDiagnostic = {
+          plays: await pet.evaluate(() => (
+            (globalThis as typeof globalThis & {
+              __workshopPlays?: Array<{ stateId: string; actionId: string; mode: string }>;
+            }).__workshopPlays ?? []
+          )),
+          state: { id: authoredState.id, name: authoredState.name },
+          actions: await workshop.evaluate(async ({ characterId, actionIds }) => {
+            const draft = await window.myself.getCharacterDraft(characterId);
+            return actionIds.map(id => ({ id, name: draft.actions.find(action => action.id === id)?.name ?? null }));
+          }, { characterId: runtime.id, actionIds: [...authoredState.actionIds] }),
+          presentations: authoredState.actionIds.map(actionId => {
+            const presentation = runtime.presentations.find(item => item.actionId === actionId)?.presentation;
+            return { actionId, durationMs: presentation?.frames.map(frame => frame.durationMs ?? null) ?? null,
+              fps: presentation?.fps ?? null, playbackRate: presentation?.playbackRate ?? null };
+          }),
+          userInChatDom: await chat.getByText('播放向你挥手动作', { exact: true }).count() > 0,
+          assistantInChatDom: await chat.getByText('向你挥手后，继续陪你开心。', { exact: true }).count() > 0
+        };
+        throw sanitizedCapturedError(error, message => sanitizeDiagnostic(
+          `${message}\n明确动作诊断：${JSON.stringify(explicitPlaybackDiagnostic)}`
+        ));
+      }
       await expect(chat.getByText('向你挥手后，继续陪你开心。')).toBeVisible();
       // 不发送下一条消息，真实 Renderer 完成一次动作后恢复仍有效的心情动作。
       await expect.poll(() => fixture.getCharacterBehaviorProbe(), { timeout: 15_000 })

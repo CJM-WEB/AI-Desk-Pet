@@ -549,7 +549,8 @@ class BrowserPixiCharacterScene implements PixiCharacterScene {
       Math.max(0, frames.length - 1)
     );
 
-    if (options.motionMode === 'animated' && frames.length > 1) {
+    // 单帧 once 也由 Pixi 累计作者时长；只有单帧循环和静态预览无需推进 ticker。
+    if (options.motionMode === 'animated' && (frames.length > 1 || !options.loop)) {
       sprite.gotoAndStop(frameIndex);
       sprite.play();
       this.application.ticker.add(sprite.update, sprite);
@@ -557,13 +558,6 @@ class BrowserPixiCharacterScene implements PixiCharacterScene {
     } else {
       sprite.gotoAndStop(frameIndex);
       this.application.ticker.stop();
-      if (options.motionMode === 'animated' && !options.loop) {
-        queueMicrotask(() => {
-          if (!this.destroyed && this.sprite === sprite) {
-            this.notifyActionCompleteListeners();
-          }
-        });
-      }
     }
     this.application.render();
   }

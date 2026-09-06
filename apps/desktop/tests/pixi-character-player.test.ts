@@ -550,6 +550,70 @@ describe('共享 Pixi 角色动作场景', () => {
     expect(new PixiCharacterPlayer(scene).isTickerRunning()).toBe(true);
   });
 
+  test('真实 Pixi 单帧 once 等待作者帧时长，微任务不完成且中断后不再计时', async () => {
+    const pixi = await import('pixi.js');
+    const applications: TestApplication[] = [];
+    // 只替换图形设备和图片解码；帧时长归约使用安装版本的真实 AnimatedSprite 与 Ticker。
+    class TestTexture extends pixi.Texture {
+      static override from() {
+        return new pixi.Texture({ source: new pixi.TextureSource({ width: 32, height: 32 }) });
+      }
+    }
+    class TestApplication {
+      canvas = document.createElement('canvas');
+      screen = { width: 100, height: 100 };
+      stage = new pixi.Container();
+      ticker = new pixi.Ticker();
+      init = vi.fn(async () => undefined);
+      render = vi.fn();
+      destroy = () => { this.ticker.destroy(); this.stage.destroy(); };
+      constructor() { applications.push(this); }
+    }
+    vi.stubGlobal('Image', class { src = ''; decode = async () => undefined; });
+    vi.stubGlobal('requestAnimationFrame', vi.fn(() => 1));
+    vi.stubGlobal('cancelAnimationFrame', vi.fn());
+    let scene: PixiCharacterScene | undefined;
+    try {
+      scene = await createBrowserPixiCharacterScene(document.createElement('div'), async () => ({
+        ...pixi, Application: TestApplication, Texture: TestTexture
+      }) as never);
+      await scene.loadAssets(new Map([['atlas', 'blob:single-frame']]));
+      const single = { ...action, fps: 8, frames: [{ ...action.frames[0]!, durationMs: 1200 }] };
+      const options = { direction: 'right' as const, motionMode: 'animated' as const, speed: 1, loop: false };
+      const complete = vi.fn();
+      scene.subscribeActionComplete!(complete);
+      scene.showAction(single, options);
+      const ticker = applications[0]!.ticker;
+      await Promise.resolve();
+      expect(complete).not.toHaveBeenCalled();
+      expect(ticker.started).toBe(true);
+      ticker.update(0);
+      for (let time = 100; time <= 1100; time += 100) ticker.update(time);
+      ticker.update(1199);
+      expect(complete).not.toHaveBeenCalled();
+      ticker.update(1201);
+      expect(complete).toHaveBeenCalledOnce();
+      ticker.update(1300);
+      expect(complete).toHaveBeenCalledOnce();
+
+      scene.showAction(single, options);
+      ticker.update(0); ticker.update(100);
+      scene.clear();
+      ticker.update(1300);
+      expect(complete).toHaveBeenCalledOnce();
+      expect(ticker.count).toBe(0);
+      for (const stationary of [{ ...options, loop: true }, { ...options, motionMode: 'static' as const }]) {
+        scene.showAction(single, stationary);
+        await Promise.resolve();
+        expect(ticker.started).toBe(false);
+        expect(complete).toHaveBeenCalledOnce();
+      }
+    } finally {
+      scene?.destroy();
+      vi.unstubAllGlobals();
+    }
+  });
+
   test('动作重建复用帧订阅，静态逐帧不启动 ticker 且取消后不再通知', async () => {
     const latestSprites: TestAnimatedSprite[] = [];
     const applications: TestApplication[] = [];
