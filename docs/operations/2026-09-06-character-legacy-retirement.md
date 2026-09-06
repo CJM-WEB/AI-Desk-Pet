@@ -23,3 +23,5 @@
 批准来源：用户对本清单的二次确认回复“批准按清单清理”。执行使用 PowerShell 原生 `Microsoft.VisualBasic.FileIO.FileSystem.DeleteFile`，明确指定 `SendToRecycleBin`，逐项完成后检查源文件不再存在；未清空回收站。精确清单和逐项结果保存在本地 SDD 记录 `retirement-inventory.json`、`retirement-result.json`；删除前 Git 版本为 `6d9e8847`，可按上表路径恢复历史文件。
 
 同时删除 6 个旧索引导出，并将 3 个直接测试文件中的旧类型或无用导入改为当前播放器／调度接口。退役模块与关键符号在运行源码及测试中的残余引用为 0。角色运行时定向 42 项、桌面存储与播放器 120 项通过；运行时及其直接消费者 agent-core、character-assets、desktop、package-scanner 类型检查通过。`git diff --check` 通过；相对本阶段基线的官网、CloudBase、scanner 业务和锁文件差异均为空。
+
+清理提交：`2e695803`，18 个文件新增4行、删除5091行；其中整文件删除严格为上表14项。固定差异独立复核 Approved，未发现清理新增的功能、安全或兼容问题；没有推送或打包。
