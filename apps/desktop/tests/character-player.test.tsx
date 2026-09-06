@@ -146,6 +146,7 @@ test('Main 几何刷新不能解除已经提交的舞台尺寸锁', async () => 
   const player = {
     load: vi.fn().mockResolvedValue(undefined),
     play: vi.fn(),
+    stopPlayback: vi.fn(),
     setDirection: vi.fn(),
     getAnchor: vi.fn().mockReturnValue(null),
     ...characterPlayerHitRegionFixture(),
@@ -448,6 +449,7 @@ describe('角色播放器组件', () => {
         }
         return playbackId;
       }),
+      stopPlayback: vi.fn(),
       setDirection: vi.fn(),
       setMotionMode: vi.fn(),
       getAnchor: vi.fn().mockReturnValue(null),
@@ -548,7 +550,8 @@ describe('角色播放器组件', () => {
       return {
         load: vi.fn().mockResolvedValue(undefined),
         play: vi.fn((_selection: ActionSelectionResult) => ++playbackId),
-        setDirection: vi.fn(),
+      stopPlayback: vi.fn(),
+      setDirection: vi.fn(),
         getAnchor: vi.fn().mockReturnValue(null),
         ...characterPlayerHitRegionFixture(),
         destroy: vi.fn(),
@@ -733,6 +736,54 @@ describe('角色播放器组件', () => {
     }));
     expect(fixture.players[1]!.play).toHaveBeenCalledTimes(2);
     fixture.rendered.unmount();
+  });
+
+  test('Main 匹配中断终止真实 Pixi 播放，方向与暂停恢复不能复活旧动作', async () => {
+    const scene: PixiCharacterScene = {
+      loadAssets: vi.fn(async () => undefined), clear: vi.fn(), showAction: vi.fn(),
+      getCurrentFrame: vi.fn(() => null), subscribeFrame: vi.fn(() => vi.fn()),
+      subscribeActionComplete: vi.fn(() => vi.fn()), destroy: vi.fn()
+    };
+    const player = new PixiCharacterPlayer(scene);
+    const lifecycle = vi.fn();
+    player.subscribePlaybackLifecycle(lifecycle);
+    let motion: ((event: CharacterMotionEvent) => void) | undefined;
+    const feedback = vi.fn(async (_input: { status: string }) => undefined);
+    const api = {
+      getCharacterRuntimeSnapshot: vi.fn(async () => ({ activeCharacterId: 'character-a', manifest: testPlaybackView(manifest('character-a')) })),
+      subscribeCharacterEvents: vi.fn(() => vi.fn()),
+      subscribeCharacterMotion: vi.fn(listener => { motion = listener; return vi.fn(); }),
+      getCharacterMotionSnapshot: vi.fn(async () => ({ revision: 1, timestampMs: 0, position: { x: 0, y: 0 }, target: { x: 0, y: 0 }, direction: 'right', moving: false, carrying: false })),
+      reportCharacterActionFeedback: feedback
+    } as unknown as MyselfApi;
+    const createPlayer = async () => player;
+    const loadBundle = async () => bundle('character-a');
+    const content = (motionMode: 'animated' | 'static') => <CharacterPlayer stateId="idle" motionMode={motionMode} api={api} createPlayer={createPlayer} loadBundle={loadBundle} />;
+    const view = render(content('animated'));
+    await waitFor(() => expect(scene.showAction).toHaveBeenCalled());
+    await act(async () => undefined);
+    vi.useFakeTimers();
+    try {
+      await act(async () => motion?.({ type: 'behavior-action', revision: 2, stateId: 'idle', actionId: 'idle', playbackToken: 'current-token', playback: { mode: 'loop', durationMs: 1000 } }));
+      act(() => motion?.({ type: 'behavior-interrupt', playbackToken: 'old-token' }));
+      view.rerender(content('static'));
+      view.rerender(content('animated'));
+      expect(scene.showAction).toHaveBeenLastCalledWith(expect.any(Object), expect.objectContaining({ motionMode: 'animated' }));
+      expect(feedback).not.toHaveBeenCalledWith(expect.objectContaining({ status: 'interrupted' }));
+      act(() => motion?.({ type: 'behavior-interrupt', playbackToken: 'current-token' }));
+      expect(scene.showAction).toHaveBeenLastCalledWith(expect.any(Object), expect.objectContaining({ motionMode: 'static' }));
+      const stoppedCalls = vi.mocked(scene.showAction).mock.calls.length;
+      act(() => motion?.({ type: 'snapshot', snapshot: { revision: 3, timestampMs: 1, position: { x: 0, y: 0 }, target: { x: 0, y: 0 }, direction: 'left', moving: false, carrying: false } }));
+      view.rerender(content('static'));
+      view.rerender(content('animated'));
+      act(() => { motion?.({ type: 'behavior-interrupt', playbackToken: 'current-token' }); vi.advanceTimersByTime(2000); });
+      expect(scene.showAction).toHaveBeenCalledTimes(stoppedCalls);
+      expect(lifecycle.mock.calls.filter(([event]) => event.status === 'completed')).toHaveLength(0);
+      expect(feedback.mock.calls.filter(([event]) => (event as { status: string }).status === 'interrupted')).toHaveLength(1);
+    } finally {
+      view.unmount();
+      vi.useRealTimers();
+    }
   });
 
   test('行为动作播放成功后报告 started，自然结束只报告一次 completed', async () => {
@@ -1039,6 +1090,7 @@ describe('角色播放器组件', () => {
     const createPlayer = vi.fn(async () => ({
       load: vi.fn().mockResolvedValue(undefined),
       play: vi.fn(),
+      stopPlayback: vi.fn(),
       setDirection: vi.fn(),
       getAnchor: vi.fn().mockReturnValue(null),
       hitTest: vi.fn().mockReturnValue(true),
@@ -1116,6 +1168,7 @@ describe('角色播放器组件', () => {
     const players = [0, 1].map(() => ({
       load: vi.fn().mockResolvedValue(undefined),
       play: vi.fn(),
+      stopPlayback: vi.fn(),
       setDirection: vi.fn(),
       getAnchor: vi.fn().mockReturnValue(null),
       hitTest: vi.fn().mockReturnValue(true),
@@ -1219,6 +1272,7 @@ describe('角色播放器组件', () => {
     const player = {
       load: vi.fn().mockResolvedValue(undefined),
       play: vi.fn(),
+      stopPlayback: vi.fn(),
       setDirection: vi.fn(),
       getAnchor: vi.fn().mockReturnValue(null),
       getFrameBounds: vi.fn().mockReturnValue({ x: 0, y: 0, width: 32, height: 32 }),
@@ -1301,6 +1355,7 @@ describe('角色播放器组件', () => {
     const player = {
       load: vi.fn().mockResolvedValue(undefined),
       play: vi.fn(),
+      stopPlayback: vi.fn(),
       setDirection: vi.fn(),
       getAnchor: vi.fn((name: string) => (
         name === 'carry' ? { x: 0.75, y: 0.5 } : null
@@ -1365,6 +1420,7 @@ describe('角色播放器组件', () => {
     const player = {
       load: vi.fn().mockResolvedValue(undefined),
       play: vi.fn(),
+      stopPlayback: vi.fn(),
       setDirection: vi.fn(() => {
         if (rejectDirection) throw new Error('CHARACTER_DIRECTION_REBUILD_FAILED');
       }),
@@ -1448,6 +1504,7 @@ describe('角色播放器组件', () => {
     const player = {
       load: vi.fn().mockResolvedValue(undefined),
       play: vi.fn(),
+      stopPlayback: vi.fn(),
       setDirection: vi.fn(),
       getAnchor: vi.fn((name: string) => (
         name === 'carry' ? { x: 0.75, y: 0.5 } : null
@@ -1519,6 +1576,7 @@ describe('角色播放器组件', () => {
     const createPlayer = vi.fn(async () => ({
       load: vi.fn().mockResolvedValue(undefined),
       play: vi.fn(),
+      stopPlayback: vi.fn(),
       setDirection: vi.fn(),
       getAnchor: vi.fn().mockReturnValue(null),
       ...characterPlayerHitRegionFixture(),
@@ -1613,6 +1671,7 @@ describe('角色播放器组件', () => {
     const player = {
       load: vi.fn().mockResolvedValue(undefined),
       play: vi.fn(),
+      stopPlayback: vi.fn(),
       setDirection: vi.fn(),
       getAnchor: vi.fn().mockReturnValue(null),
       ...characterPlayerHitRegionFixture(),
@@ -1692,6 +1751,7 @@ describe('角色播放器组件', () => {
     const candidate = {
       load: vi.fn().mockResolvedValue(undefined),
       play: vi.fn(),
+      stopPlayback: vi.fn(),
       setDirection: vi.fn(),
       getAnchor: vi.fn().mockReturnValue(null),
       ...characterPlayerHitRegionFixture(),
@@ -1735,6 +1795,7 @@ describe('角色播放器组件', () => {
     const players = [undefined, secondLoad.promise].map(loadPromise => ({
       load: vi.fn(() => loadPromise ?? Promise.resolve()),
       play: vi.fn(),
+      stopPlayback: vi.fn(),
       setDirection: vi.fn(),
       getAnchor: vi.fn().mockReturnValue(null),
       ...characterPlayerHitRegionFixture(),
@@ -1799,6 +1860,7 @@ describe('角色播放器组件', () => {
     const player = {
       load: vi.fn().mockResolvedValue(undefined),
       play: vi.fn(),
+      stopPlayback: vi.fn(),
       setDirection: vi.fn(),
       getAnchor: vi.fn().mockReturnValue(null),
       ...characterPlayerHitRegionFixture(),
@@ -1927,7 +1989,8 @@ describe('角色播放器组件', () => {
         createPlayer={async () => ({
           load: vi.fn(async () => undefined),
           play: vi.fn(),
-          setDirection: vi.fn(),
+      stopPlayback: vi.fn(),
+      setDirection: vi.fn(),
           getAnchor: vi.fn(() => null),
           ...characterPlayerHitRegionFixture(),
           destroy: vi.fn()
@@ -1954,6 +2017,7 @@ describe('角色播放器组件', () => {
       load: vi.fn().mockResolvedValue(undefined),
       play: vi.fn(),
       setMotionMode: vi.fn(),
+      stopPlayback: vi.fn(),
       setDirection: vi.fn(),
       getAnchor: vi.fn().mockReturnValue(null),
       ...characterPlayerHitRegionFixture(),
@@ -1992,6 +2056,7 @@ describe('角色播放器组件', () => {
     const candidate = {
       load: vi.fn().mockRejectedValue(new Error('纹理解码失败')),
       play: vi.fn(),
+      stopPlayback: vi.fn(),
       setDirection: vi.fn(),
       getAnchor: vi.fn().mockReturnValue(null),
       ...characterPlayerHitRegionFixture(),
@@ -2032,6 +2097,7 @@ describe('角色播放器组件', () => {
     const oldPlayer = {
       load: vi.fn(() => oldLoad.promise),
       play: vi.fn(),
+      stopPlayback: vi.fn(),
       setDirection: vi.fn(),
       getAnchor: vi.fn().mockReturnValue(null),
       ...characterPlayerHitRegionFixture(),
@@ -2040,6 +2106,7 @@ describe('角色播放器组件', () => {
     const newPlayer = {
       load: vi.fn().mockResolvedValue(undefined),
       play: vi.fn(),
+      stopPlayback: vi.fn(),
       setDirection: vi.fn(),
       getAnchor: vi.fn().mockReturnValue(null),
       ...characterPlayerHitRegionFixture(),
@@ -2090,6 +2157,7 @@ describe('角色播放器组件', () => {
     const oldPlayer = {
       load: vi.fn(() => oldLoad.promise),
       play: vi.fn(),
+      stopPlayback: vi.fn(),
       setDirection: vi.fn(),
       getAnchor: vi.fn().mockReturnValue(null),
       destroy: vi.fn()
@@ -2097,6 +2165,7 @@ describe('角色播放器组件', () => {
     const newPlayer = {
       load: vi.fn().mockResolvedValue(undefined),
       play: vi.fn(),
+      stopPlayback: vi.fn(),
       setDirection: vi.fn(),
       getAnchor: vi.fn().mockReturnValue(null),
       destroy: vi.fn()
@@ -2144,6 +2213,7 @@ describe('角色播放器组件', () => {
     const candidate = {
       load: vi.fn(),
       play: vi.fn(),
+      stopPlayback: vi.fn(),
       setDirection: vi.fn(),
       getAnchor: vi.fn().mockReturnValue(null),
       ...characterPlayerHitRegionFixture(),
@@ -2191,6 +2261,7 @@ describe('角色播放器组件', () => {
     const candidate = {
       load: vi.fn(() => pending.promise),
       play: vi.fn(),
+      stopPlayback: vi.fn(),
       setDirection: vi.fn(),
       getAnchor: vi.fn().mockReturnValue(null),
       ...characterPlayerHitRegionFixture(),

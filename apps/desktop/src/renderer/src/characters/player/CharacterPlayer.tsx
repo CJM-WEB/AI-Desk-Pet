@@ -575,7 +575,7 @@ export function CharacterPlayer({
         const pending = pendingPlaybackActionRef.current;
         if (pending?.playbackToken === event.playbackToken) settlePendingPlaybackAction(api, pendingPlaybackActionRef, behaviorPlaybackTokensRef, 'interrupted');
         if (activeBehaviorPlaybackRef.current?.playbackToken === event.playbackToken) {
-          activePlayerRef.current?.setMotionMode?.('static');
+          activePlayerRef.current?.stopPlayback();
           finishBehaviorPlayback(api, activeBehaviorPlaybackRef, behaviorPlaybackTokensRef, 'interrupted');
         }
         return;

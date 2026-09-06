@@ -25,6 +25,7 @@ export interface CharacterPlayerPort {
   load(manifest: CharacterPlaybackView, assets: CharacterAssetBundle): Promise<void>;
   play(selection: CharacterPlaybackSelection, motionMode: CharacterMotionMode): number | void;
   setMotionMode?(motionMode: CharacterMotionMode): void;
+  stopPlayback(): void;
   setDirection(direction: 'left' | 'right'): void;
   getAnchor(name: keyof AnchorSet): AnchorPoint | null;
   getFrameBounds?(): { x: number; y: number; width: number; height: number } | null;
@@ -211,6 +212,15 @@ export class PixiCharacterPlayer implements CharacterPlayerPort {
     } catch (error) {
       this.finishActivePlayback('failed');
       throw error;
+    }
+  }
+
+  /** 行为终止保留静止帧，但清除播放生命周期，后续属性同步不得复活动作。 */
+  stopPlayback(): void {
+    try {
+      this.setMotionMode('static');
+    } finally {
+      this.finishActivePlayback('interrupted');
     }
   }
 
