@@ -184,8 +184,11 @@ const layer = Layer.effectDiscard(
                       if (change.type === "delete") {
                         yield* mutation.resolve({ path: change.target.canonical, kind: "file" })
                         if ((yield* fs.stat(change.target.canonical)).type !== "File") return yield* fail(change.path)
-                        yield* Effect.tryPromise(() => host.trashFile(change.target.canonical))
-                        applied.push({ type: change.type, resource: change.target.resource, target: change.target.canonical })
+                        // 回收站调用不能撤销；只等待本次副作用及登记，许可等待和后续变更仍可取消。
+                        yield* Effect.uninterruptible(Effect.gen(function* () {
+                          yield* Effect.tryPromise(() => host.trashFile(change.target.canonical))
+                          applied.push({ type: change.type, resource: change.target.resource, target: change.target.canonical })
+                        }))
                         return
                       }
                       const result = yield* files.writeIfUnchanged({

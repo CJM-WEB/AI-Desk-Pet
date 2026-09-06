@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { readFile, writeFile } from 'node:fs/promises';
+import { readFile, rename, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { expect, test } from 'vitest';
 import { fixture, waitForPermission } from './fixtures/coding-task-http';
@@ -194,15 +194,64 @@ test.each(['cancel', 'reset', 'close'] as const)('%s 等待 run 和 close 屏障
   if (action !== 'close') expect(events.at(-1)).toEqual({ type: 'phase', phase: 'cancelled' });
 });
 
-test.each([{ exits: [1], expected: 'error' }, { exits: [1, 0], expected: 'success' }] as const)('命令退出事实 $exits 决定最近命令结果，不由模型成功声明覆盖', async ({ exits, expected }) => {
+test.each([
+  { results: [{ exit: 1 }], expected: 'error', expectedFacts: [false] },
+  { results: [{ exit: 1 }, { exit: 0 }], expected: 'success', expectedFacts: [false, true] },
+  { results: [{ timeout: true }], expected: 'error', expectedFacts: [false] },
+  { results: [{ timeout: true }, { exit: 0 }], expected: 'success', expectedFacts: [false, true] }
+] as const)('命令事实 $results 决定最近命令结果，不由模型成功声明覆盖', async ({ results, expected, expectedFacts }) => {
   const events: TaskEvent[] = [];
+  const facts: { ok: boolean }[] = [];
   const service = new CodingTaskService({
     sessionOptions: async () => ({ directory: 'D:\\task', dataDirectory: 'D:\\data', approvedCommands: [], model: { baseUrl: '', modelId: 'fixture', contextWindow: 8192, outputTokens: 2048, readCredential: async () => 'fixture' } }),
-    createSession: async options => ({ run: async () => { for (const exit of exits) options.onEvent({ type: 'tool', name: 'bash', callId: `command-${exit}`, status: 'completed', facts: { exit } }); options.onEvent({ type: 'phase', phase: 'completed' }); return { text: '模型声称测试通过', toolCalls: exits.length }; }, replyPermission: async () => undefined, close: async () => undefined }),
-    emit: event => events.push(event)
+    createSession: async options => ({ run: async () => { for (const [index, result] of results.entries()) options.onEvent({ type: 'tool', name: 'bash', callId: `command-${index}`, status: 'completed', facts: result }); options.onEvent({ type: 'phase', phase: 'completed' }); return { text: '模型声称测试通过', toolCalls: results.length }; }, replyPermission: async () => undefined, close: async () => undefined }),
+    emit: event => events.push(event), emitTrustedToolResult: fact => facts.push(fact)
   });
   await service.submitFileTask({ text: '运行测试', visibleHistory: [] });
+  expect.soft(facts.map(fact => fact.ok)).toEqual(expectedFacts);
   expect(events.at(-1)).toEqual({ type: 'phase', phase: expected });
+});
+
+test.each(['resolve', 'reject'] as const)('真实 Core 回收站 %s 结算前 reset 不释放任务所有权', async settlement => {
+  let entered!: () => void;
+  let release!: () => void;
+  let reject!: (error: Error) => void;
+  const started = new Promise<void>(resolve => { entered = resolve; });
+  const gate = new Promise<void>((resolve, fail) => { release = resolve; reject = fail; });
+  let forward: (event: CodingSessionEvent) => void = () => undefined;
+  const f = await fixture([[{ name: 'apply_patch', args: { patchText: '*** Begin Patch\n*** Delete File: note.txt\n*** Add File: late.txt\n+迟到变更\n*** End Patch' } }], '迟到成功'], {
+    trashFile: async path => { entered(); await gate; await rename(path, path + '.trashed'); },
+    onEvent: event => forward(event)
+  });
+  const events: TaskEvent[] = [];
+  const facts: unknown[] = [];
+  const service = new CodingTaskService({
+    sessionOptions: async () => ({ directory: f.directory, dataDirectory: f.dataDirectory, approvedCommands: [], model: { baseUrl: '', modelId: 'fixture', contextWindow: 8192, outputTokens: 2048, readCredential: async () => 'fixture' } }),
+    createSession: async options => { forward = options.onEvent; return f.session; },
+    emit: event => events.push(event), emitTrustedToolResult: fact => facts.push(fact)
+  });
+  let run: Promise<unknown> | undefined;
+  let resetting: Promise<void> | undefined;
+  try {
+    await writeFile(join(f.directory, 'note.txt'), '原始正文');
+    run = service.submitFileTask({ text: '删除文件', visibleHistory: [] });
+    await service.confirm((await waitForPermission(f.events, 'delete')).id);
+    await started;
+    let runSettled = false;
+    void run.then(() => { runSettled = true; });
+    resetting = service.resetForNewConversation();
+    // 进入信号已证明宿主正在执行；短观察窗只用于检查取消是否提前结算。
+    expect(await Promise.race([resetting.then(() => 'settled'), new Promise(resolve => setTimeout(() => resolve('pending'), 100))])).toBe('pending');
+    expect(runSettled).toBe(false);
+    await expect(service.submitFileTask({ text: '下一任务', visibleHistory: [] })).rejects.toMatchObject({ code: 'TASK_ALREADY_ACTIVE' });
+    if (settlement === 'resolve') release(); else reject(new Error('回收站拒绝'));
+    await Promise.all([run, resetting]);
+    expect(await readFile(join(f.directory, settlement === 'resolve' ? 'note.txt.trashed' : 'note.txt'), 'utf8')).toBe('原始正文');
+    await expect(readFile(join(f.directory, 'late.txt'))).rejects.toBeDefined();
+    expect(events.at(-1)).toEqual({ type: 'phase', phase: 'cancelled' });
+    expect(events).not.toContainEqual({ type: 'phase', phase: 'success' });
+    expect(facts).toEqual([]);
+  } finally { release(); await run; await resetting; await service.close(); await f.close(); }
 });
 
 test('零工具的正在读取回复也明确结束，不制造永久运行', async () => {

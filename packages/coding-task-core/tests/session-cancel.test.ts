@@ -1,7 +1,66 @@
-import { readFile, writeFile } from 'node:fs/promises';
+import { readFile, realpath, rename, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { expect, test } from 'vitest';
-import { fixture } from './fixture';
+import { fixture, waitForPermission } from './fixture';
+
+test.each([
+  { ending: 'cancel', settlement: 'resolve' }, { ending: 'cancel', settlement: 'reject' },
+  { ending: 'close', settlement: 'resolve' }, { ending: 'close', settlement: 'reject' }
+] as const)('原 runner 回收站 $settlement 结算前 $ending 不完成 run 或 close', async ({ ending, settlement }) => {
+  let entered!: () => void;
+  let release!: () => void;
+  let reject!: (error: Error) => void;
+  const started = new Promise<void>(resolve => { entered = resolve; });
+  const gate = new Promise<void>((resolve, fail) => { release = resolve; reject = fail; });
+  const calls: string[] = [];
+  const f = await fixture([[{ name: 'apply_patch', args: { patchText: '*** Begin Patch\n*** Delete File: note.txt\n*** Add File: late.txt\n+迟到变更\n*** End Patch' } }], '迟到成功'], {
+    trashFile: async path => { calls.push(path); entered(); await gate; await rename(path, path + '.trashed'); }
+  });
+  const controller = new AbortController();
+  let run: Promise<unknown> | undefined;
+  let closing: Promise<void> | undefined;
+  try {
+    await writeFile(join(f.directory, 'note.txt'), '原始正文');
+    run = f.session.run('删除文件', controller.signal).catch(error => error);
+    await f.session.replyPermission((await waitForPermission(f.events, 'delete')).id, 'once');
+    await started;
+    let runSettled = false;
+    void run.then(() => { runSettled = true; });
+    if (ending === 'cancel') controller.abort();
+    closing = f.session.close();
+    // 已确认副作用开始；观察取消是否在受控 Promise 兑现前错误释放 fiber。
+    expect(await Promise.race([closing.then(() => 'settled'), new Promise(resolve => setTimeout(() => resolve('pending'), 100))])).toBe('pending');
+    expect(runSettled).toBe(false);
+    expect(await readFile(join(f.directory, 'note.txt'), 'utf8')).toBe('原始正文');
+    if (settlement === 'resolve') release(); else reject(new Error('回收站拒绝'));
+    await Promise.all([run, closing]);
+    expect(calls).toEqual([join(await realpath(f.directory), 'note.txt')]);
+    expect(await readFile(join(f.directory, settlement === 'resolve' ? 'note.txt.trashed' : 'note.txt'), 'utf8')).toBe('原始正文');
+    await expect(readFile(join(f.directory, 'late.txt'))).rejects.toBeDefined();
+    expect(f.events.at(-1)).toEqual({ type: 'phase', phase: 'cancelled' });
+    expect(f.events).not.toContainEqual({ type: 'phase', phase: 'completed' });
+    expect(f.events).not.toContainEqual(expect.objectContaining({ type: 'tool', name: 'apply_patch', status: 'completed' }));
+    expect(f.requests).toHaveLength(1);
+  } finally { release(); controller.abort(); await run; await closing; await f.close(); }
+});
+
+test('原 runner 等待删除许可时仍可取消，回收站零调用', async () => {
+  const calls: string[] = [];
+  const f = await fixture([[{ name: 'apply_patch', args: { patchText: '*** Begin Patch\n*** Delete File: note.txt\n*** End Patch' } }]], { trashFile: async path => { calls.push(path); } });
+  const controller = new AbortController();
+  let run: Promise<unknown> | undefined;
+  try {
+    await writeFile(join(f.directory, 'note.txt'), '原始正文');
+    run = f.session.run('删除文件', controller.signal).catch(error => error);
+    const permission = await waitForPermission(f.events, 'delete');
+    controller.abort();
+    await Promise.all([run, f.session.close()]);
+    await expect(f.session.replyPermission(permission.id, 'once')).rejects.toBeDefined();
+    expect(calls).toEqual([]);
+    expect(await readFile(join(f.directory, 'note.txt'), 'utf8')).toBe('原始正文');
+    expect(f.events.at(-1)).toEqual({ type: 'phase', phase: 'cancelled' });
+  } finally { controller.abort(); await run; await f.close(); }
+});
 
 test.runIf(process.platform === 'win32')('helper 缺失时批准命令也不得启动目标', async () => {
   const command = 'echo unexpected>started.txt';

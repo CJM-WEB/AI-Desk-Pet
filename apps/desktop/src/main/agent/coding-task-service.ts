@@ -38,7 +38,7 @@ export class CodingTaskService {
     let session: CodingSession | undefined;
     let acted = false;
     let phase: 'success' | 'error' | 'cancelled' = 'success';
-    let lastCommandExit: number | undefined;
+    let lastCommandFailed = false;
     const publish = (event: TaskEvent) => { if (this.active === owner && !this.closed) this.options.emit(event); };
     try {
       const configuration = await this.options.sessionOptions();
@@ -73,9 +73,11 @@ export class CodingTaskService {
           }
           if (event.type === 'tool' && event.status !== 'running') {
             acted = true;
-            if (event.name === 'bash') lastCommandExit = event.facts?.exit;
+            // 超时即实际失败；后续成功命令可以恢复终态，但不改写已发出的失败事实。
+            const ok = event.status === 'completed' && event.facts?.timeout !== true && (event.facts?.exit === undefined || event.facts.exit === 0);
+            if (event.name === 'bash') lastCommandFailed = !ok;
             this.options.emitTrustedToolResult?.({ toolName: event.name,
-              ok: event.status === 'completed' && (event.facts?.exit === undefined || event.facts.exit === 0),
+              ok,
               relativePaths: [], ...(input.submissionOwner === undefined ? {} : { submissionOwner: input.submissionOwner }),
               ...(event.facts?.exit === undefined ? {} : { exit: event.facts.exit }) });
           }
@@ -84,7 +86,7 @@ export class CodingTaskService {
       owner.session = session;
       const result = await session.run(input.text, owner.controller.signal);
       if (!owner.controller.signal.aborted) publish({ type: 'message', role: 'assistant', text: result.text || '任务已结束，模型未返回正文。' });
-      if (lastCommandExit !== undefined && lastCommandExit !== 0) phase = 'error';
+      if (lastCommandFailed) phase = 'error';
     } catch {
       phase = owner.controller.signal.aborted ? 'cancelled' : 'error';
     } finally {

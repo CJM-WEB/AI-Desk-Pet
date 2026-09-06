@@ -687,21 +687,21 @@ const request: ModelRequest = {
 
 ### 8.1 RED：实际超时与取消缺口
 
-- [ ] 阅读 whole-branch-review-report.md 两个发现与直接调用链。先新增Main定向测试：timeout:true、无exit、模型直接终答时，可信工具结果ok:false且最终phase:error；超时后实际命令成功重试可以恢复success，历史失败事实仍是false。保持原非零退出码后成功重试契约。
-- [ ] 在现有Core真实runner夹具注入延迟trash Promise，先等待回调确实开始，再取消/关闭；结算前run与close不得完成，兑现后才完成且无completed成功终态。覆盖宿主成功和拒绝兑现，以及许可等待阶段仍可取消且trash零调用。Main已有reset/active所有权测试若不能证明reset等待实际Core结算，最小扩展相应测试，不造独立模拟执行器。
-- [ ] 运行各自最小定向测试并记录正确失败，不以超时或装配错误代替RED。受控deferred与明确进入信号优先于固定sleep。
+- [x] 阅读 whole-branch-review-report.md 两个发现与直接调用链。先新增Main定向测试：timeout:true、无exit、模型直接终答时，可信工具结果ok:false且最终phase:error；超时后实际命令成功重试可以恢复success，历史失败事实仍是false。保持原非零退出码后成功重试契约。
+- [x] 在现有Core真实runner夹具注入延迟trash Promise，先等待回调确实开始，再取消/关闭；结算前run与close不得完成，兑现后才完成且无completed成功终态。覆盖宿主成功和拒绝兑现，以及许可等待阶段仍可取消且trash零调用。Main已有reset/active所有权测试若不能证明reset等待实际Core结算，最小扩展相应测试，不造独立模拟执行器。
+- [x] 运行各自最小定向测试并记录正确失败，不以超时或装配错误代替RED。受控deferred与明确进入信号优先于固定sleep。
 
 ### 8.2 GREEN：最小修复
 
-- [ ] Main工具事实投影纳入timeout，最近命令结果决定未恢复失败；不把任意历史失败永久锁成error，也不让模型口头成功改写工具事实。不扩大公开DTO保存原始工具参数。
-- [ ] 仅已经开始的单次不可取消trash副作用及必要结果登记等待结算；不得将权限等待、整个apply_patch或整个工具循环设成不可取消。取消后不继续下一次变更，不释放owner后继续本地副作用；失败结算不发布成功。
-- [ ] 更新已有apply-patch来源补丁，运行 node packages/coding-task-core/extract-upstream.cjs 核对可重放来源，不追加重复source条目或改变其他上游实现。
+- [x] Main工具事实投影纳入timeout，最近命令结果决定未恢复失败；不把任意历史失败永久锁成error，也不让模型口头成功改写工具事实。不扩大公开DTO保存原始工具参数。
+- [x] 仅已经开始的单次不可取消trash副作用及必要结果登记等待结算；不得将权限等待、整个apply_patch或整个工具循环设成不可取消。取消后不继续下一次变更，不释放owner后继续本地副作用；失败结算不发布成功。
+- [x] 更新已有apply-patch来源补丁，运行 node packages/coding-task-core/extract-upstream.cjs 核对可重放来源，不追加重复source条目或改变其他上游实现。
 
 ### 8.3 验证与交接
 
-- [ ] Main定向测试、Core取消与相关权限定向测试、两个package typecheck、必要Electron Core wrapper运行；总门禁由主控在Task9后统一执行，不重复启动完整E2E。
-- [ ] 保存 task-8-red-*.log / task-8-green-*.log，记录命令、起止、退出码与新旧测试数量。git diff --check通过；用task-8-baseline.json核对修改集合。
-- [ ] 交付 task-8-report.md：DONE/有问题状态、修改与原因、RED/GREEN证据、取消成功与失败语义、来源记录、未验证项。最终清单task-8-final-manifest.json包含所有改动源码与日志SHA。返回主控简短状态，不提交代码。
+- [x] Main定向测试、Core取消与相关权限定向测试、两个package typecheck、必要Electron Core wrapper运行；总门禁由主控在Task9后统一执行，不重复启动完整E2E。
+- [x] 保存 task-8-red-*.log / task-8-green-*.log，记录命令、起止、退出码与新旧测试数量。git diff --check通过；用task-8-baseline.json核对修改集合。
+- [x] 交付 task-8-report.md：DONE/有问题状态、修改与原因、RED/GREEN证据、取消成功与失败语义、来源记录、未验证项。最终清单task-8-final-manifest.json包含所有改动源码与日志SHA。返回主控简短状态，不提交代码。
 
 完成标准：两个审查缺陷有最小失败回归与修复证据，未扩大权限或改变其他模块；全分支审查由原审查者按精确差异定向复核，不重新审阅整个分支。
 
