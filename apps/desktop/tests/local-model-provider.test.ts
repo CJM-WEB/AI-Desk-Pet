@@ -61,7 +61,7 @@ const localBehaviorContext = {
       actions: [{ name: '挥手', actionId: 'protocol-action', tags: [] }]
     }]
   },
-  runtime: { moving: false, dragging: false, carrying: false, movementMode: 2 as const },
+  runtime: { chatting: false, taskRunning: false, awaitingConfirmation: false, moving: false, dragging: false, carrying: false, movementMode: 2 as const },
   proactivityMode: 'assistive' as const,
   recentActions: []
 };
@@ -235,7 +235,7 @@ describe('LocalModelProvider', () => {
           },
           states: []
         },
-        runtime: { moving: false, dragging: false, carrying: false, movementMode: 2 },
+        runtime: { chatting: false, taskRunning: false, awaitingConfirmation: false, moving: false, dragging: false, carrying: false, movementMode: 2 },
         proactivityMode: 'assistive',
         recentActions: []
       },
@@ -876,7 +876,7 @@ describe('LocalModelProvider', () => {
           },
           states: []
         },
-        runtime: { moving: false, dragging: false, carrying: false, movementMode: 2 },
+        runtime: { chatting: false, taskRunning: false, awaitingConfirmation: false, moving: false, dragging: false, carrying: false, movementMode: 2 },
         proactivityMode: 'assistive',
         recentActions: []
       },

@@ -4,7 +4,7 @@ import {
   type BehaviorTarget, type CharacterAgentBehaviorIntent, type CharacterBehaviorPlan,
   type CharacterExpressionContext, type CharacterExpressionDecision, type CharacterExpressionResult,
   type CharacterManifestV3, type CharacterPlaybackFeedback, type PublicBehaviorCatalog,
-  type CharacterExpressionTarget, type TrustedCharacterEventV3
+  type CharacterExpressionTarget, type TrustedCharacterEventV3, type CharacterRuntimeFacts
 } from '@myself/character-runtime';
 import type { TaskEvent } from '@myself/shared-types';
 import type { CharacterMotionSnapshot } from '../../shared/character-motion-ipc';
@@ -46,6 +46,7 @@ export class CharacterBehaviorService {
   private manifest: CharacterManifestV3 | null = null;
   private direction: 'left' | 'right' = 'right';
   private moving = false;
+  private runtimeFacts: Partial<CharacterRuntimeFacts> = {};
   private closed = false;
   private transitioning = false;
   private loadRevision = 0;
@@ -60,6 +61,7 @@ export class CharacterBehaviorService {
     if (this.closed) return;
     const motion = this.options.motion.getSnapshot();
     this.direction = motion.direction; this.moving = motion.moving;
+    this.runtimeFacts = { ...this.runtimeFacts, moving: motion.moving, carrying: motion.carrying };
     await this.loadActiveCharacter();
   }
   getPublicBehaviorCatalog(): PublicBehaviorCatalog {
@@ -112,9 +114,19 @@ export class CharacterBehaviorService {
   handleMovement(snapshot: CharacterMotionSnapshot): void {
     if (this.closed) return;
     this.direction = snapshot.direction;
+    this.updateRuntimeFacts({ moving: snapshot.moving, carrying: snapshot.carrying });
     if (snapshot.moving === this.moving) return;
     this.moving = snapshot.moving;
     this.recordTrustedEvent(snapshot.moving ? 'move-start' : 'move-stop');
+  }
+  /** 真实事实即刻重判并发布；切换期间缓存，交由新角色的唯一 Engine 重新接纳。 */
+  updateRuntimeFacts(facts: Partial<CharacterRuntimeFacts>): void {
+    if (this.closed) return;
+    this.runtimeFacts = { ...this.runtimeFacts, ...facts };
+    if (!this.transitioning && this.engine) this.publish(this.engine.updateRuntimeFacts(facts));
+  }
+  hasEligibleExpressionFor(facts: Partial<CharacterRuntimeFacts>, requiredFact?: keyof CharacterRuntimeFacts): boolean {
+    return !this.closed && !this.transitioning && !!this.engine && this.engine.hasEligibleExpressionFor(facts, requiredFact);
   }
   /** 新互动撤销在途推断，保留已经接纳的心情与有限播放。 */
   invalidateContext(): void { if (!this.closed && !this.transitioning && this.engine) this.engine.invalidateContext(); }
@@ -129,7 +141,9 @@ export class CharacterBehaviorService {
     return this.closed || this.transitioning || !this.engine ? NONE : this.publish(this.engine.applyDecision(decision));
   }
   snapshot() { return this.closed || this.transitioning ? null : this.engine?.snapshot() ?? null; }
-  cancelStateLifecycle(): void { if (this.engine) this.publish(this.engine.reset()); }
+  cancelStateLifecycle(): void {
+    if (this.engine) { this.publish(this.engine.reset()); this.publish(this.engine.updateRuntimeFacts(this.runtimeFacts)); }
+  }
   advance(): readonly string[] {
     if (this.closed || this.transitioning || !this.engine) return [];
     const previous = this.engine.snapshot().schedule.current?.playbackToken;
@@ -173,6 +187,7 @@ export class CharacterBehaviorService {
       const engine = new CharacterExpressionEngine({ manifest, now: this.now,
         random: this.options.random ?? Math.random, createPlaybackToken: this.options.createPlaybackToken ?? randomUUID });
       this.manifest = manifest; this.engine = engine; this.transitioning = false;
+      this.publish(engine.updateRuntimeFacts(this.runtimeFacts));
       this.publish(engine.advance());
     } catch {
       if (this.closed || revision !== this.loadRevision) return;

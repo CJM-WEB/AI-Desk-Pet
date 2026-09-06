@@ -34,7 +34,7 @@ const behaviorContext = {
     }]
   },
   runtime: {
-    moving: false,
+    chatting: false, taskRunning: false, awaitingConfirmation: false, moving: false,
     dragging: false,
     carrying: false,
     movementMode: 2 as const

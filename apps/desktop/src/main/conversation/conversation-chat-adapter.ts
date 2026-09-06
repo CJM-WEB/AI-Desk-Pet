@@ -12,6 +12,11 @@ import type { ConversationBehaviorContext } from '../characters/character-behavi
 import { z } from 'zod';
 
 const characterAutonomySchema = z.object(characterExpressionWireShape).strict();
+/** 条件是模型建议的资格表达式，只有 Main 可以提供或更新运行事实。 */
+const runtimeConditionInstructions = '状态和动作都可用 when:{moving?,dragging?,carrying?,chatting?,taskRunning?,awaitingConfirmation?} 指定布尔条件；所有条件必须同时匹配，省略字段表示不限制。'
+  + '状态 lifetime 可为 episode（默认，有限片段）或 condition（条件持续期间可续播）；condition 必须在状态 when 中至少包含一个 true 条件，动作条件进一步收紧资格。'
+  + '根据候选描述判断适用情境，不把状态或动作名称当作内置语义。用于窗口位移的表现应建议 when:{moving:true}、lifetime:"condition"，停止时即可退出。'
+  + 'runtime.pendingMovement=true 仅表示 Main 已有等待本轮模型的明确位移请求，不表示 moving=true，不允许模型写运行事实；请据描述提前建议未来 moving=true 时可播放的条件计划。';
 export const characterAutonomyResponseContract = {
   type: 'json_object', name: 'character_autonomy',
   jsonSchema: { type: 'object', additionalProperties: false, required: ['moodUpdate', 'expressionPlan'], properties: {
@@ -21,6 +26,7 @@ export const characterAutonomyResponseContract = {
   validateStructuredOutput: (value: unknown) => characterAutonomySchema.safeParse(value).success
 } satisfies ModelResponseContract;
 const autonomousInstructions = '这是 Main 的无工具自主心情重评，不是真实用户发言。只返回 JSON 对象，必须评估并返回 moodUpdate 和 expressionPlan，无新变化用 null 表示不更新。'
+  + runtimeConditionInstructions
   + 'moodUpdate 使用 summary、strength(0..1)，可选 fadeInMs(0..300000)、halfLifeMs(30000..1800000)。'
   + 'expressionPlan 使用 states:[{stateId,score,minStrength,maxStrength,actions:[{actionId,score}]}]，可选 validForMs(最多1800000，默认1200000)。'
   + '先选择状态再选择其动作，最多8状态和32动作，分数及强度区间均0..1。只能引用本轮发出的合法配对且 agentInferable=true。'
@@ -33,6 +39,7 @@ export type CharacterAutonomousInput = Readonly<{
 }>;
 
 export const characterJsonOutputInstructions = [
+  runtimeConditionInstructions,
   '只返回 JSON 对象，正文放 text，可用 Markdown，不加对象外文字。',
   '必须结合本轮事件和人设判断你自己的感受，显式评估 moodUpdate 和 expressionPlan；有新感受时更新心情及匹配计划，无新变化用 null，不重放历史事件。',
   'moodUpdate 更新包含 summary、strength(0..1)，可选 fadeInMs(0..300000)、halfLifeMs(30000..1800000)。',

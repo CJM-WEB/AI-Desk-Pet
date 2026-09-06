@@ -64,6 +64,10 @@ export type ConversationBehaviorContext = Readonly<{
     moving: boolean;
     dragging: boolean;
     carrying: boolean;
+    chatting: boolean;
+    taskRunning: boolean;
+    awaitingConfirmation: boolean;
+    pendingMovement?: true;
     movementMode: CharacterMovementMode;
   }>;
   proactivityMode: 'passive' | 'assistive' | 'autonomous';
@@ -123,6 +127,7 @@ export type BehaviorPlanSource = 'explicit' | 'chat' | 'local-idle';
 type BehaviorServicePort = Pick<
   CharacterBehaviorService,
   | 'context' | 'snapshot' | 'applyDecision' | 'invalidateContext' | 'recordTrustedEvent' | 'handleUserInteraction'
+  | 'updateRuntimeFacts' | 'hasEligibleExpressionFor'
   | 'getPublicBehaviorCatalog'
   | 'getRecentPublicActions'
   | 'resolveBehaviorTarget'
@@ -147,6 +152,7 @@ type CharacterBehaviorDirectorOptions = Readonly<{
   motion: MotionServicePort;
   initialGeneration: string;
   initialSettings: CharacterBehaviorSettingsSnapshot;
+  now?: () => number;
   saveMovementMode(
     mode: CharacterMovementMode,
     isCurrent?: () => boolean
@@ -163,6 +169,13 @@ type MotionRequest = Readonly<{
   target: MotionTarget;
   distance: MotionDistance;
 }> | Readonly<{ mode: 'once'; target: 'relative'; direction: MoveDirection; distance: MoveDistance }>;
+
+/** 唯一待执行槽保留准确请求；模型完成和聊天成功属于不同提交边界。 */
+type PendingMotion = Readonly<{
+  request: MotionRequest; source: BehaviorPlanSource; generation: string; turnEpoch: number;
+  behaviorLifecycleGeneration: number; lifecycle: 'explicit-response-or-timeout' | 'chat-success';
+  deadlineAtMs: number; modelResponseCompleted: boolean;
+}>;
 
 const NONE: CharacterExpressionAuthorization = { kind: 'none' };
 const SOURCE_PRIORITY: Readonly<Record<ActiveBehaviorSource, number>> = {
@@ -212,7 +225,8 @@ export class CharacterBehaviorDirector {
   private closed = false;
   private readonly completedPrompts = new Set<string>();
   private candidateSequence = 0;
-  private pendingMovementControl: MovementControlPlan | null = null;
+  private pendingMotion: PendingMotion | null = null;
+  private readonly now: () => number;
   private active: Readonly<{
     source: ActiveBehaviorSource;
     playbackToken: string;
@@ -224,22 +238,29 @@ export class CharacterBehaviorDirector {
   private turnEpoch = 0;
 
   constructor(private readonly options: CharacterBehaviorDirectorOptions) {
+    this.now = options.now ?? performance.now.bind(performance);
     this.generation = options.initialGeneration;
     this.movementMode = options.initialSettings.movementMode;
     this.proactivityMode = options.initialSettings.proactivityMode;
+    this.syncRuntimeFacts();
   }
 
   /** Gate 在能力路由与 Provider 前执行，明确移动复用 Main 的运动与生命周期边界。 */
   async prepareUserPrompt(text: string): Promise<PreparedBehaviorPrompt> {
+    this.clearPendingChat();
     const turnEpoch = ++this.turnEpoch;
     this.options.behavior.handleUserInteraction();
     this.options.behavior.recordTrustedEvent('conversation-start');
     const originalText = text.trim();
     const parsed = parseExplicitCharacterBehavior(originalText);
     const directive = parsed?.explicitDirective ?? null;
+    // 只有新轮明确播放替换旧明确来源；Engine 负责撤销旧令牌。
+    if (directive?.kind === 'play' && this.active?.source === 'explicit') this.active = null;
     if (directive?.kind === 'move' && directive.motion.kind === 'relative') {
       // Main 已解析的相对方向和距离不能经区域协议降级为屏幕边缘。
-      this.requestBehaviorPlan({ kind: 'move', direction: directive.motion.direction, distance: directive.motion.distance }, 'explicit');
+      this.prepareExplicitMotion({ mode: 'once', target: 'relative', direction: directive.motion.direction, distance: directive.motion.distance });
+    } else if (parsed?.movementControl.kind === 'move_once') {
+      this.prepareExplicitMotion({ mode: 'once', target: parsed.movementControl.target, distance: parsed.movementControl.distance });
     } else {
       await this.applyMovementControl(parsed?.movementControl ?? { kind: 'keep' }, 'explicit', turnEpoch);
     }
@@ -294,6 +315,10 @@ export class CharacterBehaviorDirector {
         moving: motion.moving,
         dragging: this.dragging,
         carrying: motion.carrying,
+        chatting: this.chatting,
+        taskRunning: this.capabilityTask,
+        awaitingConfirmation: this.awaitingConfirmation,
+        ...(this.pendingMotion?.lifecycle === 'explicit-response-or-timeout' ? { pendingMovement: true as const } : {}),
         movementMode: this.movementMode
       },
       proactivityMode: this.proactivityMode,
@@ -338,6 +363,7 @@ export class CharacterBehaviorDirector {
   invalidateBehaviorLifecycle(): void {
     if (this.closed) return;
     this.behaviorLifecycleGeneration += 1;
+    this.clearPendingChat();
     this.publishActivityChanged();
   }
 
@@ -370,7 +396,12 @@ export class CharacterBehaviorDirector {
       });
       if (authorization.kind === 'play') this.active = { source: explicit ? 'explicit' : 'chat', playbackToken: authorization.playbackToken };
     }
-    this.pendingMovementControl = movementControl.kind === 'move_once' ? movementControl : null;
+    if (this.pendingMotion?.lifecycle === 'explicit-response-or-timeout') {
+      this.pendingMotion = { ...this.pendingMotion, modelResponseCompleted: true };
+      this.commitPendingMotion('explicit-response-or-timeout');
+    } else if (movementControl.kind === 'move_once' && !this.capabilityTask && !this.awaitingConfirmation && !this.dragging) {
+      this.pendingMotion = this.createPendingMotion({ mode: 'once', target: movementControl.target, distance: movementControl.distance }, 'chat', 'chat-success');
+    }
   }
 
   private isExpressionContextCurrent(context: CharacterExpressionContext | null): boolean {
@@ -384,6 +415,8 @@ export class CharacterBehaviorDirector {
     if (this.closed) return;
     this.updateTrustedBlock(event);
     this.updateActivityFromTaskEvent(event);
+    if (this.capabilityTask || this.awaitingConfirmation || event.type === 'capability_authorization_required'
+      || event.type === 'history_disclosure_required') this.clearPendingChat();
     // 正文不是新的阻塞边沿，不能沿用 thinking 事实撤销本轮已接纳的明确运动。
     if (event.type === 'phase' && (this.trustedRuntimeBlocked || this.capabilityTask || this.awaitingConfirmation)) {
       this.clearContinuousMotion();
@@ -402,8 +435,9 @@ export class CharacterBehaviorDirector {
     }
 
     if (event.type !== 'phase') return;
+    if (event.phase === 'error') this.commitPendingMotion('explicit-response-or-timeout');
     if (event.phase === 'error' || event.phase === 'cancelled') this.clearPendingChat();
-    if (event.phase === 'success') this.commitPendingMovementControl();
+    if (event.phase === 'success') this.commitPendingMotion('chat-success');
   }
 
   /** 兼容能力任务的高层意图仍先经过显式优先级与停止锁，再生成唯一运动意图。 */
@@ -485,6 +519,9 @@ export class CharacterBehaviorDirector {
   /** 500ms 推进只更新本地心情与表现；模型重评和独立运动由宿主 Runtime 分别调度。 */
   advance(): void {
     if (this.closed) return;
+    if (this.pendingMotion?.lifecycle === 'explicit-response-or-timeout' && this.now() >= this.pendingMotion.deadlineAtMs) {
+      this.commitPendingMotion('explicit-response-or-timeout');
+    }
     const expiredTokens = this.options.behavior.advance();
     for (const playbackToken of expiredTokens) this.releasePlaybackToken(playbackToken);
   }
@@ -494,8 +531,10 @@ export class CharacterBehaviorDirector {
     if (this.closed || this.dragging === active) return;
     this.dragging = active;
     if (active) {
+      this.clearPendingChat();
       this.clearContinuousMotion();
     }
+    this.syncRuntimeFacts();
     this.publishActivityChanged();
   }
 
@@ -595,6 +634,7 @@ export class CharacterBehaviorDirector {
     this.active = null;
     await this.options.behavior.handleActiveCharacterChanged();
     this.invalidateBehaviorLifecycle();
+    this.syncRuntimeFacts();
   }
 
   reset(generation: string): void {
@@ -613,6 +653,7 @@ export class CharacterBehaviorDirector {
     this.capabilityTask = false;
     this.awaitingConfirmation = false;
     this.dragging = false;
+    this.syncRuntimeFacts();
     this.publishActivityChanged();
   }
 
@@ -681,6 +722,7 @@ export class CharacterBehaviorDirector {
     this.chatting = event.phase === 'listening' || event.phase === 'thinking';
     this.awaitingConfirmation = event.phase === 'awaiting_confirmation';
     this.capabilityTask = this.awaitingConfirmation || event.phase === 'acting';
+    this.syncRuntimeFacts();
     this.publishActivityChanged();
   }
 
@@ -694,18 +736,39 @@ export class CharacterBehaviorDirector {
     }
   }
 
-  private commitPendingMovementControl(): void {
-    const control = this.pendingMovementControl;
-    this.pendingMovementControl = null;
-    if (control?.kind === 'move_once') {
-      this.requestMotion({
-        mode: 'once', target: control.target, distance: control.distance
-      }, 'chat', true);
+  private syncRuntimeFacts(): void {
+    this.options.behavior.updateRuntimeFacts({ dragging: this.dragging, chatting: this.chatting,
+      taskRunning: this.capabilityTask, awaitingConfirmation: this.awaitingConfirmation });
+  }
+
+  private createPendingMotion(request: MotionRequest, source: BehaviorPlanSource, lifecycle: PendingMotion['lifecycle']): PendingMotion {
+    return { request, source, generation: this.generation, turnEpoch: this.turnEpoch,
+      behaviorLifecycleGeneration: this.behaviorLifecycleGeneration, lifecycle,
+      deadlineAtMs: this.now() + 8000, modelResponseCompleted: lifecycle === 'chat-success' };
+  }
+
+  private prepareExplicitMotion(request: MotionRequest): void {
+    if (this.closed || this.dragging || this.capabilityTask || this.awaitingConfirmation) return;
+    this.pendingMotion = this.createPendingMotion(request, 'explicit', 'explicit-response-or-timeout');
+    if (this.options.behavior.hasEligibleExpressionFor({ moving: true }, 'moving')) this.commitPendingMotion('explicit-response-or-timeout');
+  }
+
+  /** Motion 会同步发布事实，必须先清槽，避免重入、success 与超时重复提交。 */
+  private commitPendingMotion(lifecycle: PendingMotion['lifecycle']): void {
+    const pending = this.pendingMotion;
+    if (!pending || pending.lifecycle !== lifecycle) return;
+    this.pendingMotion = null;
+    if (!this.isTurnCurrent(pending.turnEpoch) || pending.generation !== this.generation
+      || pending.behaviorLifecycleGeneration !== this.behaviorLifecycleGeneration
+      || this.dragging || this.capabilityTask || this.awaitingConfirmation) return;
+    if (lifecycle === 'explicit-response-or-timeout' && !this.options.behavior.hasEligibleExpressionFor({ moving: true }, 'moving')) {
+      this.publishUnavailableNotice();
     }
+    this.requestMotion(pending.request, pending.source, true);
   }
 
   private clearPendingChat(): void {
-    this.pendingMovementControl = null;
+    this.pendingMotion = null;
   }
 
   private releasePlaybackToken(playbackToken: string): void {
@@ -719,9 +782,9 @@ export class CharacterBehaviorDirector {
   /** 运动与表达独立，保留同轮、拖拽、任务及模式原子门禁。 */
   private requestMotion(plan: MotionRequest, source: BehaviorPlanSource, currentChat = false): void {
     if (source === 'local-idle' && this.movementMode === 0) return;
-    const sameTurn = currentChat && this.active?.source === 'chat';
+    const sameTurn = currentChat && (source === 'explicit' || this.active?.source === 'chat');
     if (sameTurn) {
-      if (this.closed || this.trustedRuntimeBlocked || this.dragging || this.capabilityTask || this.awaitingConfirmation || this.movementModeTransitionPending) return;
+      if (this.closed || source !== 'explicit' && this.trustedRuntimeBlocked || this.dragging || this.capabilityTask || this.awaitingConfirmation || this.movementModeTransitionPending) return;
     } else if (!this.canRequest(source)) return;
     if (plan.mode === 'once' && this.continuousTarget !== null) this.stopContinuousMotion();
     const snapshot = this.options.motion.requestIntent(plan.target === 'relative'

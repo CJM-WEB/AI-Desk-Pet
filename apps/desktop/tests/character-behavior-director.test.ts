@@ -33,6 +33,7 @@ function createFixture(initialSettings: Readonly<{
   movementMode: 2,
   proactivityMode: 'assistive' as const
 }) {
+  let now = 0;
   let taskAuthorization: CharacterBehaviorAuthorization = NONE;
   let directedAuthorization: CharacterBehaviorAuthorization = NONE;
   let agentAuthorization: CharacterBehaviorAuthorization = NONE;
@@ -55,6 +56,7 @@ function createFixture(initialSettings: Readonly<{
     ['移动', { kind: 'state_action', stateId: 'move-state', actionId: 'move-action' }]
   ]);
   const behavior = {
+    updateRuntimeFacts: vi.fn(), hasEligibleExpressionFor: vi.fn(() => true),
     context: vi.fn(() => null), snapshot: vi.fn(() => null), applyDecision: vi.fn(() => directedAuthorization),
     invalidateContext: vi.fn(), recordTrustedEvent: vi.fn(), handleUserInteraction: vi.fn(),
     getPublicBehaviorCatalog: vi.fn((): PublicBehaviorCatalog => ({ idleStateId: 'state-2241',
@@ -160,6 +162,7 @@ function createFixture(initialSettings: Readonly<{
     isCurrent?: () => boolean
   ) => Promise<void>>();
   const director = new CharacterBehaviorDirector({
+    now: () => now,
     behavior,
     motion,
     initialGeneration: 'generation-1',
@@ -178,6 +181,7 @@ function createFixture(initialSettings: Readonly<{
     });
   });
   return {
+    setNow: (value: number) => { now = value; },
     behavior,
     director,
     motion,
@@ -230,6 +234,7 @@ function createRealMotionFixture(input: Readonly<{
     maxDeltaMs: 10_000
   });
   const director = new CharacterBehaviorDirector({
+    now: () => now,
     behavior: base.behavior,
     motion,
     initialGeneration: 'generation-1',
@@ -258,6 +263,81 @@ function play(name: string): CharacterBehaviorPlan {
 }
 
 describe('Main 角色行为 Director', () => {
+  test.each([
+    { type: 'history_disclosure_required', requestId: 'history', targetProviderName: 'test', messageCount: 1, characterCount: 10 },
+    { type: 'capability_authorization_required', requestId: 'scope', targetProviderName: 'test', capability: 'file', requestSummary: '读取',
+      directory: 'C:\\test', modelId: 'test', actions: ['read', 'create', 'edit'], approvedCommands: [], expiresAt: '2026-09-06T12:00:00Z' }
+  ] satisfies TaskEvent[])('$type 清理等待但不伪造任务或确认事实', async event => {
+    const f = createFixture(); f.behavior.hasEligibleExpressionFor.mockReturnValue(false);
+    f.director.handleTaskEvent({ type: 'phase', phase: 'thinking' });
+    await f.director.prepareUserPrompt('向左一点');
+    f.director.handleTaskEvent(event);
+    expect(f.director.getChatContext().runtime).toMatchObject({ chatting: true, taskRunning: false, awaitingConfirmation: false });
+    expect(f.director.getChatContext().runtime).not.toHaveProperty('pendingMovement');
+    f.setNow(9000); f.director.advance(); f.director.handleTaskEvent({ type: 'phase', phase: 'error' });
+    expect(f.motion.requestIntent).not.toHaveBeenCalled();
+  });
+
+  test.each([0, 1, 2] as const)('模式 %s 明确相对运动等待同轮模型，thinking 不撤销，完成后只提交一次', async movementMode => {
+    const f = createFixture({ movementMode, proactivityMode: 'assistive' });
+    f.behavior.hasEligibleExpressionFor.mockReturnValue(false);
+    f.setMotionSnapshot({ ...f.motion.getSnapshot(), moving: false });
+    const prepared = await f.director.prepareUserPrompt('向左一点');
+    expect(f.motion.requestIntent).not.toHaveBeenCalled();
+    expect(f.director.getChatContext().runtime).toMatchObject({ moving: false, pendingMovement: true });
+    f.director.handleTaskEvent({ type: 'phase', phase: 'thinking' });
+    await f.director.completeUserPrompt({ generation: 'generation-1', eventId: 'pending-response',
+      context: f.director.captureExpressionContext(), explicitDirective: prepared.explicitDirective });
+    expect(f.motion.requestIntent).toHaveBeenCalledExactlyOnceWith({ kind: 'relative', direction: 'left', distance: 'near' });
+    expect(f.notices).toEqual([{ code: 'CHARACTER_ACTION_UNAVAILABLE', message: '当前角色没有可播放的对应动作。' }]);
+    f.director.handleTaskEvent({ type: 'phase', phase: 'success' }); f.setNow(9000); f.director.advance();
+    expect(f.motion.requestIntent).toHaveBeenCalledTimes(1);
+    expect(f.director.getChatContext().runtime).not.toHaveProperty('pendingMovement');
+    expect(f.director.getDiagnosticSnapshot().movementMode).toBe(movementMode);
+  });
+
+  test.each(['timeout', 'error'] as const)('明确位移在 %s 降级一次，不改变方向距离', async edge => {
+    const f = createFixture(); f.behavior.hasEligibleExpressionFor.mockReturnValue(false);
+    await f.director.prepareUserPrompt('向左一点');
+    expect(f.motion.requestIntent).not.toHaveBeenCalled();
+    f.setNow(7999); f.director.advance(); expect(f.motion.requestIntent).not.toHaveBeenCalled();
+    if (edge === 'error') f.director.handleTaskEvent({ type: 'phase', phase: 'error' });
+    else { f.setNow(8000); f.director.advance(); }
+    f.setNow(9000); f.director.advance();
+    expect(f.motion.requestIntent).toHaveBeenCalledExactlyOnceWith({ kind: 'relative', direction: 'left', distance: 'near' });
+    expect(f.notices).toEqual([{ code: 'CHARACTER_ACTION_UNAVAILABLE', message: '当前角色没有可播放的对应动作。' }]);
+  });
+
+  test.each(['stop', 'cancel', 'drag', 'character', 'input', 'reset', 'close', 'acting', 'awaiting_confirmation', 'configuration'] as const)(
+    '%s 使等待位移失效，迟到完成与超时不能复活', async edge => {
+      const f = createFixture(); f.behavior.hasEligibleExpressionFor.mockReturnValue(false);
+      const prepared = await f.director.prepareUserPrompt('向左一点');
+      expect(f.motion.requestIntent).not.toHaveBeenCalled();
+      if (edge === 'stop') await f.director.prepareUserPrompt('停下');
+      if (edge === 'cancel') f.director.cancelActive();
+      if (edge === 'drag') f.director.setDragging(true);
+      if (edge === 'character') await f.director.handleActiveCharacterChanged();
+      if (edge === 'input') await f.director.prepareUserPrompt('你好');
+      if (edge === 'reset') f.director.reset('generation-2');
+      if (edge === 'close') await f.director.close();
+      if (edge === 'configuration') f.director.invalidateBehaviorLifecycle();
+      if (edge === 'acting' || edge === 'awaiting_confirmation') f.director.handleTaskEvent({ type: 'phase', phase: edge });
+      await f.director.completeUserPrompt({ generation: 'generation-1', eventId: 'late', context: null, explicitDirective: prepared.explicitDirective });
+      f.director.handleTaskEvent({ type: 'phase', phase: 'success' }); f.setNow(9000); f.director.advance();
+      expect(f.motion.requestIntent).not.toHaveBeenCalled();
+    }
+  );
+
+  test('同轮明确表达不会用来源锁阻止已授权位移，新轮明确动作可替换旧动作', async () => {
+    const f = createFixture();
+    f.setDirectedAuthorization({ kind: 'play', stateId: 'happy-state', actionId: 'wave-action', playbackToken: 'old' });
+    await f.director.prepareUserPrompt('请播放挥手动作');
+    await f.director.prepareUserPrompt('向左一点');
+    expect(f.motion.requestIntent).toHaveBeenCalledExactlyOnceWith({ kind: 'relative', direction: 'left', distance: 'near' });
+    await f.director.prepareUserPrompt('请播放庆祝动作');
+    expect(f.behavior.requestDirectedBehavior).toHaveBeenCalledTimes(2);
+  });
+
   test.each(persistentMovementIntentCases)(
     '真实表达“$prompt”在 Provider 前写入唯一持久模式 $mode',
     async ({ prompt, mode: expectedMode }) => {
@@ -1459,6 +1539,7 @@ describe('Main 角色行为 Director', () => {
         moving: true,
         dragging: false,
         carrying: false,
+        chatting: false, taskRunning: false, awaitingConfirmation: false,
         movementMode: 2
       },
       proactivityMode: 'assistive',

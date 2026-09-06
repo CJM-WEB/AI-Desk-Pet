@@ -11,7 +11,7 @@ function fixture() {
     states: Array.from({ length: 40 }, (_, i) => ({ stateId: `s${i}`, name: `姿态${i}`, agentInferable: true,
       description: i === 39 ? '听到获奖喜讯，兴奋地甩尾巴' : `休息姿态${i}`, tags: [],
       actions: [{ actionId: `a${i}`, name: `动作${i}`, description: i === 39 ? '分享得奖快乐时大幅甩尾' : '安静等候', tags: [] }] })) };
-  const behaviorContext = { character, runtime: { moving: false, dragging: false, carrying: false, movementMode: 0 as const },
+  const behaviorContext = { character, runtime: { chatting: false, taskRunning: false, awaitingConfirmation: false, moving: false, dragging: false, carrying: false, movementMode: 0 as const },
     proactivityMode: 'assistive' as const, recentActions: [],
     expression: { stateId: 's0', actionId: 'a0', mood: null } };
   const requests: ModelRequest[] = [];

@@ -6,7 +6,7 @@ const input = {
   behaviorContext: { character: { idleStateId: 'idle', identity: {
     name: '伙伴', description: '陪伴用户', background: '数字花园', traits: [], languageStyle: '简洁',
     formsOfAddress: [], likes: [], dislikes: [], behavioralTendencies: [], boundaries: [], exampleLines: []
-  }, states: [] }, runtime: { moving: false, dragging: false, carrying: false, movementMode: 0 as const },
+  }, states: [] }, runtime: { chatting: false, taskRunning: false, awaitingConfirmation: false, moving: false, dragging: false, carrying: false, movementMode: 0 as const },
   proactivityMode: 'assistive' as const, recentActions: [] }
 };
 const controls = { movementControl: { kind: 'keep' }, capabilityPlan: { kind: 'chat' } };
@@ -49,4 +49,28 @@ test('普通正文兼容不产生工具，修复取消遵守同一AbortSignal且
   } };
   await expect(new ConversationChatAdapter(p).respond({ ...input, signal: controller.signal, onTextDelta: delta })).rejects.toMatchObject({ name: 'AbortError' });
   expect(calls).toBe(2);
+});
+
+test.each([false, true])('条件建议经过正常输出或修复（%s）保留 when/lifetime 并教模型真实 pending 含义', async repair => {
+  const expressionPlan = { states: [{ stateId: 'custom', score: 1, minStrength: 0, maxStrength: 1,
+    when: { moving: true }, lifetime: 'condition', actions: [{ actionId: 'custom-action', score: 1, when: { carrying: false } }] }] };
+  const requests: Parameters<ModelProvider['respond']>[0][] = [];
+  const p: ModelProvider = { respond: async request => {
+    requests.push(request);
+    return { type: 'text', text: '走一小段', structured_output: { ...controls, moodUpdate: null,
+      expressionPlan: repair && requests.length === 1 ? { states: 'bad' } : expressionPlan } };
+  } };
+  const reply = await new ConversationChatAdapter(p).respond({ ...input, text: '向左一点', movementControlHandled: true,
+    behaviorContext: { ...input.behaviorContext, runtime: { ...input.behaviorContext.runtime, pendingMovement: true },
+      character: { ...input.behaviorContext.character, states: [{ stateId: 'custom', name: '云游', description: '身体随空间位移轻轻摆动', tags: [], agentInferable: true,
+        actions: [{ actionId: 'custom-action', name: '轻摆', tags: [] }] }] } } });
+  expect(reply.expressionPlan).toMatchObject(expressionPlan);
+  expect(requests).toHaveLength(repair ? 2 : 1);
+  for (const request of requests) {
+    expect(request.tools).toEqual([]);
+    const instruction = request.messages[0]!.content;
+    expect(instruction).toContain('when'); expect(instruction).toContain('lifetime');
+    expect(instruction).toContain('pendingMovement'); expect(instruction).toContain('moving=true');
+    expect(instruction).toContain('描述');
+  }
 });

@@ -143,7 +143,7 @@ function behaviorPort(): ConversationBehaviorPort {
         },
         states: []
       },
-      runtime: { moving: false, dragging: false, carrying: false, movementMode: 2 },
+      runtime: { chatting: false, taskRunning: false, awaitingConfirmation: false, moving: false, dragging: false, carrying: false, movementMode: 2 },
       proactivityMode: 'assistive',
       recentActions: []
     }),

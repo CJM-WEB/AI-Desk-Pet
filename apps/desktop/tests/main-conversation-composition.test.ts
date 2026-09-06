@@ -47,7 +47,7 @@ function behaviorDouble(): ConversationBehaviorPort {
         states: []
       },
       runtime: {
-        moving: false, dragging: false, carrying: false, movementMode: 2 as const
+        chatting: false, taskRunning: false, awaitingConfirmation: false, moving: false, dragging: false, carrying: false, movementMode: 2 as const
       },
       proactivityMode: 'assistive' as const,
       recentActions: []

@@ -689,6 +689,7 @@ async function createApplicationWindows(
   });
   let publishCharacterBehaviorNotice = (_notice: CharacterBehaviorNotice): void => undefined;
   const characterBehaviorDirector = new CharacterBehaviorDirector({
+    now: characterRuntimeClock.now,
     behavior: characterBehavior,
     motion: characterMotion,
     initialGeneration: 'startup',

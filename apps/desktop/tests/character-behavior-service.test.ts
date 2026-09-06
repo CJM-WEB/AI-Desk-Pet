@@ -1,6 +1,7 @@
 import { expect, test, vi } from 'vitest';
 import { characterManifestV3Schema, type CharacterManifestV3 } from '@myself/character-runtime';
 import { CharacterBehaviorService, type CharacterBehaviorPlaybackEvent } from '../src/main/characters/character-behavior-service';
+import { CharacterBehaviorDirector } from '../src/main/characters/character-behavior-director';
 
 // 名称只用于作者目录，不是运行时状态类别或官方语义。
 const SEMANTICS = ['idle', 'listen', 'think', 'move', 'carry', 'celebrate', 'fail'] as const;
@@ -99,6 +100,65 @@ function currentAction(events: CharacterBehaviorPlaybackEvent[]) {
   if (!event || event.type !== 'behavior-action') throw new Error('缺少动作授权');
   return event;
 }
+
+test('Main 运动和搬运事实立即重判同一计划，停止后回到 idle', async () => {
+  const f = fixture(); await f.service.initialize();
+  f.service.applyDecision({ context: f.service.context()!, eventId: 'facts-plan', source: 'chat',
+    moodUpdate: { summary: '跟随运动', strength: 1 }, expressionPlan: { states: [
+      { stateId: 'move-state', score: 1, minStrength: 0, maxStrength: 1,
+        when: { moving: true, carrying: false }, lifetime: 'condition', actions: [{ actionId: 'move-action', score: 1 }] },
+      { stateId: 'carry-state', score: 1, minStrength: 0, maxStrength: 1,
+        when: { moving: true, carrying: true }, lifetime: 'condition', actions: [{ actionId: 'carry-action', score: 1 }] }
+    ] } });
+  f.service.handleMovement({ ...f.motion.getSnapshot(), moving: true });
+  expect(currentAction(f.events).actionId).toBe('move-action');
+  f.service.handleMovement({ ...f.motion.getSnapshot(), moving: true, carrying: true });
+  expect(currentAction(f.events).actionId).toBe('carry-action');
+  f.service.handleMovement({ ...f.motion.getSnapshot(), moving: false, carrying: true });
+  expect(currentAction(f.events).actionId).toBe('idle-action');
+  f.service.close();
+});
+
+test('任务占用解除即退出条件状态，角色重载与reset仍保留 Main 事实', async () => {
+  const f = fixture(); await f.service.initialize();
+  f.service.updateRuntimeFacts({ taskRunning: true, dragging: true });
+  const apply = () => f.service.applyDecision({ context: f.service.context()!, eventId: 'task-plan', source: 'chat',
+    moodUpdate: { summary: '专注', strength: 1 }, expressionPlan: { states: [
+      { stateId: 'think-state', score: 1, minStrength: 0, maxStrength: 1,
+        when: { taskRunning: true, dragging: true }, lifetime: 'condition', actions: [{ actionId: 'think-action', score: 1 }] }
+    ] } });
+  apply(); expect(currentAction(f.events).actionId).toBe('think-action');
+  f.service.cancelStateLifecycle(); apply(); expect(currentAction(f.events).actionId).toBe('think-action');
+  await f.service.handleActiveCharacterChanged(); apply(); expect(currentAction(f.events).actionId).toBe('think-action');
+  f.service.updateRuntimeFacts({ taskRunning: false });
+  expect(currentAction(f.events).actionId).toBe('idle-action');
+  f.service.close();
+});
+
+test('真实 Engine 接纳未来条件后才提交位移，同步 Motion 回调不能重复提交', async () => {
+  const f = fixture(); await f.service.initialize();
+  const director = new CharacterBehaviorDirector({ behavior: f.service, motion: { ...f.motion, stop: vi.fn() },
+    now: () => 0, initialGeneration: 'real', initialSettings: { movementMode: 0, proactivityMode: 'assistive' }, saveMovementMode: async () => undefined });
+  director.handleTaskEvent({ type: 'phase', phase: 'thinking' });
+  const prepared = await director.prepareUserPrompt('向左一点');
+  expect(f.motion.requestIntent).not.toHaveBeenCalled();
+  f.motion.requestIntent.mockImplementation(() => {
+    expect(director.getChatContext().runtime).not.toHaveProperty('pendingMovement');
+    const snapshot = { ...f.motion.getSnapshot(), moving: true };
+    f.service.handleMovement(snapshot); director.handleMotionSnapshot(snapshot); director.advance();
+    expect(f.service.snapshot()?.schedule.current?.actionId).toBe('move-action');
+    return snapshot;
+  });
+  await director.completeUserPrompt({ generation: 'real', eventId: 'real-response', context: director.captureExpressionContext(),
+    explicitDirective: prepared.explicitDirective, moodUpdate: { summary: '轻快', strength: 1 },
+    expressionPlan: { states: [{ stateId: 'move-state', score: 1, minStrength: 0, maxStrength: 1,
+      when: { moving: true }, lifetime: 'condition', actions: [{ actionId: 'move-action', score: 1 }] }] } });
+  director.handleTaskEvent({ type: 'phase', phase: 'success' });
+  expect(f.motion.requestIntent).toHaveBeenCalledExactlyOnceWith({ kind: 'relative', direction: 'left', distance: 'near' });
+  f.service.handleMovement(f.motion.getSnapshot());
+  expect(f.service.snapshot()?.schedule.current?.actionId).toBe('idle-action');
+  await director.close();
+});
 
 test('V3 初始化保留真实 ID，公开目录不暴露旧语义', async () => {
   const { service, events } = fixture();
