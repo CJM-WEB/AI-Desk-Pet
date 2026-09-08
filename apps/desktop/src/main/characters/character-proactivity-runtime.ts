@@ -2,7 +2,7 @@ import type { CharacterBehaviorDirector } from './character-behavior-director';
 import { CharacterProactivityScheduler } from './character-proactivity-scheduler';
 import type { CharacterAutonomousInput } from '../conversation/conversation-chat-adapter';
 
-export type CharacterAutonomousRequest = Omit<CharacterAutonomousInput, 'behaviorContext'>;
+export type CharacterAutonomousRequest = Omit<CharacterAutonomousInput, 'behaviorContext'> & { purpose?: 'activity' | 'mood' };
 const MINUTE = 60_000;
 
 /** 同一逻辑时钟供心情、请求与播放反馈使用；墙钟仅在真实休眠边沿参与一次有界推进。 */
@@ -66,8 +66,10 @@ export function createCharacterProactivityRuntime(options: CharacterProactivityR
   let enabled = options.autonomousMoodEnabled ?? true;
   let started = false; let closed = false; let suspended = false;
   let generation = options.requestAutonomousDecision ? options.director.getBehaviorLifecycleGeneration() : 0;
-  type Flight = { controller: AbortController; counted: boolean; timer: ReturnType<typeof setTimeout> | null };
+  type Flight = { purpose: 'activity' | 'mood'; controller: AbortController; counted: boolean; timer: ReturnType<typeof setTimeout> | null };
   let flight: Flight | null = null;
+  let activityAttemptGeneration = -1;
+  let activityPreflightGeneration = -1;
   const abort = () => {
     const current = flight; flight = null;
     if (!current) return;
@@ -83,16 +85,25 @@ export function createCharacterProactivityRuntime(options: CharacterProactivityR
     if (next !== generation || blocked()) abort();
     generation = next;
   }) : () => undefined;
+  const hasBudget = () => {
+    while (starts.length && starts[0]! <= now() - 60 * MINUTE) starts.shift();
+    return starts.length < 4;
+  };
   const eligible = () => {
     const time = now();
-    while (starts.length && starts[0]! <= time - 60 * MINUTE) starts.shift();
     return started && !closed && !suspended && enabled && !blocked()
       && time - lastInteraction >= 5 * MINUTE && time - lastStart >= 5 * MINUTE
-      && time >= nextEvaluation && starts.length < 4;
+      && time >= nextEvaluation && hasBudget();
   };
+  const activityEligible = () => started && !closed && !suspended && !blocked()
+    && activityAttemptGeneration !== generation && hasBudget() && options.director.needsActivityMatch();
   const pollAutonomy = () => {
-    if (!options.requestAutonomousDecision || flight || now() < nextPreflight || !eligible()) return;
-    const current: Flight = { controller: new AbortController(), counted: false, timer: null };
+    if (!options.requestAutonomousDecision || flight) return;
+    const purpose = activityEligible() ? 'activity' : 'mood';
+    if (purpose === 'mood' && (now() < nextPreflight || !eligible())) return;
+    if (purpose === 'activity' && activityPreflightGeneration === generation && now() < nextPreflight) return;
+    if (purpose === 'activity') activityPreflightGeneration = generation;
+    const current: Flight = { purpose, controller: new AbortController(), counted: false, timer: null };
     flight = current;
     // 预检不可无限占用在途槽；真正发起后重新给予完整六十秒。
     const armTimeout = () => {
@@ -101,10 +112,12 @@ export function createCharacterProactivityRuntime(options: CharacterProactivityR
     };
     armTimeout(); nextPreflight = now() + MINUTE;
     void Promise.resolve().then(() => options.requestAutonomousDecision!({
-      idleForMs: Math.max(0, now() - lastInteraction), signal: current.controller.signal,
+      purpose, idleForMs: Math.max(0, now() - lastInteraction), signal: current.controller.signal,
       beforeProviderCall: () => {
-        if (flight !== current || current.counted || current.controller.signal.aborted || !eligible()) return false;
+        if (flight !== current || current.counted || current.controller.signal.aborted || !(purpose === 'activity' ? activityEligible() : eligible())) return false;
+        // 模式准备绕过心情闲置门槛，但同样消费唯一小时额度；loading预检尚未到此处。
         current.counted = true; lastStart = now(); starts.push(lastStart); nextEvaluation = lastStart + 15 * MINUTE;
+        if (purpose === 'activity') activityAttemptGeneration = generation;
         armTimeout(); return true;
       }
     })).catch(() => {
@@ -126,7 +139,7 @@ export function createCharacterProactivityRuntime(options: CharacterProactivityR
       options.director.invalidateBehaviorLifecycle();
     },
     noteUserInteraction(): void { lastInteraction = now(); abort(); },
-    setAutonomousMoodEnabled(value: boolean): void { enabled = value; if (!enabled) abort(); },
+    setAutonomousMoodEnabled(value: boolean): void { enabled = value; if (!enabled && flight?.purpose === 'mood') abort(); },
     suspend(): void { suspended = true; abort(); },
     resume(): void { suspended = false; if (!closed) { options.advanceBehavior(); pollAutonomy(); } },
     poll(): void {

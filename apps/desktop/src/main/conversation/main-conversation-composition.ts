@@ -65,7 +65,7 @@ export interface MainConversationCompositionOptions<TPrivacy> {
     input: MainConversationCodingTaskFactoryInput<TPrivacy>
   ): CapabilityTaskServicePort;
   behavior: ConversationBehaviorPort;
-  autonomy?: Pick<CharacterBehaviorDirector, 'getActivityBlockers' | 'getBehaviorLifecycleGeneration' | 'applyAutonomousDecision'>;
+  autonomy?: Pick<CharacterBehaviorDirector, 'getActivityBlockers' | 'getBehaviorLifecycleGeneration' | 'applyAutonomousDecision' | 'applyActivityDecision'>;
   emit(event: TaskEvent): void;
 }
 
@@ -279,9 +279,15 @@ export function createMainConversationComposition<TPrivacy>(
         if (!context || !isCurrent()) return;
         const turn = await createChatTurn();
         if (!isCurrent()) return;
-        const decision = await turn.adapter.respondAutonomous({ behaviorContext, idleForMs: input.idleForMs,
-          signal: current.signal, beforeProviderCall: () => isCurrent() && input.beforeProviderCall() });
-        if (decision && isCurrent()) autonomy.applyAutonomousDecision({ ...decision, context, lifecycle, eventId: randomUUID() });
+        const request = { behaviorContext, signal: current.signal, beforeProviderCall: () => isCurrent() && input.beforeProviderCall() };
+        const decision = input.purpose === 'activity'
+          ? await turn.adapter.respondActivity(request)
+          : await turn.adapter.respondAutonomous({ ...request, idleForMs: input.idleForMs });
+        if (decision && isCurrent()) {
+          const accepted = { ...decision, context, lifecycle, eventId: randomUUID() };
+          if (input.purpose === 'activity') autonomy.applyActivityDecision(accepted);
+          else autonomy.applyAutonomousDecision(accepted);
+        }
       } finally {
         if (autonomousFlight === current) autonomousFlight = null;
       }

@@ -130,6 +130,21 @@ export class CharacterBehaviorService {
   hasEligibleExpressionFor(facts: Partial<CharacterRuntimeFacts>, requiredFact?: keyof CharacterRuntimeFacts): boolean {
     return !this.closed && !this.transitioning && !!this.engine && this.engine.hasEligibleExpressionFor(facts, requiredFact);
   }
+  /** 活动准备只发布同一引擎令牌，不伪造真实移动事实；复用令牌也返回原授权。 */
+  prepareActivity(): CharacterExpressionAuthorization {
+    if (this.closed || this.transitioning || !this.engine) return NONE;
+    if (!this.engine.hasEligibleExpressionFor({ moving: true }, 'moving')) return NONE;
+    this.publish(this.engine.prepareActivity('moving'));
+    const current = this.engine.snapshot().schedule.current;
+    return current && this.engine.hasEligibleExpressionFor({ moving: true }, 'moving')
+      ? { kind: 'play', stateId: current.stateId, actionId: current.actionId, playbackToken: current.playbackToken } : NONE;
+  }
+  releasePreparedActivity(): void {
+    if (!this.closed && !this.transitioning && this.engine) this.publish(this.engine.releasePreparedActivity());
+  }
+  releaseExplicitPlayback(): void {
+    if (!this.closed && !this.transitioning && this.engine) this.publish(this.engine.releaseExplicitPlayback());
+  }
   /** 新互动撤销在途推断，保留已经接纳的心情与有限播放。 */
   invalidateContext(): void { if (!this.closed && !this.transitioning && this.engine) this.engine.invalidateContext(); }
   handleUserInteraction(): void { this.invalidateContext(); this.recordTrustedEvent('user-interaction'); }

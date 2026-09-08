@@ -135,31 +135,6 @@ test('任务占用解除即退出条件状态，角色重载与reset仍保留 Ma
   f.service.close();
 });
 
-test('真实 Engine 接纳未来条件后才提交位移，同步 Motion 回调不能重复提交', async () => {
-  const f = fixture(); await f.service.initialize();
-  const director = new CharacterBehaviorDirector({ behavior: f.service, motion: { ...f.motion, stop: vi.fn() },
-    now: () => 0, initialGeneration: 'real', initialSettings: { movementMode: 0, proactivityMode: 'assistive' }, saveMovementMode: async () => undefined });
-  director.handleTaskEvent({ type: 'phase', phase: 'thinking' });
-  const prepared = await director.prepareUserPrompt('向左一点');
-  expect(f.motion.requestIntent).not.toHaveBeenCalled();
-  f.motion.requestIntent.mockImplementation(() => {
-    expect(director.getChatContext().runtime).not.toHaveProperty('pendingMovement');
-    const snapshot = { ...f.motion.getSnapshot(), moving: true };
-    f.service.handleMovement(snapshot); director.handleMotionSnapshot(snapshot); director.advance();
-    expect(f.service.snapshot()?.schedule.current?.actionId).toBe('move-action');
-    return snapshot;
-  });
-  await director.completeUserPrompt({ generation: 'real', eventId: 'real-response', context: director.captureExpressionContext(),
-    explicitDirective: prepared.explicitDirective, moodUpdate: { summary: '轻快', strength: 1 },
-    expressionPlan: { states: [{ stateId: 'move-state', score: 1, minStrength: 0, maxStrength: 1,
-      when: { moving: true }, lifetime: 'condition', actions: [{ actionId: 'move-action', score: 1 }] }] } });
-  director.handleTaskEvent({ type: 'phase', phase: 'success' });
-  expect(f.motion.requestIntent).toHaveBeenCalledExactlyOnceWith({ kind: 'relative', direction: 'left', distance: 'near' });
-  f.service.handleMovement(f.motion.getSnapshot());
-  expect(f.service.snapshot()?.schedule.current?.actionId).toBe('idle-action');
-  await director.close();
-});
-
 test('V3 初始化保留真实 ID，公开目录不暴露旧语义', async () => {
   const { service, events } = fixture();
   await service.initialize();
@@ -169,80 +144,6 @@ test('V3 初始化保留真实 ID，公开目录不暴露旧语义', async () =>
   expect(catalog.states[0]).not.toHaveProperty('semantic');
   expect(service.resolveBehaviorTarget({ kind: 'action_name', name: 'think 动作' })).toEqual({ kind: 'state_action', stateId: 'think-state', actionId: 'think-action' });
   service.close();
-});
-
-test.each([true, false])('真实多候选裁决可同步=%s：只有实际活动播放才提前提交，否则原截止降级', async matches => {
-  const f = fixture(); const manifest = createManifest();
-  // 长片段隔离两秒保持与优先级；不存在动作自然结束带来的偶然切换。
-  manifest.states.find(state => state.id === 'celebrate-state')!.suggestedDurationMs = 20_000;
-  manifest.actions.find(action => action.id === 'celebrate-action')!.loopPolicy = 'until-interrupted';
-  f.store.getActiveManifestV3.mockResolvedValue(manifest);
-  await f.service.initialize(); let now = 0;
-  const time = (value: number) => { now = value; f.setNow(value); };
-  const notices = vi.fn();
-  const director = new CharacterBehaviorDirector({ behavior: f.service, motion: { ...f.motion, stop: vi.fn() },
-    now: () => now, initialGeneration: 'real', initialSettings: { movementMode: 0, proactivityMode: 'assistive' },
-    saveMovementMode: async () => undefined, publishNotice: notices });
-  const prepared = await director.prepareUserPrompt('向右走一点');
-  f.motion.requestIntent.mockImplementation(() => {
-    expect(director.getChatContext().runtime).not.toHaveProperty('pendingMovement');
-    const snapshot = { ...f.motion.getSnapshot(), moving: true };
-    f.service.handleMovement(snapshot); director.handleMotionSnapshot(snapshot);
-    expect(f.service.snapshot()?.schedule.current?.actionId).toBe(matches ? 'move-action' : 'celebrate-action');
-    return snapshot;
-  });
-  await director.completeUserPrompt({ generation: 'real', eventId: 'competition', context: director.captureExpressionContext(),
-    explicitDirective: prepared.explicitDirective, expressionPlan: { states: [
-      { stateId: 'celebrate-state', score: matches ? .5 : 1, minStrength: 0, maxStrength: 1, lifetime: 'episode', actions: [] },
-      { stateId: 'move-state', score: matches ? 1 : .8, minStrength: 0, maxStrength: 1,
-        when: { moving: true }, lifetime: 'condition', actions: [{ actionId: 'move-action', score: 1 }] }
-    ] } });
-  const current = f.service.snapshot()!.schedule.current!;
-  f.service.applyPlaybackFeedback({ actionId: current.actionId, playbackToken: current.playbackToken, status: 'started', occurredAtMs: 0 });
-  director.handleTaskEvent({ type: 'phase', phase: 'success' });
-  expect(f.motion.requestIntent).not.toHaveBeenCalled();
-  expect(director.getChatContext().runtime.pendingMovement).toBe(true);
-  time(1999); director.advance();
-  expect(f.motion.requestIntent).not.toHaveBeenCalled();
-  time(matches ? 2000 : 7999); director.advance();
-  expect(f.motion.requestIntent).toHaveBeenCalledTimes(matches ? 1 : 0);
-  if (!matches) { expect(notices).not.toHaveBeenCalled(); time(8000); director.advance(); }
-  expect(f.motion.requestIntent).toHaveBeenCalledExactlyOnceWith({ kind: 'relative', direction: 'right', distance: 'near' });
-  expect(notices).toHaveBeenCalledTimes(matches ? 0 : 1);
-  await director.close();
-});
-
-test.each([true, false])('成功响应后按剩余预算等待真实心情资格（可匹配=%s），同步位移只提交一次', async matches => {
-  const f = fixture(); await f.service.initialize(); let now = 0;
-  const time = (value: number) => { now = value; f.setNow(value); };
-  const notices = vi.fn();
-  const director = new CharacterBehaviorDirector({ behavior: f.service, motion: { ...f.motion, stop: vi.fn() },
-    now: () => now, initialGeneration: 'real', initialSettings: { movementMode: 0, proactivityMode: 'assistive' },
-    saveMovementMode: async () => undefined, publishNotice: notices });
-  const prepared = await director.prepareUserPrompt('向右走一点');
-  time(matches ? 4000 : 7500);
-  f.motion.requestIntent.mockImplementation(() => {
-    expect(director.getChatContext().runtime).not.toHaveProperty('pendingMovement');
-    const snapshot = { ...f.motion.getSnapshot(), moving: true };
-    f.service.handleMovement(snapshot); director.handleMotionSnapshot(snapshot); director.advance();
-    expect(f.service.snapshot()?.stateId).toBe(matches ? 'move-state' : 'idle-state');
-    return snapshot;
-  });
-  await director.completeUserPrompt({ generation: 'real', eventId: 'fade-response', context: director.captureExpressionContext(),
-    explicitDirective: prepared.explicitDirective, moodUpdate: { summary: '轻快', strength: .6, fadeInMs: 1000 },
-    expressionPlan: { states: matches ? [{ stateId: 'move-state', score: 1, minStrength: .5, maxStrength: .9,
-      when: { moving: true }, lifetime: 'condition', actions: [{ actionId: 'move-action', score: 1 }] }] : [] } });
-  director.handleTaskEvent({ type: 'phase', phase: 'success' });
-  expect(f.motion.requestIntent).not.toHaveBeenCalled();
-  expect(director.getChatContext().runtime.pendingMovement).toBe(true);
-  time(matches ? 4500 : 7999); director.advance();
-  expect(f.motion.requestIntent).not.toHaveBeenCalled();
-  time(matches ? 5000 : 8000); director.advance();
-  expect(f.motion.requestIntent).toHaveBeenCalledExactlyOnceWith({ kind: 'relative', direction: 'right', distance: 'near' });
-  expect(notices).toHaveBeenCalledTimes(matches ? 0 : 1);
-  time(9000); director.advance();
-  expect(f.motion.requestIntent).toHaveBeenCalledTimes(1);
-  await director.close();
 });
 
 test.each(['completed', 'interrupted', 'failed'] as const)('Main先换片段后的已发布旧令牌 %s 回报仅忽略且无副作用', async status => {
@@ -347,4 +248,160 @@ test('运动与统一阶段不推断表达状态，关闭后不再发布', async
   f.service.close(); const count = f.events.length;
   f.service.handleUserInteraction(); f.service.advance();
   expect(f.events).toHaveLength(count);
+});
+
+/** 只替换窗口边界；真实 Service/Engine 裁决准备 token 与 started 的可信性。 */
+async function movementFixture(mode: 0 | 1 | 2 = 0, matched = true) {
+  const f = fixture(); let now = 0;
+  const manifest = createManifest();
+  manifest.actions.forEach(action => { action.loopPolicy = 'until-interrupted'; });
+  f.store.getActiveManifestV3.mockResolvedValue(manifest); await f.service.initialize();
+  f.service.applyDecision({ context: f.service.context()!, eventId: '能力', source: 'chat',
+    moodUpdate: { summary: '开心', strength: .8, fadeInMs: 0 }, expressionPlan: { states: [
+      { stateId: 'celebrate-state', score: 1, minStrength: 0, maxStrength: 1, lifetime: 'episode', actions: [] },
+      ...(matched ? [{ stateId: 'move-state', score: .1, minStrength: .9, maxStrength: 1,
+        when: { moving: true }, lifetime: 'condition' as const, actions: [{ actionId: 'move-action', score: 1 }] }] : [])
+    ] } });
+  const stop = vi.fn(() => f.service.handleMovement(f.motion.getSnapshot())); const notices = vi.fn();
+  const director = new CharacterBehaviorDirector({ behavior: f.service, motion: { ...f.motion, stop },
+    now: () => now, initialGeneration: 'real', initialSettings: { movementMode: mode, proactivityMode: 'assistive' },
+    saveMovementMode: async () => undefined, publishNotice: notices });
+  f.motion.requestIntent.mockImplementation(() => {
+    const snapshot = { ...f.motion.getSnapshot(), target: { x: f.motion.requestIntent.mock.calls.length * 100, y: 0 }, moving: true };
+    f.service.handleMovement(snapshot); director.handleMotionSnapshot(snapshot); return snapshot;
+  });
+  const feedback = (status: 'started' | 'failed' | 'interrupted' = 'started') => {
+    const current = f.service.snapshot()!.schedule.current!;
+    director.applyPlaybackFeedback({ playbackToken: current.playbackToken, actionId: current.actionId, status, occurredAtMs: now });
+  };
+  return { ...f, director, stop, notices, feedback, time: (value: number) => { now = value; f.setNow(value); } };
+}
+
+test.each([0, 1, 2] as const)('首帧门控：模式%s有活动也必须等同token started才一次位移', async mode => {
+  const f = await movementFixture(mode);
+  if (mode === 0) await f.director.prepareUserPrompt('向右一点');
+  if (mode === 1) f.director.requestPersistentMovement();
+  if (mode === 2) f.director.requestIntermittentMovement();
+  expect(f.motion.requestIntent).not.toHaveBeenCalled();
+  expect(f.director.getChatContext().runtime).toMatchObject({ pendingMovement: true, moving: false });
+  expect(f.service.snapshot()?.schedule.current?.actionId).toBe('move-action');
+  f.feedback(); expect(f.motion.requestIntent).toHaveBeenCalledTimes(1);
+  f.feedback(); expect(f.motion.requestIntent).toHaveBeenCalledTimes(1);
+  expect(f.service.snapshot()?.mood?.summary).toBe('开心');
+  f.feedback('failed'); expect(f.stop).toHaveBeenCalled();
+  expect(f.service.snapshot()?.mood?.summary).toBe('开心');
+  await f.director.close();
+});
+
+test.each(['timeout', 'wrong', 'failed', 'reset', 'cancel'] as const)('首帧门控：%s不会产生位移', async cause => {
+  const f = await movementFixture(); await f.director.prepareUserPrompt('向右一点');
+  const current = f.service.snapshot()!.schedule.current!;
+  if (cause === 'timeout') { f.time(1500); f.director.advance(); }
+  if (cause === 'wrong') expect(() => f.director.applyPlaybackFeedback({ playbackToken: '伪造', actionId: current.actionId, status: 'started', occurredAtMs: 0 })).toThrow();
+  if (cause === 'failed') f.feedback('failed');
+  if (cause === 'reset') f.director.reset('new');
+  if (cause === 'cancel') f.director.cancelActive();
+  if (cause !== 'wrong') {
+    try { f.director.applyPlaybackFeedback({ playbackToken: current.playbackToken, actionId: current.actionId, status: 'started', occurredAtMs: cause === 'timeout' ? 1500 : 0 }); } catch { /* 旧令牌拒绝也是合法结果。 */ }
+  }
+  expect(f.motion.requestIntent).not.toHaveBeenCalled(); await f.director.close();
+});
+
+test.each([0, 1, 2] as const)('首帧门控：模式%s缺活动永久零位移且无逐tick提示', async mode => {
+  const f = await movementFixture(mode, false);
+  if (mode === 0) {
+    const prepared = await f.director.prepareUserPrompt('向右一点');
+    await f.director.completeUserPrompt({ generation: 'real', eventId: '缺失', context: f.director.captureExpressionContext(),
+      explicitDirective: prepared.explicitDirective, expressionStatus: 'no_match', requestKind: 'movement', expressionPlan: { states: [] } });
+  }
+  for (let i = 0; i < 20; i++) {
+    f.time(i * 1000); f.director.advance();
+    if (mode === 1) f.director.requestPersistentMovement();
+    if (mode === 2) f.director.requestIntermittentMovement();
+  }
+  expect(f.motion.requestIntent).not.toHaveBeenCalled(); expect(f.notices.mock.calls.length).toBeLessThanOrEqual(1);
+  await f.director.close();
+});
+
+test('明确移动只释放旧explicit，保留心情并等待新活动首帧', async () => {
+  const f = await movementFixture();
+  f.service.requestDirectedBehavior({ kind: 'state_action', stateId: 'think-state', actionId: 'think-action' });
+  await f.director.prepareUserPrompt('向右一点');
+  expect(f.service.snapshot()?.schedule.current?.actionId).toBe('move-action');
+  expect(f.service.snapshot()?.mood?.summary).toBe('开心');
+  expect(f.motion.requestIntent).not.toHaveBeenCalled(); f.feedback();
+  expect(f.motion.requestIntent).toHaveBeenCalledTimes(1); await f.director.close();
+});
+
+
+test('自动首帧超时同生命周期不重复播放或提示，明确请求仍可重试', async () => {
+  const f = await movementFixture(1); f.director.requestPersistentMovement();
+  f.time(1500); f.director.advance(); const published = f.events.filter(event => event.type === 'behavior-action' && event.actionId === 'move-action').length;
+  for (let i = 0; i < 4; i++) { f.director.requestPersistentMovement(); f.time(3000 + i * 1500); f.director.advance(); }
+  expect(f.events.filter(event => event.type === 'behavior-action' && event.actionId === 'move-action')).toHaveLength(published); expect(f.notices).toHaveBeenCalledTimes(1);
+  await f.director.prepareUserPrompt('向右一点');
+  expect(f.service.snapshot()?.schedule.current?.actionId).toBe('move-action'); await f.director.close();
+});
+
+test('真实到达先更新Service再续行，新token未started保持零新增位移', async () => {
+  const f = await movementFixture(1); f.director.requestPersistentMovement(); f.feedback();
+  const arrived = f.motion.getSnapshot();
+  f.service.handleMovement(arrived); f.director.handleMotionSnapshot(arrived);
+  expect(f.motion.requestIntent).toHaveBeenCalledTimes(1);
+  expect(f.service.snapshot()?.schedule.current?.actionId).toBe('move-action');
+  f.feedback(); expect(f.motion.requestIntent).toHaveBeenCalledTimes(2); await f.director.close();
+});
+
+test.each(['ready', 'no_match', 'failed'] as const)('无固定Gate的明确状态%s：精确播放或如实反馈', async status => {
+  const f = await movementFixture();
+  const prepared = await f.director.prepareUserPrompt('你表现得开心一点');
+  await f.director.completeUserPrompt({ generation: 'real', eventId: '状态', context: f.director.captureExpressionContext(),
+    explicitDirective: prepared.explicitDirective, requestKind: 'state', expressionStatus: status,
+    ...(status === 'ready' ? { explicitPlayback: { stateId: 'think-state' } } : {}),
+    ...(status === 'no_match' ? { expressionPlan: { states: [] } } : {}) });
+  if (status === 'ready') expect(f.service.snapshot()?.stateId).toBe('think-state');
+  else expect(f.notices).toHaveBeenCalledWith(expect.objectContaining({ code: status === 'no_match' ? 'CHARACTER_ACTION_UNAVAILABLE' : 'CHARACTER_EXPRESSION_NOT_EXECUTED' }));
+  expect(f.motion.requestIntent).not.toHaveBeenCalled(); await f.director.close();
+});
+
+test('明确移动已开始后失败表现不能留下正在移动的失败状态', async () => {
+  const f = await movementFixture(); const prepared = await f.director.prepareUserPrompt('向右一点'); f.feedback();
+  await f.director.completeUserPrompt({ generation: 'real', eventId: '失败', context: f.director.captureExpressionContext(),
+    explicitDirective: prepared.explicitDirective, expressionStatus: 'failed' });
+  expect(f.stop).toHaveBeenCalled(); await f.director.close();
+});
+
+
+test('取消已开始的移动及时停止且不会清掉心情', async () => {
+  const f = await movementFixture(); await f.director.prepareUserPrompt('向右一点'); f.feedback();
+  f.director.cancelActive(); expect(f.stop).toHaveBeenCalled();
+  expect(f.service.snapshot()?.mood?.summary).toBe('开心'); await f.director.close();
+});
+
+test('真实运动快照导致活动token失效时立即停止，不能等下一次poll滑行', async () => {
+  const f = await movementFixture(); await f.director.prepareUserPrompt('向右一点'); f.feedback();
+  f.service.requestDirectedBehavior({ kind: 'state_action', stateId: 'think-state', actionId: 'think-action' });
+  f.director.handleMotionSnapshot({ ...f.motion.getSnapshot(), moving: true });
+  expect(f.stop).toHaveBeenCalled(); await f.director.close();
+});
+
+
+test('已有普通聊天表现不阻挡更高优先级活动准备', async () => {
+  const f = await movementFixture(1); await f.director.prepareUserPrompt('你好'); f.time(3000);
+  await f.director.completeUserPrompt({ generation: 'real', eventId: '普通', context: f.director.captureExpressionContext(),
+    explicitDirective: null, expressionStatus: 'ready', requestKind: 'ambient', expressionPlan: { states: [
+      { stateId: 'think-state', score: 1, minStrength: 0, maxStrength: 1, lifetime: 'episode', actions: [] }
+    ] } });
+  expect(f.service.snapshot()?.stateId).toBe('think-state');
+  f.director.requestPersistentMovement();
+  expect(f.service.snapshot()?.stateId).toBe('move-state');
+  expect(f.motion.requestIntent).not.toHaveBeenCalled(); f.feedback();
+  expect(f.motion.requestIntent).toHaveBeenCalledTimes(1); await f.director.close();
+});
+
+test('截止时started先于poll到达也只失败一次，自动模式不能重复准备', async () => {
+  const f = await movementFixture(1); f.director.requestPersistentMovement();
+  f.time(1500); f.feedback(); f.director.requestPersistentMovement();
+  expect(f.events.filter(event => event.type === 'behavior-action' && event.actionId === 'move-action')).toHaveLength(1);
+  expect(f.motion.requestIntent).not.toHaveBeenCalled(); expect(f.notices).toHaveBeenCalledTimes(1); await f.director.close();
 });

@@ -160,6 +160,12 @@ export class CharacterExpressionEngine {
     this.preparedActivity = fact;
     return this.advanceWith(effects, false, true);
   }
+  /** 新的明确移动可释放旧明确播放；心情、活动能力与失败记录继续由同一引擎持有。 */
+  releaseExplicitPlayback(): CharacterExpressionResult {
+    if (!this.explicit) return this.result();
+    this.explicit = false; this.explicitUntilMs = null;
+    return this.advanceWith(this.stop(), true, true);
+  }
   releasePreparedActivity(): CharacterExpressionResult {
     if (this.preparedActivity === null) return this.result();
     this.preparedActivity = null;

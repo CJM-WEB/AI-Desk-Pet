@@ -18,15 +18,16 @@ const flush = async () => { for (let i = 0; i < 12; i++) await Promise.resolve()
 const response = (summary = '安静地陪伴') => ({ type: 'structured' as const, structured_output: { moodUpdate: { summary, strength: .8 }, expressionPlan: null } });
 
 /** 只替换网络与窗口；使用真实组合、Director、Service 和表达引擎。 */
-async function fixture(provider?: ModelProvider) {
+async function fixture(provider?: ModelProvider, mode: 0 | 1 | 2 = 0) {
   let now = 0;
   const requests: ModelRequest[] = [];
   const events: TaskEvent[] = [];
   const manifest = characterManifestV3Schema.parse({ ...v3Fixture(), ...resourceFields });
+  if (mode !== 0) manifest.states.push({ ...manifest.states[0]!, id: 'author-running', name: '作者自定义跑步', description: '跑步活动', agentInferable: true });
   const motion = { getSnapshot: () => ({ revision: 0, timestampMs: now, position: { x: 0, y: 0 }, target: { x: 0, y: 0 }, direction: 'right' as const, moving: false, carrying: false }), requestIntent: vi.fn(() => null), applyTaskEvent: () => undefined, stop: () => undefined };
   const service = new CharacterBehaviorService({ store: { getActiveManifestV3: async () => manifest }, motion, now: () => now });
   await service.initialize();
-  const director = new CharacterBehaviorDirector({ behavior: service, motion, initialGeneration: 'initial', initialSettings: { movementMode: 0, proactivityMode: 'assistive' }, saveMovementMode: async () => undefined });
+  const director = new CharacterBehaviorDirector({ behavior: service, motion, initialGeneration: 'initial', initialSettings: { movementMode: mode, proactivityMode: 'assistive' }, saveMovementMode: async () => undefined });
   const privacySessions = new PrivacySessionRegistry();
   privacySessions.register('test', { incognito: false });
   let ready = true;
@@ -169,4 +170,63 @@ it('单一宿主时间域一次消费休眠，忽略运行中墙钟跳变且心�
     clock.suspend(); wall += 7 * 24 * 60 * minute; clock.resume();
     expect(clock.now()).toBe(302_000 + 24 * 60 * minute);
   } finally { await f.close(); }
+});
+
+
+it('运动模式首次匹配不受心情开关与五分钟闲置限制，同生命周期只调用一次', async () => {
+  const f = await fixture({ respond: async () => ({ type: 'structured', structured_output: { moodUpdate: null, expressionPlan: null } }) }, 2);
+  f.runtime.setAutonomousMoodEnabled(false);
+  await f.time(0);
+  expect(f.requests).toHaveLength(1);
+  expect(f.requests[0]).toMatchObject({ tools: [], toolChoice: 'none' });
+  expect(f.requests[0]!.responseContract?.name).toBe('character_autonomy');
+  expect(JSON.stringify(f.requests[0]!.messages)).toContain('匹配适合真实移动');
+  await f.time(1000); await f.time(300_000);
+  expect(f.requests).toHaveLength(1);
+  expect(f.motion.requestIntent).not.toHaveBeenCalled();
+  f.runtime.invalidate(); await f.time(300_001);
+  expect(f.requests).toHaveLength(2); await f.close();
+});
+
+
+it('模式2成功按描述匹配后无心情副作用，真正运动仍等待同token首帧', async () => {
+  const f = await fixture({ respond: async () => ({ type: 'structured', structured_output: {
+    moodUpdate: null, expressionPlan: { states: [{ stateId: 'author-running', score: 1, activity: 'moving', actions: [{ actionId: 'breathe', score: 1 }] }] }
+  } }) }, 2);
+  f.runtime.setAutonomousMoodEnabled(false); await f.time(0);
+  expect(f.requests).toHaveLength(1); expect(f.service.snapshot()?.mood).toBeNull();
+  f.director.requestIntermittentMovement(); expect(f.motion.requestIntent).not.toHaveBeenCalled();
+  const current = f.service.snapshot()!.schedule.current!;
+  expect(current.stateId).toBe('author-running');
+  f.director.applyPlaybackFeedback({ playbackToken: current.playbackToken, actionId: current.actionId, status: 'started', occurredAtMs: 0 });
+  expect(f.motion.requestIntent).toHaveBeenCalledTimes(1); await f.close();
+});
+
+it('活动匹配与心情重评共用在途槽，用户互动取消后丢弃迟到匹配', async () => {
+  const pending: Array<{ resolve(value: ModelResponse): void; signal: AbortSignal }> = [];
+  const f = await fixture({ respond: async (_request, signal) => new Promise(resolve => pending.push({ resolve, signal })) }, 2);
+  await f.time(0); await f.time(5 * minute); expect(pending).toHaveLength(1);
+  f.runtime.noteUserInteraction(); await f.director.prepareUserPrompt('你好');
+  expect(pending[0]!.signal.aborted).toBe(true);
+  pending[0]!.resolve({ type: 'structured', structured_output: { moodUpdate: null, expressionPlan: { states: [
+    { stateId: 'author-running', score: 1, activity: 'moving', actions: [{ actionId: 'breathe', score: 1 }] }
+  ] } } }); await flush();
+  f.director.requestIntermittentMovement(); expect(f.motion.requestIntent).not.toHaveBeenCalled();
+  expect(f.service.hasEligibleExpressionFor({ moving: true }, 'moving')).toBe(false); await f.close();
+});
+
+
+it('模式首次匹配在模型loading预检失败时保留机会，并沿原一分钟冷却重试', async () => {
+  const f = await fixture({ respond: async () => ({ type: 'structured', structured_output: { moodUpdate: null, expressionPlan: null } }) }, 2);
+  f.runtime.setAutonomousMoodEnabled(false); f.ready(false); await f.time(0);
+  expect(f.requests).toHaveLength(0); f.ready(true); await f.time(1000);
+  expect(f.requests).toHaveLength(0); await f.time(60_000);
+  expect(f.requests).toHaveLength(1); await f.time(120_000); expect(f.requests).toHaveLength(1); await f.close();
+});
+
+it('活动匹配使用同一Provider调用额度，生命周期切换不能绕过小时四次上限', async () => {
+  const f = await fixture({ respond: async () => ({ type: 'structured', structured_output: { moodUpdate: null, expressionPlan: null } }) }, 2);
+  f.runtime.setAutonomousMoodEnabled(false);
+  for (let index = 0; index < 5; index++) { f.runtime.invalidate(); await f.time(index * 60_000); }
+  expect(f.requests).toHaveLength(4); await f.close();
 });

@@ -55,9 +55,12 @@ function createFixture(initialSettings: Readonly<{
     ['庆祝', { kind: 'state_action', stateId: 'happy-state', actionId: 'celebrate-action' }],
     ['移动', { kind: 'state_action', stateId: 'move-state', actionId: 'move-action' }]
   ]);
+  const activityAuthorization = { kind: 'play' as const, stateId: 'move-state', actionId: 'move-action', playbackToken: 'prepared-move' };
   const behavior = {
     updateRuntimeFacts: vi.fn(), hasEligibleExpressionFor: vi.fn(() => true),
-    context: vi.fn(() => null), snapshot: vi.fn(() => null), applyDecision: vi.fn(() => directedAuthorization),
+    context: vi.fn(() => null), snapshot: vi.fn(() => ({ schedule: { current: { ...activityAuthorization, startedAtMs: 0 } } }) as never), applyDecision: vi.fn(() => directedAuthorization),
+    prepareActivity: vi.fn((): CharacterBehaviorAuthorization => behavior.hasEligibleExpressionFor() ? activityAuthorization : NONE),
+    releasePreparedActivity: vi.fn(), releaseExplicitPlayback: vi.fn(),
     invalidateContext: vi.fn(), recordTrustedEvent: vi.fn(), handleUserInteraction: vi.fn(),
     getPublicBehaviorCatalog: vi.fn((): PublicBehaviorCatalog => ({ idleStateId: 'state-2241',
       identity: { formsOfAddress: [], dislikes: [], boundaries: [], exampleLines: [],
@@ -297,7 +300,7 @@ describe('Main 角色行为 Director', () => {
     expect(f.director.getDiagnosticSnapshot().movementMode).toBe(movementMode);
   });
 
-  test.each(['timeout', 'error'] as const)('明确位移在 %s 降级一次，不改变方向距离', async edge => {
+  test.each(['timeout', 'error'] as const)('明确位移在 %s 没有动画时保持原位', async edge => {
     const f = createFixture(); f.behavior.hasEligibleExpressionFor.mockReturnValue(false);
     await f.director.prepareUserPrompt('向左一点');
     expect(f.motion.requestIntent).not.toHaveBeenCalled();
@@ -305,8 +308,8 @@ describe('Main 角色行为 Director', () => {
     if (edge === 'error') f.director.handleTaskEvent({ type: 'phase', phase: 'error' });
     else { f.setNow(8000); f.director.advance(); }
     f.setNow(9000); f.director.advance();
-    expect(f.motion.requestIntent).toHaveBeenCalledExactlyOnceWith({ kind: 'relative', direction: 'left', distance: 'near' });
-    expect(f.notices).toEqual([{ code: 'CHARACTER_ACTION_UNAVAILABLE', message: '当前角色没有可播放的对应动作。' }]);
+    expect(f.motion.requestIntent).not.toHaveBeenCalled();
+    expect(f.notices).toEqual([]);
   });
 
   test.each(['stop', 'cancel', 'drag', 'character', 'input', 'reset', 'close', 'acting', 'awaiting_confirmation', 'configuration', 'proactivity'] as const)(
@@ -1395,7 +1398,7 @@ describe('Main 角色行为 Director', () => {
     });
   });
 
-  test('显式移动不依赖动画授权且不发布动画缺失提示', async () => {
+  test('显式移动复用已started活动授权且不发布缺失提示', async () => {
     const fixture = createFixture();
 
     await fixture.director.prepareUserPrompt('去右下角');
@@ -1525,7 +1528,7 @@ describe('Main 角色行为 Director', () => {
 
     expect(fixture.director.getChatContext()).toEqual({
       candidateSequence: 0,
-      expression: { stateId: null, actionId: null, mood: null },
+      expression: { stateId: null, actionId: 'move-action', mood: null },
       character: { idleStateId: 'state-2241',
         identity: { formsOfAddress: [], dislikes: [], boundaries: [], exampleLines: [],
           name: '测试角色', description: '测试角色', background: '测试环境', traits: [],
@@ -1924,7 +1927,7 @@ describe('Main 角色行为 Director', () => {
 
       expect(fixture.notices).toEqual([{
         code: 'CHARACTER_ACTION_UNAVAILABLE',
-        message: '当前角色没有可播放的对应动作。'
+        message: '请先配置对应状态和动作。'
       }]);
       expect(fixture.behavior.requestDirectedBehavior).not.toHaveBeenCalled();
     }
