@@ -65,7 +65,7 @@ expect(engine.snapshot().stateId).not.toBe('motion-custom');
 - `respondAutonomous` 保持原公开参数和预算回调，内部使用同一精简语义契约，仅 mood/plan。新增 `respondActivity(input)` 用于仅匹配 `moving` 的无工具准备，保持同样的 `beforeProviderCall`、取消、目录投影和无正文约束；返回宿主 `expressionPlan`，不更新心情或发起位移。
 - ModelRequest 可添加 Main 自有 `purpose:'conversation'` 标记，给新自然聊天保留 DeepSeek 的非思考和有界输出策略；不以角色 `response_format` 开关冒充用途。
 
-- [ ] RED：记录实际发出的主请求，断言没有 `responseContract`，`tools` 恰含申请工具；已有会话人设／正文历史保留；静态 JSON `capabilityPlan` 文本不得申请。
+- [x] RED：记录实际发出的主请求，断言没有 `responseContract`，`tools` 恰含申请工具；已有会话人设／正文历史保留；静态 JSON `capabilityPlan` 文本不得申请。
 
 ```ts
 const reply = await adapter.respond(input);
@@ -75,11 +75,11 @@ expect(reply.capabilityPlan?.kind).toBe('agent_task');
 expect(requests).toHaveLength(1);
 ```
 
-- [ ] RED：合法正文后的表现请求只携带当前用户文字与公开角色情境，无会话任务正文、无工具、无正文 text 字段；表现空白／非法／12秒超时仍返回首次正文，父取消仍取消全轮，迟到结果无效。
-- [ ] RED：主模型 task 请求缺 ID、未知工具、多工具、额外参数失败；合法混合正文不阻断申请。Qwen 首条 system 合并、8192/6400 预算、无思考、连接 generation 保持。
-- [ ] GREEN：删除旧联合 JSON 主请求和表现修复循环，复用已有 Provider、codec、请求字节裁剪；不复制传输层。普通请求先后执行，表现使用独立 AbortController 与 12 秒 race，并清理计时和监听。
-- [ ] GREEN：语义请求由 Task 1 Shape 派生严格 JSON Schema；为了理解固定 Gate 之外的明确表达，公开目录可包含用于明确查找的不可推断状态，严格接纳时仅 `state/action` 能选择它们，`ambient` 仍只能选择可推断候选；输出不接受自行生成的时间／条件字段。
-- [ ] 运行对应定向测试、`pnpm.cmd --filter @myself/agent-core typecheck` 和 desktop typecheck；对尚待 Task 3 迁移的夹具明确列出，不能删除未受影响的安全断言；提交本任务。
+- [x] RED：合法正文后的表现请求只携带当前用户文字与公开角色情境，无会话任务正文、无工具、无正文 text 字段；表现空白／非法／12秒超时仍返回首次正文，父取消仍取消全轮，迟到结果无效。
+- [x] RED：主模型 task 请求缺 ID、未知工具、多工具、额外参数失败；合法混合正文不阻断申请。Qwen 首条 system 合并、8192/6400 预算、无思考、连接 generation 保持。
+- [x] GREEN：删除旧联合 JSON 主请求和表现修复循环，复用已有 Provider、codec、请求字节裁剪；不复制传输层。普通请求先后执行，表现使用独立 AbortController 与 12 秒 race，并清理计时和监听。
+- [x] GREEN：语义请求由 Task 1 Shape 派生严格 JSON Schema；为了理解固定 Gate 之外的明确表达，公开目录可包含用于明确查找的不可推断状态，严格接纳时仅 `state/action` 能选择它们，`ambient` 仍只能选择可推断候选；输出不接受自行生成的时间／条件字段。
+- [x] 运行对应定向测试、`pnpm.cmd --filter @myself/agent-core typecheck` 和 desktop typecheck；对尚待 Task 3 迁移的夹具明确列出，不能删除未受影响的安全断言；提交本任务。
 
 ## Task 3: 单一发送与原授权链整合
 
