@@ -43,7 +43,14 @@ export const characterExpressionSelectionShape = {
   explicitPlayback: characterExplicitPlaybackSchema.nullable(),
   movementControl: movementControlPlanSchema
 };
-export const characterExpressionSelectionSchema = z.object(characterExpressionSelectionShape).strict();
+export const characterExpressionSelectionSchema = z.object(characterExpressionSelectionShape).strict()
+  .superRefine((selection, context) => {
+    if (selection.requestKind === 'action' && selection.explicitPlayback !== null
+      && selection.explicitPlayback.actionId === undefined) {
+      context.addIssue({ code: z.ZodIssueCode.custom, path: ['explicitPlayback', 'actionId'],
+        message: '明确动作目标必须包含 actionId。' });
+    }
+  });
 export type CharacterExpressionSelection = Readonly<z.infer<typeof characterExpressionSelectionSchema>>;
 
 const identifierJsonSchema = { type: 'string', pattern: '^[a-z0-9][a-z0-9_-]{0,119}$' } as const;
@@ -102,8 +109,8 @@ export function toCharacterExpressionDecision(
   const moodUpdate = selection.moodUpdate === null
     ? undefined
     : source === 'chat' ? { ...selection.moodUpdate, fadeInMs: 0 } : { ...selection.moodUpdate };
-  const expressionPlan = selection.expressionPlan === null ? undefined : {
-    states: selection.expressionPlan.states.map(state => ({
+  const expressionPlan = {
+    states: (selection.expressionPlan?.states ?? []).map(state => ({
       stateId: state.stateId,
       score: state.score,
       minStrength: state.activity === null ? MIN_ACTIVE_MOOD_STRENGTH : 0,
@@ -116,8 +123,10 @@ export function toCharacterExpressionDecision(
   };
   return {
     ...(moodUpdate === undefined ? {} : { moodUpdate }),
-    ...(expressionPlan === undefined ? {} : { expressionPlan }),
-    ...(source === 'chat' && selection.explicitPlayback !== null
+    expressionPlan,
+    ...(source === 'chat' && (selection.requestKind === 'state' || selection.requestKind === 'action')
+      && selection.explicitPlayback !== null
+      && (selection.requestKind !== 'action' || selection.explicitPlayback.actionId !== undefined)
       ? { explicitPlayback: selection.explicitPlayback } : {}),
     movementControl: source === 'chat' ? selection.movementControl : { kind: 'keep' },
     requestKind: selection.requestKind

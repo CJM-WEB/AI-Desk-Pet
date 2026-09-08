@@ -29,9 +29,12 @@ describe('通用情境条件与有限表现', () => {
   it('真实活动优先于高分普通心情，并在结束后保留心情', () => {
     let now = 0;
     const engine = new runtime.CharacterExpressionEngine({ manifest: fixture(), now: () => now, random: () => 0 });
-    engine.applyDecision({ context: engine.context(), eventId: 'competition', source: 'chat', expressionPlan: { states: [
-      { stateId: 'bright', score: 1, minStrength: 0, maxStrength: 1, actions: [] },
-      { stateId: 'soft', score: .2, minStrength: 0, maxStrength: 1, when: { moving: true }, lifetime: 'condition', actions: [] }
+    engine.applyDecision({ context: engine.context(), eventId: 'mood-plan', source: 'chat', expressionPlan: { states: [
+      { stateId: 'bright', score: 1, minStrength: 0, maxStrength: 1, actions: [] }
+    ] } });
+    engine.applyDecision({ context: engine.context(), eventId: 'activity-plan', source: 'chat', expressionPlan: { states: [
+      { stateId: 'soft', score: .2, minStrength: 0, maxStrength: 1,
+        when: { moving: true }, lifetime: 'condition', actions: [] }
     ] } });
     expect(engine.snapshot().stateId).toBe('bright');
     now = 100;
@@ -77,6 +80,7 @@ describe('通用情境条件与有限表现', () => {
     expect(engine.advance().snapshot.schedule.current?.playbackToken).toBe(current.playbackToken);
     now = 3000;
     expect(engine.advance().snapshot.stateId).toBe('rest');
+    now = 13_000;
     expect(engine.advance().snapshot.stateId).toBe('rest');
   });
   it('无条件 episode 不因聊天事实结束而失效', () => {
@@ -111,6 +115,30 @@ describe('通用情境条件与有限表现', () => {
     const result = engine.prepareActivity('moving');
     expect(result.snapshot.schedule.current).toBeNull();
     expect(result.effects).toEqual([]);
+  });
+  it('准备播放失败后清除准备所有权，再次准备不返回 idle 或失败 token', () => {
+    let now = 0;
+    const engine = new runtime.CharacterExpressionEngine({ manifest: fixture(), now: () => now, random: () => 0 });
+    engine.applyDecision({ context: engine.context(), eventId: 'moving-plan', source: 'chat', expressionPlan: movingPlan });
+    const current = engine.prepareActivity('moving').snapshot.schedule.current!;
+    const failed = engine.applyFeedback({ playbackToken: current.playbackToken, actionId: current.actionId,
+      status: 'failed', occurredAtMs: now });
+    expect(failed.snapshot.stateId).toBe('rest');
+    expect(engine.releasePreparedActivity().effects).toEqual([]);
+    const retry = engine.prepareActivity('moving');
+    expect(retry.snapshot.stateId).toBe('rest');
+    expect(retry.snapshot.schedule.current?.playbackToken).not.toBe(current.playbackToken);
+    expect(retry.effects).toEqual([]);
+  });
+  it('准备 token 超过开始截止后重新校验并生成新活动 token', () => {
+    let now = 0;
+    const engine = new runtime.CharacterExpressionEngine({ manifest: fixture(), now: () => now, random: () => 0 });
+    engine.applyDecision({ context: engine.context(), eventId: 'moving-plan', source: 'chat', expressionPlan: movingPlan });
+    const stale = engine.prepareActivity('moving').snapshot.schedule.current!;
+    now = stale.startDeadlineAtMs!;
+    const retried = engine.prepareActivity('moving');
+    expect(retried.snapshot.stateId).toBe('bright');
+    expect(retried.snapshot.schedule.current?.playbackToken).not.toBe(stale.playbackToken);
   });
   it('普通轮次失效与心情 TTL 都不删除已接纳的活动能力', () => {
     let now = 0;

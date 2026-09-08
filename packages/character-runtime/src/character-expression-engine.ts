@@ -117,6 +117,11 @@ export class CharacterExpressionEngine {
   private installPlan(plan: CharacterExpressionPlan): void {
     const activityStates = plan.states.filter(candidate => this.isActivityCandidate(candidate));
     const moodStates = plan.states.filter(candidate => !this.isActivityCandidate(candidate));
+    if (!plan.states.length) {
+      // 成功的空候选只退役旧心情所有权；当前 token 仍由 activeCandidate 走完原截止。
+      this.moodPlan = null;
+      return;
+    }
     if (activityStates.length) {
       // 活动能力属于角色运行生命周期，不能被一次心情计划的默认 TTL 淘汰。
       this.activityPlan = { ...plan, states: activityStates, expiresAtMs: Number.POSITIVE_INFINITY };
@@ -127,11 +132,32 @@ export class CharacterExpressionEngine {
       moodStates.forEach(candidate => this.restingUntil.delete(candidate.stateId));
     }
   }
+  private canReusePreparedActivity(fact: keyof CharacterRuntimeFacts): boolean {
+    const current = this.schedule.current;
+    const active = this.activeCandidate;
+    if (!current || !active || active.playbackToken !== current.playbackToken || active.entry.owner !== 'activity') return false;
+    const deadline = current.startedAtMs === null ? current.startDeadlineAtMs : current.expectedEndAtMs;
+    if (deadline !== null && this.now() >= deadline) return false;
+    const facts = { ...this.facts, [fact]: true };
+    const candidate = active.entry.candidate;
+    const supportsFact = candidate.when?.[fact] === true
+      || candidate.actions.find(action => action.actionId === current.actionId)?.when?.[fact] === true;
+    return supportsFact && this.eligibleState(active.entry, facts, !this.owns(active.entry))
+      && this.actionCandidates(current.stateId, facts, current.actionId, false, active.entry).length > 0;
+  }
   prepareActivity(fact: keyof CharacterRuntimeFacts): CharacterExpressionResult {
-    if (this.preparedActivity === fact && this.schedule.current) return this.result();
-    if (!this.hasEligibleExpressionFor({ [fact]: true }, fact)) return this.result();
+    let effects: CharacterExpressionEffect[] = [];
+    if (this.preparedActivity !== null) {
+      if (this.preparedActivity === fact && this.canReusePreparedActivity(fact)) return this.result();
+      const current = this.schedule.current;
+      const ownsCurrent = current && this.activeCandidate?.playbackToken === current.playbackToken
+        && this.activeCandidate.entry.owner === 'activity';
+      this.preparedActivity = null;
+      if (ownsCurrent) effects = this.stop();
+    }
+    if (!this.hasEligibleExpressionFor({ [fact]: true }, fact)) return this.result(effects);
     this.preparedActivity = fact;
-    return this.advanceWith([], false, true);
+    return this.advanceWith(effects, false, true);
   }
   releasePreparedActivity(): CharacterExpressionResult {
     if (this.preparedActivity === null) return this.result();
@@ -454,12 +480,14 @@ export class CharacterExpressionEngine {
     if (!parsed.success || !current || feedback.playbackToken !== current.playbackToken || feedback.actionId !== current.actionId
       || feedback.occurredAtMs < current.scheduledAtMs || feedback.occurredAtMs > this.now()) return this.result();
     try {
+      const preparedToken = this.preparedActivity !== null && this.activeCandidate?.playbackToken === current.playbackToken;
       const reduced = reduceCharacterActionSchedule(this.schedule, { type: 'feedback', feedback, nowMs: this.now() }, this.manifest.actions);
       this.schedule = reduced.schedule;
       if (feedback.status === 'started') {
         if (this.explicit && this.explicitUntilMs === null) this.explicitUntilMs = feedback.occurredAtMs + this.explicitDurationMs;
         return this.result();
       }
+      if (preparedToken) this.preparedActivity = null;
       this.activeCandidate = null;
       this.recency.set(feedback.actionId, this.now());
       if (feedback.status === 'failed') this.failed.add(feedback.actionId);

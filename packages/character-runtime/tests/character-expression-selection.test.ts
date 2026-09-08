@@ -11,7 +11,7 @@ const selection = {
     { stateId: 'feeling-custom', score: 1, activity: null, actions: [{ actionId: 'smile-custom', score: .9 }] },
     { stateId: 'motion-custom', score: .2, activity: 'moving' as const, actions: [{ actionId: 'walk-custom', score: .8 }] }
   ] },
-  requestKind: 'movement' as const,
+  requestKind: 'action' as const,
   explicitPlayback: { stateId: 'motion-custom', actionId: 'walk-custom' },
   movementControl: { kind: 'move_once' as const, target: 'right' as const, distance: 'near' as const }
 };
@@ -47,7 +47,7 @@ describe('精简表现选择契约', () => {
       moodUpdate: { summary: '愉快', strength: .8, fadeInMs: 0 },
       explicitPlayback: { stateId: 'motion-custom', actionId: 'walk-custom' },
       movementControl: { kind: 'move_once', target: 'right', distance: 'near' },
-      requestKind: 'movement'
+      requestKind: 'action'
     });
     expect(decision.expressionPlan?.states[0]).toMatchObject({
       stateId: 'feeling-custom', lifetime: 'episode', minStrength: .02, maxStrength: 1
@@ -64,6 +64,31 @@ describe('精简表现选择契约', () => {
     expect(decision.moodUpdate).toEqual({ summary: '愉快', strength: .8 });
     expect(decision).not.toHaveProperty('explicitPlayback');
     expect(decision.movementControl).toEqual({ kind: 'keep' });
-    expect(decision.requestKind).toBe('movement');
+    expect(decision.requestKind).toBe('action');
+  });
+
+  it('no_match 显式转换为空候选，字段省略仍留给调用方失败', () => {
+    const noMatch = characterExpressionSelectionSchema.parse({
+      ...selection, expressionPlan: null, requestKind: 'ambient', explicitPlayback: null,
+      movementControl: { kind: 'keep' }
+    });
+    expect(toCharacterExpressionDecision(noMatch, 'chat').expressionPlan).toEqual({ states: [] });
+  });
+
+  it('聊天明确播放只接受 state/action，action 目标必须精确到 actionId', () => {
+    for (const requestKind of ['ambient', 'movement'] as const) {
+      const parsed = characterExpressionSelectionSchema.parse({ ...selection, requestKind });
+      expect(toCharacterExpressionDecision(parsed, 'chat')).not.toHaveProperty('explicitPlayback');
+    }
+    expect(characterExpressionSelectionSchema.safeParse({
+      ...selection, explicitPlayback: { stateId: 'motion-custom' }
+    }).success).toBe(false);
+    expect(characterExpressionSelectionSchema.safeParse({
+      ...selection, explicitPlayback: null
+    }).success).toBe(true);
+    const state = characterExpressionSelectionSchema.parse({
+      ...selection, requestKind: 'state', explicitPlayback: { stateId: 'motion-custom' }
+    });
+    expect(toCharacterExpressionDecision(state, 'chat').explicitPlayback).toEqual({ stateId: 'motion-custom' });
   });
 });
