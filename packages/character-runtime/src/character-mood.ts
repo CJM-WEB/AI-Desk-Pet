@@ -1,5 +1,8 @@
 import { z } from 'zod';
 
+/** 心情低于该宿主阈值后结束；表现投影复用同一值，避免模型配置运行寿命。 */
+export const MIN_ACTIVE_MOOD_STRENGTH = .02;
+
 export const characterMoodUpdateSchema = z.object({
   summary: z.string().trim().min(1).max(240), strength: z.number().finite().min(0).max(1),
   fadeInMs: z.number().finite().int().min(0).max(300_000).optional(),
@@ -19,5 +22,5 @@ export function sampleMood(mood: CharacterMood | null, nowMs: number): Character
   const strength = elapsed < mood.fadeInMs
     ? mood.targetStrength * elapsed / mood.fadeInMs
     : mood.targetStrength * 2 ** (-(elapsed - mood.fadeInMs) / mood.halfLifeMs);
-  return elapsed >= mood.fadeInMs && strength < .02 ? null : { ...mood, strength };
+  return elapsed >= mood.fadeInMs && strength < MIN_ACTIVE_MOOD_STRENGTH ? null : { ...mood, strength };
 }

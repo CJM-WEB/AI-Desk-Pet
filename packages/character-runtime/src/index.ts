@@ -12,4 +12,5 @@ export * from './character-behavior-plan';
 export * from './behavior-target-resolver';
 export * from './character-mood';
 export * from './character-expression-plan';
+export * from './character-expression-selection';
 export * from './character-expression-engine';

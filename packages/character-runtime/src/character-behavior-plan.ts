@@ -15,6 +15,10 @@ export type MovementControlPlan =
   | Readonly<{ kind: 'keep' }>
   | Readonly<{ kind: 'set_mode'; mode: 0 | 1 | 2 }>
   | Readonly<{ kind: 'move_once'; target: PublicMotionTarget; distance: MoveDistance }>;
+export const characterActivityFacts = [
+  'moving', 'dragging', 'carrying', 'chatting', 'taskRunning', 'awaitingConfirmation'
+] as const;
+export type CharacterActivityFact = typeof characterActivityFacts[number];
 
 /** 仅供 Main 已有明确目标/运动入口；不是模型输出协议。 */
 export type CharacterBehaviorDuration = 'brief' | 'normal' | 'extended';
@@ -30,6 +34,16 @@ export const movementControlPlanSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('move_once'), target: z.enum(['random_work_area', 'left', 'right', 'top', 'bottom', 'top_left', 'top_right', 'bottom_left', 'bottom_right']),
     distance: z.enum(['near', 'medium', 'far']) }).strict()
 ]);
+export const movementControlPlanJsonSchema = { oneOf: [
+  { type: 'object', additionalProperties: false, required: ['kind'], properties: { kind: { const: 'keep' } } },
+  { type: 'object', additionalProperties: false, required: ['kind', 'mode'],
+    properties: { kind: { const: 'set_mode' }, mode: { enum: [0, 1, 2] } } },
+  { type: 'object', additionalProperties: false, required: ['kind', 'target', 'distance'], properties: {
+    kind: { const: 'move_once' },
+    target: { enum: ['random_work_area', 'left', 'right', 'top', 'bottom', 'top_left', 'top_right', 'bottom_left', 'bottom_right'] },
+    distance: { enum: ['near', 'medium', 'far'] }
+  } }
+] } as const;
 export const characterBehaviorPlanSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('none') }).strict(),
   z.object({ kind: z.literal('play_state'), state: publicNameSchema, action: publicNameSchema.optional(),
@@ -69,9 +83,8 @@ export const characterChatResponseSchema = z.object({
 }).strict();
 const identifier = { type: 'string', pattern: '^[a-z0-9][a-z0-9_-]{0,119}$' };
 const score = { type: 'number', minimum: 0, maximum: 1 };
-const factNames = ['moving', 'dragging', 'carrying', 'chatting', 'taskRunning', 'awaitingConfirmation'] as const;
 const when = { type: 'object', additionalProperties: false,
-  properties: Object.fromEntries(factNames.map(name => [name, { type: 'boolean' }])) };
+  properties: Object.fromEntries(characterActivityFacts.map(name => [name, { type: 'boolean' }])) };
 /** wire 约束字段语法；condition 至少一项 true 等关联规则由 Main Zod 强制，避免固定 llama.cpp 不支持的条件 Schema。 */
 export const characterChatResponseJsonSchema = {
   type: 'object', additionalProperties: false, required: ['text', 'moodUpdate', 'expressionPlan', 'movementControl'],
@@ -91,12 +104,6 @@ export const characterChatResponseJsonSchema = {
               required: ['actionId', 'score'], properties: { actionId: identifier, score, when } } } } } } } }, { type: 'null' }] },
     explicitPlayback: { type: 'object', additionalProperties: false, required: ['stateId'],
       properties: { stateId: identifier, actionId: identifier } },
-    movementControl: { oneOf: [
-      { type: 'object', additionalProperties: false, required: ['kind'], properties: { kind: { const: 'keep' } } },
-      { type: 'object', additionalProperties: false, required: ['kind', 'mode'], properties: { kind: { const: 'set_mode' }, mode: { enum: [0, 1, 2] } } },
-      { type: 'object', additionalProperties: false, required: ['kind', 'target', 'distance'],
-        properties: { kind: { const: 'move_once' }, target: { enum: ['random_work_area', 'left', 'right', 'top', 'bottom', 'top_left', 'top_right', 'bottom_left', 'bottom_right'] },
-          distance: { enum: ['near', 'medium', 'far'] } } }
-    ] }
+    movementControl: movementControlPlanJsonSchema
   }
 } as const;

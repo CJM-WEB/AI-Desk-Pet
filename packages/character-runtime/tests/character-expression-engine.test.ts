@@ -26,20 +26,99 @@ const movingPlan = { states: [{ ...plan.states[0]!, minStrength: 0,
   ] }] };
 
 describe('通用情境条件与有限表现', () => {
-  it.each([
-    { plainScore: 1, activeScore: .8, at: 2100, eligible: false },
-    { plainScore: .5, activeScore: 1, at: 100, eligible: false },
-    { plainScore: .5, activeScore: 1, at: 2100, eligible: true }
-  ])('同步资格遵守分数竞争与两秒保持：%j', ({ plainScore, activeScore, at, eligible }) => {
+  it('真实活动优先于高分普通心情，并在结束后保留心情', () => {
     let now = 0;
     const engine = new runtime.CharacterExpressionEngine({ manifest: fixture(), now: () => now, random: () => 0 });
     engine.applyDecision({ context: engine.context(), eventId: 'competition', source: 'chat', expressionPlan: { states: [
-      { stateId: 'bright', score: plainScore, minStrength: 0, maxStrength: 1, actions: [] },
-      { stateId: 'soft', score: activeScore, minStrength: 0, maxStrength: 1, when: { moving: true }, lifetime: 'condition', actions: [] }
+      { stateId: 'bright', score: 1, minStrength: 0, maxStrength: 1, actions: [] },
+      { stateId: 'soft', score: .2, minStrength: 0, maxStrength: 1, when: { moving: true }, lifetime: 'condition', actions: [] }
     ] } });
-    now = at;
-    expect(engine.hasEligibleExpressionFor({ moving: true }, 'moving')).toBe(eligible);
-    expect(engine.updateRuntimeFacts({ moving: true }).snapshot.stateId).toBe(eligible ? 'soft' : 'bright');
+    expect(engine.snapshot().stateId).toBe('bright');
+    now = 100;
+    expect(engine.hasEligibleExpressionFor({ moving: true }, 'moving')).toBe(true);
+    expect(engine.updateRuntimeFacts({ moving: true }).snapshot.stateId).toBe('soft');
+    expect(engine.updateRuntimeFacts({ moving: false }).snapshot.stateId).toBe('bright');
+  });
+  it('新心情不删除既有活动候选，但旧心情候选不能绑定新心情', () => {
+    let now = 0;
+    const engine = new runtime.CharacterExpressionEngine({ manifest: fixture(), now: () => now, random: () => 0 });
+    engine.applyDecision({ context: engine.context(), eventId: 'old-mood', source: 'chat',
+      moodUpdate: { summary: '旧心情', strength: .8 }, expressionPlan: { states: [
+        { stateId: 'bright', score: 1, minStrength: .02, maxStrength: 1, actions: [] },
+        { stateId: 'soft', score: .2, minStrength: 0, maxStrength: 1,
+          when: { moving: true }, lifetime: 'condition', actions: [] }
+      ] } });
+    const oldToken = engine.snapshot().schedule.current!.playbackToken;
+    now = 100;
+    const updated = engine.applyDecision({ context: engine.context(), eventId: 'new-mood', source: 'chat',
+      moodUpdate: { summary: '新心情', strength: .4 } });
+    expect(updated.snapshot.schedule.current?.playbackToken).toBe(oldToken);
+    expect(engine.updateRuntimeFacts({ moving: true }).snapshot.stateId).toBe('soft');
+    expect(engine.updateRuntimeFacts({ moving: false }).snapshot.stateId).toBe('rest');
+    expect(engine.snapshot().mood?.summary).toBe('新心情');
+  });
+  it.each(['空计划', '新心情'] as const)('%s 不终止或续期已开始的 episode', update => {
+    let now = 0;
+    const engine = new runtime.CharacterExpressionEngine({ manifest: fixture(), now: () => now, random: () => 0 });
+    const current = engine.applyDecision({ context: engine.context(), eventId: 'episode', source: 'chat',
+      moodUpdate: { summary: '原心情', strength: .8 }, expressionPlan: {
+        states: [{ stateId: 'bright', score: 1, minStrength: .02, maxStrength: 1, actions: [] }]
+      } }).snapshot.schedule.current!;
+    engine.applyFeedback({ playbackToken: current.playbackToken, actionId: current.actionId, status: 'started', occurredAtMs: now });
+    now = 100;
+    const decision = update === '空计划'
+      ? { context: engine.context(), eventId: 'empty', source: 'chat' as const, expressionPlan: { states: [] } }
+      : { context: engine.context(), eventId: 'mood', source: 'chat' as const, moodUpdate: { summary: '新心情', strength: .4 } };
+    const retained = engine.applyDecision(decision);
+    expect(retained.effects).toEqual([]);
+    expect(retained.snapshot.schedule.current?.playbackToken).toBe(current.playbackToken);
+    expect(retained.snapshot.schedule.current?.startedAtMs).toBe(0);
+    now = 2999;
+    expect(engine.advance().snapshot.schedule.current?.playbackToken).toBe(current.playbackToken);
+    now = 3000;
+    expect(engine.advance().snapshot.stateId).toBe('rest');
+    expect(engine.advance().snapshot.stateId).toBe('rest');
+  });
+  it('无条件 episode 不因聊天事实结束而失效', () => {
+    const engine = new runtime.CharacterExpressionEngine({ manifest: fixture(), now: () => 0 });
+    const current = engine.applyDecision({ context: engine.context(), eventId: 'chat-mood', source: 'chat',
+      moodUpdate: { summary: '聊天后的感受', strength: .8 }, expressionPlan: {
+        states: [{ stateId: 'bright', score: 1, minStrength: .02, maxStrength: 1, actions: [] }]
+      } }).snapshot.schedule.current!;
+    engine.updateRuntimeFacts({ chatting: true });
+    expect(engine.updateRuntimeFacts({ chatting: false }).snapshot.schedule.current?.playbackToken).toBe(current.playbackToken);
+  });
+  it('活动准备复用唯一调度器且不写入真实事实，释放和 reset 都清理准备', () => {
+    const engine = new runtime.CharacterExpressionEngine({ manifest: fixture(), now: () => 0, random: () => 0 });
+    engine.applyDecision({ context: engine.context(), eventId: 'moving-plan', source: 'chat', expressionPlan: movingPlan });
+    const prepared = engine.prepareActivity('moving');
+    const token = prepared.snapshot.schedule.current?.playbackToken;
+    expect(token).toBeTruthy();
+    expect(prepared.snapshot.stateId).toBe('bright');
+    const current = prepared.snapshot.schedule.current!;
+    engine.applyFeedback({ playbackToken: current.playbackToken, actionId: current.actionId, status: 'started', occurredAtMs: 0 });
+    expect(engine.prepareActivity('moving').snapshot.schedule.current?.playbackToken).toBe(token);
+    expect(engine.releasePreparedActivity().snapshot.stateId).toBe('rest');
+    expect(engine.advance().snapshot.stateId).toBe('rest');
+    expect(engine.prepareActivity('moving').snapshot.schedule.current?.playbackToken).not.toBe(token);
+    const reset = engine.reset();
+    expect(reset.snapshot.stateId).toBe('rest');
+    expect(reset.snapshot.schedule.current).toBeNull();
+    expect(engine.advance().snapshot.stateId).toBe('rest');
+  });
+  it('无活动候选时准备不返回 idle 播放 token', () => {
+    const engine = new runtime.CharacterExpressionEngine({ manifest: fixture(), now: () => 0 });
+    const result = engine.prepareActivity('moving');
+    expect(result.snapshot.schedule.current).toBeNull();
+    expect(result.effects).toEqual([]);
+  });
+  it('普通轮次失效与心情 TTL 都不删除已接纳的活动能力', () => {
+    let now = 0;
+    const engine = new runtime.CharacterExpressionEngine({ manifest: fixture(), now: () => now });
+    engine.applyDecision({ context: engine.context(), eventId: 'moving-plan', source: 'chat', expressionPlan: movingPlan });
+    engine.invalidateContext();
+    now = 1_200_001;
+    expect(engine.prepareActivity('moving').snapshot.stateId).toBe('bright');
   });
   it('明确播放锁仍生效时不宣称另一条件候选会同步', () => {
     const engine = new runtime.CharacterExpressionEngine({ manifest: fixture(), now: () => 0 });
@@ -177,7 +256,7 @@ describe('通用情境条件与有限表现', () => {
     now = 100;
     expect(engine.applyFeedback({ playbackToken: current.playbackToken, actionId: current.actionId, status: 'failed', occurredAtMs: now }).snapshot.stateId).toBe('rest');
   });
-  it('资格查询纯读，要求明确 true 条件，尊重事件、冷却、有效期和推断开关', () => {
+  it('资格查询纯读，要求明确 true 条件，尊重事件、冷却和推断开关', () => {
     let now = 0; let randomCalls = 0;
     const manifest = fixture();
     manifest.states[1]!.enterConditions = [{ mode: 'all', clauses: [{ kind: 'event', event: 'user-interaction' }] }];
@@ -193,9 +272,9 @@ describe('通用情境条件与有限表现', () => {
     expect(engine.snapshot()).toEqual(snapshot); expect(randomCalls).toBe(calls);
     const current = engine.updateRuntimeFacts({ moving: true }).snapshot.schedule.current!;
     engine.applyFeedback({ playbackToken: current.playbackToken, actionId: current.actionId, status: 'started', occurredAtMs: now });
-    expect(engine.hasEligibleExpressionFor({ moving: true }, 'moving')).toBe(false);
+    expect(engine.hasEligibleExpressionFor({ moving: true }, 'moving')).toBe(true);
     now = 20_000;
-    expect(engine.hasEligibleExpressionFor({ moving: true }, 'moving')).toBe(false);
+    expect(engine.hasEligibleExpressionFor({ moving: true }, 'moving')).toBe(true);
     const plain = new runtime.CharacterExpressionEngine({ manifest: fixture(), now: () => 0 });
     plain.applyDecision({ context: plain.context(), eventId: 'plain', source: 'chat', expressionPlan: { states: [{ ...plan.states[0]!, minStrength: 0 }] } });
     expect(plain.hasEligibleExpressionFor({ moving: true }, 'moving')).toBe(false);
@@ -307,12 +386,16 @@ describe('V3 心情与表现', () => {
     expect(engine.applyFeedback({ playbackToken: first.playbackToken, actionId: first.actionId, status: 'failed', occurredAtMs: now }).effects).toEqual([]);
     expect(engine.snapshot().schedule.current).toEqual(next);
   });
-  it('新心情清旧计划且旧情境、重置和另一实例的响应无法复活', () => {
-    const engine = new runtime.CharacterExpressionEngine({ manifest: fixture(), now: () => 0 });
+  it('新心情不复用旧候选，旧情境、重置和另一实例的响应无法复活', () => {
+    let now = 0;
+    const engine = new runtime.CharacterExpressionEngine({ manifest: fixture(), now: () => now });
     const old = engine.context();
     engine.applyDecision({ context: old, eventId: 'one', source: 'chat', moodUpdate: { summary: '喜讯', strength: 1 }, expressionPlan: plan });
+    const token = engine.snapshot().schedule.current!.playbackToken;
     engine.applyDecision({ context: engine.context(), eventId: 'two', source: 'chat', moodUpdate: { summary: '新感受', strength: .5 } });
-    expect(engine.snapshot().stateId).toBe('rest');
+    expect(engine.snapshot().schedule.current?.playbackToken).toBe(token);
+    now = 3000;
+    expect(engine.advance().snapshot.stateId).toBe('rest');
     expect(engine.applyDecision({ context: old, eventId: 'late', source: 'chat', expressionPlan: plan }).effects).toEqual([]);
     const current = engine.context(); engine.reset();
     expect(engine.applyDecision({ context: current, eventId: 'reset-late', source: 'chat', expressionPlan: plan }).effects).toEqual([]);
@@ -331,7 +414,7 @@ describe('V3 心情与表现', () => {
     engine.applyDecision({ context: engine.context(), eventId: 'quiet', source: 'autonomous', moodUpdate: { summary: '重复', strength: 1 } });
     expect(engine.snapshot().mood?.summary).toBe('渐渐有感受');
   });
-  it('计划过期结束持续循环；停止表现空计划立即中断', () => {
+  it('计划过期结束持续循环；空计划不充当停止命令', () => {
     let now = 0;
     const engine = new runtime.CharacterExpressionEngine({ manifest: fixture(), now: () => now });
     engine.applyDecision({ context: engine.context(), eventId: 'plan', source: 'chat', moodUpdate: { summary: '高兴', strength: 1 }, expressionPlan: { ...plan, validForMs: 10_000 } });
@@ -339,8 +422,9 @@ describe('V3 心情与表现', () => {
     engine.applyFeedback({ playbackToken: current.playbackToken, actionId: current.actionId, status: 'started', occurredAtMs: now });
     now = 10_000;
     expect(engine.advance().snapshot.stateId).toBe('rest');
-    engine.playExplicit('bright');
-    expect(engine.applyDecision({ context: engine.context(), eventId: 'stop', source: 'chat', expressionPlan: { states: [] } }).snapshot.stateId).toBe('rest');
+    const explicit = engine.playExplicit('bright').snapshot.schedule.current!;
+    expect(engine.applyDecision({ context: engine.context(), eventId: 'empty', source: 'chat', expressionPlan: { states: [] } })
+      .snapshot.schedule.current?.playbackToken).toBe(explicit.playbackToken);
   });
   it('全冷却只静止一次，到期恢复调度，不反复请求播放', () => {
     let now = 0;
