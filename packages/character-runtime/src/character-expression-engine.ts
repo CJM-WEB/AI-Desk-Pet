@@ -100,6 +100,10 @@ export class CharacterExpressionEngine {
   private isActivityCandidate(candidate: StateCandidate): boolean {
     return candidate.lifetime === 'condition' && Object.values(candidate.when ?? {}).some(value => value === true);
   }
+  /** 状态或动作候选都可明确声明事实；准备、择态和预检共用同一资格定义。 */
+  private supportsFact(candidate: StateCandidate, actionId: string, fact: keyof CharacterRuntimeFacts): boolean {
+    return candidate.when?.[fact] === true || candidate.actions.find(action => action.actionId === actionId)?.when?.[fact] === true;
+  }
   private entries(): CandidateEntry[] {
     return [
       ...(this.activityPlan?.states.map(candidate => ({ candidate, plan: this.activityPlan!, owner: 'activity' as const })) ?? []),
@@ -141,9 +145,7 @@ export class CharacterExpressionEngine {
     if (deadline !== null && this.now() >= deadline) return false;
     const facts = { ...this.facts, [fact]: true };
     const candidate = active.entry.candidate;
-    const supportsFact = candidate.when?.[fact] === true
-      || candidate.actions.find(action => action.actionId === current.actionId)?.when?.[fact] === true;
-    return supportsFact && this.eligibleState(active.entry, facts)
+    return this.supportsFact(candidate, current.actionId, fact) && this.eligibleState(active.entry, facts)
       && this.actionCandidates(current.stateId, facts, current.actionId, false, active.entry).length > 0;
   }
   prepareActivity(fact: keyof CharacterRuntimeFacts): CharacterExpressionResult {
@@ -182,8 +184,7 @@ export class CharacterExpressionEngine {
     if (!target.entry || target.stateId === this.manifest.idleStateId
       || !this.eligibleState(target.entry, projected)) return false;
     const candidate = target.entry.candidate;
-    const qualified = (id: string) => !requiredFact || candidate.when?.[requiredFact] === true
-      || candidate.actions.find(action => action.actionId === id)?.when?.[requiredFact] === true;
+    const qualified = (id: string) => !requiredFact || this.supportsFact(candidate, id, requiredFact);
     const candidates = this.actionCandidates(target.stateId, projected, undefined, false, target.entry);
     const staticDue = this.staticPlayback && this.nextEligibleAtMs !== null && this.now() >= this.nextEligibleAtMs;
     if (this.schedule.current && target.stateId === this.stateId && !force && !staticDue) {
@@ -277,11 +278,14 @@ export class CharacterExpressionEngine {
     const exit = this.conditionEvents(current, true);
     const eligible = this.entries().filter(entry => this.eligibleState(entry, facts)
       && !(exit && entry.candidate.stateId === this.stateId)
+      // 实际或准备移动时，其他活动不能凭高分抢占；无合格候选由原有待机与零位移守卫兜底。
+      && (!facts.moving || this.actionCandidates(entry.candidate.stateId, facts, undefined, false, entry)
+        .every(action => this.supportsFact(entry.candidate, action.id, 'moving')))
       && this.actionCandidates(entry.candidate.stateId, facts, undefined, false, entry).some(action => action.due <= this.now()
         || entry.candidate.stateId === this.stateId && this.schedule.current?.actionId === action.id));
     const activities = eligible.filter(entry => entry.owner === 'activity');
     const currentEntry = this.currentEntry();
-    if (this.schedule.current && currentEntry && !this.owns(currentEntry) && !exit && !activities.length
+    if (!facts.moving && this.schedule.current && currentEntry && !this.owns(currentEntry) && !exit && !activities.length
       && this.eligibleState(currentEntry, facts, true)) {
       return { stateId: this.stateId, entry: currentEntry };
     }
@@ -329,6 +333,7 @@ export class CharacterExpressionEngine {
     const entry = this.currentEntry();
     return !this.explicit && this.stateId !== this.manifest.idleStateId
       && (!entry || !this.eligibleState(entry, facts, !this.owns(entry))
+        || facts.moving && this.schedule.current !== null && !this.supportsFact(entry.candidate, this.schedule.current.actionId, 'moving')
         || this.schedule.current !== null && !this.actionCandidates(this.stateId, facts, undefined, false, entry)
           .some(action => action.id === this.schedule.current!.actionId));
   }

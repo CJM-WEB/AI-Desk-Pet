@@ -63,8 +63,12 @@ export class ConversationChatAdapter {
       const expression = await this.expression.respond({ text: input.text, behaviorContext: input.behaviorContext,
         signal: input.signal, ...(input.movementControlHandled === undefined ? {} : { movementControlHandled: input.movementControlHandled }) }, 'chat');
       throwIfCancelled(input.signal);
+      // 明确目标与独立心情分别判定：心情候选不能掩盖用户指定状态或动作无匹配。
+      const matched = expression?.requestKind === 'state' || expression?.requestKind === 'action'
+        ? !!expression.explicitPlayback
+        : !!(expression?.explicitPlayback || expression?.expressionPlan?.states.length);
       return { text: response.text, capabilityPlan: { kind: 'chat' }, ...expression,
-        expressionStatus: expression?.explicitPlayback || expression?.expressionPlan?.states.length ? 'ready' : 'no_match' };
+        expressionStatus: matched ? 'ready' : 'no_match' };
     } catch (error) {
       throwIfCancelled(input.signal);
 

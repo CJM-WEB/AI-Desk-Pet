@@ -75,6 +75,21 @@ E2E 首跑只执行一次：`node node_modules/@playwright/test/cli.js test --co
 
 不在本次范围：原生 Win32 鼠标注入拖拽用例、干净环境安装卸载、生产部署、网站、CloudBase、扫描器、锁文件与依赖变更。MCP 仍禁用。
 
+## 最终复核后的统一修复记录（2026-09-08）
+
+在基线 `51eba3d084662844b526dafdfdef642f07ad3f50` 上修复 I1、I2，并迁移 M1 单个集成夹具。Engine 在共用择态入口按候选的 moving 事实限定实际／准备移动，复用状态与动作级事实资格检查；高分聊天活动不能抢占行走，移动结束后恢复正常候选选择。无合格动作仍由既有零位移边界处理。Adapter 按明确状态／动作目标是否匹配判定 `no_match`，保留独立合法心情及计划；Director 沿用已有配置提示与本地明确播放 token 防误报条件。未知动作负例改为合法精简形状，仅保留不存在的 actionId。
+
+验证环境：本工作区、Windows、Node/Vitest 3.2.7；模型与原生窗口未重跑。以下均为实际程序结果：
+
+- RED：移动并存回归 2 项失败（实际态错误切为 soft、准备预检为 false）；明确无匹配回归 2 项失败（ready 应为 no_match）；迁移无条件动作回归 1 项失败（moving 时仍为 bright，应回待机）。
+- GREEN：在 `packages/character-runtime` 运行 `node ../../node_modules/vitest/vitest.mjs run tests/character-expression-engine.test.ts`，44 项通过，退出 0。
+- GREEN：仓库根运行 `node node_modules/vitest/vitest.mjs run --config apps/desktop/vitest.config.ts apps/desktop/tests/conversation-chat-adapter.test.ts apps/desktop/tests/character-behavior-director.test.ts`，137 项通过，退出 0。覆盖取消、12 秒超时、迟到结果、运动等待清理及无素材零位移的已有定向用例。
+- 类型检查：`pnpm.cmd --filter @myself/character-runtime typecheck` 与 `pnpm.cmd --filter @myself/desktop typecheck` 均退出 0。
+- M1：仓库根运行 `node node_modules/vitest/vitest.mjs run --config tests/vitest.config.ts tests/integration/desktop-agent.test.ts -t 'Provider 建议不存在动作时保留正文且不播放非法动作'`，1 项通过、37 项跳过，退出 0。
+- 首次 RED 命令误加脚本参数分隔符 `--`，筛选未生效：runtime 包 216 通过、2 个目标失败；desktop 仅观察到 10 项通过后即中止。随后改为上述 Node 精确定向命令。首次 desktop GREEN 的 2 个新增断言因未容纳宿主补充的 `fadeInMs` 失败，修正断言后 137 项通过；未修改该宿主行为。上述过程不计作完整门禁通过。
+
+详细命令、输出和修复提交见工作区 `.superpowers/sdd/2026-09-08-single-send-expression-isolation/final-fix-report.md` 及同目录日志。本次不改写上文历史失败、未覆盖范围与原生限制：实际首帧／位移／停止后心情仍待用户人工确认，`CHARACTER_PLAYBACK_UNAUTHORIZED` 未唯一归因，也未宣称由此修复；完整门禁状态仍非通过。
+
 ## 开发体验步骤
 
 在仓库根目录运行 pnpm.cmd --filter @myself/desktop dev，沿用已有模型配置和角色。聊天窗口只有一个发送入口。可依次体验普通问候、“note.txt里面写了什么”、讨论是否需要整理后同意查看；真实文件操作仍须确认准确目录和命令范围。角色可体验“表现得开心一点”“向左一点”“停下”，核对首帧后才位移、停止后按剩余心情择态；无匹配素材应保持位置并提示配置。上述人工观察尚待用户确认。

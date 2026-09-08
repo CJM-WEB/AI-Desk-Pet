@@ -774,7 +774,7 @@ describe('桌面会话分流纵向集成', () => {
         text: '仍然保留的自然正文',
         structured_output: {
           expressionPlan: { states: [{ stateId: 'agent-focus', score: 1,
-            minStrength: 0, maxStrength: 1, actions: [{ actionId: 'missing-action', score: 1 }] }] }
+            activity: null, actions: [{ actionId: 'missing-action', score: 1 }] }] }
         }
       }],
       behavior: behaviorFixture.director

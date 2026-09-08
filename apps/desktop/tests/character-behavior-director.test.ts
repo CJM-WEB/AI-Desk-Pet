@@ -15,6 +15,7 @@ import {
 } from '../src/main/characters/character-behavior-director';
 import { CharacterMotionService } from '../src/main/characters/character-motion-service';
 import { ConversationEventProjection } from '../src/main/conversation/conversation-event-projection';
+import { ConversationChatAdapter } from '../src/main/conversation/conversation-chat-adapter';
 import { CharacterProactivityScheduler } from
   '../src/main/characters/character-proactivity-scheduler';
 import {
@@ -1431,6 +1432,36 @@ describe('Main 角色行为 Director', () => {
       { urgency: 100, systemForced: true }
     );
     expect(fixture.motion.requestIntent).not.toHaveBeenCalled();
+  });
+
+  test.each(['state', 'action'] as const)('明确 %s 无匹配时独立心情仍应用并提示，已有本地播放则不误报', async requestKind => {
+    const fixture = createFixture({ movementMode: 0, proactivityMode: 'assistive' });
+    const context = { instance: Symbol(), contextRevision: 0, moodRevision: 0 };
+    fixture.behavior.context.mockReturnValue(context as never);
+    const moodUpdate = { summary: '平静', strength: .5 };
+    const reply = await new ConversationChatAdapter({ respond: vi.fn()
+      .mockResolvedValueOnce({ type: 'text', text: '仍然保留的正文' })
+      .mockResolvedValueOnce({ type: 'structured', structured_output: {
+        moodUpdate, requestKind, explicitPlayback: null, movementControl: { kind: 'keep' },
+        expressionPlan: { states: [{ stateId: 'state-2241', score: 1, activity: null,
+          actions: [{ actionId: 'action-2309', score: 1 }] }] }
+      } }) }).respond({ text: '表现一个未配置的状态或动作', history: [],
+      signal: new AbortController().signal, behaviorContext: fixture.director.getChatContext() });
+    expect(reply).toMatchObject({ text: '仍然保留的正文', requestKind, expressionStatus: 'no_match', moodUpdate });
+    const completion = { ...reply, generation: 'generation-1', context, explicitDirective: null };
+    await fixture.director.completeUserPrompt({ ...completion, eventId: String(++completionSequence) });
+    expect(fixture.behavior.applyDecision).toHaveBeenCalledWith(expect.objectContaining({
+      moodUpdate: expect.objectContaining(moodUpdate),
+      expressionPlan: expect.objectContaining({ states: [expect.objectContaining({ stateId: 'state-2241' })] })
+    }));
+    expect(fixture.notices).toEqual([{ code: 'CHARACTER_ACTION_UNAVAILABLE', message: '请先配置对应状态和动作。' }]);
+    fixture.notices.length = 0;
+    fixture.setDirectedAuthorization({ kind: 'play', stateId: 'happy-state', actionId: 'wave-action', playbackToken: 'local-play' });
+    const prepared = await fixture.director.prepareUserPrompt('请播放挥手动作');
+    expect(prepared.explicitPlaybackToken).toBe('local-play');
+    await fixture.director.completeUserPrompt({ ...completion, ...prepared, eventId: String(++completionSequence) });
+    expect(fixture.notices).toEqual([]);
+    expect(fixture.behavior.applyDecision).toHaveBeenLastCalledWith(expect.objectContaining({ preserveExplicitPlaybackToken: 'local-play' }));
   });
 
   test('明确动作未能本地匹配时留给模型描述候选，不播放待机冒充', async () => {

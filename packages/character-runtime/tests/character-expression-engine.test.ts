@@ -26,6 +26,29 @@ const movingPlan = { states: [{ ...plan.states[0]!, minStrength: 0,
   ] }] };
 
 describe('通用情境条件与有限表现', () => {
+  it.each(['实际移动', '准备移动'] as const)('%s 优先于高分聊天活动，结束后恢复正常选择', mode => {
+    let now = 0;
+    const engine = new runtime.CharacterExpressionEngine({ manifest: fixture(), now: () => now, random: () => 0 });
+    engine.applyDecision({ context: engine.context(), eventId: 'overlap', source: 'chat', expressionPlan: { states: [
+      { stateId: 'bright', score: .2, minStrength: 0, maxStrength: 1,
+        when: { moving: true }, lifetime: 'condition', actions: [] },
+      { stateId: 'soft', score: 1, minStrength: 0, maxStrength: 1,
+        when: { chatting: true }, lifetime: 'condition', actions: [] }
+    ] } });
+    if (mode === '准备移动') {
+      engine.updateRuntimeFacts({ chatting: true });
+      expect(engine.hasEligibleExpressionFor({ moving: true }, 'moving')).toBe(true);
+    }
+    const moving = (mode === '实际移动' ? engine.updateRuntimeFacts({ moving: true })
+      : engine.prepareActivity('moving')).snapshot.schedule.current!;
+    expect(moving.stateId).toBe('bright');
+    engine.applyFeedback({ playbackToken: moving.playbackToken, actionId: moving.actionId, status: 'started', occurredAtMs: now });
+    now = 2100;
+    expect(engine.updateRuntimeFacts({ chatting: true }).snapshot.stateId).toBe('bright');
+    expect(engine.hasEligibleExpressionFor({ moving: true }, 'moving')).toBe(true);
+    const ended = mode === '实际移动' ? engine.updateRuntimeFacts({ moving: false }) : engine.releasePreparedActivity();
+    expect(ended.snapshot.stateId).toBe('soft');
+  });
   it('真实活动优先于高分普通心情，并在结束后保留心情', () => {
     let now = 0;
     const engine = new runtime.CharacterExpressionEngine({ manifest: fixture(), now: () => now, random: () => 0 });
@@ -172,15 +195,24 @@ describe('通用情境条件与有限表现', () => {
     expect(engine.hasEligibleExpressionFor({ moving: true }, 'moving')).toBe(false);
     expect(engine.updateRuntimeFacts({ moving: true }).snapshot.schedule.current?.playbackToken).toBe(current.playbackToken);
   });
-  it('同状态当前无条件动作仍会保留时不能把另一活动动作算作同步', () => {
+  it('移动不保留无条件动作，预检只读且动作级条件仍可提供移动资格', () => {
     const engine = new runtime.CharacterExpressionEngine({ manifest: fixture(), now: () => 0, random: () => 0 });
     engine.applyDecision({ context: engine.context(), eventId: 'mixed', source: 'chat', expressionPlan: { states: [
       { stateId: 'bright', score: 1, minStrength: 0, maxStrength: 1, actions: [
         { actionId: 'bright-a', score: 1 }, { actionId: 'bright-b', score: 1, when: { moving: true } }
       ] }
     ] } });
+    const before = engine.snapshot();
     expect(engine.hasEligibleExpressionFor({ moving: true }, 'moving')).toBe(false);
-    expect(engine.updateRuntimeFacts({ moving: true }).snapshot.schedule.current?.actionId).toBe('bright-a');
+    expect(engine.snapshot()).toEqual(before);
+    expect(engine.prepareActivity('moving').snapshot).toEqual(before);
+    expect(engine.updateRuntimeFacts({ moving: true }).snapshot.stateId).toBe('rest');
+    const qualified = engine.applyDecision({ context: engine.context(), eventId: 'qualified', source: 'chat', expressionPlan: { states: [
+      { stateId: 'bright', score: 1, minStrength: 0, maxStrength: 1,
+        actions: [{ actionId: 'bright-b', score: 1, when: { moving: true } }] }
+    ] } });
+    expect(qualified.snapshot.schedule.current?.actionId).toBe('bright-b');
+    expect(engine.hasEligibleExpressionFor({ moving: true }, 'moving')).toBe(true);
   });
   it.each(['weight', 'suppression', 'cooldown'] as const)('同状态混合动作经过%s仍可能选无条件动作时保守等待', reason => {
     let randomCalls = 0; let tokens = 0;
