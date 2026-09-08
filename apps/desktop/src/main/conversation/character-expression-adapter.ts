@@ -28,7 +28,7 @@ const instructions = '只返回符合Schema的JSON，无正文和工具。只根
   + '根据公开描述先选状态再选其动作，ID只能使用本轮合法配对。普通expressionPlan只选agentInferable=true；不可推断项仅供明确state/action的explicitPlayback查找。'
   + 'moodUpdate只含summary和strength，无新感受用null。expressionPlan无匹配用null，状态只含stateId、score、activity、actions，动作只含actionId、score。'
   + 'activity为null表示短时心情表现；moving/dragging/carrying/chatting/taskRunning/awaitingConfirmation表示对应活动适用，不改变Main真实事实。'
-  + 'pendingMovement仅表示准备移动，moving仍为false时也可提前选择activity=moving的行走描述。不得生成时间、条件或强度区间。';
+  + 'pendingMovement仅表示准备移动；有行走、跑步等适合移动的候选时必须选择activity=moving，不能因当前moving=false而返回null。只有目录没有适合候选时才无匹配。不得生成时间、条件或强度区间。';
 export function requestBytes(request: ModelRequest): number {
   return new TextEncoder().encode(JSON.stringify({ messages: request.messages, tools: request.tools,
     responseSchema: request.responseContract?.jsonSchema ?? null })).byteLength;
@@ -120,9 +120,12 @@ export class CharacterExpressionAdapter {
       const catalog: PublicBehaviorCatalog = { ...selected, identity, states };
       const request: ModelRequest = {
         messages: [{ role: 'system', content: instructions + (mode === 'chat'
-          ? 'requestKind区分ambient/state/action/movement；action必须给精确actionId，state可仅给stateId。无明确目标用explicitPlayback:null。Main已处理位移时movementControl=keep，否则沿用约定方向、距离和模式。'
+          ? 'requestKind区分ambient/state/action/movement。用户明确要求表现某种状态且目录有匹配时，requestKind=state并在explicitPlayback给stateId；明确动作时requestKind=action并在explicitPlayback给stateId和精确actionId，不能只填expressionPlan而漏掉explicitPlayback。只有没有对应目标才用explicitPlayback:null。移动请求选择适合moving的expressionPlan，不使用explicitPlayback占用行走。Main已处理位移时movementControl=keep，否则沿用约定方向、距离和模式。'
           : '这是Main自主准备，不是真实用户发言。只返回moodUpdate和expressionPlan，禁止requestKind、explicitPlayback及movementControl。'
             + (mode === 'activity' ? '仅匹配activity=moving，moodUpdate必须为null。' : '结合闲置时间和当前心情重新评估，不重放历史事件。')) },
+          // 所有协议都会收到同一正式 Schema；JSON 模式的云 Provider 不会自动传递其内容。
+          { role: 'system', content: '完整输出JSON Schema：' + JSON.stringify(mode === 'chat'
+            ? characterExpressionResponseContract.jsonSchema : characterAutonomyResponseContract.jsonSchema) },
           { role: 'system', content: '角色公开人设：' + JSON.stringify(identity) },
           { role: 'system', content: 'Main公开情境与候选：' + JSON.stringify({ character: { idleStateId: catalog.idleStateId, states },
             runtime: context.runtime, expression: context.expression ?? null, recentActions: context.recentActions,

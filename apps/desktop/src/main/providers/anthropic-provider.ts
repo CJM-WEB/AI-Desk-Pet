@@ -12,14 +12,9 @@ import {
   type ProviderAdapterConfig,
   ProviderError,
   normalizeFetchError,
-  normalizeHttpError,
   normalizeResponseContractText,
   readProviderJson
 } from './openai-provider';
-import {
-  readStructuredTextSse,
-  shouldStreamStructuredText
-} from './structured-text-stream';
 import { ProviderResponseError } from './provider-response-error';
 
 const anthropicContentBlockSchema = z.discriminatedUnion('type', [
@@ -207,7 +202,6 @@ export class AnthropicProvider implements ModelProvider {
 
   async respond(request: ModelRequest, signal: AbortSignal): Promise<ModelResponse> {
     assertResponseContractRequest(request);
-    const structuredStream = shouldStreamStructuredText(request);
     const systemMessages = request.messages
       .filter(message => message.role === 'system')
       .map(message => message.content);
@@ -221,7 +215,6 @@ export class AnthropicProvider implements ModelProvider {
       messages,
       tools: request.tools.map(serializeTool)
     };
-    if (structuredStream) body.stream = true;
     if (systemMessages.length > 0) body.system = systemMessages.join('\n\n');
     if (request.responseContract !== undefined) {
       body.output_config = {
@@ -248,52 +241,7 @@ export class AnthropicProvider implements ModelProvider {
       normalizeFetchError(error, signal);
     }
 
-    const raw = structuredStream
-      ? await readAnthropicStructuredSse(response, request, signal)
-      : await readProviderJson(response);
+    const raw = await readProviderJson(response);
     return normalizeResponse(raw, request.responseContract, request.purpose);
   }
-}
-
-async function readAnthropicStructuredSse(
-  response: Response,
-  request: ModelRequest,
-  signal: AbortSignal
-): Promise<unknown> {
-  if (!response.ok) throw normalizeHttpError(response.status);
-  return readStructuredTextSse(response, {
-    request,
-    signal,
-    malformed: () => { throw new ProviderResponseError('RESPONSE_SHAPE_INVALID', 'stream'); },
-    terminalMissing: () => { throw new ProviderResponseError('STREAM_TERMINAL_MISSING', 'stream'); },
-    normalizeReadError: error => normalizeFetchError(error, signal),
-    decodeEvent: (eventName, data) => {
-      let raw: unknown;
-      try { raw = JSON.parse(data); } catch {
-        throw new ProviderResponseError('RESPONSE_SHAPE_INVALID', 'stream');
-      }
-      if (typeof raw !== 'object' || raw === null) {
-        throw new ProviderResponseError('RESPONSE_SHAPE_INVALID', 'stream');
-      }
-      const type = Reflect.get(raw, 'type');
-      if (eventName === 'message_stop' || type === 'message_stop') return { done: true };
-      if (eventName !== 'content_block_delta' && type !== 'content_block_delta') return {};
-      const delta = Reflect.get(raw, 'delta');
-      if (typeof delta !== 'object' || delta === null) {
-        throw new ProviderResponseError('RESPONSE_SHAPE_INVALID', 'stream');
-      }
-      const deltaType = Reflect.get(delta, 'type');
-      // 私有推理仍经过共享 SSE 预算统计，但绝不能进入可见正文或中断正常文本流。
-      if (deltaType === 'thinking_delta' || deltaType === 'signature_delta') return {};
-      if (deltaType !== 'text_delta') {
-        throw new ProviderResponseError('RESPONSE_SHAPE_INVALID', 'stream');
-      }
-      const text = Reflect.get(delta, 'text');
-      if (typeof text !== 'string') {
-        throw new ProviderResponseError('RESPONSE_SHAPE_INVALID', 'stream');
-      }
-      return { fragment: text };
-    },
-    toRaw: content => ({ content: [{ type: 'text', text: content }] })
-  });
 }

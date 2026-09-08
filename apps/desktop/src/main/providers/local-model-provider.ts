@@ -191,15 +191,10 @@ function createRequestPolicy(
   generation: string,
   request: ModelRequest
 ): OpenAIRequestPolicy {
-  const streamVisibleText = request.responseContract?.name === 'character_chat'
-    && request.tools.length === 0
-    && request.toolChoice === 'none'
-    && request.onTextDelta !== undefined;
-  let reasoningTagTail = '';
   return {
     body: {
       ...localRequestBody,
-      stream: streamVisibleText,
+      stream: false,
       ...(request.toolChoice === 'required' ? { temperature: 0 } : {}),
       // 锁定的 llama.cpp 支持在 json_object 中附带 Schema；只约束本地结构化回合。
       ...(request.responseContract === undefined
@@ -211,23 +206,6 @@ function createRequestPolicy(
             }
           })
     },
-    responseMode: streamVisibleText ? 'sse' : 'json',
-    ...(streamVisibleText
-      ? {
-          onTextDelta: (delta: string): void => {
-            assertCurrentGeneration(connectionPort, generation);
-            request.onTextDelta?.(delta);
-          },
-          validateProjectedText: (delta: string): void => {
-            const candidate = reasoningTagTail + delta;
-            if (/<\/?think(?:\s|>)/iu.test(candidate)) {
-              throw new ProviderError('LOCAL_MODEL_REASONING_LEAK', false);
-            }
-            // 最长危险前缀是 `</think`；固定尾窗即可识别跨事件标签且保持线性。
-            reasoningTagTail = candidate.slice(-7);
-          }
-        }
-      : {}),
     validateResponse(raw: unknown): void {
       assertCurrentGeneration(connectionPort, generation);
       assertNoReasoningLeak(raw);

@@ -1,5 +1,7 @@
 # AI 桌宠自主陪伴演进 Implementation Plan
 
+> **2026-09-08 入口／表现修订：** 当前采用[单一发送与独立表现规格](../specs/2026-09-08-single-send-expression-isolation-design.md)，范围内退役独立任务按钮、联合 JSON 与无动画位移。实际有限结果见[验收记录](../../operations/2026-09-08-single-send-expression-acceptance.md)，下文历史路线不追认为已完成。
+
 > **2026-09-06 角色阶段修订：** 用户已确认文件能力验收并批准进入[自定义状态、持续心情与自主表现](../specs/2026-09-05-ai-pet-custom-state-autonomy-design.md)开发。角色采用 V3 单活动状态，唯一本机保留语义为 idle，心情独立随时间演进；本轮不主动发消息，锚点与区域保留现有入口但不扩展，三态运动继续复用。下文 V2 主／修饰状态与官方语义只作历史路线，不再指导本轮实现。
 
 > **2026-09-05 文件任务修订：** 文件／命令任务执行器、确认频率与事务续接按[新文件任务规格](../specs/2026-09-05-ai-pet-coding-assistant-design.md)替代，使用有限 OpenCode Core 原链；实际完成范围见[验收记录](../../operations/2026-09-05-deepseek-qwen-coding-tasks.md)。下文旧文件工具、AgentService及继续令牌复用点属于历史基线。普通聊天、角色、Explorer、长期记忆及 MCP 边界仍按各自规格；Git 操作服从当前 `AGENTS.md` 与用户授权，本轮允许已验证阶段提交，暂不push。

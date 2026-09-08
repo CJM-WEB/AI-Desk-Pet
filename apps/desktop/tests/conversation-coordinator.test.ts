@@ -1625,9 +1625,12 @@ describe('ConversationCoordinator', () => {
     });
     await harness.coordinator.submit('整理文件');
 
+    const disclosure = harness.events.find(event => event.type === 'history_disclosure_required');
+    if (disclosure?.type !== 'history_disclosure_required') throw new Error('缺少实际披露请求');
+    const requestId = disclosure.requestId;
     await harness.coordinator.resetConversation();
 
-    await expect(harness.coordinator.resolveHistoryDisclosure('request-1', 'share_once')).rejects
+    await expect(harness.coordinator.resolveHistoryDisclosure(requestId, 'share_once')).rejects
       .toSatisfy(error => errorCode(error) === 'DISCLOSURE_REQUEST_EXPIRED');
     expect(harness.fileTasks.submissions).toEqual([]);
     expect(harness.events).toContainEqual({

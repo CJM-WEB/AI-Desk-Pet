@@ -1,7 +1,5 @@
 import { z } from 'zod';
 import { characterIdentitySchema, safeIdentifierSchema } from './character-v2-schema';
-import { characterMoodUpdateSchema } from './character-mood';
-import { characterExpressionPlanSchema, characterExplicitPlaybackSchema } from './character-expression-plan';
 
 export type BehaviorTarget =
   | Readonly<{ kind: 'state_name'; name: string }>
@@ -70,40 +68,3 @@ export type PublicCharacterIdentity = Readonly<z.infer<typeof publicIdentitySche
 export type PublicBehaviorAction = Readonly<z.infer<typeof publicBehaviorActionSchema>>;
 export type PublicBehaviorState = Readonly<Omit<z.infer<typeof publicBehaviorStateSchema>, 'actions'>> & { readonly actions: readonly PublicBehaviorAction[] };
 export type PublicBehaviorCatalog = Readonly<{ idleStateId: string; identity: PublicCharacterIdentity; states: readonly PublicBehaviorState[] }>;
-
-/** 聊天与自主共用 wire 字段：必须评估，null 在对象校验入口归一化为无更新。 */
-export const characterExpressionWireShape = {
-  moodUpdate: characterMoodUpdateSchema.nullable().transform(value => value ?? undefined),
-  expressionPlan: characterExpressionPlanSchema.nullable().transform(value => value ?? undefined)
-};
-/** 表现引用由 Main 对照实际发送目录复核；没有更新不等于强制平静。 */
-export const characterChatResponseSchema = z.object({
-  ...characterExpressionWireShape, text: z.string().min(1).max(4000), explicitPlayback: characterExplicitPlaybackSchema.optional(),
-  movementControl: movementControlPlanSchema
-}).strict();
-const identifier = { type: 'string', pattern: '^[a-z0-9][a-z0-9_-]{0,119}$' };
-const score = { type: 'number', minimum: 0, maximum: 1 };
-const when = { type: 'object', additionalProperties: false,
-  properties: Object.fromEntries(characterActivityFacts.map(name => [name, { type: 'boolean' }])) };
-/** wire 约束字段语法；condition 至少一项 true 等关联规则由 Main Zod 强制，避免固定 llama.cpp 不支持的条件 Schema。 */
-export const characterChatResponseJsonSchema = {
-  type: 'object', additionalProperties: false, required: ['text', 'moodUpdate', 'expressionPlan', 'movementControl'],
-  properties: {
-    text: { type: 'string', minLength: 1, maxLength: 4000 },
-    moodUpdate: { anyOf: [{ type: 'object', additionalProperties: false, required: ['summary', 'strength'],
-      properties: { summary: { type: 'string', minLength: 1, maxLength: 240 }, strength: score,
-        fadeInMs: { type: 'integer', minimum: 0, maximum: 300000 }, halfLifeMs: { type: 'integer', minimum: 30000, maximum: 1800000 } } }, { type: 'null' }] },
-    expressionPlan: { anyOf: [{ type: 'object', additionalProperties: false, required: ['states'],
-      properties: { validForMs: { type: 'integer', minimum: 1, maximum: 1800000 },
-        states: { type: 'array', maxItems: 8, items: { type: 'object', additionalProperties: false,
-          // 生成时禁止省略条件与寿命；Main Zod 仍兼容旧输入省略，并独立校验 condition 关联。
-          required: ['stateId', 'score', 'minStrength', 'maxStrength', 'when', 'lifetime', 'actions'],
-          properties: { stateId: identifier, score, minStrength: score, maxStrength: score,
-            when, lifetime: { enum: ['episode', 'condition'] },
-            actions: { type: 'array', maxItems: 32, items: { type: 'object', additionalProperties: false,
-              required: ['actionId', 'score'], properties: { actionId: identifier, score, when } } } } } } } }, { type: 'null' }] },
-    explicitPlayback: { type: 'object', additionalProperties: false, required: ['stateId'],
-      properties: { stateId: identifier, actionId: identifier } },
-    movementControl: movementControlPlanJsonSchema
-  }
-} as const;

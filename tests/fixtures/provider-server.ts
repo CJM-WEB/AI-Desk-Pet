@@ -322,15 +322,15 @@ function normalizeRequest(value: unknown): ProviderInspectionRequest {
 }
 
 function compatibleResponse(response: ModelResponse): unknown {
+  if (response.type === 'structured') {
+    return { choices: [{ message: { content: JSON.stringify(response.structured_output) } }] };
+  }
   if (response.type === 'text') {
     return {
       choices: [{
         message: {
-          content: response.structured_output === undefined
-            ? response.text
-            : JSON.stringify({ text: response.text, ...response.structured_output }),
-          ...((response.structured_output === undefined
-            && (response.emotion !== undefined || response.behaviorIntent !== undefined))
+          content: response.text,
+          ...((response.emotion !== undefined || response.behaviorIntent !== undefined)
             ? {
                 metadata: {
                   ...(response.emotion === undefined ? {} : { emotion: response.emotion }),

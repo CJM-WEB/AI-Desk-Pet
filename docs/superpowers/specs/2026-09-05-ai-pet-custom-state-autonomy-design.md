@@ -1,5 +1,7 @@
 # AI Pet 自定义状态、持续心情与自主表现设计
 
+2026-09-08 范围更新：联合角色 JSON、活动受心情门槛限制、无匹配即时中断和无动作位移由[单一发送与独立表现规格](2026-09-08-single-send-expression-isolation-design.md)替代。当前有限程序证据与原生未验证项见[验收记录](../../operations/2026-09-08-single-send-expression-acceptance.md)；以下旧日期结果保留。
+
 日期：2026-09-05；补充：2026-09-06。状态：**通用情境资格与有限播放已实现，最后 DeepSeek 实际窗口移动样例同步通过；Qwen 最后已选对描述，但时长／事实条件决策仍未通过，不能视为所有模型的角色体验已交付**。实际证据见[开发与验收记录 Task 8](../../operations/2026-09-06-custom-state-autonomy.md)；后续时序以[情境执行补充规格](2026-09-06-character-motion-expression-followup.md)为准。
 
 本文将已确认的产品方向与推荐的工程取舍分开记录。源码调查基线为本仓库 `d7abbef`；没有把旧测试报告当成本轮效果证明。本规格依赖[编程助手规格第 9 节](2026-09-05-ai-pet-coding-assistant-design.md)定义的真实任务事实。

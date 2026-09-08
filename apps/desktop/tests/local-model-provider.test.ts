@@ -6,6 +6,7 @@ import {
   type LocalModelConnectionPort
 } from '../src/main/providers/local-model-provider';
 import { ProviderError } from '../src/main/providers/openai-provider';
+import { characterExpressionSelectionSchema, characterExpressionSelectionJsonSchema } from '@myself/character-runtime';
 import { ConversationChatAdapter } from '../src/main/conversation/conversation-chat-adapter';
 
 type FetchLike = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
@@ -38,17 +39,6 @@ const request: ModelRequest = {
   reasoningMode: 'provider_default'
 };
 
-const characterResponseSchema = Object.freeze({
-  type: 'object',
-  additionalProperties: false,
-  required: ['text', 'activity', 'status'],
-  properties: {
-    text: { type: 'string' },
-    activity: { type: 'string' },
-    status: { type: 'string' }
-  }
-});
-
 const localBehaviorContext = {
   character: { idleStateId: 'protocol-state',
     identity: { formsOfAddress: [], dislikes: [], boundaries: [], exampleLines: [],
@@ -72,17 +62,9 @@ const structuredRequest: ModelRequest = {
   reasoningMode: 'provider_default',
   responseContract: {
     type: 'json_object',
-    name: 'character_chat',
-    jsonSchema: characterResponseSchema,
-    textField: 'text',
-    allowPlainTextFallback: true,
-    validateStructuredOutput: value => (
-      typeof value === 'object'
-      && value !== null
-      && typeof Reflect.get(value, 'text') === 'string'
-      && typeof Reflect.get(value, 'activity') === 'string'
-      && typeof Reflect.get(value, 'status') === 'string'
-    )
+    name: 'character_expression',
+    jsonSchema: characterExpressionSelectionJsonSchema,
+    validateStructuredOutput: value => characterExpressionSelectionSchema.safeParse(value).success
   }
 };
 
@@ -90,29 +72,6 @@ function jsonResponse(value: unknown, status = 200): Response {
   return new Response(JSON.stringify(value), {
     status,
     headers: { 'content-type': 'application/json' }
-  });
-}
-
-function sseResponse(contentChunks: readonly string[]): Response {
-  const encoder = new TextEncoder();
-  const events = contentChunks.map(content => (
-    `data: ${JSON.stringify({ choices: [{ delta: { content } }] })}\n\n`
-  )).concat('data: [DONE]\n\n');
-  return new Response(new ReadableStream({
-    start(controller) {
-      // 故意把 UTF-8 与 SSE 边界拆散，证明传输层不依赖网络分片形状。
-      const bytes = encoder.encode(events.join(''));
-      for (let offset = 0; offset < bytes.length; offset += 3) {
-        controller.enqueue(bytes.slice(offset, offset + 3));
-      }
-      controller.close();
-    }
-  }), { headers: { 'content-type': 'text/event-stream' } });
-}
-
-function rawSseResponse(events: readonly string[]): Response {
-  return new Response(events.join(''), {
-    headers: { 'content-type': 'text/event-stream' }
   });
 }
 
@@ -303,11 +262,11 @@ describe('LocalModelProvider', () => {
     expect(requestBodies[2]).not.toHaveProperty('temperature');
   });
 
-  test('结构化聊天把响应契约作为 llama.cpp JSON Schema 约束发送', async () => {
+  test('独立表现把响应契约作为 llama.cpp JSON Schema 约束发送', async () => {
     const fetchClient = vi.fn<FetchLike>(async () => jsonResponse({
       choices: [{
         message: {
-          content: JSON.stringify({ text: '好的。', activity: '安静陪伴', status: 'idle' })
+          content: JSON.stringify({"moodUpdate":null,"expressionPlan":null,"requestKind":"ambient","explicitPlayback":null,"movementControl":{"kind":"keep"}})
         }
       }]
     }));
@@ -317,40 +276,13 @@ describe('LocalModelProvider', () => {
       structuredRequest,
       new AbortController().signal
     )).resolves.toMatchObject({
-      type: 'text',
-      text: '好的。',
-      structured_output: { activity: '安静陪伴', status: 'idle' }
+      type: 'structured', structured_output: {"moodUpdate":null,"expressionPlan":null,"requestKind":"ambient","explicitPlayback":null,"movementControl":{"kind":"keep"}}
     });
 
     const body = JSON.parse(String(fetchClient.mock.calls[0]?.[1]?.body));
     expect(body.response_format).toEqual({
       type: 'json_object',
-      schema: characterResponseSchema
-    });
-  });
-
-  test('本地无工具结构化聊天使用 SSE 且只增量公开顶层 text 的完整解码字符', async () => {
-    const fetchClient = vi.fn<FetchLike>(async () => sseResponse([
-      '{"activity":"不可见-canary","text":"你\\uD83D',
-      '\\uDC3E好\\n世',
-      '界","status":"idle"}'
-    ]));
-    const deltas: string[] = [];
-    const provider = new LocalModelProvider(readyPort(), fetchClient);
-
-    await expect(provider.respond({
-      ...structuredRequest,
-      onTextDelta: delta => deltas.push(delta)
-    }, new AbortController().signal)).resolves.toMatchObject({
-      type: 'text',
-      text: '你🐾好\n世界',
-      structured_output: { activity: '不可见-canary', status: 'idle' }
-    });
-
-    expect(deltas.join('')).toBe('你🐾好\n世界');
-    expect(JSON.stringify(deltas)).not.toContain('不可见-canary');
-    expect(JSON.parse(String(fetchClient.mock.calls[0]?.[1]?.body))).toMatchObject({
-      stream: true
+      schema: characterExpressionSelectionJsonSchema
     });
   });
 
@@ -501,293 +433,6 @@ describe('LocalModelProvider', () => {
     expect(bounded.content).toHaveLength(4_000);
     expect(bounded.content).toBe(oversizedLine.slice(0, 4_000));
     expect(bounded).toMatchObject({ startLine: 7, endLine: 7, truncated: true });
-  });
-
-  test('SSE 期间 generation 变化后拒绝迟到增量与最终响应', async () => {
-    let currentConnection = connection;
-    const deltas: string[] = [];
-    const fetchClient = vi.fn<FetchLike>(async () => sseResponse([
-      '{"text":"第一段',
-      '第二段","activity":"陪伴","status":"idle"}'
-    ]));
-    const provider = new LocalModelProvider(
-      readyPort(() => currentConnection),
-      fetchClient
-    );
-
-    await expect(provider.respond({
-      ...structuredRequest,
-      onTextDelta: delta => {
-        deltas.push(delta);
-        currentConnection = { ...connection, generation: 'generation-2' };
-      }
-    }, new AbortController().signal)).rejects.toMatchObject({
-      code: 'LOCAL_MODEL_CONNECTION_STALE',
-      retryable: false
-    });
-
-    expect(deltas).toEqual(['第一段']);
-  });
-
-  test('SSE 被 Abort 后不再发布后续增量', async () => {
-    const controller = new AbortController();
-    const deltas: string[] = [];
-    const fetchClient = vi.fn<FetchLike>(async () => sseResponse([
-      '{"text":"第一段',
-      '第二段","activity":"陪伴","status":"idle"}'
-    ]));
-    const provider = new LocalModelProvider(readyPort(), fetchClient);
-
-    await expect(provider.respond({
-      ...structuredRequest,
-      onTextDelta: delta => {
-        deltas.push(delta);
-        controller.abort();
-      }
-    }, controller.signal)).rejects.toMatchObject({ name: 'AbortError' });
-
-    expect(deltas).toEqual(['第一段']);
-  });
-
-  test('SSE 大量事件会让出事件循环并在最终响应前响应 Abort', async () => {
-    const controller = new AbortController();
-    const deltas: string[] = [];
-    const fragments = [
-      '{"text":"',
-      ...Array.from({ length: 600 }, () => '字'),
-      '","activity":"陪伴","status":"idle"}'
-    ];
-    const events = fragments.map(content => (
-      `data: ${JSON.stringify({ choices: [{ delta: { content } }] })}\n\n`
-    )).concat('data: [DONE]\n\n');
-    const fetchClient = vi.fn<FetchLike>(async () => rawSseResponse(events));
-    const provider = new LocalModelProvider(readyPort(), fetchClient);
-    let abortTimer: ReturnType<typeof setTimeout> | undefined;
-
-    try {
-      await expect(provider.respond({
-        ...structuredRequest,
-        onTextDelta: delta => {
-          deltas.push(delta);
-          if (deltas.length === 10) {
-            abortTimer = setTimeout(() => {
-              controller.abort(new DOMException('主动取消', 'AbortError'));
-            }, 0);
-          }
-        }
-      }, controller.signal)).rejects.toMatchObject({ name: 'AbortError' });
-    } finally {
-      if (abortTimer !== undefined) clearTimeout(abortTimer);
-    }
-
-    expect(deltas.length).toBeGreaterThanOrEqual(10);
-    expect(deltas.length).toBeLessThan(600);
-  });
-
-  test('跨 SSE chunk 的 think 标签在任何前缀公开前稳定拒绝', async () => {
-    const deltas: string[] = [];
-    const fetchClient = vi.fn<FetchLike>(async () => sseResponse([
-      '{"text":"<thi',
-      'nk>内部推理</think>","activity":"陪伴","status":"idle"}'
-    ]));
-    const provider = new LocalModelProvider(readyPort(), fetchClient);
-
-    await expect(provider.respond({
-      ...structuredRequest,
-      onTextDelta: delta => deltas.push(delta)
-    }, new AbortController().signal)).rejects.toMatchObject({
-      code: 'LOCAL_MODEL_REASONING_LEAK',
-      retryable: false
-    });
-
-    expect(deltas).toEqual([]);
-  });
-
-  test('SSE 缺少 DONE 终态时即使正文完整也 fail-close', async () => {
-    const content = JSON.stringify({ text: '未终止', activity: '陪伴', status: 'idle' });
-    const fetchClient = vi.fn<FetchLike>(async () => rawSseResponse([
-      `data: ${JSON.stringify({ choices: [{ delta: { content } }] })}\n\n`
-    ]));
-    const provider = new LocalModelProvider(readyPort(), fetchClient);
-
-    await expect(provider.respond({
-      ...structuredRequest,
-      onTextDelta: vi.fn()
-    }, new AbortController().signal)).rejects.toMatchObject({
-      code: 'STREAM_TERMINAL_MISSING', retryable: false
-    });
-  });
-
-  test.each([
-    ['DONE 后普通数据', [
-      `data: ${JSON.stringify({ choices: [{ delta: { content: JSON.stringify({ text: '保留', activity: '陪伴', status: 'idle' }) } }] })}\n\n`,
-      'data: [DONE]\n\n',
-      'data: {not-json-tail}\n\n'
-    ]],
-    ['重复 DONE', [
-      `data: ${JSON.stringify({ choices: [{ delta: { content: JSON.stringify({ text: '保留', activity: '陪伴', status: 'idle' }) } }] })}\n\n`,
-      'data: [DONE]\n\n',
-      'data: [DONE]\n\n'
-    ]]
-  ] as const)('%s 不污染首个终态结果', async (_name, events) => {
-    const deltas: string[] = [];
-    const provider = new LocalModelProvider(
-      readyPort(),
-      vi.fn<FetchLike>(async () => rawSseResponse(events))
-    );
-
-    await expect(provider.respond({
-      ...structuredRequest,
-      onTextDelta: delta => deltas.push(delta)
-    }, new AbortController().signal)).resolves.toMatchObject({
-      type: 'text', text: '保留'
-    });
-    expect(deltas.join('')).toBe('保留');
-  });
-
-  test('SSE 在最终校验前拒绝超过正文预算的累计投影', async () => {
-    const deltas: string[] = [];
-    const provider = new LocalModelProvider(
-      readyPort(),
-      vi.fn<FetchLike>(async () => sseResponse([
-        JSON.stringify({ text: 'x'.repeat(4_001), activity: '陪伴', status: 'idle' })
-      ]))
-    );
-
-    await expect(provider.respond({
-      ...structuredRequest,
-      onTextDelta: delta => deltas.push(delta)
-    }, new AbortController().signal)).rejects.toMatchObject({
-      code: 'RESPONSE_SHAPE_INVALID', retryable: false
-    });
-    expect(deltas).toEqual([]);
-  });
-
-  test('SSE 单事件与累计结构化内容具有固定上限', async () => {
-    const content = `${JSON.stringify({ text: '保留', activity: '陪伴', status: 'idle' })}${' '.repeat(300_000)}`;
-    const provider = new LocalModelProvider(
-      readyPort(),
-      vi.fn<FetchLike>(async () => rawSseResponse([
-        `data: ${JSON.stringify({ choices: [{ delta: { content } }] })}\n\n`,
-        'data: [DONE]\n\n'
-      ]))
-    );
-
-    await expect(provider.respond({
-      ...structuredRequest,
-      onTextDelta: vi.fn()
-    }, new AbortController().signal)).rejects.toMatchObject({
-      code: 'RESPONSE_SHAPE_INVALID', retryable: false
-    });
-  });
-
-  test('SSE 多事件累计内容超过结构化 JSON 预算时 fail-close', async () => {
-    const first = JSON.stringify({ text: '保留', activity: '陪伴', status: 'idle' });
-    const provider = new LocalModelProvider(
-      readyPort(),
-      vi.fn<FetchLike>(async () => sseResponse([first, ' '.repeat(40_000), ' '.repeat(30_000)]))
-    );
-
-    await expect(provider.respond({
-      ...structuredRequest,
-      onTextDelta: vi.fn()
-    }, new AbortController().signal)).rejects.toMatchObject({
-      code: 'RESPONSE_SHAPE_INVALID', retryable: false
-    });
-  });
-
-  test('SSE 单事件 data 行数量具有固定上限', async () => {
-    const content = JSON.stringify({ text: '保留', activity: '陪伴', status: 'idle' });
-    const data = JSON.stringify({ choices: [{ delta: { content } }] });
-    const provider = new LocalModelProvider(
-      readyPort(),
-      vi.fn<FetchLike>(async () => rawSseResponse([
-        `data: ${data}\n`,
-        ...Array.from({ length: 1_024 }, () => 'data:  \n'),
-        '\n',
-        'data: [DONE]\n\n'
-      ]))
-    );
-
-    await expect(provider.respond({
-      ...structuredRequest,
-      onTextDelta: vi.fn()
-    }, new AbortController().signal)).rejects.toMatchObject({
-      code: 'RESPONSE_SHAPE_INVALID', retryable: false
-    });
-  });
-
-  test('SSE 忽略行也计入固定传输预算', async () => {
-    const content = JSON.stringify({ text: '保留', activity: '陪伴', status: 'idle' });
-    const ignored = `: ${'x'.repeat(1_000)}\n`;
-    const provider = new LocalModelProvider(
-      readyPort(),
-      vi.fn<FetchLike>(async () => rawSseResponse([
-        ...Array.from({ length: 530 }, () => ignored),
-        `data: ${JSON.stringify({ choices: [{ delta: { content } }] })}\n\n`,
-        'data: [DONE]\n\n'
-      ]))
-    );
-
-    await expect(provider.respond({
-      ...structuredRequest,
-      onTextDelta: vi.fn()
-    }, new AbortController().signal)).rejects.toMatchObject({
-      code: 'RESPONSE_SHAPE_INVALID', retryable: false
-    });
-  });
-
-  test.each([
-    {
-      name: '纯文本',
-      content: '我会保持安静。',
-      expected: { type: 'text', text: '我会保持安静。' }
-    },
-    {
-      name: '只有 text 的 JSON',
-      content: '{"text":"只保留正文。"}',
-      expected: {
-        type: 'text', text: '只保留正文。', structured_output: { text: '只保留正文。' }
-      }
-    },
-    {
-      name: '带非法隐藏字段的 JSON',
-      content: '{"text":"正文仍然有效。","activity":42,"status":null}',
-      expected: {
-        type: 'text',
-        text: '正文仍然有效。',
-        structured_output: { text: '正文仍然有效。', activity: 42, status: null }
-      }
-    }
-  ] as const)('结构化聊天的$name只以合法正文作为成功前置条件', async ({ content, expected }) => {
-    const textDeltas: string[] = [];
-    const provider = new LocalModelProvider(
-      readyPort(),
-      vi.fn<FetchLike>(async () => sseResponse([content]))
-    );
-
-    await expect(provider.respond(
-      { ...structuredRequest, onTextDelta: delta => textDeltas.push(delta) },
-      new AbortController().signal
-    )).resolves.toEqual(expected);
-    expect(textDeltas.join('')).toBe(expected.text);
-  });
-
-  test('完全没有合法正文时仍返回格式错误', async () => {
-    const onTextDelta = vi.fn();
-    const provider = new LocalModelProvider(
-      readyPort(),
-      vi.fn<FetchLike>(async () => sseResponse(['{}']))
-    );
-
-    await expect(provider.respond(
-      { ...structuredRequest, onTextDelta },
-      new AbortController().signal
-    )).rejects.toMatchObject({
-      code: 'RESPONSE_FORMAT_UNSUPPORTED',
-      retryable: false
-    });
-    expect(onTextDelta).not.toHaveBeenCalled();
   });
 
   test('本地主正文中的旧控制JSON按文字保留，独立表现故障不授权', async () => {

@@ -8,7 +8,6 @@ import {
   type ToolDefinition
 } from '@myself/agent-core';
 import {
-  ASSISTANT_STREAM_TEXT_MAX_CHARACTERS,
   characterEmotionLabelSchema,
   type ProviderProfile
 } from '@myself/shared-types';
@@ -18,11 +17,6 @@ import {
   createOpenAIToolNameCodec,
   type OpenAIToolNameCodec
 } from './openai-tool-name-codec';
-import {
-  readStructuredTextSse,
-  shouldStreamStructuredText
-} from './structured-text-stream';
-import { TopLevelTextProjector } from './top-level-text-projector';
 import { ProviderResponseError } from './provider-response-error';
 
 export type FetchLike = (
@@ -44,9 +38,6 @@ type OpenAICompatibleConfig = ProviderAdapterConfig | ProviderProfile;
 export interface OpenAIRequestPolicy {
   body: Readonly<Record<string, unknown>>;
   validateResponse(raw: unknown): void;
-  responseMode?: 'json' | 'sse';
-  onTextDelta?: (delta: string) => void;
-  validateProjectedText?: (text: string) => void;
 }
 
 const compatibleResponseSchema = z.object({
@@ -225,256 +216,7 @@ function normalizeResponse(
   return response;
 }
 
-const MAX_STREAM_CONTENT_CHARACTERS = 64 * 1024;
-const MAX_SSE_EVENT_CHARACTERS = 256 * 1024;
-const MAX_SSE_TRANSPORT_CHARACTERS = 512 * 1024;
-const MAX_SSE_EVENT_DATA_LINES = 1_024;
-const DEEPSEEK_CHARACTER_CHAT_MAX_TOKENS = 4_096;
-const SSE_YIELD_EVERY_EVENTS = 32;
-
-function splitVisibleProjection(held: string, delta: string): Readonly<{ visible: string; held: string }> {
-  const candidate = held + delta;
-  const normalized = candidate.toLocaleLowerCase();
-  let heldCharacters = 0;
-  for (const forbiddenPrefix of ['<think', '</think']) {
-    for (let length = 1; length <= forbiddenPrefix.length; length += 1) {
-      if (normalized.endsWith(forbiddenPrefix.slice(0, length))) {
-        heldCharacters = Math.max(heldCharacters, length);
-      }
-    }
-  }
-  return heldCharacters === 0
-    ? { visible: candidate, held: '' }
-    : {
-        visible: candidate.slice(0, -heldCharacters),
-        held: candidate.slice(-heldCharacters)
-      };
-}
-
-function 抛出已取消(signal: AbortSignal): void {
-  if (!signal.aborted) return;
-  if (signal.reason instanceof Error) throw signal.reason;
-  throw new DOMException('Aborted', 'AbortError');
-}
-
-async function readProviderSse(
-  response: Response,
-  request: ModelRequest,
-  signal: AbortSignal,
-  onTextDelta: ((delta: string) => void) | undefined,
-  validateProjectedText: ((text: string) => void) | undefined
-): Promise<unknown> {
-  if (!response.ok) throw normalizeHttpError(response.status);
-  if (response.body === null) throw new ProviderResponseError('RESPONSE_SHAPE_INVALID', 'stream');
-
-  const reader = response.body.getReader();
-  const decoder = new TextDecoder();
-  let lineBuffer = '';
-  let eventData: string[] = [];
-  let eventCharacters = 0;
-  let transportCharacters = 0;
-  let content = '';
-  let projectedCharacters = 0;
-  let heldProjection = '';
-  let streamDone = false;
-  let dispatchedEvents = 0;
-  const projector = request.responseContract?.name !== 'character_chat'
-    ? null
-    : new TopLevelTextProjector({
-        field: request.responseContract.textField,
-        allowPlainTextFallback: request.responseContract.allowPlainTextFallback,
-        malformed: () => { throw new ProviderResponseError('RESPONSE_SHAPE_INVALID', 'stream'); }
-      });
-
-  const dispatch = (): void => {
-    if (eventData.length === 0) return;
-    const data = eventData.join('\n');
-    eventData = [];
-    eventCharacters = 0;
-    if (data === '[DONE]') {
-      streamDone = true;
-      return;
-    }
-    let raw: unknown;
-    try {
-      raw = JSON.parse(data);
-    } catch {
-      throw new ProviderResponseError('RESPONSE_SHAPE_INVALID', 'stream');
-    }
-    if (typeof raw !== 'object' || raw === null) {
-      throw new ProviderResponseError('RESPONSE_SHAPE_INVALID', 'stream');
-    }
-    const choices = Reflect.get(raw, 'choices');
-    const choice = Array.isArray(choices) ? choices[0] : undefined;
-    const delta = typeof choice === 'object' && choice !== null
-      ? Reflect.get(choice, 'delta')
-      : undefined;
-    if (typeof delta !== 'object' || delta === null) {
-      throw new ProviderResponseError('RESPONSE_SHAPE_INVALID', 'stream');
-    }
-    if (Object.prototype.hasOwnProperty.call(delta, 'reasoning_content')) {
-      throw new ProviderError('LOCAL_MODEL_REASONING_LEAK', false);
-    }
-    if (Object.prototype.hasOwnProperty.call(delta, 'tool_calls')) {
-      throw new ProviderResponseError('RESPONSE_SHAPE_INVALID', 'stream');
-    }
-    const fragment = Reflect.get(delta, 'content');
-    if (fragment !== undefined && fragment !== null && typeof fragment !== 'string') {
-      throw new ProviderResponseError('RESPONSE_SHAPE_INVALID', 'stream');
-    }
-    if (typeof fragment !== 'string' || fragment.length === 0) return;
-    if (content.length + fragment.length > MAX_STREAM_CONTENT_CHARACTERS) {
-      throw new ProviderResponseError('RESPONSE_SHAPE_INVALID', 'stream');
-    }
-    content += fragment;
-    const projectionDelta = projector === null ? fragment : projector.project(content);
-    projectedCharacters += projectionDelta.length;
-    if (projectedCharacters > ASSISTANT_STREAM_TEXT_MAX_CHARACTERS) {
-      throw new ProviderResponseError('RESPONSE_SHAPE_INVALID', 'stream');
-    }
-    validateProjectedText?.(projectionDelta);
-    // 只暂存可能组成 think 标签的固定长度后缀；普通正文不做累计重扫。
-    const split = splitVisibleProjection(heldProjection, projectionDelta);
-    heldProjection = split.held;
-    if (split.visible.length > 0) {
-      抛出已取消(signal);
-      onTextDelta?.(split.visible);
-    }
-  };
-
-  const acceptLine = (line: string): boolean => {
-    if (line === '') {
-      const hasEvent = eventData.length > 0;
-      dispatch();
-      return hasEvent;
-    } else if (line.startsWith('data:')) {
-      const value = line.slice(5).replace(/^ /u, '');
-      if (
-        eventData.length >= MAX_SSE_EVENT_DATA_LINES
-        || eventCharacters + value.length > MAX_SSE_EVENT_CHARACTERS
-      ) {
-        throw new ProviderResponseError('RESPONSE_SHAPE_INVALID', 'stream');
-      }
-      eventData.push(value);
-      eventCharacters += value.length;
-    }
-    return false;
-  };
-
-  const acceptText = async (text: string): Promise<void> => {
-    let offset = 0;
-    while (!streamDone && offset < text.length) {
-      const newline = text.indexOf('\n', offset);
-      const end = newline < 0 ? text.length : newline;
-      const fragment = text.slice(offset, end);
-      transportCharacters += fragment.length + (newline < 0 ? 0 : 1);
-      if (
-        transportCharacters > MAX_SSE_TRANSPORT_CHARACTERS
-        || lineBuffer.length + fragment.length > MAX_SSE_EVENT_CHARACTERS
-      ) {
-        throw new ProviderResponseError('RESPONSE_SHAPE_INVALID', 'stream');
-      }
-      lineBuffer += fragment;
-      if (newline < 0) return;
-      const line = lineBuffer.replace(/\r$/u, '');
-      lineBuffer = '';
-      offset = newline + 1;
-      if (acceptLine(line)) {
-        dispatchedEvents += 1;
-        if (dispatchedEvents % SSE_YIELD_EVERY_EVENTS === 0) {
-          // 单个网络块也可能包含大量事件；周期性让步使定时 Abort 不被同步解析饿死。
-          await new Promise<void>(resolve => setTimeout(resolve, 0));
-          抛出已取消(signal);
-        }
-      }
-    }
-  };
-
-  try {
-    while (true) {
-      抛出已取消(signal);
-      let chunk: ReadableStreamReadResult<Uint8Array>;
-      try {
-        chunk = await reader.read();
-      } catch (error) {
-        normalizeFetchError(error, signal);
-      }
-      if (chunk.done) break;
-      await acceptText(decoder.decode(chunk.value, { stream: true }));
-      if (streamDone) {
-        await reader.cancel().catch(() => undefined);
-        break;
-      }
-    }
-    if (!streamDone) {
-      await acceptText(decoder.decode());
-      if (lineBuffer.length > 0) {
-        const finalLine = lineBuffer;
-        lineBuffer = '';
-        acceptLine(finalLine.replace(/\r$/u, ''));
-      }
-      dispatch();
-    }
-    if (!streamDone) throw new ProviderResponseError('STREAM_TERMINAL_MISSING', 'stream');
-  } catch (error) {
-    await reader.cancel().catch(() => undefined);
-    throw error;
-  } finally {
-    reader.releaseLock();
-  }
-
-  return {
-    choices: [{
-      message: {
-        content
-      }
-    }]
-  };
-}
-
-async function readCloudOpenAISse(
-  response: Response,
-  request: ModelRequest,
-  signal: AbortSignal
-): Promise<unknown> {
-  if (!response.ok) throw normalizeHttpError(response.status);
-  return readStructuredTextSse(response, {
-    request,
-    signal,
-    malformed: () => { throw new ProviderResponseError('RESPONSE_SHAPE_INVALID', 'stream'); },
-    terminalMissing: () => { throw new ProviderResponseError('STREAM_TERMINAL_MISSING', 'stream'); },
-    normalizeReadError: error => normalizeFetchError(error, signal),
-    decodeEvent: (_eventName, data) => {
-      if (data === '[DONE]') return { done: true };
-      let raw: unknown;
-      try { raw = JSON.parse(data); } catch {
-        throw new ProviderResponseError('RESPONSE_SHAPE_INVALID', 'stream');
-      }
-      if (typeof raw !== 'object' || raw === null) {
-        throw new ProviderResponseError('RESPONSE_SHAPE_INVALID', 'stream');
-      }
-      const choices = Reflect.get(raw, 'choices');
-      const choice = Array.isArray(choices) ? choices[0] : undefined;
-      const delta = typeof choice === 'object' && choice !== null ? Reflect.get(choice, 'delta') : undefined;
-      if (typeof delta !== 'object' || delta === null) {
-        throw new ProviderResponseError('RESPONSE_SHAPE_INVALID', 'stream');
-      }
-      const toolCalls = Reflect.get(delta, 'tool_calls');
-      if (toolCalls !== undefined && (!Array.isArray(toolCalls) || toolCalls.length > 0)) {
-        throw new ProviderResponseError('RESPONSE_SHAPE_INVALID', 'stream');
-      }
-      // 云端推理字段既不公开也不作为本地模型泄漏处理；只消费可见 content。
-      const content = Reflect.get(delta, 'content');
-      if (content !== undefined && content !== null && typeof content !== 'string') {
-        throw new ProviderResponseError('RESPONSE_SHAPE_INVALID', 'stream');
-      }
-      return typeof content === 'string' ? { fragment: content } : {};
-    },
-    toRaw: content => ({ choices: [{ message: { content } }] })
-  });
-}
-
-/** 各 Provider 共用契约解码；聊天隐藏字段留给适配器，自主只返回完整有效的无正文信封。 */
+/** 各 Provider 共用严格表现解码，只返回完整有效的无正文信封。 */
 export function normalizeResponseContractText(
   raw: string,
   contract: ModelResponseContract
@@ -483,28 +225,8 @@ export function normalizeResponseContractText(
   if (decoded.kind === 'invalid') {
     throw new ProviderResponseError('RESPONSE_FORMAT_UNSUPPORTED', 'chat_control');
   }
-  if (decoded.kind === 'plain_text') {
-    return { type: 'text', text: decoded.text };
-  }
-  if (decoded.kind === 'structured_only') {
-    return { type: 'structured', structured_output: decoded.structured_output };
-  }
-  const required = contract.jsonSchema['required'];
-  if (
-    contract.name === 'character_chat' && !contract.allowPlainTextFallback
-    && Array.isArray(required)
-    && required.some(field => (
-      typeof field !== 'string'
-      || !Object.prototype.hasOwnProperty.call(decoded.structured_output, field)
-    ))
-  ) {
-    throw new ProviderResponseError('RESPONSE_FORMAT_UNSUPPORTED', 'chat_control');
-  }
-  return {
-    type: 'text',
-    text: decoded.text,
-    structured_output: decoded.structured_output
-  };
+
+  return { type: 'structured', structured_output: decoded.structured_output };
 }
 
 /** 响应契约没有系统权限，也不得与工具调用复用同一次 Provider 请求。 */
@@ -512,20 +234,10 @@ export function assertResponseContractRequest(request: ModelRequest): void {
   if (
     request.responseContract !== undefined
     && (request.tools.length > 0 || request.toolChoice !== 'none'
-      || request.responseContract.name !== 'character_chat' && request.onTextDelta !== undefined)
+      || request.onTextDelta !== undefined)
   ) {
     throw new ProviderError('PROVIDER_RESPONSE_CONTRACT_CONFLICT', false);
   }
-}
-
-/** DeepSeek 偶发空正文只允许在无工具的桌宠聊天边界重试，避免重复任何可执行操作。 */
-function isEmptyCompatibleContent(raw: unknown): boolean {
-  const parsed = compatibleResponseSchema.safeParse(raw);
-  if (!parsed.success) return false;
-  const message = parsed.data.choices[0]?.message;
-  if (message === undefined || (message.tool_calls?.length ?? 0) > 0) return false;
-  // 全空白同样没有可见正文，复用原有一次重试预算，不扩大重放范围。
-  return message.content === undefined || message.content === null || message.content.trim() === '';
 }
 
 export class OpenAICompatibleProvider implements ModelProvider {
@@ -542,10 +254,6 @@ export class OpenAICompatibleProvider implements ModelProvider {
 
   async respond(request: ModelRequest, signal: AbortSignal): Promise<ModelResponse> {
     assertResponseContractRequest(request);
-    const cloudStructuredStream = this.requestPolicy === undefined
-      && shouldStreamStructuredText(request);
-    const deepSeekCharacterChat = this.config.providerId === 'deepseek'
-      && request.responseContract?.name === 'character_chat';
     const deepSeekConversation = this.config.providerId === 'deepseek' && request.purpose === 'conversation';
     // 单次请求复用同一映射，确保定义、续传历史与响应名称处于同一 Provider 命名空间。
     const toolChoice = resolveToolChoice(request);
@@ -566,56 +274,37 @@ export class OpenAICompatibleProvider implements ModelProvider {
       ...(request.responseContract === undefined
         ? {}
         : { response_format: { type: 'json_object' } }),
-      ...(cloudStructuredStream ? { stream: true } : {}),
-      ...(deepSeekCharacterChat || deepSeekConversation
-        ? { thinking: { type: 'disabled' }, max_tokens: DEEPSEEK_CHARACTER_CHAT_MAX_TOKENS }
+      ...(deepSeekConversation
+        ? { thinking: { type: 'disabled' }, max_tokens: 4_096 }
         : this.config.providerId === 'deepseek' && request.reasoningMode === 'disabled'
           ? { thinking: { type: 'disabled' } }
           : {}),
       ...this.requestPolicy?.body
     });
-    const attemptCount = deepSeekCharacterChat ? 2 : 1;
 
-    for (let attempt = 0; attempt < attemptCount; attempt += 1) {
-      let response: Response;
-      try {
-        response = await this.fetchClient(chatCompletionsUrl(this.config.baseUrl), {
-          method: 'POST',
-          signal,
-          headers: {
-            'content-type': 'application/json',
-            authorization: `Bearer ${await this.getSecret()}`
-          },
-          body: requestBody
-        });
-      } catch (error) {
-        if (this.requestPolicy !== undefined && error instanceof ProviderError) throw error;
-        normalizeFetchError(error, signal);
-      }
-
-      const rawResponse = this.requestPolicy?.responseMode === 'sse'
-        ? await readProviderSse(
-            response,
-            request,
-            signal,
-            this.requestPolicy.onTextDelta,
-            this.requestPolicy.validateProjectedText
-          )
-        : cloudStructuredStream
-          ? response.headers.get('content-type')?.toLocaleLowerCase().includes('application/json')
-            ? await readProviderJson(response)
-            : await readCloudOpenAISse(response, request, signal)
-          : await readProviderJson(response);
-      this.requestPolicy?.validateResponse(rawResponse);
-      if (attempt === 0 && deepSeekCharacterChat && isEmptyCompatibleContent(rawResponse)) continue;
-      return normalizeResponse(
-        rawResponse,
-        toolNameCodec,
-        request.responseContract, request.purpose
-      );
+    let response: Response;
+    try {
+      response = await this.fetchClient(chatCompletionsUrl(this.config.baseUrl), {
+        method: 'POST',
+        signal,
+        headers: {
+          'content-type': 'application/json',
+          authorization: `Bearer ${await this.getSecret()}`
+        },
+        body: requestBody
+      });
+    } catch (error) {
+      if (this.requestPolicy !== undefined && error instanceof ProviderError) throw error;
+      normalizeFetchError(error, signal);
     }
 
-    throw new ProviderResponseError('RESPONSE_FORMAT_UNSUPPORTED', 'chat_control');
+    const rawResponse = await readProviderJson(response);
+    this.requestPolicy?.validateResponse(rawResponse);
+    return normalizeResponse(
+      rawResponse,
+      toolNameCodec,
+      request.responseContract, request.purpose
+    );
   }
 }
 

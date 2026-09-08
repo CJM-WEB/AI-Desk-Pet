@@ -406,7 +406,7 @@ export async function runCodingModelAcceptance(input: ModelAcceptanceEnvironment
     await removeAcceptanceRoot(input.temporaryRoot);
     result.cleanup = true;
   })();
-  // 文件场景使用正式明确入口；首条普通中文聊天单独保留自动入口。
+  // 问候、讨论和文件场景均使用正式单一发送入口，由模型申请任务范围。
   const turn = (text: string, options: { permission?: (event: PermissionEvent) => Promise<void>; tick?: () => Promise<void>; before?: () => Promise<unknown> } = {}) => submitAcceptanceTurn({
     events, signal: lifecycle.signal, submit: () => composition.coordinator.submit(text),
     resolveCapabilityAuthorization: (id, choice) => composition.coordinator.resolveCapabilityAuthorization(id, choice),

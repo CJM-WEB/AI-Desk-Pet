@@ -83,7 +83,7 @@ export interface SaveProviderProfileInput {
   persistSecret: boolean;
 }
 
-/** 单次提交意图只选择入口，不携带或保存本地操作授权。 */
+/** 单一文本提交不携带或保存本地操作授权。 */
 
 export interface MyselfApi extends PetWindowInteractionApi {
   commitPetViewport(input: PetViewportCommitInput): Promise<void>;

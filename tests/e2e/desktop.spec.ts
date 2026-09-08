@@ -539,6 +539,16 @@ function taskAuthorizationStep(): ProviderStep {
   } }, inspect: expectCharacterChatRequest };
 }
 
+/** 默认间断模式在任务释放后会进行一次无工具活动匹配，脚本不得误消费下一轮正文。 */
+function activityMatchStep(): ProviderStep {
+  return { response: { type: 'structured', structured_output: { moodUpdate: null, expressionPlan: null } },
+    inspect: request => {
+      expect(request.tools).toEqual([]);
+      expect(request.toolChoice).toBe('none');
+      expect(request.responseFormatWasJsonObject).toBe(true);
+    } };
+}
+
 function expectCharacterChatRequest(
   request: Parameters<NonNullable<ProviderStep['inspect']>>[0]
 ): void {
@@ -628,6 +638,7 @@ test.describe('正式 Core 任务 UI', () => {
     const provider = await startProviderServer([
       taskAuthorizationStep(),
       ...Array.from({ length: 4 }, (_, index) => ({ response: codingResponse([{ name: 'read', args: { path: 'note.txt' }, id: `ui-loop-${index}` }]) })),
+      activityMatchStep(),
       taskAuthorizationStep(),
       { response: codingResponse([{ name: 'write', args: { path: 'note.txt', content: '禁止覆盖' }, id: 'ui-rejected' }]) },
       { response: codingResponse([{ name: 'read', args: { path: 'note.txt' }, id: 'ui-after-reject' }]), inspectRaw: request => { expect(JSON.stringify(request.messages)).toContain('rejected'); } },
@@ -658,7 +669,7 @@ test.describe('正式 Core 任务 UI', () => {
       await permission.getByRole('button', { name: '结束当前任务' }).click();
       await expect(chat.locator('.phase-pill')).toHaveClass(/phase-cancelled/u);
       await expect(permission).toHaveCount(0);
-      expect(provider.requests).toHaveLength(5);
+      await expect.poll(() => provider.requests.length).toBe(6);
       expect(await readFile(join(fixture.authorizedRootDirectory, 'note.txt'), 'utf8')).toBe(nonce);
       await submitChatMessage(chat, '修改 note.txt 文件');
       await approveCodingScope(chat);
@@ -787,6 +798,7 @@ test.describe('正式 Core 任务 UI', () => {
       taskAuthorizationStep(),
       { response: codingResponse([{ name: 'read', args: { path: 'note.txt' } }]) },
       { response: codingResponse('迟到正文不应显示'), gate },
+      activityMatchStep(),
       ...characterChatSteps('取消后普通聊天正常', {}, {inspect: expectCharacterChatRequest})
     ]);
     let fixture: AppFixture | undefined;
@@ -800,6 +812,7 @@ test.describe('正式 Core 任务 UI', () => {
       await chat.getByRole('button', { name: '停止当前任务' }).click();
       await expect(chat.locator('.phase-pill')).toHaveClass(/phase-cancelled/u);
       await expect.poll(() => gate.isWaiting()).toBe(false);
+      await expect.poll(() => provider.requests.length).toBe(4);
       await submitChatMessage(chat, '现在聊聊天');
       await expect(chat.getByText('取消后普通聊天正常', { exact: true })).toBeVisible();
       await expect(chat.getByText('迟到正文不应显示', { exact: true })).toHaveCount(0);
@@ -5768,7 +5781,12 @@ test.describe('真实 Provider 业务闭环', () => {
       workspaceRoot: resolve(process.cwd()),
       apiKey: sourceProvider.apiKey,
       additionalSecrets: [targetProvider.apiKey],
-      launchTimeoutMs: 15_000
+      launchTimeoutMs: 15_000,
+      // 披露验收使用静止模式，隔离间断活动请求与固定主请求脚本的竞争。
+      prepareUserData: async directories => {
+        const settings = new SettingsStore(join(directories.userDataDirectory, 'settings.json'), async () => false);
+        await settings.saveMovementMode(0);
+      }
     });
     try {
       await expect.poll(() => Boolean(

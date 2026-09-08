@@ -87,18 +87,10 @@ function securityProfile() {
   };
 }
 
-function completeSecurityChatResponse(response: ModelResponse): ModelResponse {
-  if (response.type !== 'text') return response;
-  return {
-    ...response,
-    structured_output: {
-      moodUpdate: null,
-      expressionPlan: null,
-      movementControl: { kind: 'keep' },
-      capabilityPlan: { kind: 'chat' },
-      ...response.structured_output
-    }
-  };
+function completeSecurityExpression(response: ModelResponse): ModelResponse {
+  return { type: 'structured', structured_output: { moodUpdate: null, expressionPlan: null,
+    requestKind: 'ambient', explicitPlayback: null, movementControl: { kind: 'keep' },
+    ...(response.type === 'text' ? response.structured_output : {}) } };
 }
 
 function conversationSecurityHarness(input: {
@@ -147,9 +139,9 @@ function conversationSecurityHarness(input: {
           toolChoice: request.toolChoice,
           responseContract: request.responseContract
         });
-        return completeSecurityChatResponse(
-          input.chatResponse ?? { type: 'text', text: input.chatText }
-        );
+        const response = input.chatResponse ?? { type: 'text' as const, text: input.chatText };
+        return request.responseContract ? completeSecurityExpression(response)
+          : response.type === 'text' ? { type: 'text', text: response.text } : response;
       }
     }),
     createCodingTaskService,
@@ -234,6 +226,8 @@ function movementLockDirector() {
     applyPlaybackFeedback: vi.fn(),
     advance: vi.fn(() => []),
     cancelStateLifecycle: vi.fn(),
+    releasePreparedActivity: vi.fn(),
+    releaseExplicitPlayback: vi.fn(),
     handleActiveCharacterChanged: vi.fn(async () => undefined),
     close: vi.fn()
   };
@@ -280,7 +274,7 @@ describe('权限边界安全回归', () => {
       fixture.provider.assertComplete();
     } finally { await fixture.close(); }
   }, 15000);
-  test('正式范围前零请求，拒绝外部目录许可后无越界副作用且模型仍可读取范围内文件', async () => {
+  test('正式范围前零Core请求，拒绝外部目录许可后无越界副作用且模型仍可读取范围内文件', async () => {
     const nonce = crypto.randomUUID();
     const fixture = await createCodingConversation([
       { response: () => codingResponse([{ name: 'write', args: { path: join(fixture.authorized.base, 'outside.txt'), content: '不应写入' }, id: 'private-call-id' }]) },
@@ -575,9 +569,10 @@ describe('权限边界安全回归', () => {
       .resolves.toBeUndefined();
 
     expect(harness.modelRequests).toEqual([{
-      tools: [],
-      toolChoice: 'none',
-      responseContract: expect.objectContaining({ type: 'json_object', name: 'character_chat' })
+      tools: [expect.objectContaining({ function: expect.objectContaining({ name: 'request_task_authorization' }) })],
+      toolChoice: 'auto', responseContract: undefined
+    }, {
+      tools: [], toolChoice: 'none', responseContract: expect.objectContaining({ name: 'character_expression' })
     }]);
     expect(harness.readAuthorizedRootPath).not.toHaveBeenCalled();
     expect(harness.readPrivacySettings).not.toHaveBeenCalled();
@@ -613,7 +608,7 @@ describe('权限边界安全回归', () => {
 
   test('明确文件任务才读取授权且无授权稳定失败并不创建 Agent', async () => {
     const harness = conversationSecurityHarness({
-      chatText: '不得调用聊天模型',
+      chatText: '', chatResponse: { type: 'tool_request', request: { requestId: 'scope-native', toolName: 'request_task_authorization', arguments: {} } },
       authorizedRootPath: null
     });
 
@@ -624,7 +619,7 @@ describe('权限边界安全回归', () => {
     expect(harness.readPrivacySettings).toHaveBeenCalledOnce();
     expect(harness.createCodingTaskService).not.toHaveBeenCalled();
     expect(harness.createPathPolicy).not.toHaveBeenCalled();
-    expect(harness.modelRequests).toEqual([]);
+    expect(harness.modelRequests).toHaveLength(1);
     expect(harness.events).toContainEqual(expect.objectContaining({
       type: 'error',
       code: 'FILE_AUTHORIZATION_REQUIRED'

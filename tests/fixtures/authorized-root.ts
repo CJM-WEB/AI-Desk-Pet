@@ -2,13 +2,13 @@ import { mkdir, mkdtemp, realpath, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import type { ModelResponse } from '@myself/agent-core';
 import type { TaskEvent, ProviderProfileV2 } from '@myself/shared-types';
 import { PrivacySessionRegistry } from '../../apps/desktop/src/main/agent/disclosure-policy';
 import { CodingTaskService } from '../../apps/desktop/src/main/agent/coding-task-service';
 import { createMainConversationComposition } from '../../apps/desktop/src/main/conversation/main-conversation-composition';
 import { ConversationChatAdapter } from '../../apps/desktop/src/main/conversation/conversation-chat-adapter';
 import { createCodingModelConnection } from '../../apps/desktop/src/main/providers/coding-model-connection';
-import { OpenAICompatibleProvider } from '../../apps/desktop/src/main/providers/openai-provider';
 import { resolveCodingTaskResources } from '../../apps/desktop/src/main/agent/coding-task-resources';
 import { startProviderServer, type ProviderScript } from './provider-server';
 
@@ -21,6 +21,7 @@ export interface AuthorizedRootFixture {
 /** 只替换模型 HTTP 和宿主回收站端口；范围、许可、runner、文件与命令均走正式组合。 */
 export async function createCodingConversation(steps: ProviderScript, options: {
   trashFile?: (path: string) => Promise<void>;
+  chatResponses?: ModelResponse[];
 } = {}) {
   const authorized = await createAuthorizedRoot();
   const provider = await startProviderServer(steps);
@@ -35,7 +36,14 @@ export async function createCodingConversation(steps: ProviderScript, options: {
     readProviderSettings: async () => ({ profiles: [profile], route: { primaryProfileId: profile.id, chatProfileId: profile.id, agentProfileId: profile.id, visionProfileId: null, fallbackProfileIds: [], allowCrossProviderFallback: false } }),
     readAuthorizedRootPath: async () => authorized.root,
     readPrivacySettings: async () => ({ dataCategories: { memory: false } }),
-    createChatAdapter: () => new ConversationChatAdapter(new OpenAICompatibleProvider({ id: profile.id, displayName: profile.displayName, baseUrl: provider.baseUrl, model: profile.modelId, hasStoredSecret: true }, async () => provider.apiKey)),
+    // 主申请是无执行 handler 的脚本模型；下方 HTTP server 只计正式 Core 的请求和流式结果。
+    createChatAdapter: () => new ConversationChatAdapter({ respond: async request => {
+      if (request.responseContract) return { type: 'structured', structured_output: { moodUpdate: null, expressionPlan: null, requestKind: 'ambient', explicitPlayback: null, movementControl: { kind: 'keep' } } };
+      if (options.chatResponses?.length) return options.chatResponses.shift()!;
+      if (request.purpose !== 'conversation' || request.tools.length !== 1
+        || request.tools[0]?.function.name !== 'request_task_authorization') throw new Error('夹具未经过正式主申请');
+      return { type: 'tool_request', request: { requestId: 'scope-native', toolName: 'request_task_authorization', arguments: {} } };
+    } }),
     createCodingTaskService: input => {
       creates += 1;
       return new CodingTaskService({

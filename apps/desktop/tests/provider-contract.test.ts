@@ -22,7 +22,7 @@ import {
 import { ProviderRegistry } from '../src/main/providers/provider-registry';
 import { BUILTIN_LOCAL_PROFILE_ID } from '../src/main/local-model/local-model-route';
 import { ConversationChatAdapter } from '../src/main/conversation/conversation-chat-adapter';
-import { characterChatResponseJsonSchema } from '@myself/character-runtime';
+import { characterExpressionSelectionJsonSchema, characterExpressionSelectionSchema } from '@myself/character-runtime';
 import {
   providerCatalog,
   toolRequestSchema,
@@ -104,10 +104,9 @@ const request: ModelRequest = {
 
 const chatResponseContract: ModelResponseContract = {
   type: 'json_object',
-  name: 'character_chat',
-  jsonSchema: characterChatResponseJsonSchema,
-  textField: 'text',
-  allowPlainTextFallback: true
+  name: 'character_expression',
+  jsonSchema: characterExpressionSelectionJsonSchema,
+  validateStructuredOutput: value => characterExpressionSelectionSchema.safeParse(value).success
 };
 
 const structuredChatRequest: ModelRequest = {
@@ -142,56 +141,6 @@ function expectObservableErrorTextHidden(
     expect(observableError.stack ?? '').not.toContain(sensitiveValue);
     expect(String(observableError.cause ?? '')).not.toContain(sensitiveValue);
   }
-}
-
-function characterChatJson(
-  text: string,
-  capabilityPlan: { kind: 'chat' } | {
-    kind: 'agent_task';
-  } = { kind: 'chat' }
-): string {
-  return JSON.stringify({
-    text,
-    movementControl: { kind: 'keep' },
-    capabilityPlan
-  });
-}
-
-function sseResponse(events: readonly string[], keepOpen = false): Response {
-  const encoded = new TextEncoder().encode(events.map(event => `data: ${event}\n\n`).join(''));
-  const body = new ReadableStream<Uint8Array>({
-    start(controller) {
-      // 小网络块确保 SSE 行、JSON escape 与多字节正文不会依赖单次 read 边界。
-      for (let offset = 0; offset < encoded.length; offset += 7) {
-        controller.enqueue(encoded.slice(offset, offset + 7));
-      }
-      if (!keepOpen) controller.close();
-    }
-  });
-  return new Response(body, {
-    headers: { 'content-type': 'text/event-stream' }
-  });
-}
-
-function characterChatSseResponse(providerName: string, content: string): Response {
-  if (providerName === 'Anthropic') {
-    return sseResponse([
-      JSON.stringify({
-        type: 'content_block_delta',
-        delta: { type: 'text_delta', text: content }
-      }),
-      JSON.stringify({ type: 'message_stop' })
-    ]);
-  }
-  if (providerName === 'Gemini') {
-    return sseResponse([JSON.stringify({
-      candidates: [{ content: { parts: [{ text: content }] }, finishReason: 'STOP' }]
-    })]);
-  }
-  return sseResponse([
-    JSON.stringify({ choices: [{ delta: { content } }] }),
-    '[DONE]'
-  ]);
 }
 
 describe('Provider 响应格式故障分类', () => {
@@ -248,24 +197,6 @@ describe('Provider 响应格式故障分类', () => {
     expect(error).toMatchObject({ code: 'TOOL_ARGUMENTS_INVALID', stage: 'tool_call' });
     expect(fetchClient).toHaveBeenCalledOnce();
     expectObservableErrorTextHidden(error, [sensitiveArguments, 'C:\\Users\\Alice\\secret.txt', '私密正文']);
-  });
-
-  test('结构化 SSE 到 EOF 仍缺少协议终态时返回 STREAM_TERMINAL_MISSING', async () => {
-    const provider = new OpenAICompatibleProvider(
-      adapterProfile,
-      async () => 'stream-private-key',
-      vi.fn(async () => sseResponse([
-        JSON.stringify({ choices: [{ delta: { content: '{"text":"仍在生成"}' } }] })
-      ]))
-    );
-
-    await expect(provider.respond({
-      ...structuredChatRequest,
-      onTextDelta: vi.fn()
-    }, new AbortController().signal)).rejects.toMatchObject({
-      code: 'STREAM_TERMINAL_MISSING',
-      stage: 'stream'
-    });
   });
 
   test('响应契约对象缺少可见 text 时返回 RESPONSE_FORMAT_UNSUPPORTED', async () => {
@@ -415,481 +346,6 @@ const structuredProviderCases: StructuredProviderCase[] = [
   }
 ];
 
-const structuredStreamFragments = [
-  '{"activity":"不可见-canary","text":"你\\uD83D',
-  '\\uDC3E好\\n世',
-  '界","status":"idle"}'
-] as const;
-
-const cloudStreamingCases = [
-  {
-    name: 'OpenAI Compatible',
-    createProvider: chatProviderContractCases[0]!.createProvider,
-    response: (keepOpen = false) => sseResponse([
-      ...structuredStreamFragments.map(content => JSON.stringify({ choices: [{ delta: { content } }] })),
-      '[DONE]'
-    ], keepOpen),
-    assertRequest(input: string | URL | Request, body: Record<string, unknown>) {
-      expect(String(input)).toBe('https://api.example.com/v1/chat/completions');
-      expect(body.stream).toBe(true);
-    }
-  },
-  {
-    name: 'Anthropic',
-    createProvider: chatProviderContractCases[1]!.createProvider,
-    response: (keepOpen = false) => sseResponse([
-      ...structuredStreamFragments.map(text => JSON.stringify({
-        type: 'content_block_delta',
-        delta: { type: 'text_delta', text }
-      })),
-      JSON.stringify({ type: 'message_stop' })
-    ], keepOpen),
-    assertRequest(input: string | URL | Request, body: Record<string, unknown>) {
-      expect(String(input)).toBe('https://api.example.com/v1/messages');
-      expect(body.stream).toBe(true);
-    }
-  },
-  {
-    name: 'Gemini',
-    createProvider: chatProviderContractCases[2]!.createProvider,
-    response: (keepOpen = false) => sseResponse(structuredStreamFragments.map((text, index) => JSON.stringify({
-      candidates: [{
-        content: { parts: [{ text }] },
-        ...(index === structuredStreamFragments.length - 1 ? { finishReason: 'STOP' } : {})
-      }]
-    })), keepOpen),
-    assertRequest(input: string | URL | Request, body: Record<string, unknown>) {
-      expect(String(input)).toBe(
-        'https://api.example.com/v1/models/contract-model:streamGenerateContent?alt=sse'
-      );
-      expect(body).not.toHaveProperty('stream');
-    }
-  }
-] as const;
-
-describe('三协议云端普通聊天流式契约', () => {
-  test.each(cloudStreamingCases)(
-    '$name 只增量公开结构化顶层 text 并保留最终完整响应',
-    async contract => {
-      const fetchClient = vi.fn<FetchLike>(async () => contract.response());
-      const deltas: string[] = [];
-      const response = await contract.createProvider(fetchClient).respond({
-        ...structuredChatRequest,
-        onTextDelta: delta => deltas.push(delta)
-      }, new AbortController().signal);
-
-      expect(response).toMatchObject({
-        type: 'text',
-        text: '你🐾好\n世界',
-        structured_output: { activity: '不可见-canary', status: 'idle' }
-      });
-      expect(deltas.join('')).toBe('你🐾好\n世界');
-      expect(JSON.stringify(deltas)).not.toContain('不可见-canary');
-      const [input, init] = fetchClient.mock.calls[0] ?? [];
-      contract.assertRequest(input!, JSON.parse(String(init?.body)) as Record<string, unknown>);
-    }
-  );
-
-  test.each(cloudStreamingCases)(
-    '$name 流式纯文本不被结构化投影器提前拒绝',
-    async contract => {
-      const fetchClient = vi.fn<FetchLike>(async () => characterChatSseResponse(
-        contract.name,
-        '流式纯文本正文'
-      ));
-      const deltas: string[] = [];
-
-      await expect(contract.createProvider(fetchClient).respond({
-        ...structuredChatRequest,
-        onTextDelta: delta => deltas.push(delta)
-      }, new AbortController().signal)).resolves.toEqual({
-        type: 'text',
-        text: '流式纯文本正文'
-      });
-      expect(deltas.join('')).toBe('流式纯文本正文');
-    }
-  );
-
-  test.each(cloudStreamingCases)(
-    '$name 收到协议终态后主动结束，不等待服务端关闭长连接',
-    async contract => {
-      const fetchClient = vi.fn<FetchLike>(async () => contract.response(true));
-      const response = contract.createProvider(fetchClient).respond({
-        ...structuredChatRequest,
-        onTextDelta: vi.fn()
-      }, new AbortController().signal);
-
-      await expect(Promise.race([
-        response,
-        new Promise((_, reject) => setTimeout(
-          () => reject(new Error('SSE_TERMINAL_WAITED_FOR_EOF')),
-          500
-        ))
-      ])).resolves.toMatchObject({ type: 'text', text: '你🐾好\n世界' });
-    }
-  );
-
-  test.each(chatProviderContractCases)(
-    '$name 工具回合即使携带 callback 也保持缓冲 JSON',
-    async contract => {
-      const fetchClient = vi.fn<FetchLike>(async () => jsonResponse(contract.textResponse('完成')));
-      const onTextDelta = vi.fn();
-
-      await contract.createProvider(fetchClient).respond({ ...request, onTextDelta }, new AbortController().signal);
-
-      expect(onTextDelta).not.toHaveBeenCalled();
-      const [input, init] = fetchClient.mock.calls[0] ?? [];
-      const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
-      if (contract.name === 'OpenAI Compatible') expect(body.stream).not.toBe(true);
-      if (contract.name === 'Anthropic') expect(body.stream).not.toBe(true);
-      if (contract.name === 'Gemini') expect(String(input)).toContain(':generateContent');
-    }
-  );
-
-  test('OpenAI Compatible 缺少协议终态时失败关闭且不返回最终响应', async () => {
-    const fetchClient = vi.fn<FetchLike>(async () => sseResponse([
-      JSON.stringify({ choices: [{ delta: { content: '{"text":"未完成"}' } }] })
-    ]));
-    const deltas: string[] = [];
-
-    await expect(chatProviderContractCases[0]!.createProvider(fetchClient).respond({
-      ...structuredChatRequest,
-      onTextDelta: delta => deltas.push(delta)
-    }, new AbortController().signal)).rejects.toMatchObject({
-      code: 'STREAM_TERMINAL_MISSING'
-    });
-
-    expect(deltas.join('')).toBe('未完成');
-  });
-
-  test.each(['SAFETY', 'MAX_TOKENS', 'UNKNOWN_REASON'])(
-    'Gemini 将非 STOP 终态 %s 作为失败关闭',
-    async finishReason => {
-      const fetchClient = vi.fn<FetchLike>(async () => sseResponse(
-        structuredStreamFragments.map((text, index) => JSON.stringify({
-          candidates: [{
-            content: { parts: [{ text }] },
-            ...(index === structuredStreamFragments.length - 1 ? { finishReason } : {})
-          }]
-        }))
-      ));
-
-      await expect(chatProviderContractCases[2]!.createProvider(fetchClient).respond({
-        ...structuredChatRequest,
-        onTextDelta: vi.fn()
-      }, new AbortController().signal)).rejects.toMatchObject({
-        code: 'RESPONSE_SHAPE_INVALID',
-        retryable: false
-      });
-    }
-  );
-
-  test('Anthropic 终态后的正文数据使整轮失败', async () => {
-    const fetchClient = vi.fn<FetchLike>(async () => sseResponse([
-      JSON.stringify({ type: 'message_stop' }),
-      JSON.stringify({
-        type: 'content_block_delta',
-        delta: { type: 'text_delta', text: '{"text":"迟到"}' }
-      })
-    ]));
-
-    await expect(chatProviderContractCases[1]!.createProvider(fetchClient).respond({
-      ...structuredChatRequest,
-      onTextDelta: vi.fn()
-    }, new AbortController().signal)).rejects.toMatchObject({
-      code: 'RESPONSE_FORMAT_UNSUPPORTED'
-    });
-  });
-
-  test('OpenAI Compatible 拒绝重复顶层 text 且不公开第二段', async () => {
-    const fetchClient = vi.fn<FetchLike>(async () => sseResponse([
-      JSON.stringify({ choices: [{ delta: { content: '{"text":"第一段"' } }] }),
-      JSON.stringify({ choices: [{ delta: { content: ',"text":"第二段"}' } }] }),
-      '[DONE]'
-    ]));
-    const deltas: string[] = [];
-
-    await expect(chatProviderContractCases[0]!.createProvider(fetchClient).respond({
-      ...structuredChatRequest,
-      onTextDelta: delta => deltas.push(delta)
-    }, new AbortController().signal)).rejects.toMatchObject({
-      code: 'RESPONSE_SHAPE_INVALID',
-      retryable: false
-    });
-
-    expect(deltas.join('')).toBe('第一段');
-  });
-
-  test('Anthropic 忽略私有 thinking 和 signature 增量并继续公开后续正文', async () => {
-    const fetchClient = vi.fn<FetchLike>(async () => sseResponse([
-      JSON.stringify({
-        type: 'content_block_delta',
-        delta: { type: 'thinking_delta', thinking: '不可见思考' }
-      }),
-      JSON.stringify({
-        type: 'content_block_delta',
-        delta: { type: 'signature_delta', signature: '不可见签名' }
-      }),
-      JSON.stringify({
-        type: 'content_block_delta',
-        delta: { type: 'text_delta', text: '{"text":"正常","status":"idle"}' }
-      }),
-      JSON.stringify({ type: 'message_stop' })
-    ]));
-    const deltas: string[] = [];
-
-    await expect(chatProviderContractCases[1]!.createProvider(fetchClient).respond({
-      ...structuredChatRequest,
-      onTextDelta: delta => deltas.push(delta)
-    }, new AbortController().signal)).resolves.toMatchObject({
-      type: 'text',
-      text: '正常'
-    });
-
-    expect(deltas.join('')).toBe('正常');
-    expect(JSON.stringify(deltas)).not.toContain('不可见');
-  });
-
-  test('Anthropic 拒绝未知 content_block_delta 类型且不公开后续正文', async () => {
-    const fetchClient = vi.fn<FetchLike>(async () => sseResponse([
-      JSON.stringify({
-        type: 'content_block_delta',
-        delta: { type: 'input_json_delta', partial_json: '{"unexpected":true}' }
-      }),
-      JSON.stringify({
-        type: 'content_block_delta',
-        delta: { type: 'text_delta', text: '{"text":"不得公开"}' }
-      }),
-      JSON.stringify({ type: 'message_stop' })
-    ]));
-    const onTextDelta = vi.fn();
-
-    await expect(chatProviderContractCases[1]!.createProvider(fetchClient).respond({
-      ...structuredChatRequest,
-      onTextDelta
-    }, new AbortController().signal)).rejects.toMatchObject({
-      code: 'RESPONSE_SHAPE_INVALID',
-      retryable: false
-    });
-
-    expect(onTextDelta).not.toHaveBeenCalled();
-  });
-
-  test('Anthropic 私有 thinking 和 signature 增量累计超预算时失败且不公开正文', async () => {
-    const privateDelta = '思'.repeat(80_000);
-    const events = [
-      { type: 'content_block_delta', delta: { type: 'thinking_delta', thinking: privateDelta } },
-      { type: 'content_block_delta', delta: { type: 'signature_delta', signature: privateDelta } },
-      { type: 'content_block_delta', delta: { type: 'thinking_delta', thinking: privateDelta } },
-      {
-        type: 'content_block_delta',
-        delta: { type: 'text_delta', text: '{"text":"不得到达"}' }
-      },
-      { type: 'message_stop' }
-    ].map(event => new TextEncoder().encode(`data: ${JSON.stringify(event)}\n\n`));
-    const fetchClient = vi.fn<FetchLike>(async () => new Response(new ReadableStream<Uint8Array>({
-      start(controller) {
-        for (const event of events) controller.enqueue(event);
-        controller.close();
-      }
-    }), {
-      headers: { 'content-type': 'text/event-stream' }
-    }));
-    const onTextDelta = vi.fn();
-
-    await expect(chatProviderContractCases[1]!.createProvider(fetchClient).respond({
-      ...structuredChatRequest,
-      onTextDelta
-    }, new AbortController().signal)).rejects.toMatchObject({
-      code: 'RESPONSE_SHAPE_INVALID',
-      retryable: false
-    });
-
-    expect(onTextDelta).not.toHaveBeenCalled();
-  }, 20_000);
-
-  test.each(cloudStreamingCases)(
-    '$name 在请求前已 Abort 时不公开任何增量',
-    async contract => {
-      const fetchClient = vi.fn<FetchLike>(async () => contract.response());
-      const onTextDelta = vi.fn();
-      const controller = new AbortController();
-      controller.abort(new DOMException('测试取消', 'AbortError'));
-
-      await expect(contract.createProvider(fetchClient).respond({
-        ...structuredChatRequest,
-        onTextDelta
-      }, controller.signal)).rejects.toMatchObject({ name: 'AbortError' });
-      expect(onTextDelta).not.toHaveBeenCalled();
-    }
-  );
-
-  test('OpenAI Compatible 在事件可读后取消时不公开迟到增量', async () => {
-    const abortReason = new DOMException('测试取消', 'AbortError');
-    let releaseFirstAbortCheck: (() => void) | undefined;
-    const firstAbortCheck = new Promise<void>(resolve => { releaseFirstAbortCheck = resolve; });
-    let firstCheckPending = true;
-    let cancelled = false;
-    const signal = {
-      get aborted() {
-        if (firstCheckPending) {
-          firstCheckPending = false;
-          releaseFirstAbortCheck?.();
-          return false;
-        }
-        return cancelled;
-      },
-      reason: abortReason
-    } as AbortSignal;
-    const encoded = new TextEncoder().encode(
-      `data: ${JSON.stringify({ choices: [{ delta: { content: '{"text":"迟到"}' } }] })}\n\n`
-    );
-    const body = new ReadableStream<Uint8Array>({
-      async pull(controller) {
-        await firstAbortCheck;
-        controller.enqueue(encoded);
-        // 模拟 reader.read 返回与同步事件投影之间抵达的取消。
-        cancelled = true;
-        controller.close();
-      }
-    });
-    const fetchClient = vi.fn<FetchLike>(async () => new Response(body, {
-      headers: { 'content-type': 'text/event-stream' }
-    }));
-    const onTextDelta = vi.fn();
-
-    await expect(chatProviderContractCases[0]!.createProvider(fetchClient).respond({
-      ...structuredChatRequest,
-      onTextDelta
-    }, signal)).rejects.toBe(abortReason);
-
-    expect(onTextDelta).not.toHaveBeenCalled();
-  });
-
-  test('Gemini 只公开非 thought 的 text Part，忽略不可见 Part', async () => {
-    const fetchClient = vi.fn<FetchLike>(async () => sseResponse([
-      JSON.stringify({
-        candidates: [{
-          content: {
-            parts: [
-              { thought: true, text: '不可见推理' },
-              { functionCall: { name: 'unused', args: {} } },
-              { text: '{"text":"公开","status":"idle"}' }
-            ]
-          },
-          finishReason: 'STOP'
-        }]
-      })
-    ]));
-    const deltas: string[] = [];
-
-    await expect(chatProviderContractCases[2]!.createProvider(fetchClient).respond({
-      ...structuredChatRequest,
-      onTextDelta: delta => deltas.push(delta)
-    }, new AbortController().signal)).resolves.toMatchObject({
-      type: 'text',
-      text: '公开'
-    });
-
-    expect(deltas.join('')).toBe('公开');
-    expect(JSON.stringify(deltas)).not.toContain('不可见推理');
-  });
-
-  test('Gemini 拒绝同一流式 Part 混合正文和函数调用', async () => {
-    const fetchClient = vi.fn<FetchLike>(async () => sseResponse([
-      JSON.stringify({
-        candidates: [{
-          content: {
-            parts: [{
-              text: '{"text":"不得公开","status":"idle"}',
-              functionCall: { name: 'unused', args: {} }
-            }]
-          },
-          finishReason: 'STOP'
-        }]
-      })
-    ]));
-
-    await expect(chatProviderContractCases[2]!.createProvider(fetchClient).respond({
-      ...structuredChatRequest,
-      onTextDelta: vi.fn()
-    }, new AbortController().signal)).rejects.toMatchObject({
-      code: 'RESPONSE_SHAPE_INVALID'
-    });
-  });
-
-  test('OpenAI Compatible 对 application/json;charset 回退为缓冲 JSON', async () => {
-    const fetchClient = vi.fn<FetchLike>(async () => new Response(JSON.stringify(
-      chatProviderContractCases[0]!.textResponse('{"text":"兼容回退","status":"idle"}')
-    ), {
-      headers: { 'content-type': 'application/json; charset=utf-8' }
-    }));
-    const onTextDelta = vi.fn();
-
-    await expect(chatProviderContractCases[0]!.createProvider(fetchClient).respond({
-      ...structuredChatRequest,
-      onTextDelta
-    }, new AbortController().signal)).resolves.toMatchObject({
-      type: 'text',
-      text: '兼容回退'
-    });
-
-    expect(onTextDelta).not.toHaveBeenCalled();
-  });
-
-  test('OpenAI Compatible 终态前已经公开的 text 在最终 JSON 无效时不冒充成功', async () => {
-    const fetchClient = vi.fn<FetchLike>(async () => sseResponse([
-      JSON.stringify({ choices: [{ delta: { content: '{"text":"可见但未提交"' } }] }),
-      JSON.stringify({ choices: [{ delta: { content: ',"text":123}' } }] }),
-      '[DONE]'
-    ]));
-    const deltas: string[] = [];
-
-    await expect(chatProviderContractCases[0]!.createProvider(fetchClient).respond({
-      ...structuredChatRequest,
-      onTextDelta: delta => deltas.push(delta)
-    }, new AbortController().signal)).rejects.toMatchObject({
-      code: 'RESPONSE_SHAPE_INVALID'
-    });
-
-    expect(deltas.join('')).toBe('可见但未提交');
-  });
-
-  test('OpenAI Compatible 把 SSE 读取异常归一为可重试网络错误', async () => {
-    const body = new ReadableStream<Uint8Array>({
-      start(controller) {
-        controller.error(new Error('sensitive-stream-failure'));
-      }
-    });
-    const fetchClient = vi.fn<FetchLike>(async () => new Response(body, {
-      headers: { 'content-type': 'text/event-stream' }
-    }));
-
-    await expect(chatProviderContractCases[0]!.createProvider(fetchClient).respond({
-      ...structuredChatRequest,
-      onTextDelta: vi.fn()
-    }, new AbortController().signal)).rejects.toMatchObject({
-      code: 'PROVIDER_NETWORK_ERROR',
-      retryable: true
-    });
-  });
-
-  test('OpenAI Compatible 按 UTF-8 字节拒绝超预算的云端 reasoning 帧', async () => {
-    const fetchClient = vi.fn<FetchLike>(async () => sseResponse([
-      JSON.stringify({ choices: [{ delta: { reasoning_content: '思'.repeat(90_000) } }] }),
-      JSON.stringify({ choices: [{ delta: { content: '{"text":"正常","status":"idle"}' } }] }),
-      '[DONE]'
-    ]));
-
-    await expect(chatProviderContractCases[0]!.createProvider(fetchClient).respond({
-      ...structuredChatRequest,
-      onTextDelta: vi.fn()
-    }, new AbortController().signal)).rejects.toMatchObject({
-      code: 'RESPONSE_SHAPE_INVALID'
-    });
-  }, 20_000);
-});
-
 describe('ConversationChatAdapter 三类 Provider 协议契约', () => {
   test.each(chatProviderContractCases)('$name先自然正文再独立表现，正文逐字保留且不增量公开', async contract => {
     const text = '  **自然正文**\n'; let calls = 0;
@@ -913,11 +369,13 @@ describe('ConversationChatAdapter 三类 Provider 协议契约', () => {
     expect(await new ConversationChatAdapter(contract.createProvider(fetchClient)).respond({ history: [], text: '普通聊天', behaviorContext: providerBehaviorContext, signal: new AbortController().signal })).toEqual({ text, capabilityPlan: { kind: 'chat' }, expressionStatus: 'failed' });
     expect(fetchClient).toHaveBeenCalledTimes(2);
   });
-  test.each(chatProviderContractCases)('$name空正文失败且原始响应不进入错误', async contract => {
-    const adapter = new ConversationChatAdapter(contract.createProvider(vi.fn(async () => jsonResponse(contract.textResponse(' ')))));
+  test.each(chatProviderContractCases)('$name非法响应实际携带隐私标记且错误不泄露', async contract => {
+    const canary = 'private-不得泄露';
+    const raw = { ...contract.textResponse(' ' ) as object, invalidPrivateField: canary };
+    const adapter = new ConversationChatAdapter(contract.createProvider(vi.fn(async () => jsonResponse(raw))));
     const error = await adapter.respond({ history: [], text: '测试', behaviorContext: providerBehaviorContext, signal: new AbortController().signal }).catch(reason => reason);
     expect(error).toMatchObject({ code: 'RESPONSE_FORMAT_UNSUPPORTED', retryable: false });
-    expectObservableErrorTextHidden(error, ['private', '不得泄露']);
+    expectObservableErrorTextHidden(error, [canary]);
   });
   test.each(chatProviderContractCases)(
     '$name 的工具响应会被聊天适配器拒绝',
@@ -1164,7 +622,7 @@ describe('结构化聊天响应协议映射', () => {
     '$name 映射无工具响应契约并解码正文',
     async contract => {
       const fetchClient = vi.fn<FetchLike>(async () => jsonResponse(
-        contract.textResponse('{"text":"结构正文"}')
+        contract.textResponse(JSON.stringify({"moodUpdate":null,"expressionPlan":null,"requestKind":"ambient","explicitPlayback":null,"movementControl":{"kind":"keep"}}))
       ));
       const provider = contract.createProvider(fetchClient);
 
@@ -1172,9 +630,7 @@ describe('结构化聊天响应协议映射', () => {
         structuredChatRequest,
         new AbortController().signal
       )).resolves.toEqual({
-        type: 'text',
-        text: '结构正文',
-        structured_output: { text: '结构正文' }
+        type: 'structured', structured_output: {"moodUpdate":null,"expressionPlan":null,"requestKind":"ambient","explicitPlayback":null,"movementControl":{"kind":"keep"}}
       });
 
       const body = JSON.parse(String(fetchClient.mock.calls[0]?.[1]?.body)) as Record<
@@ -2644,7 +2100,11 @@ capabilityPlan: { kind: 'chat' }}
     const second = JSON.parse(String(fetchClient.mock.calls[1]?.[1]?.body));
     expect(first).toMatchObject({ model: 'deepseek-v4-flash', thinking: { type: 'disabled' }, max_tokens: 4096, tool_choice: 'auto' });
     expect(first).not.toHaveProperty('response_format');
+    expect(first.tools[0].function.description).toContain('不能代替普通聊天征求同意');
+    expect(first.messages[0].content).toContain('是否需要整理');
     expect(second).toMatchObject({ model: 'deepseek-v4-flash', thinking: { type: 'disabled' }, tools: [], response_format: { type: 'json_object' } });
+    // JSON 模式仅保证 JSON；服务端实际收到的消息必须包含完整嵌套输出约定。
+    expect(second.messages).toContainEqual({ role: 'system', content: '完整输出JSON Schema：' + JSON.stringify(characterExpressionSelectionJsonSchema) });
   });
   test.each([['空 content', null, 'RESPONSE_SHAPE_INVALID'], ['全空白 content', ' \n\t'.repeat(18), 'RESPONSE_FORMAT_UNSUPPORTED']] as const)('DeepSeek自然聊天%s只失败一次且不请求表现', async (_name, content, code) => {
     const profile: ProviderProfileV2 = { id: 'deepseek-empty-chat-profile', displayName: 'DeepSeek', mode: 'preset', providerId: 'deepseek', modelId: 'deepseek-v4-flash', hasStoredSecret: true };

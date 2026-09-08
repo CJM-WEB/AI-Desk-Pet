@@ -1,5 +1,7 @@
 # AI Pet 基于 OpenCode 的文件操作与任务执行重构
 
+2026-09-08 入口补充：正式发送改为[单一发送与原生范围申请](2026-09-08-single-send-expression-isolation-design.md)，对应[有限验收](../../operations/2026-09-08-single-send-expression-acceptance.md)独立记录。原 Core、Main 授权与命令边界保持，下面历史结果不追认为全量通过。
+
 日期：2026-09-05。状态：**用户已要求首轮实现 DeepSeek 与内置免费 Qwen；采用任务范围授权，接入验证进行中**。
 
 2026-09-06补充：用户已批准[任务入口稳定性与重复操作保护调整](2026-09-06-ai-pet-task-entry-and-loop-proposal.md)。该补充只覆盖原生申请隔离验证、通过后的对应入口迁移及第三次连续重复前保护；模型、原Core执行链、Main权限、网站隔离与暂不打包保持。验证与实现状态以[实际验收记录](../../operations/2026-09-05-deepseek-qwen-coding-tasks.md)为准，批准不代表功能已完成。

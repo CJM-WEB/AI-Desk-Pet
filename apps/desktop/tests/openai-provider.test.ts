@@ -1,6 +1,6 @@
 import { describe, expect, test, vi } from 'vitest';
 import type { ModelRequest, ToolDefinition } from '@myself/agent-core';
-import { characterChatResponseJsonSchema } from '@myself/character-runtime';
+import { characterExpressionSelectionJsonSchema, characterExpressionSelectionSchema } from '@myself/character-runtime';
 import {
   OpenAICompatibleProvider,
   ProviderError
@@ -138,7 +138,7 @@ describe('OpenAICompatibleProvider', () => {
     const fetchMock = vi.fn<FetchLike>(async () => jsonResponse({
       choices: [{
         message: {
-          content: '{"text":"结构正文"}',
+          content: JSON.stringify({"moodUpdate":null,"expressionPlan":null,"requestKind":"ambient","explicitPlayback":null,"movementControl":{"kind":"keep"}}),
           metadata: {
             behaviorIntent: {
               stateIntent: { semantic: 'move' },
@@ -159,15 +159,12 @@ describe('OpenAICompatibleProvider', () => {
       reasoningMode: 'provider_default',
       responseContract: {
         type: 'json_object',
-        name: 'character_chat',
-        jsonSchema: characterChatResponseJsonSchema,
-        textField: 'text',
-        allowPlainTextFallback: true
+        name: 'character_expression',
+        jsonSchema: characterExpressionSelectionJsonSchema,
+        validateStructuredOutput: value => characterExpressionSelectionSchema.safeParse(value).success
       }
     }, new AbortController().signal)).resolves.toEqual({
-      type: 'text',
-      text: '结构正文',
-      structured_output: { text: '结构正文' }
+      type: 'structured', structured_output: {"moodUpdate":null,"expressionPlan":null,"requestKind":"ambient","explicitPlayback":null,"movementControl":{"kind":"keep"}}
     });
   });
 
@@ -178,7 +175,7 @@ describe('OpenAICompatibleProvider', () => {
     const fetchMock = vi.fn<FetchLike>(async () => jsonResponse({
       choices: [{
         message: {
-          content: '{"text":"结构正文"}',
+          content: JSON.stringify({"moodUpdate":null,"expressionPlan":null,"requestKind":"ambient","explicitPlayback":null,"movementControl":{"kind":"keep"}}),
           metadata: { emotion: metadataEmotion }
         }
       }]
@@ -192,15 +189,12 @@ describe('OpenAICompatibleProvider', () => {
       reasoningMode: 'provider_default',
       responseContract: {
         type: 'json_object',
-        name: 'character_chat',
-        jsonSchema: characterChatResponseJsonSchema,
-        textField: 'text',
-        allowPlainTextFallback: true
+        name: 'character_expression',
+        jsonSchema: characterExpressionSelectionJsonSchema,
+        validateStructuredOutput: value => characterExpressionSelectionSchema.safeParse(value).success
       }
     }, new AbortController().signal)).resolves.toEqual({
-      type: 'text',
-      text: '结构正文',
-      structured_output: { text: '结构正文' }
+      type: 'structured', structured_output: {"moodUpdate":null,"expressionPlan":null,"requestKind":"ambient","explicitPlayback":null,"movementControl":{"kind":"keep"}}
     });
   });
 

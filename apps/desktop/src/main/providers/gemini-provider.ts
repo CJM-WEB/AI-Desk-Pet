@@ -12,14 +12,9 @@ import {
   type ProviderAdapterConfig,
   ProviderError,
   normalizeFetchError,
-  normalizeHttpError,
   normalizeResponseContractText,
   readProviderJson
 } from './openai-provider';
-import {
-  readStructuredTextSse,
-  shouldStreamStructuredText
-} from './structured-text-stream';
 import { ProviderResponseError } from './provider-response-error';
 
 const geminiPartSchema = z.union([
@@ -119,13 +114,6 @@ function serializeTool(tool: ToolDefinition): Record<string, unknown> {
     description: tool.function.description,
     parameters: tool.function.parameters
   };
-}
-
-function streamGenerateContentUrl(baseUrl: string, modelId: string): URL {
-  const url = generateContentUrl(baseUrl, modelId);
-  url.pathname = url.pathname.replace(/:generateContent$/u, ':streamGenerateContent');
-  url.searchParams.set('alt', 'sse');
-  return url;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -270,7 +258,6 @@ export class GeminiProvider implements ModelProvider {
 
   async respond(request: ModelRequest, signal: AbortSignal): Promise<ModelResponse> {
     assertResponseContractRequest(request);
-    const structuredStream = shouldStreamStructuredText(request);
     const systemParts = request.messages
       .filter(message => message.role === 'system')
       .map(message => ({ text: message.content }));
@@ -295,9 +282,7 @@ export class GeminiProvider implements ModelProvider {
     let response: Response;
     try {
       response = await this.fetchClient(
-        structuredStream
-          ? streamGenerateContentUrl(this.config.baseUrl, this.config.modelId)
-          : generateContentUrl(this.config.baseUrl, this.config.modelId),
+        generateContentUrl(this.config.baseUrl, this.config.modelId),
         {
           method: 'POST',
           signal,
@@ -312,9 +297,7 @@ export class GeminiProvider implements ModelProvider {
       normalizeFetchError(error, signal);
     }
 
-    const raw = structuredStream
-      ? await readGeminiStructuredSse(response, request, signal)
-      : await readProviderJson(response);
+    const raw = await readProviderJson(response);
     const normalized = normalizeResponse(
       raw,
       toolName => `gemini-call-${toolName}-${this.nextFallbackRequestId++}`,
@@ -328,64 +311,4 @@ export class GeminiProvider implements ModelProvider {
     }
     return normalized.response;
   }
-}
-
-async function readGeminiStructuredSse(
-  response: Response,
-  request: ModelRequest,
-  signal: AbortSignal
-): Promise<unknown> {
-  if (!response.ok) throw normalizeHttpError(response.status);
-  return readStructuredTextSse(response, {
-    request,
-    signal,
-    malformed: () => { throw new ProviderResponseError('RESPONSE_SHAPE_INVALID', 'stream'); },
-    terminalMissing: () => { throw new ProviderResponseError('STREAM_TERMINAL_MISSING', 'stream'); },
-    normalizeReadError: error => normalizeFetchError(error, signal),
-    decodeEvent: (_eventName, data) => {
-      let raw: unknown;
-      try { raw = JSON.parse(data); } catch {
-        throw new ProviderResponseError('RESPONSE_SHAPE_INVALID', 'stream');
-      }
-      if (typeof raw !== 'object' || raw === null) {
-        throw new ProviderResponseError('RESPONSE_SHAPE_INVALID', 'stream');
-      }
-      const candidates = Reflect.get(raw, 'candidates');
-      const candidate = Array.isArray(candidates) ? candidates[0] : undefined;
-      if (typeof candidate !== 'object' || candidate === null) {
-        throw new ProviderResponseError('RESPONSE_SHAPE_INVALID', 'stream');
-      }
-      const content = Reflect.get(candidate, 'content');
-      const parts = typeof content === 'object' && content !== null ? Reflect.get(content, 'parts') : undefined;
-      if (!Array.isArray(parts)) {
-        throw new ProviderResponseError('RESPONSE_SHAPE_INVALID', 'stream');
-      }
-      let fragment = '';
-      for (const part of parts) {
-        if (typeof part !== 'object' || part === null) continue;
-        // Gemini 的 Part 可以携带思考、函数等非可见数据；普通聊天流只累积非 thought 的显式正文。
-        if (Reflect.get(part, 'thought') === true) continue;
-        const text = Reflect.get(part, 'text');
-        if (typeof text !== 'string') continue;
-        if ([
-          'inlineData', 'functionCall', 'functionResponse', 'fileData',
-          'executableCode', 'codeExecutionResult', 'toolCall', 'toolResponse'
-        ].some(field => Reflect.has(part, field))) {
-          throw new ProviderResponseError('RESPONSE_SHAPE_INVALID', 'stream');
-        }
-        fragment += text;
-      }
-      const hasFinishReason = Reflect.has(candidate, 'finishReason');
-      const finishReason = Reflect.get(candidate, 'finishReason');
-      // 只有 STOP 表示完整生成；安全拦截、长度截断或未知终态都不能提交部分 JSON。
-      if (hasFinishReason && finishReason !== 'STOP') {
-        throw new ProviderResponseError('RESPONSE_SHAPE_INVALID', 'stream');
-      }
-      return {
-        fragment,
-        ...(finishReason === 'STOP' ? { done: true } : {})
-      };
-    },
-    toRaw: content => ({ candidates: [{ content: { parts: [{ text: content }] } }] })
-  });
 }

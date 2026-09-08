@@ -1,3 +1,4 @@
+import type { ModelRequest } from '@myself/agent-core';
 import { expect, it, vi } from 'vitest';
 import { characterManifestV3Schema } from '@myself/character-runtime';
 import { resourceFields, v3Fixture } from '../../../packages/character-runtime/tests/character-v3-fixture';
@@ -17,7 +18,7 @@ async function fixture(stateOptions: { suggestedDurationMs?: number; agentInfera
   const service = new CharacterBehaviorService({ store: { getActiveManifestV3: async () => characterManifestV3Schema.parse({ ...draft, ...resourceFields }) }, motion, now: () => now });
   await service.initialize();
   const saveMovementMode = vi.fn(async () => undefined);
-  const director = new CharacterBehaviorDirector({ behavior: service, motion, initialGeneration: 'one', initialSettings: { movementMode: 0, proactivityMode: 'assistive' }, saveMovementMode });
+  const director = new CharacterBehaviorDirector({ behavior: service, motion, now: () => now, initialGeneration: 'one', initialSettings: { movementMode: 0, proactivityMode: 'assistive' }, saveMovementMode });
   return { service, director, motion, saveMovementMode, time: (value: number) => { now = value; } };
 }
 it('明确状态经本地名称或模型描述直达，按作者时长或默认三秒驻留后回 idle', async () => {
@@ -30,11 +31,12 @@ it('明确状态经本地名称或模型描述直达，按作者时长或默认�
     expect(!!prepared.explicitPlaybackToken).toBe(exact);
     const context = f.director.captureExpressionContext();
     const reply = exact ? {} : await new ConversationChatAdapter({ respond: async request => {
+      if (!request.responseContract) return { type: 'text', text: '轻快地陪你一会儿。' };
       expect(request.tools).toEqual([]);
       expect(request.toolChoice).toBe('none');
       expect(request.responseContract?.jsonSchema.properties).toHaveProperty('explicitPlayback');
-      return { type: 'text', text: '轻快地陪你一会儿。', structured_output: {
-        explicitPlayback: { stateId: 'joy' }, movementControl: { kind: 'keep' }, capabilityPlan: { kind: 'chat' }
+      return { type: 'structured', structured_output: {
+        moodUpdate: null, expressionPlan: null, requestKind: 'state', explicitPlayback: { stateId: 'joy' }, movementControl: { kind: 'keep' }
       } };
     } }).respond({ history: [], text, signal: new AbortController().signal, behaviorContext: f.director.getChatContext(),
       explicitPlaybackRequested: prepared.explicitDirective?.kind === 'play' && prepared.explicitPlaybackToken === undefined });
@@ -76,14 +78,14 @@ it('聊天 null 经真实 Adapter 与 Main 后保留原心情修订及后续计�
   const mood = f.service.snapshot()!.mood!;
   const prepared = await f.director.prepareUserPrompt('继续聊聊');
   const context = f.director.captureExpressionContext();
-  const respond = vi.fn(async () => ({ type: 'text' as const, text: '我在听。', structured_output: {
-    moodUpdate: null, expressionPlan: null, movementControl: { kind: 'keep' }, capabilityPlan: { kind: 'chat' }
-  } }));
+  const respond = vi.fn(async (request: ModelRequest) => request.responseContract
+    ? { type: 'structured' as const, structured_output: { moodUpdate: null, expressionPlan: null, requestKind: 'ambient', explicitPlayback: null, movementControl: { kind: 'keep' } } }
+    : { type: 'text' as const, text: '我在听。' });
   const reply = await new ConversationChatAdapter({ respond }).respond({ text: prepared.originalText, history: [],
     behaviorContext: f.director.getChatContext(), signal: new AbortController().signal });
   expect(reply).not.toHaveProperty('moodUpdate');
-  expect(reply).not.toHaveProperty('expressionPlan');
-  expect(respond).toHaveBeenCalledOnce();
+  expect(reply.expressionPlan).toEqual({ states: [] });
+  expect(respond).toHaveBeenCalledTimes(2);
   await f.director.completeUserPrompt({ generation: 'one', eventId: 'no-update', context, explicitDirective: prepared.explicitDirective, ...reply });
   f.time(2999); f.director.advance();
   expect(f.service.snapshot()?.schedule.current?.actionId).toBe('jump');
@@ -92,9 +94,9 @@ it('聊天 null 经真实 Adapter 与 Main 后保留原心情修订及后续计�
   expect(f.service.snapshot()?.stateId).toBe('rest');
   f.time(12999); f.director.advance();
   expect(f.service.snapshot()?.stateId).toBe('rest');
-  // 有限片段休息结束后，原心情和计划仍可支持下一次表现。
+  // 成功无匹配退役旧候选；片段到期后不再重播，但心情修订保留。
   f.time(13000); f.director.advance();
-  expect(f.service.snapshot()?.schedule.current?.actionId).toBe('jump');
+  expect(f.service.snapshot()?.stateId).toBe('rest');
   expect(f.service.snapshot()?.mood?.revision).toBe(mood.revision);
   expect(f.motion.requestIntent).not.toHaveBeenCalled();
 });
@@ -103,9 +105,12 @@ it('同轮两级表现不吞独立的一次运动，完成事件不重发运动'
   await f.director.prepareUserPrompt('开心地向左一点');
   await f.director.completeUserPrompt({ generation: 'one', eventId: 'motion', context: f.director.captureExpressionContext(), explicitDirective: null,
     movementControl: { kind: 'move_once', target: 'left', distance: 'near' }, moodUpdate: { summary: '开心', strength: 1 },
-    expressionPlan: { states: [{ stateId: 'joy', score: 1, minStrength: 0, maxStrength: 1, actions: [{ actionId: 'jump', score: 1 }] }] } });
+    expressionStatus: 'ready', requestKind: 'movement', expressionPlan: { states: [{ stateId: 'joy', score: 1, minStrength: 0, maxStrength: 1, when: { moving: true }, lifetime: 'condition', actions: [{ actionId: 'jump', score: 1 }] }] } });
   f.director.handleTaskEvent({ type: 'phase', phase: 'success' });
   f.director.handleTaskEvent({ type: 'phase', phase: 'success' });
+  expect(f.motion.requestIntent).not.toHaveBeenCalled();
+  const active = f.service.snapshot()!.schedule.current!;
+  f.director.applyPlaybackFeedback({ playbackToken: active.playbackToken, actionId: active.actionId, status: 'started', occurredAtMs: 0 });
   expect(f.motion.requestIntent).toHaveBeenCalledOnce();
 });
 it('明确动作接纳同轮心情及后续计划，重复完成不重播，旧请求不能改心情', async () => {

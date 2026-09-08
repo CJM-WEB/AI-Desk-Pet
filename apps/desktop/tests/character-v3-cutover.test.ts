@@ -78,10 +78,11 @@ test('旧规则逐项保留，省略处置不能发布，原文不被后续保�
   expect(service.snapshot()).toEqual(current);
   const requestIntent = vi.fn(() => ({ revision: 1, timestampMs: 10, position: { x: 0, y: 0 }, target: { x: 10, y: 0 }, direction: 'right' as const, moving: true, carrying: false }));
   const director = new CharacterBehaviorDirector({ behavior: service,
-    motion: { getSnapshot: requestIntent, requestIntent, stop: () => undefined },
+    motion: { getSnapshot: () => ({ revision: 1, timestampMs: 10, position: { x: 0, y: 0 }, target: { x: 0, y: 0 }, direction: 'right' as const, moving: false, carrying: false }), requestIntent, stop: () => undefined },
     initialGeneration: 'test', initialSettings: { movementMode: 1, proactivityMode: 'assistive' }, saveMovementMode: async () => undefined });
   director.requestPersistentMovement();
-  expect(requestIntent).toHaveBeenCalledWith({ kind: 'wander', scope: 'work_area', distance: 'medium' });
+  // 迁移后仅有待机素材不能直接位移；正式模式仍等待合法行走匹配与首帧。
+  expect(requestIntent).not.toHaveBeenCalled();
   expect(service.snapshot()).toEqual(current);
   service.close();
 });
