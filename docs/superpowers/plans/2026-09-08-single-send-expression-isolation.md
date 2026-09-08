@@ -94,12 +94,12 @@ expect(requests).toHaveLength(1);
 - 主模型原生申请仍映射到既有 `prepareCapabilityTask(context,'file')`；Core 的工具／命令能力由原任务范围定义，不从前置语义分类器决定。
 - `CompletedCharacterPrompt` 传递 Task 2 的 `expressionStatus`、`requestKind`；接口新增到 Director，行为处理留给 Task 4。
 
-- [ ] RED：同一个提交 API 的自然文件问句通过原生调用展示范围卡；范围确认前执行器计数为 0；拒绝后为 0；同意后 Core 收到当前原文和原披露历史。
-- [ ] RED：用受控模型模拟“目录乱？”→诚实未查看→“可以，先看看”→原生申请，断言历史连续且没有继承旧许可。
-- [ ] RED：坏表现仍提交正文，任务申请不等待表现；reset／关闭／Provider 切换让旧范围、请求和回复失效；单个发送按钮和 Enter 都调用同一 API。
-- [ ] GREEN：去掉句式分流与显式提交分支，保留确认 follow-up、可信上次任务事实摘要、披露和授权生命周期；原始用户输入始终保留。
-- [ ] 更新受影响真实模型／E2E 夹具，让普通发送的主响应使用原生 task 调用或纯正文；不能通过另开内部显式入口绕过待验收路径。
-- [ ] 运行 Coordinator／composition／UI／IPC 定向测试和 desktop typecheck；提交本任务及旧入口退役。
+- [x] RED：同一个提交 API 的自然文件问句通过原生调用展示范围卡；范围确认前执行器计数为 0；拒绝后为 0；同意后 Core 收到当前原文和原披露历史。
+- [x] RED：用受控模型模拟“目录乱？”→诚实未查看→“可以，先看看”→原生申请，断言历史连续且没有继承旧许可。
+- [x] RED：坏表现仍提交正文，任务申请不等待表现；reset／关闭／Provider 切换让旧范围、请求和回复失效；单个发送按钮和 Enter 都调用同一 API。
+- [x] GREEN：去掉句式分流与显式提交分支，保留确认 follow-up、可信上次任务事实摘要、披露和授权生命周期；原始用户输入始终保留。
+- [x] 更新受影响真实模型／E2E 夹具，让普通发送的主响应使用原生 task 调用或纯正文；不能通过另开内部显式入口绕过待验收路径。
+- [x] 运行 Coordinator／composition／UI／IPC 定向测试和 desktop typecheck；提交本任务及旧入口退役。
 
 ## Task 4: 统一运动准备、有限动作与缺失反馈
 
