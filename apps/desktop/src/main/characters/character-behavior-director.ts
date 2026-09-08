@@ -581,6 +581,7 @@ export class CharacterBehaviorDirector {
   ): Promise<void> {
     if (!this.isTurnCurrent(turnEpoch) || control.kind === 'keep') return;
     if (control.kind === 'set_mode') {
+      const retrySameMode = control.mode !== 0 && control.mode === this.movementMode;
       const transitionRevision = this.beginMovementModeTransition(control.mode);
       try {
         await this.options.saveMovementMode(
@@ -588,7 +589,9 @@ export class CharacterBehaviorDirector {
           () => this.isTurnCurrent(turnEpoch)
             && transitionRevision === this.movementModeTransitionRevision
         );
-        if (!this.isTurnCurrent(turnEpoch)) return;
+        if (!this.isTurnCurrent(turnEpoch) || transitionRevision !== this.movementModeTransitionRevision) return;
+        // 同值持久化仍代表用户明确重试；成功后开启新生命周期，自动tick不能自行解锁。
+        if (retrySameMode) this.invalidateBehaviorLifecycle();
       } finally {
         this.finishMovementModeTransition(transitionRevision);
       }

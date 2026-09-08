@@ -405,3 +405,21 @@ test('截止时started先于poll到达也只失败一次，自动模式不能重
   expect(f.events.filter(event => event.type === 'behavior-action' && event.actionId === 'move-action')).toHaveLength(1);
   expect(f.motion.requestIntent).not.toHaveBeenCalled(); expect(f.notices).toHaveBeenCalledTimes(1); await f.director.close();
 });
+
+
+test.each([1, 2] as const)('模式%s首帧失败后，用户明确请求相同模式可用新token重试', async mode => {
+  const f = await movementFixture(mode);
+  const request = () => mode === 1 ? f.director.requestPersistentMovement() : f.director.requestIntermittentMovement();
+  request(); const previous = f.service.snapshot()!.schedule.current!.playbackToken;
+  f.time(1500); f.director.advance();
+  for (let index = 0; index < 3; index++) request();
+  expect(f.motion.requestIntent).not.toHaveBeenCalled();
+  expect(f.notices).toHaveBeenCalledTimes(1);
+  await f.director.prepareUserPrompt(mode === 1 ? '让他一直运动' : '让他时不时动一下');
+  request();
+  expect(f.service.snapshot()?.schedule.current?.actionId).toBe('move-action');
+  expect(f.service.snapshot()?.schedule.current?.playbackToken).not.toBe(previous);
+  expect(f.motion.requestIntent).not.toHaveBeenCalled();
+  f.feedback(); expect(f.motion.requestIntent).toHaveBeenCalledTimes(1);
+  expect(f.service.snapshot()?.mood?.summary).toBe('开心'); await f.director.close();
+});
