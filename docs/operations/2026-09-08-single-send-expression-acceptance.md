@@ -1,5 +1,7 @@
 # 单一发送入口与独立表现验收记录
 
+当前开发交付：最终修复提交 `ee06881125cd47ea062b933e494476fb73da2d0a`。整体复核的两项 Important 和一项旧测试夹具 Minor 均经定向复审确认修正；当前正式入口没有剩余 Critical／Important。保留以下原生未验收、历史门禁失败及内部兼容边界，不将开发交付写成全量通过。
+
 日期：2026-09-08。环境：Windows、pnpm workspace，开发构建；未打包、未推送。实施起点为 `0ec6ca57d14dada8fe5088e1146e349b07fa5f4c`；收尾起点为 `ea342c55b301aac1ef15d78418c8a3f21fe84357`，以下结果对应其后的本地工作区修改。适用[规格](../superpowers/specs/2026-09-08-single-send-expression-isolation-design.md)；计划不是验收证据。
 
 ## 本轮实现与退役
@@ -89,6 +91,10 @@ E2E 首跑只执行一次：`node node_modules/@playwright/test/cli.js test --co
 - 首次 RED 命令误加脚本参数分隔符 `--`，筛选未生效：runtime 包 216 通过、2 个目标失败；desktop 仅观察到 10 项通过后即中止。随后改为上述 Node 精确定向命令。首次 desktop GREEN 的 2 个新增断言因未容纳宿主补充的 `fadeInMs` 失败，修正断言后 137 项通过；未修改该宿主行为。上述过程不计作完整门禁通过。
 
 详细命令、输出和修复提交见工作区 `.superpowers/sdd/2026-09-08-single-send-expression-isolation/final-fix-report.md` 及同目录日志。本次不改写上文历史失败、未覆盖范围与原生限制：实际首帧／位移／停止后心情仍待用户人工确认，`CHARACTER_PLAYBACK_UNAUTHORIZED` 未唯一归因，也未宣称由此修复；完整门禁状态仍非通过。
+
+## 后续内部兼容边界
+
+定向复审记录一项非阻塞 Minor：直接给内部 Engine 输入“动作级 `when:{moving:true}` 的 episode”，成功空计划后，仍适用 moving 的旧 token 可能在原期限之前被中断。当前正式精简 Schema 不允许动作级 when；转换器只生成无条件 episode 或状态级条件的 condition，已查正式模型／Main 入口无法生成该组合，因此不认定它会触发当前桌宠的实际聊天停走。内部输入仍合法，此兼容边界尚未修复；未来扩展直接宿主计划输入前，需要保留合格旧 token 的原期限，同时禁止退役候选重播或重新准备。
 
 ## 开发体验步骤
 
