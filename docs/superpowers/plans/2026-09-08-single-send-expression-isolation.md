@@ -33,7 +33,7 @@
 - Engine 增加 `prepareActivity(fact: keyof CharacterRuntimeFacts): CharacterExpressionResult` 与 `releasePreparedActivity(): CharacterExpressionResult`，准备状态独立于真实 facts；继续复用既有 `hasEligibleExpressionFor` 和 token。
 - 保持已有宿主 `CharacterExpressionPlanInput` 及 Service 依赖的方法签名，活动候选与心情候选分开保存所有权但仍只有一个当前状态和一个调度器。
 
-- [ ] RED：用任意 ID 的 fixture 验证活动分低于心情分仍在 moving 时获选；mood 更新不删除既有行走候选；无条件 episode 不因聊天结束而失效。
+- [x] RED：用任意 ID 的 fixture 验证活动分低于心情分仍在 moving 时获选；mood 更新不删除既有行走候选；无条件 episode 不因聊天结束而失效。
 
 ```ts
 engine.applyDecision({context: engine.context(), eventId: 'mood', source: 'chat', moodUpdate: {summary: '愉快', strength: .8}, expressionPlan: mixedPlan});
@@ -44,11 +44,11 @@ expect(engine.snapshot().mood?.strength).toBeGreaterThan(0);
 expect(engine.snapshot().stateId).not.toBe('motion-custom');
 ```
 
-- [ ] RED：当前动作收到 started 后注入空计划／新心情无匹配，token 和原截止不变，推进到原截止正常结束；reset、资源失败、活动事实结束仍能撤销。
-- [ ] RED：精简 Schema 拒绝模型毫秒数、非法事实、重复 ID；转换活动区间为 0..1，episode 无聊天条件；准备 moving 时 snapshot 不伪造真实事实，释放／reset 清准备。
-- [ ] 运行 `pnpm.cmd --filter @myself/character-runtime test -- character-expression-engine.test.ts character-expression-selection.test.ts`，确认以上新断言因现状失败。
-- [ ] GREEN：在已有 Engine 选择和生命周期中实施上述规则；不增加第二状态机、不按状态名称猜行走。准备方法复用实际筛选与调度，无候选不返回行走 token。
-- [ ] 运行同一组测试及 `pnpm.cmd --filter @myself/character-runtime typecheck`；记录 RED/GREEN 和公开接口，提交本任务文件。
+- [x] RED：当前动作收到 started 后注入空计划／新心情无匹配，token 和原截止不变，推进到原截止正常结束；reset、资源失败、活动事实结束仍能撤销。
+- [x] RED：精简 Schema 拒绝模型毫秒数、非法事实、重复 ID；转换活动区间为 0..1，episode 无聊天条件；准备 moving 时 snapshot 不伪造真实事实，释放／reset 清准备。
+- [x] 运行 `pnpm.cmd --filter @myself/character-runtime test -- character-expression-engine.test.ts character-expression-selection.test.ts`，确认以上新断言因现状失败。
+- [x] GREEN：在已有 Engine 选择和生命周期中实施上述规则；不增加第二状态机、不按状态名称猜行走。准备方法复用实际筛选与调度，无候选不返回行走 token。
+- [x] 运行同一组测试及 `pnpm.cmd --filter @myself/character-runtime typecheck`；记录 RED/GREEN 和公开接口，提交本任务文件。
 
 ## Task 2: 原生正文／任务与独立表现适配器
 
