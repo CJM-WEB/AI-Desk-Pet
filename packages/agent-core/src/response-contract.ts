@@ -10,7 +10,7 @@ export type ModelResponseContract = ResponseContractBase & (Readonly<{
   /** 旧本地 Provider 可复核整体结构；云端聊天不得把它作为正文成功前置条件。 */
   validateStructuredOutput?: (value: unknown) => boolean;
 }> | Readonly<{
-  name: 'character_autonomy';
+  name: 'character_autonomy' | 'character_expression';
   /** 自主请求没有可见正文，完整严格校验成功后才交给 Main。 */
   validateStructuredOutput(value: unknown): boolean;
 }>);
@@ -122,7 +122,7 @@ export function decodeResponseContractText(
   raw: string,
   contract: ModelResponseContract
 ): ResponseContractDecodeResult {
-  if (contract.name === 'character_autonomy') {
+  if (contract.name !== 'character_chat') {
     if (new TextEncoder().encode(raw).byteLength > 16 * 1024) return { kind: 'invalid' };
     try {
       const parsed: unknown = JSON.parse(raw);

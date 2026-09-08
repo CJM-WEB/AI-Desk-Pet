@@ -476,3 +476,31 @@ describe('OpenAICompatibleProvider', () => {
     });
   });
 });
+
+test('自然conversation用途接纳混合单工具并隔离旧emotion元数据', async () => {
+  const natural: ModelRequest = { ...request, purpose: 'conversation', tools: [{ type: 'function', function: { name: 'request_task_authorization', description: '申请', parameters: { type: 'object', properties: {}, additionalProperties: false } } }] };
+  const fetchMock = vi.fn<FetchLike>(async () => jsonResponse({ choices: [{ message: { content: '先申请查看', tool_calls: [{ id: 'c1', type: 'function', function: { name: 'request_task_authorization', arguments: '{}' } }] } }] }));
+  const provider = new OpenAICompatibleProvider({ baseUrl: profile.baseUrl, modelId: 'deepseek-chat', providerId: 'deepseek' }, async () => 'fixture', fetchMock);
+  expect(await provider.respond(natural, new AbortController().signal)).toMatchObject({ type: 'tool_request', request: { requestId: 'c1', arguments: {} } });
+  const body = JSON.parse(String(fetchMock.mock.calls[0]![1]!.body));
+  expect(body).toMatchObject({ thinking: { type: 'disabled' }, max_tokens: 4096 });
+  expect(body).not.toHaveProperty('response_format');
+  fetchMock.mockImplementation(async () => jsonResponse({ choices: [{ message: { content: '正文', metadata: { emotion: 'INVALID' } } }] }));
+  expect(await provider.respond(natural, new AbortController().signal)).toEqual({ type: 'text', text: '正文' });
+  fetchMock.mockImplementation(async () => jsonResponse({ choices: [{ message: { content: ' ' } }] }));
+  await provider.respond(natural, new AbortController().signal);
+  expect(fetchMock).toHaveBeenCalledTimes(3);
+});
+
+test.each([
+  [{ id: 'c1', type: 'function', function: { name: 'request_task_authorization', arguments: '{}' } }, { id: 'c2', type: 'function', function: { name: 'request_task_authorization', arguments: '{}' } }],
+  [{ type: 'function', function: { name: 'request_task_authorization', arguments: '{}' } }],
+  [{ id: 'c1', type: 'function', function: { name: 'unknown', arguments: '{}' } }],
+  [{ id: 'c1', type: 'function', function: { name: 'request_task_authorization', arguments: '[]' } }]
+])('自然conversation非法调用不能借附带正文降级成功：%j', async (...toolCalls) => {
+  const natural: ModelRequest = { ...request, purpose: 'conversation', tools: [{ type: 'function', function: { name: 'request_task_authorization', description: '申请', parameters: {} } }] };
+  const fetchMock = vi.fn<FetchLike>(async () => jsonResponse({ choices: [{ message: { content: '合法正文', tool_calls: toolCalls } }] }));
+  const provider = new OpenAICompatibleProvider(profile, async () => 'fixture', fetchMock);
+  await expect(provider.respond(natural, new AbortController().signal)).rejects.toBeInstanceOf(Error);
+  expect(fetchMock).toHaveBeenCalledOnce();
+});

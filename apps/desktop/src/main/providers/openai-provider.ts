@@ -157,7 +157,7 @@ function serializeMessage(
 function normalizeResponse(
   raw: unknown,
   toolNameCodec: OpenAIToolNameCodec,
-  responseContract: ModelResponseContract | undefined
+  responseContract: ModelResponseContract | undefined, purpose?: ModelRequest['purpose']
 ): ModelResponse {
   const parsed = compatibleResponseSchema.safeParse(raw);
   if (!parsed.success) throw new ProviderResponseError('RESPONSE_SHAPE_INVALID', 'transport');
@@ -168,6 +168,7 @@ function normalizeResponse(
   if (toolCalls.length > 1) throw new ProviderResponseError('RESPONSE_SHAPE_INVALID', 'transport');
   if (
     toolCalls.length === 1
+    && purpose !== 'conversation'
     && typeof message.content === 'string'
     && message.content.length > 0
   ) {
@@ -207,7 +208,7 @@ function normalizeResponse(
   const response = responseContract === undefined
     ? { type: 'text' as const, text: message.content }
     : normalizeResponseContractText(message.content, responseContract);
-  if (responseContract === undefined && response.type === 'text') {
+  if (responseContract === undefined && purpose !== 'conversation' && response.type === 'text') {
     if (message.metadata?.emotion !== undefined) {
       const emotion = characterEmotionLabelSchema.safeParse(message.metadata.emotion);
       if (!emotion.success) {
@@ -511,7 +512,7 @@ export function assertResponseContractRequest(request: ModelRequest): void {
   if (
     request.responseContract !== undefined
     && (request.tools.length > 0 || request.toolChoice !== 'none'
-      || request.responseContract.name === 'character_autonomy' && request.onTextDelta !== undefined)
+      || request.responseContract.name !== 'character_chat' && request.onTextDelta !== undefined)
   ) {
     throw new ProviderError('PROVIDER_RESPONSE_CONTRACT_CONFLICT', false);
   }
@@ -545,6 +546,7 @@ export class OpenAICompatibleProvider implements ModelProvider {
       && shouldStreamStructuredText(request);
     const deepSeekCharacterChat = this.config.providerId === 'deepseek'
       && request.responseContract?.name === 'character_chat';
+    const deepSeekConversation = this.config.providerId === 'deepseek' && request.purpose === 'conversation';
     // 单次请求复用同一映射，确保定义、续传历史与响应名称处于同一 Provider 命名空间。
     const toolChoice = resolveToolChoice(request);
     const toolNameCodec = createOpenAIToolNameCodec(codecDefinitions(request));
@@ -565,7 +567,7 @@ export class OpenAICompatibleProvider implements ModelProvider {
         ? {}
         : { response_format: { type: 'json_object' } }),
       ...(cloudStructuredStream ? { stream: true } : {}),
-      ...(deepSeekCharacterChat
+      ...(deepSeekCharacterChat || deepSeekConversation
         ? { thinking: { type: 'disabled' }, max_tokens: DEEPSEEK_CHARACTER_CHAT_MAX_TOKENS }
         : this.config.providerId === 'deepseek' && request.reasoningMode === 'disabled'
           ? { thinking: { type: 'disabled' } }
@@ -609,7 +611,7 @@ export class OpenAICompatibleProvider implements ModelProvider {
       return normalizeResponse(
         rawResponse,
         toolNameCodec,
-        request.responseContract
+        request.responseContract, request.purpose
       );
     }
 

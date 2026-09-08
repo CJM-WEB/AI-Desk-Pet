@@ -28,7 +28,6 @@ import {
   toolRequestSchema,
   type ProviderProfileV2
 } from '@myself/shared-types';
-import { characterChatProtocolCases } from '../../../tests/fixtures/natural-intent-matrix';
 
 type FetchLike = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
 
@@ -892,160 +891,34 @@ describe('三协议云端普通聊天流式契约', () => {
 });
 
 describe('ConversationChatAdapter 三类 Provider 协议契约', () => {
-  test.each(chatProviderContractCases.flatMap(contract => characterChatProtocolCases.map(protocol => ({
-    contract,
-    ...protocol
-  }))))(
-    '$contract.name 解码“$name”线协议且保留控制字段',
-    async ({ contract, wireJson, decoded }) => {
-      const adapter = new ConversationChatAdapter(contract.createProvider(
-        vi.fn(async () => characterChatSseResponse(contract.name, wireJson))
-      ));
-
-      await expect(adapter.respond({
-        history: [],
-        text: '协议解码测试',
-        behaviorContext: providerBehaviorContext,
-        signal: new AbortController().signal,
-        onTextDelta: vi.fn()
-      })).resolves.toEqual(decoded);
-    }
-  );
-
-  test.each(chatProviderContractCases)(
-    '$name 的合法普通聊天与能力任务结构在流式传输后均保留控制计划',
-    async contract => {
-      const plans = [
-        { kind: 'chat' } as const,
-        { kind: 'agent_task' } as const
-      ];
-
-      for (const capabilityPlan of plans) {
-        const visibleText = capabilityPlan.kind === 'chat' ? '普通回复。' : '需要进入本地任务。';
-        const deltas: string[] = [];
-        const fetchClient = vi.fn<FetchLike>(async () => (
-          characterChatSseResponse(
-            contract.name,
-            characterChatJson(visibleText, capabilityPlan)
-          )
-        ));
-        const adapter = new ConversationChatAdapter(contract.createProvider(fetchClient));
-
-        await expect(adapter.respond({
-          history: [],
-          text: capabilityPlan.kind === 'chat' ? '你好' : '创建文件',
-          behaviorContext: providerBehaviorContext,
-          signal: new AbortController().signal,
-          onTextDelta: delta => deltas.push(delta)
-        })).resolves.toMatchObject({ text: visibleText, capabilityPlan });
-        expect(deltas.join('')).toBe(visibleText);
-      }
-    }
-  );
-
-  test.each(chatProviderContractCases)(
-    '$name 普通聊天返回完整结构且请求工具数组为空',
-    async contract => {
-      const visibleText = '  可以使用 Markdown。\n\n```ts\nconst 回复 = "原样保留";\n```\n';
-      const fetchClient = vi.fn<FetchLike>(async () => jsonResponse(
-        contract.textResponse(characterChatJson(visibleText))
-      ));
-      const adapter = new ConversationChatAdapter(contract.createProvider(fetchClient));
-
-      await expect(adapter.respond({
-        history: [],
-        text: '请给出示例',
-        behaviorContext: providerBehaviorContext,
-        signal: new AbortController().signal
-      })).resolves.toEqual({
-        text: visibleText,
-        movementControl: { kind: 'keep' },
-        capabilityPlan: { kind: 'chat' }
-      });
-
-      const body = JSON.parse(String(fetchClient.mock.calls[0]?.[1]?.body)) as Record<
-        string,
-        unknown
-      >;
-      expect(contract.requestTools(body)).toEqual([]);
-    }
-  );
-
-  test.each(chatProviderContractCases)(
-    '$name 对合法 JSON 同时保留正文与严格行为计划',
-    async contract => {
-      const raw = JSON.stringify({
-        text: '我向左走一点。',
-        movementControl: { kind: 'move_once', target: 'left', distance: 'near' },
-        capabilityPlan: { kind: 'chat' },
-        moodUpdate: { summary: '平静', strength: 0.5, halfLifeMs: 300_000 }
-      });
-      const adapter = new ConversationChatAdapter(contract.createProvider(
-        vi.fn(async () => jsonResponse(contract.textResponse(raw)))
-      ));
-
-      await expect(adapter.respond({
-        history: [],
-        text: '向左走一点',
-        behaviorContext: providerBehaviorContext,
-        signal: new AbortController().signal
-      })).resolves.toEqual({
-        text: '我向左走一点。',
-        movementControl: { kind: 'move_once', target: 'left', distance: 'near' },
-        capabilityPlan: { kind: 'chat' },
-        moodUpdate: { summary: '平静', strength: 0.5, halfLifeMs: 300_000 }
-      });
-    }
-  );
-
-  test.each(chatProviderContractCases.flatMap(contract => ([
-    ['纯文本', '普通纯文本', '普通纯文本'],
-    ['只有 text 的 JSON', '{"text":"只有正文"}', '只有正文'],
-    [
-      '合法 text 加非法 movementControl',
-      '{"text":"正文仍然有效。","movementControl":{"kind":"move_once","target":{"x":1,"y":2},"distance":"far"}}',
-      '正文仍然有效。'
-    ],
-    ['截断于控制字段的 JSON', '{"text":"截断前的正文","movementControl":', '截断前的正文']
-  ] as const).map(([shape, raw, text]) => ({ contract, shape, raw, text }))))(
-    '$contract.name 对$shape只要求合法正文',
-    async ({ contract, raw, text }) => {
-      const adapter = new ConversationChatAdapter(contract.createProvider(
-        vi.fn(async () => jsonResponse(contract.textResponse(raw)))
-      ));
-
-      await expect(adapter.respond({
-        history: [],
-        text: '普通聊天',
-        behaviorContext: providerBehaviorContext,
-        signal: new AbortController().signal
-      })).resolves.toEqual({ text });
-    }
-  );
-
-  test.each(chatProviderContractCases)(
-    '$name 拒绝无法恢复正文的空对象且不泄露响应',
-    async contract => {
-      const sensitiveRaw = '{"private":"不得泄露"}';
-      const adapter = new ConversationChatAdapter(contract.createProvider(
-        vi.fn(async () => jsonResponse(contract.textResponse(sensitiveRaw)))
-      ));
-
-      const error = await adapter.respond({
-        history: [],
-        text: '测试空对象',
-        behaviorContext: providerBehaviorContext,
-        signal: new AbortController().signal
-      }).catch(reason => reason);
-
-      expect(error).toMatchObject({
-        code: 'RESPONSE_FORMAT_UNSUPPORTED',
-        retryable: false
-      });
-      expectObservableErrorTextHidden(error, ['private', '不得泄露']);
-    }
-  );
-
+  test.each(chatProviderContractCases)('$name先自然正文再独立表现，正文逐字保留且不增量公开', async contract => {
+    const text = '  **自然正文**\n'; let calls = 0;
+    const selection = { moodUpdate: { summary: '开心', strength: .8 }, expressionPlan: null,
+      requestKind: 'ambient', explicitPlayback: null, movementControl: { kind: 'keep' } };
+    const fetchClient = vi.fn<FetchLike>(async () => jsonResponse(contract.textResponse(++calls === 1 ? text : JSON.stringify(selection))));
+    const onTextDelta = vi.fn();
+    const reply = await new ConversationChatAdapter(contract.createProvider(fetchClient)).respond({ history: [], text: '你好', behaviorContext: providerBehaviorContext, signal: new AbortController().signal, onTextDelta });
+    expect(reply).toMatchObject({ text, capabilityPlan: { kind: 'chat' }, moodUpdate: { summary: '开心', strength: .8, fadeInMs: 0 }, expressionStatus: 'no_match', expressionPlan: { states: [] } });
+    expect(onTextDelta).not.toHaveBeenCalled();
+    const bodies = fetchClient.mock.calls.map(call => JSON.parse(String(call[1]?.body)));
+    expect(contract.requestTools(bodies[0])).toHaveLength(1);
+    expect(JSON.stringify(contract.requestTools(bodies[0]))).toContain('request_task_authorization');
+    expect(contract.requestTools(bodies[1])).toEqual([]);
+    expect(bodies[0]).not.toHaveProperty('response_format');
+    expect(bodies[0]).not.toHaveProperty('output_config');
+  });
+  test.each(chatProviderContractCases)('$name旧JSON只作为正文，独立表现格式失败保留正文', async contract => {
+    const text = '{"text":"旧信封","capabilityPlan":{"kind":"agent_task"}}';
+    const fetchClient = vi.fn<FetchLike>(async () => jsonResponse(contract.textResponse(text)));
+    expect(await new ConversationChatAdapter(contract.createProvider(fetchClient)).respond({ history: [], text: '普通聊天', behaviorContext: providerBehaviorContext, signal: new AbortController().signal })).toEqual({ text, capabilityPlan: { kind: 'chat' }, expressionStatus: 'failed' });
+    expect(fetchClient).toHaveBeenCalledTimes(2);
+  });
+  test.each(chatProviderContractCases)('$name空正文失败且原始响应不进入错误', async contract => {
+    const adapter = new ConversationChatAdapter(contract.createProvider(vi.fn(async () => jsonResponse(contract.textResponse(' ')))));
+    const error = await adapter.respond({ history: [], text: '测试', behaviorContext: providerBehaviorContext, signal: new AbortController().signal }).catch(reason => reason);
+    expect(error).toMatchObject({ code: 'RESPONSE_FORMAT_UNSUPPORTED', retryable: false });
+    expectObservableErrorTextHidden(error, ['private', '不得泄露']);
+  });
   test.each(chatProviderContractCases)(
     '$name 的工具响应会被聊天适配器拒绝',
     async contract => {
@@ -1059,7 +932,7 @@ describe('ConversationChatAdapter 三类 Provider 协议契约', () => {
         behaviorContext: providerBehaviorContext,
         signal: new AbortController().signal
       })).rejects.toMatchObject({
-        code: contract.expectedToolResponseErrorCode ?? 'RESPONSE_FORMAT_UNSUPPORTED',
+        code: contract.name === 'Gemini' ? 'RESPONSE_SHAPE_INVALID' : contract.expectedToolResponseErrorCode ?? 'RESPONSE_FORMAT_UNSUPPORTED',
         retryable: false
       });
     }
@@ -2520,7 +2393,7 @@ describe('ProviderRegistry', () => {
     expect(sink).toHaveBeenCalledOnce();
   });
 
-  test('聊天控制修复使用同一私有 reporter 且每次 respond 使用新 correlation id', async () => {
+  test('独立表现校验使用同一私有reporter并关联表现调用', async () => {
     const rawProvider: ModelProvider = {
       respond: vi.fn()
         .mockResolvedValueOnce({
@@ -2573,7 +2446,7 @@ capabilityPlan: { kind: 'chat' }}
       providerType: BUILTIN_LOCAL_PROFILE_ID,
       stage: 'chat_control',
       code: 'CONTROL_SCHEMA_INVALID',
-      correlationId: 'provider-call-1'
+      correlationId: 'repair-call-2'
     });
     expect(JSON.stringify(sink.mock.calls)).not.toContain('control response');
   });
@@ -2761,137 +2634,25 @@ capabilityPlan: { kind: 'chat' }}
     }
   );
 
-  test('DeepSeek 预设通过既有 OpenAI Compatible 边界返回完整桌宠结构', async () => {
-    const profile: ProviderProfileV2 = {
-      id: 'deepseek-chat-profile',
-      displayName: 'DeepSeek',
-      mode: 'preset',
-      providerId: 'deepseek',
-      modelId: 'deepseek-v4-flash',
-      hasStoredSecret: true
-    };
-    const visibleText = '  **自然回复**\n\n```ts\n你好();\n```\n';
-    const fetchClient = vi.fn<FetchLike>(async () => jsonResponse({
-      choices: [{ message: { content: characterChatJson(visibleText) } }]
-    }));
-    const provider = new ProviderRegistry(providerCatalog).create(
-      profile,
-      async () => 'deepseek-secret',
-      fetchClient
-    );
-    const adapter = new ConversationChatAdapter(provider);
-
-    await expect(adapter.respond({
-      history: [],
-      text: '给出 Markdown 示例',
-      behaviorContext: providerBehaviorContext,
-      signal: new AbortController().signal
-    })).resolves.toEqual({
-      text: visibleText,
-      movementControl: { kind: 'keep' },
-      capabilityPlan: { kind: 'chat' }
-    });
-
-    const body = JSON.parse(String(fetchClient.mock.calls[0]?.[1]?.body));
-    expect(provider).toBeInstanceOf(OpenAICompatibleProvider);
-    expect(body).toMatchObject({
-      model: 'deepseek-v4-flash',
-      thinking: { type: 'disabled' },
-      max_tokens: 4096,
-      tools: [],
-      messages: [
-        { role: 'system', content: expect.any(String) },
-        { role: 'system', content: expect.any(String) },
-        { role: 'system', content: expect.any(String) },
-        { role: 'user', content: '给出 Markdown 示例' }
-      ]
-    });
+  test('DeepSeek自然主请求无角色契约，独立表现沿用同一Provider且不思考', async () => {
+    const profile: ProviderProfileV2 = { id: 'deepseek-chat-profile', displayName: 'DeepSeek', mode: 'preset', providerId: 'deepseek', modelId: 'deepseek-v4-flash', hasStoredSecret: true };
+    const text = '  **自然回复**\n'; let calls = 0;
+    const fetchClient = vi.fn<FetchLike>(async () => jsonResponse({ choices: [{ message: { content: ++calls === 1 ? text : JSON.stringify({ moodUpdate: null, expressionPlan: null, requestKind: 'ambient', explicitPlayback: null, movementControl: { kind: 'keep' } }) } }] }));
+    const provider = new ProviderRegistry(providerCatalog).create(profile, async () => 'deepseek-secret', fetchClient);
+    expect(await new ConversationChatAdapter(provider).respond({ history: [], text: '你好', behaviorContext: providerBehaviorContext, signal: new AbortController().signal })).toMatchObject({ text, capabilityPlan: { kind: 'chat' }, expressionStatus: 'no_match' });
+    const first = JSON.parse(String(fetchClient.mock.calls[0]?.[1]?.body));
+    const second = JSON.parse(String(fetchClient.mock.calls[1]?.[1]?.body));
+    expect(first).toMatchObject({ model: 'deepseek-v4-flash', thinking: { type: 'disabled' }, max_tokens: 4096, tool_choice: 'auto' });
+    expect(first).not.toHaveProperty('response_format');
+    expect(second).toMatchObject({ model: 'deepseek-v4-flash', thinking: { type: 'disabled' }, tools: [], response_format: { type: 'json_object' } });
   });
-
-  test.each([
-    ['空 content SSE', 'sse', null],
-    ['53 字符全空白 SSE', 'sse', ' '.repeat(53)],
-    ['53 字符全空白 JSON', 'json', ' '.repeat(53)]
-  ] as const)('DeepSeek %s 经 Provider 重试得到合法正文后结束，不修复省略的表现', async (_name, transport, content) => {
-    const profile: ProviderProfileV2 = {
-      id: 'deepseek-empty-chat-profile',
-      displayName: 'DeepSeek',
-      mode: 'preset',
-      providerId: 'deepseek',
-      modelId: 'deepseek-v4-flash',
-      hasStoredSecret: true
-    };
-    const fetchClient = vi.fn<FetchLike>()
-      // 使用实际故障的无正文形状验证既有一次重试，传输形式不改变空正文语义。
-      .mockResolvedValueOnce(transport === 'sse' ? sseResponse([
-        JSON.stringify({ choices: [{ delta: { content, tool_calls: [] } }] }),
-        '[DONE]'
-      ]) : jsonResponse({ choices: [{ message: { content, tool_calls: [] } }] }))
-      .mockResolvedValueOnce(characterChatSseResponse(
-        'OpenAI Compatible',
-        '{"text":"重试后正文"}'
-      ));
-    const adapter = new ConversationChatAdapter(new ProviderRegistry(providerCatalog).create(
-      profile,
-      async () => 'deepseek-secret',
-      fetchClient
-    ));
-
-    await expect(adapter.respond({
-      history: [],
-      text: '你好',
-      behaviorContext: providerBehaviorContext,
-      signal: new AbortController().signal,
-      onTextDelta: vi.fn()
-    })).resolves.toEqual({ text: '重试后正文' });
-
-    expect(fetchClient).toHaveBeenCalledTimes(2);
-    const firstBody = JSON.parse(String(fetchClient.mock.calls[0]?.[1]?.body));
-    const secondBody = JSON.parse(String(fetchClient.mock.calls[1]?.[1]?.body));
-    expect(secondBody).toEqual(firstBody);
-    expect(firstBody).toMatchObject({
-      thinking: { type: 'disabled' },
-      max_tokens: 4096,
-      response_format: { type: 'json_object' },
-      stream: true,
-      tools: [],
-      tool_choice: 'none'
-    });
+  test.each([['空 content', null, 'RESPONSE_SHAPE_INVALID'], ['全空白 content', ' \n\t'.repeat(18), 'RESPONSE_FORMAT_UNSUPPORTED']] as const)('DeepSeek自然聊天%s只失败一次且不请求表现', async (_name, content, code) => {
+    const profile: ProviderProfileV2 = { id: 'deepseek-empty-chat-profile', displayName: 'DeepSeek', mode: 'preset', providerId: 'deepseek', modelId: 'deepseek-v4-flash', hasStoredSecret: true };
+    const fetchClient = vi.fn<FetchLike>(async () => jsonResponse({ choices: [{ message: { content, tool_calls: [] } }] }));
+    const adapter = new ConversationChatAdapter(new ProviderRegistry(providerCatalog).create(profile, async () => 'deepseek-secret', fetchClient));
+    await expect(adapter.respond({ history: [], text: '你好', behaviorContext: providerBehaviorContext, signal: new AbortController().signal })).rejects.toMatchObject({ code, retryable: false });
+    expect(fetchClient).toHaveBeenCalledOnce();
   });
-
-  test.each([
-    ['空 content', null, 'RESPONSE_SHAPE_INVALID'],
-    ['全空白 content', ' \n\t'.repeat(18), 'RESPONSE_FORMAT_UNSUPPORTED']
-  ] as const)('DeepSeek 桌宠聊天%s 重试耗尽后返回格式错误', async (_name, content, code) => {
-    const profile: ProviderProfileV2 = {
-      id: 'deepseek-empty-chat-failure-profile',
-      displayName: 'DeepSeek',
-      mode: 'preset',
-      providerId: 'deepseek',
-      modelId: 'deepseek-v4-flash',
-      hasStoredSecret: true
-    };
-    const fetchClient = vi.fn<FetchLike>(async () => jsonResponse({
-      choices: [{ message: { content, tool_calls: [] } }]
-    }));
-    const adapter = new ConversationChatAdapter(new ProviderRegistry(providerCatalog).create(
-      profile,
-      async () => 'deepseek-secret',
-      fetchClient
-    ));
-
-    await expect(adapter.respond({
-      history: [],
-      text: '你好',
-      behaviorContext: providerBehaviorContext,
-      signal: new AbortController().signal
-    })).rejects.toMatchObject({
-      code,
-      retryable: false
-    });
-    expect(fetchClient).toHaveBeenCalledTimes(2);
-  });
-
   test('拒绝未知预置提供商', () => {
     const profile: ProviderProfileV2 = {
       id: 'unknown-profile',
@@ -2986,4 +2747,16 @@ capabilityPlan: { kind: 'chat' }}
 
     expect(() => registry.create(profile, async () => 'secret')).toThrow(ProviderError);
   });
+});
+
+test.each(['Anthropic', 'Gemini'])('%s自然conversation接受正文加单申请并拒绝缺ID', async name => {
+  const make = (id: string | undefined) => name === 'Anthropic'
+    ? { content: [{ type: 'text', text: '请确认' }, { type: 'tool_use', id, name: 'request_task_authorization', input: {} }] }
+    : { candidates: [{ content: { parts: [{ text: '请确认' }, { functionCall: { id, name: 'request_task_authorization', args: {} } }] } }] };
+  const fetchClient = vi.fn<FetchLike>(async () => jsonResponse(make('call-1')));
+  const provider = name === 'Anthropic' ? new AnthropicProvider(adapterProfile, async () => 'fixture', fetchClient) : new GeminiProvider(adapterProfile, async () => 'fixture', fetchClient);
+  const natural: ModelRequest = { ...request, purpose: 'conversation', tools: [{ type: 'function', function: { name: 'request_task_authorization', description: '申请', parameters: { type: 'object', properties: {}, additionalProperties: false } } }] };
+  expect(await provider.respond(natural, new AbortController().signal)).toMatchObject({ type: 'tool_request', request: { requestId: 'call-1', toolName: 'request_task_authorization', arguments: {} } });
+  fetchClient.mockImplementation(async () => jsonResponse(make(undefined)));
+  await expect(provider.respond(natural, new AbortController().signal)).rejects.toMatchObject({ code: 'RESPONSE_SHAPE_INVALID' });
 });

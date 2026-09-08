@@ -212,7 +212,7 @@ interface NormalizedGeminiResponse {
 function normalizeResponse(
   raw: unknown,
   createFallbackRequestId: (toolName: string) => string,
-  responseContract: ModelRequest['responseContract']
+  responseContract: ModelRequest['responseContract'], purpose?: ModelRequest['purpose']
 ): NormalizedGeminiResponse {
   const parsed = geminiResponseSchema.safeParse(raw);
   if (!parsed.success) throw new ProviderResponseError('RESPONSE_SHAPE_INVALID', 'transport');
@@ -230,12 +230,13 @@ function normalizeResponse(
         : normalizeResponseContractText(text, responseContract)
     };
   }
-  if (functionParts.length === 1 && parts.length === 1) {
+  if (functionParts.length === 1 && (parts.length === 1 || purpose === 'conversation' && textParts.length + functionParts.length === parts.length)) {
     const functionPart = functionParts[0];
     const call = functionPart?.functionCall;
     if (!call) throw new ProviderResponseError('RESPONSE_SHAPE_INVALID', 'transport');
     const args = z.record(z.unknown()).safeParse(call.args);
     if (!args.success) throw new ProviderResponseError('TOOL_ARGUMENTS_INVALID', 'tool_call');
+    if (purpose === 'conversation' && !call.id?.trim()) throw new ProviderResponseError('RESPONSE_SHAPE_INVALID', 'transport');
     const requestId = call.id ?? createFallbackRequestId(call.name);
     const response: ModelResponse = {
       type: 'tool_request',
@@ -317,7 +318,7 @@ export class GeminiProvider implements ModelProvider {
     const normalized = normalizeResponse(
       raw,
       toolName => `gemini-call-${toolName}-${this.nextFallbackRequestId++}`,
-      request.responseContract
+      request.responseContract, request.purpose
     );
     if (normalized.thoughtSignature) {
       this.thoughtSignatures.set(

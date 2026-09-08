@@ -35,7 +35,7 @@ const LOCAL_READ_RESULT_CHARACTER_BUDGET = 4_000;
 
 /** Qwen 角色模板只允许首条 system；各段保留系统身份，文件工具请求不改布局。 */
 function mergeCharacterSystemMessages(request: ModelRequest): ModelRequest {
-  if (request.responseContract === undefined) return request;
+  if (request.responseContract === undefined && request.purpose !== 'conversation') return request;
   const systems = request.messages.filter(message => message.role === 'system');
   if (systems.length === 0 || systems.length === 1 && request.messages[0]?.role === 'system') return request;
   return {

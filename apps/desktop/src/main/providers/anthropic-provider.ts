@@ -166,7 +166,7 @@ export function toAnthropicResponseJsonSchema(
 
 function normalizeResponse(
   raw: unknown,
-  responseContract: ModelRequest['responseContract']
+  responseContract: ModelRequest['responseContract'], purpose?: ModelRequest['purpose']
 ): ModelResponse {
   const parsed = anthropicResponseSchema.safeParse(raw);
   if (!parsed.success) throw new ProviderResponseError('RESPONSE_SHAPE_INVALID', 'transport');
@@ -181,7 +181,7 @@ function normalizeResponse(
       ? { type: 'text', text }
       : normalizeResponseContractText(text, responseContract);
   }
-  if (toolBlocks.length === 1 && blocks.length === 1) {
+  if (toolBlocks.length === 1 && (blocks.length === 1 || purpose === 'conversation' && textBlocks.length + toolBlocks.length === blocks.length)) {
     const tool = toolBlocks[0];
     if (!tool) throw new ProviderResponseError('RESPONSE_SHAPE_INVALID', 'transport');
     const input = z.record(z.unknown()).safeParse(tool.input);
@@ -251,7 +251,7 @@ export class AnthropicProvider implements ModelProvider {
     const raw = structuredStream
       ? await readAnthropicStructuredSse(response, request, signal)
       : await readProviderJson(response);
-    return normalizeResponse(raw, request.responseContract);
+    return normalizeResponse(raw, request.responseContract, request.purpose);
   }
 }
 

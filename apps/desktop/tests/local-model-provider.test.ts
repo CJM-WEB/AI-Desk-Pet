@@ -7,7 +7,6 @@ import {
 } from '../src/main/providers/local-model-provider';
 import { ProviderError } from '../src/main/providers/openai-provider';
 import { ConversationChatAdapter } from '../src/main/conversation/conversation-chat-adapter';
-import { characterChatProtocolCases } from '../../../tests/fixtures/natural-intent-matrix';
 
 type FetchLike = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
 
@@ -122,45 +121,34 @@ function readyPort(getReadyConnection = () => connection): LocalModelConnectionP
 }
 
 describe('LocalModelProvider', () => {
-  test('角色首次及修复请求合并全部 system 到首条，内容字节和非 system 顺序保真，普通工具请求保持原样', async () => {
+  test('主聊天及独立表现合并system到首条，保留字节、非思考和原工具请求布局', async () => {
     const requests: ModelRequest[] = [];
-    let responseNumber = 0;
-    const fetchClient = vi.fn<FetchLike>(async () => jsonResponse({ choices: [{ message: { content: JSON.stringify({
-      text: '  **保留正文😀**\n', moodUpdate: null, movementControl: { kind: 'keep' }, capabilityPlan: { kind: 'chat' },
-      expressionPlan: ++responseNumber === 1 ? { states: 'bad' } : { states: [] }
-    }) } }] }));
+    const fetchClient = vi.fn<FetchLike>(async (_url, init) => {
+      const body = JSON.parse(String(init?.body));
+      return jsonResponse({ choices: [{ message: { content: body.response_format ? JSON.stringify({ moodUpdate: null, expressionPlan: null,
+        requestKind: 'ambient', explicitPlayback: null, movementControl: { kind: 'keep' } }) : '  **保留正文😀**\n' } }] });
+    });
     const local = new LocalModelProvider(readyPort(), fetchClient);
-    const adapter = new ConversationChatAdapter({ respond: (input, signal) => {
-      requests.push(input);
-      return local.respond(input, signal);
-    } }, () => undefined, { inputByteBudget: 19_200 });
-    const history: ModelRequest['messages'] = [
-      { role: 'user', content: '历史用户🐾\n\n保留段落' },
-      { role: 'assistant', content: '  历史答复  \r\n```text\n  原始缩进\n```' }
-    ];
-    const reply = await adapter.respond({ history, text: '  今天获奖了😀\n聊聊吧。  ',
-      behaviorContext: localBehaviorContext, signal: new AbortController().signal, movementControlHandled: true });
+    const adapter = new ConversationChatAdapter({ respond: (input, signal) => { requests.push(input); return local.respond(input, signal); } }, () => undefined, { inputByteBudget: 19_200 });
+    const history: ModelRequest['messages'] = [{ role: 'user', content: '历史用户🐾\n\n保留段落' }, { role: 'assistant', content: '  历史答复  \r\n缩进' }];
+    const reply = await adapter.respond({ history, text: '  今天获奖了😀\n聊聊吧。  ', behaviorContext: localBehaviorContext, signal: new AbortController().signal });
     expect(reply.text).toBe('  **保留正文😀**\n');
     expect(fetchClient).toHaveBeenCalledTimes(2);
     for (const [index, original] of requests.entries()) {
       const body = JSON.parse(String(fetchClient.mock.calls[index]?.[1]?.body));
       const systems = original.messages.filter(message => message.role === 'system');
-      expect(systems).toHaveLength(index === 0 ? 3 : 4);
-      expect(body.messages).toEqual([
-        { role: 'system', content: systems.map(message => message.content).join('\n\n') },
-        ...original.messages.filter(message => message.role !== 'system')
-      ]);
-      expect(body.tools).toEqual([]);
-      expect(body.tool_choice).toBe('none');
-      expect(body.response_format.schema).toEqual(original.responseContract?.jsonSchema);
-      expect(body.response_format.schema.required).toEqual(expect.arrayContaining(['moodUpdate', 'expressionPlan']));
-      for (const field of ['moodUpdate', 'expressionPlan']) expect(body.response_format.schema.properties[field].anyOf).toContainEqual({ type: 'null' });
-      expect(body.response_format.schema.properties.movementControl.oneOf).toHaveLength(1);
-      expect(body.response_format.schema.properties).not.toHaveProperty('explicitPlayback');
-      const bytes = Buffer.byteLength(JSON.stringify({ messages: body.messages, tools: body.tools, responseSchema: body.response_format.schema }));
-      const originalBytes = Buffer.byteLength(JSON.stringify({ messages: original.messages, tools: original.tools, responseSchema: original.responseContract?.jsonSchema }));
-      expect(bytes).toBeLessThanOrEqual(originalBytes);
-      expect(bytes).toBeLessThanOrEqual(19_200);
+      expect(body.messages).toEqual([{ role: 'system', content: systems.map(message => message.content).join('\n\n') }, ...original.messages.filter(message => message.role !== 'system')]);
+      expect(body).toMatchObject({ stream: false, reasoning_effort: 'none', chat_template_kwargs: { enable_thinking: false }, parallel_tool_calls: false });
+      if (index === 0) {
+        expect(body.tools.map((tool: ToolDefinition) => tool.function.name)).toEqual(['request_task_authorization']);
+        expect(body.tool_choice).toBe('auto'); expect(body).not.toHaveProperty('response_format');
+      } else {
+        expect(body.tools).toEqual([]); expect(body.tool_choice).toBe('none');
+        expect(body.response_format.schema).toEqual(original.responseContract?.jsonSchema);
+        expect(body.response_format.schema.properties).not.toHaveProperty('text');
+        expect(body.response_format.schema.properties).not.toHaveProperty('capabilityPlan');
+      }
+      expect(Buffer.byteLength(JSON.stringify({ messages: body.messages, tools: body.tools, responseSchema: body.response_format?.schema ?? null }))).toBeLessThanOrEqual(19_200);
     }
     await local.respond({ ...request, messages: requests[0]!.messages }, new AbortController().signal);
     expect(JSON.parse(String(fetchClient.mock.calls[2]?.[1]?.body)).messages).toEqual(requests[0]!.messages);
@@ -190,63 +178,12 @@ describe('LocalModelProvider', () => {
     expect(fetchClient).toHaveBeenCalledOnce();
   });
 
-  test.each(characterChatProtocolCases)(
-    '解码“$name”线协议且保留与云 Provider 相同的控制字段',
-    async ({ wireJson, decoded }) => {
-      const fetchClient = vi.fn<FetchLike>(async () => sseResponse([wireJson]));
-      const adapter = new ConversationChatAdapter(new LocalModelProvider(readyPort(), fetchClient));
-
-      await expect(adapter.respond({
-        history: [],
-        text: '协议解码测试',
-        behaviorContext: localBehaviorContext,
-        signal: new AbortController().signal,
-        onTextDelta: vi.fn()
-      })).resolves.toEqual(decoded);
-
-      const requestBody = JSON.parse(String(fetchClient.mock.calls[0]?.[1]?.body));
-      expect(requestBody).toMatchObject({
-        stream: true,
-        response_format: { type: 'json_object' }
-      });
-      expect(requestBody.response_format.schema.required).toEqual(expect.arrayContaining([
-        'text', 'movementControl', 'capabilityPlan'
-      ]));
-    }
-  );
-
-  test('真实本地 Provider 接受包含 capabilityPlan 的完整桌宠组合契约', async () => {
-    const payload = JSON.stringify({
-      text: '需要进入本地任务。',
-      movementControl: { kind: 'keep' },
-      capabilityPlan: { kind: 'agent_task' }
-    });
-    const fetchClient = vi.fn<FetchLike>(async () => sseResponse([payload]));
+  test('本地原生单申请可附正文，且不额外请求表现', async () => {
+    const fetchClient = vi.fn<FetchLike>(async () => jsonResponse({ choices: [{ message: { content: '准备查看', tool_calls: [{ id: 'call-1', type: 'function', function: { name: 'request_task_authorization', arguments: '{}' } }] } }] }));
     const adapter = new ConversationChatAdapter(new LocalModelProvider(readyPort(), fetchClient));
-
-    await expect(adapter.respond({
-      history: [],
-      text: '请整理当前目录并生成摘要',
-      behaviorContext: {
-        character: { idleStateId: 'idle',
-          identity: { formsOfAddress: [], dislikes: [], boundaries: [], exampleLines: [],
-            name: '小橘', description: '测试角色', background: '测试环境', traits: [],
-            languageStyle: '简洁', likes: [], behavioralTendencies: []
-          },
-          states: []
-        },
-        runtime: { chatting: false, taskRunning: false, awaitingConfirmation: false, moving: false, dragging: false, carrying: false, movementMode: 2 },
-        proactivityMode: 'assistive',
-        recentActions: []
-      },
-      signal: new AbortController().signal,
-      onTextDelta: vi.fn()
-    })).resolves.toMatchObject({
-      text: '需要进入本地任务。',
-      capabilityPlan: { kind: 'agent_task' }
-    });
+    expect(await adapter.respond({ history: [], text: '请查看目录', behaviorContext: localBehaviorContext, signal: new AbortController().signal })).toEqual({ text: '', capabilityPlan: { kind: 'agent_task' } });
+    expect(fetchClient).toHaveBeenCalledOnce();
   });
-
   test('过大公开角色目录不会挤占本地当前用户正文的固定输入预算', async () => {
     const fetchClient = vi.fn<FetchLike>(async () => jsonResponse({
       choices: [{ message: { content: JSON.stringify({ text: '收到。' }) } }]
@@ -284,7 +221,7 @@ describe('LocalModelProvider', () => {
     expect(Math.ceil(Buffer.byteLength(JSON.stringify({
       messages: body.messages,
       tools: [],
-      responseSchema: body.response_format.schema
+      responseSchema: body.response_format?.schema ?? null
     }), 'utf8') / 3)).toBeLessThanOrEqual(6_400);
   });
 
@@ -853,39 +790,14 @@ describe('LocalModelProvider', () => {
     expect(onTextDelta).not.toHaveBeenCalled();
   });
 
-  test('本地模型非法隐藏字段由聊天 Adapter 逐项丢弃且保留正文', async () => {
-    const payload = JSON.stringify({
-      text: '正文仍然有效。',
-      movementControl: { kind: 'move_once', target: { x: 1, y: 2 } },
-      capabilityPlan: { kind: 'agent_task', preferredTool: 'unknown' }
-    });
-    const adapter = new ConversationChatAdapter(new LocalModelProvider(
-      readyPort(),
-      vi.fn<FetchLike>(async () => sseResponse([payload]))
-    ));
-    const textDeltas: string[] = [];
-
-    await expect(adapter.respond({
-      history: [],
-      text: '普通聊天',
-      behaviorContext: {
-        character: { idleStateId: 'idle',
-          identity: { formsOfAddress: [], dislikes: [], boundaries: [], exampleLines: [],
-            name: '小橘', description: '测试角色', background: '测试环境', traits: [],
-            languageStyle: '简洁', likes: [], behavioralTendencies: []
-          },
-          states: []
-        },
-        runtime: { chatting: false, taskRunning: false, awaitingConfirmation: false, moving: false, dragging: false, carrying: false, movementMode: 2 },
-        proactivityMode: 'assistive',
-        recentActions: []
-      },
-      onTextDelta: delta => textDeltas.push(delta),
-      signal: new AbortController().signal
-    })).resolves.toEqual({ text: '正文仍然有效。' });
-    expect(textDeltas.join('')).toBe('正文仍然有效。');
+  test('本地主正文中的旧控制JSON按文字保留，独立表现故障不授权', async () => {
+    const payload = JSON.stringify({ text: '正文', capabilityPlan: { kind: 'agent_task', preferredTool: 'unknown' } });
+    const fetchClient = vi.fn<FetchLike>(async () => jsonResponse({ choices: [{ message: { content: payload } }] }));
+    const adapter = new ConversationChatAdapter(new LocalModelProvider(readyPort(), fetchClient));
+    const onTextDelta = vi.fn();
+    expect(await adapter.respond({ history: [], text: '普通聊天', behaviorContext: localBehaviorContext, signal: new AbortController().signal, onTextDelta })).toEqual({ text: payload, capabilityPlan: { kind: 'chat' }, expressionStatus: 'failed' });
+    expect(onTextDelta).not.toHaveBeenCalled();
   });
-
   test.each([
     ['字符串', 'reasoning-canary-string'],
     ['空字符串', ''],

@@ -49,6 +49,8 @@ export type ToolChoicePolicy = 'auto' | 'required' | 'none';
 export type ReasoningMode = 'provider_default' | 'disabled';
 
 export interface ModelRequest {
+  /** Main 标记自然正文与任务申请用途，不依赖角色 JSON 契约。 */
+  purpose?: 'conversation';
   messages: ModelMessage[];
   tools: ToolDefinition[];
   toolChoice: ToolChoicePolicy;
