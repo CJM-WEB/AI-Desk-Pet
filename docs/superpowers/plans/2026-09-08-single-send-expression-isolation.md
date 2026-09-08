@@ -106,6 +106,7 @@ expect(requests).toHaveLength(1);
 **文件：**
 - 修改 `apps/desktop/src/main/characters/character-behavior-service.ts`、`character-behavior-director.ts`、`character-proactivity-runtime.ts`、`character-proactivity-scheduler.ts`（仅必要接线）。
 - 修改 `apps/desktop/src/main/conversation/main-conversation-composition.ts`、`apps/desktop/src/main/index.ts` 的活动匹配回调与播放回报接线。
+- 必要时补充 `packages/character-runtime/src/character-expression-engine.ts` 的明确播放释放接口及其定向测试，供新的明确移动打断旧明确播放；保持已有心情和活动缓存，不以全引擎 reset 代替。
 - 测试对应 Service／Director／Runtime／composition 文件；实际 Renderer `started` 含义若需修正，仅改 `src/renderer/src/characters/player/CharacterPlayer.tsx` 及其直接测试。
 
 **接口：**
@@ -114,8 +115,8 @@ expect(requests).toHaveLength(1);
 - `getChatContext` 继续用 pendingMovement 标记准备事实，真实 moving 来自 MotionService。
 - Runtime 的唯一在途槽增加按需活动匹配用途；空闲时复用 composition→adapter `respondActivity`，每个角色／Provider／运动模式生命周期最多一次自动缺失匹配尝试。用户明确请求可重新匹配；后台心情额度不被零成本 tick 绕过。
 
-- [ ] RED：一次、持续、间断、续行均无适用动画时，`motion.requestIntent` 为 0；相同自动失败不逐 tick 反复调用模型或提示。
-- [ ] RED：准备返回 token 后未 started 时零位移；相同 token started 后一次位移；错误 token、1500ms 超时、failed、reset 后 started 均零位移。
+- [x] RED：一次、持续、间断、续行均无适用动画时，`motion.requestIntent` 为 0；相同自动失败不逐 tick 反复调用模型或提示。
+- [x] RED：准备返回 token 后未 started 时零位移；相同 token started 后一次位移；错误 token、1500ms 超时、failed、reset 后 started 均零位移。
 
 ```ts
 director.requestPersistentMovement();
@@ -124,11 +125,11 @@ director.applyPlaybackFeedback({playbackToken: token, actionId, status: 'started
 expect(motion.requestIntent).toHaveBeenCalledTimes(1);
 ```
 
-- [ ] RED：已移动过程中行走播放失败即停；停止后心情仍有效且择态恢复；新普通心情没有匹配不重置当前 token 的截止。
-- [ ] RED：明确 `state/action` 无匹配提示配置；表现请求失败只提示本次未执行，不误报缺素材；日常无匹配静默；“表现开心一点”不要求固定名称 Gate 才能进入明确播放。
-- [ ] GREEN：所有运动入口进入同一准备／提交方法，删八秒 idle 降级和错误回合启动位移分支。应用精确动作前停掉不兼容位移；不按作者名称写分支。
-- [ ] GREEN：复用已匹配活动候选，后台首次按需匹配与用户回合互斥；reset、模式切换、角色切换和配置变化清理当前活动准备与缺失提示去重。
-- [ ] 运行相关定向测试及 character-runtime/desktop typecheck；提交本任务。
+- [x] RED：已移动过程中行走播放失败即停；停止后心情仍有效且择态恢复；新普通心情没有匹配不重置当前 token 的截止。
+- [x] RED：明确 `state/action` 无匹配提示配置；表现请求失败只提示本次未执行，不误报缺素材；日常无匹配静默；“表现开心一点”不要求固定名称 Gate 才能进入明确播放。
+- [x] GREEN：所有运动入口进入同一准备／提交方法，删八秒 idle 降级和错误回合启动位移分支。应用精确动作前停掉不兼容位移；不按作者名称写分支。
+- [x] GREEN：复用已匹配活动候选，后台首次按需匹配与用户回合互斥；reset、模式切换、角色切换和配置变化清理当前活动准备与缺失提示去重。
+- [x] 运行相关定向测试及 character-runtime/desktop typecheck；提交本任务。
 
 ## Task 5: 有限真实检查、死路径清理与交付记录
 
