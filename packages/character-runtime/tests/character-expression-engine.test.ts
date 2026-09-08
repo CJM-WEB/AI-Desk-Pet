@@ -140,6 +140,23 @@ describe('通用情境条件与有限表现', () => {
     expect(retried.snapshot.stateId).toBe('bright');
     expect(retried.snapshot.schedule.current?.playbackToken).not.toBe(stale.playbackToken);
   });
+  it('活动计划换代后从当前候选重新接纳，不复用抗中断的旧准备 token', () => {
+    const manifest = fixture();
+    manifest.actions.find(action => action.id === 'bright-a')!.interrupt = 'resistant';
+    const engine = new runtime.CharacterExpressionEngine({ manifest, now: () => 0, random: () => 0 });
+    engine.applyDecision({ context: engine.context(), eventId: 'old-moving', source: 'chat', expressionPlan: movingPlan });
+    const old = engine.prepareActivity('moving').snapshot.schedule.current!;
+    engine.applyFeedback({ playbackToken: old.playbackToken, actionId: old.actionId, status: 'started', occurredAtMs: 0 });
+    const retained = engine.applyDecision({ context: engine.context(), eventId: 'new-moving', source: 'chat', expressionPlan: {
+      states: [{ stateId: 'soft', score: 1, minStrength: 0, maxStrength: 1,
+        when: { moving: true }, lifetime: 'condition', actions: [{ actionId: 'soft-a', score: 1 }] }]
+    } });
+    expect(retained.snapshot.schedule.current?.playbackToken).toBe(old.playbackToken);
+    const prepared = engine.prepareActivity('moving');
+    expect(prepared.snapshot.stateId).toBe('soft');
+    expect(prepared.snapshot.schedule.current?.actionId).toBe('soft-a');
+    expect(prepared.snapshot.schedule.current?.playbackToken).not.toBe(old.playbackToken);
+  });
   it('普通轮次失效与心情 TTL 都不删除已接纳的活动能力', () => {
     let now = 0;
     const engine = new runtime.CharacterExpressionEngine({ manifest: fixture(), now: () => now });

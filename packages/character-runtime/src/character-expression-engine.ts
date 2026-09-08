@@ -135,14 +135,15 @@ export class CharacterExpressionEngine {
   private canReusePreparedActivity(fact: keyof CharacterRuntimeFacts): boolean {
     const current = this.schedule.current;
     const active = this.activeCandidate;
-    if (!current || !active || active.playbackToken !== current.playbackToken || active.entry.owner !== 'activity') return false;
+    if (!current || !active || active.playbackToken !== current.playbackToken || active.entry.owner !== 'activity'
+      || active.entry.plan !== this.activityPlan) return false;
     const deadline = current.startedAtMs === null ? current.startDeadlineAtMs : current.expectedEndAtMs;
     if (deadline !== null && this.now() >= deadline) return false;
     const facts = { ...this.facts, [fact]: true };
     const candidate = active.entry.candidate;
     const supportsFact = candidate.when?.[fact] === true
       || candidate.actions.find(action => action.actionId === current.actionId)?.when?.[fact] === true;
-    return supportsFact && this.eligibleState(active.entry, facts, !this.owns(active.entry))
+    return supportsFact && this.eligibleState(active.entry, facts)
       && this.actionCandidates(current.stateId, facts, current.actionId, false, active.entry).length > 0;
   }
   prepareActivity(fact: keyof CharacterRuntimeFacts): CharacterExpressionResult {
