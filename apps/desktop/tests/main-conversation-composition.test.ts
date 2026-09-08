@@ -97,7 +97,7 @@ function localStatus(phase: typeof localReadinessCases[number][0]) {
 
 function providerWith(response: ModelResponse | Promise<ModelResponse>): ModelProvider {
   return {
-    respond: vi.fn(async (_request: ModelRequest) => response)
+    respond: vi.fn(async (request: ModelRequest) => request.responseContract ? { type: 'structured' as const, structured_output: { moodUpdate: null, expressionPlan: null, requestKind: 'ambient', explicitPlayback: null, movementControl: { kind: 'keep' } } } : response)
   };
 }
 
@@ -206,14 +206,12 @@ describe('Main 会话组合模块', () => {
     expect(harness.factoryInputs).toHaveLength(0);
     await harness.composition.close();
   });
-  test.each([undefined, 'task'] as const)('提交意图 %s 的真实读取先确认范围，确认 IPC 不等待最终正文', async intent => {
+  test('单一发送真实读取先确认范围，确认 IPC 不等待最终正文', async () => {
     const nonce = randomUUID();
     let forward: (event: CodingSessionEvent) => void = () => undefined;
     const f = await fixture([[{ name: 'read', args: { path: 'note.txt' } }], nonce], { onEvent: event => forward(event) });
     const base = baseOptions({
-      chatResponse: { type: 'text', text: '申请任务', structured_output: {text: '申请任务',
-movementControl: { kind: 'keep' },
-capabilityPlan: { kind: 'agent_task' }} }
+      chatResponse: { type: 'tool_request', request: { requestId: 'native-1', toolName: 'request_task_authorization', arguments: {} } }
     });
     await base.composition.close();
     const events: TaskEvent[] = [];
@@ -234,10 +232,10 @@ capabilityPlan: { kind: 'agent_task' }} }
     try {
       await writeFile(join(f.directory, 'note.txt'), nonce);
       await writeFile(join(f.directory, 'package.json'), JSON.stringify({ packageManager: 'pnpm@10.0.0', scripts: { test: 'vitest run', lint: 'eslint .' } }));
-      await composition.coordinator.submit('帮我看看 note.txt 里写了什么', intent);
+      await composition.coordinator.submit('帮我看看 note.txt 里写了什么');
       expect(creates).toBe(0);
       expect(f.requests).toHaveLength(0);
-      if (intent === 'task') expect(createChatAdapter).not.toHaveBeenCalled();
+      expect(createChatAdapter).toHaveBeenCalledOnce();
       const scope = events.find(event => event.type === 'capability_authorization_required');
       expect(scope).toBeDefined();
       if (scope?.type !== 'capability_authorization_required') throw new Error('缺少范围授权');
@@ -260,7 +258,7 @@ capabilityPlan: { kind: 'agent_task' }} }
     const resources = await resolveCodingTaskResources({ appPath: fileURLToPath(new URL('..', import.meta.url)), isPackaged: false, resourcesPath: '' });
     let forward: (event: CodingSessionEvent) => void = () => undefined;
     const f = await fixture([[{ name: 'bash', args: { command: `exit ${exit}`, cwd: '.' } }], '模型声称运行完成'], { ...resources, onEvent: event => forward(event) });
-    const base = baseOptions();
+    const base = baseOptions({ chatResponse: { type: 'tool_request', request: { requestId: 'native-1', toolName: 'request_task_authorization', arguments: {} } } });
     await base.composition.close();
     const events: TaskEvent[] = [];
     const composition = createMainConversationComposition({ ...base.options,
@@ -301,7 +299,7 @@ capabilityPlan: { kind: 'agent_task' }} }
     expect(harness.behavior.completeUserPrompt).toHaveBeenCalledExactlyOnceWith({
       generation: expect.any(String),
       explicitDirective: null,
-      eventId: expect.any(String), context: null, movementControl: null
+      eventId: expect.any(String), context: null, movementControl: { kind: 'keep' }, expressionPlan: { states: [] }, expressionStatus: 'no_match', requestKind: 'ambient'
     });
     await harness.composition.close();
     expect(harness.behavior.close).toHaveBeenCalledOnce();
@@ -358,16 +356,30 @@ capabilityPlan: { kind: 'agent_task' }} }
     await harness.composition.close();
   });
 
-  test('明确任务范围在配置 generation 变化后不能激活', async () => {
-    const harness = baseOptions();
+  test('原生申请范围在配置 generation 变化后不能激活', async () => {
+    const harness = baseOptions({ chatResponse: { type: 'tool_request', request: { requestId: 'native-1', toolName: 'request_task_authorization', arguments: {} } } });
     try {
-      await harness.composition.coordinator.submit('note.txt 里面写了什么？', 'task');
+      await harness.composition.coordinator.submit('note.txt 里面写了什么？');
       const scope = harness.events.find(event => event.type === 'capability_authorization_required');
       if (scope?.type !== 'capability_authorization_required') throw new Error('缺少范围授权');
       await harness.composition.resetForConfigurationChange();
       await expect(harness.composition.coordinator.resolveCapabilityAuthorization(scope.requestId, 'confirm')).rejects.toMatchObject({ code: 'ACTION_EXPIRED' });
       expect(harness.factoryInputs).toHaveLength(0);
     } finally { await harness.composition.close(); }
+  });
+
+  test('Provider 配置切换撤销在途主请求，迟到原生申请不产生范围卡', async () => {
+    let complete!: (response: ModelResponse) => void;
+    const harness = baseOptions({ chatResponse: new Promise(resolve => { complete = resolve; }) });
+    const running = harness.composition.coordinator.submit('可以，先看看');
+    await vi.waitFor(() => expect(harness.behavior.getChatContext).toHaveBeenCalledOnce());
+    await harness.composition.resetForConfigurationChange();
+    complete({ type: 'tool_request', request: { requestId: 'old', toolName: 'request_task_authorization', arguments: {} } });
+    await running;
+    expect(harness.events.some(event => event.type === 'capability_authorization_required')).toBe(false);
+    expect(harness.readAuthorizedRootPath).not.toHaveBeenCalled();
+    expect(harness.factoryInputs).toHaveLength(0);
+    await harness.composition.close();
   });
 
   test.each(localReadinessCases)('本地档案处于 %s 时抛出稳定就绪错误且不要求 Secret', (phase, code) => {

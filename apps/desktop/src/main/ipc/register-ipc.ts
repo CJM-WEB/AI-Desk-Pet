@@ -10,7 +10,6 @@ import {
 import { privacySettingsSchema } from '../storage/settings-store';
 import { z } from 'zod';
 import { ipcChannels } from '../../shared/ipc-channels';
-import type { ChatSubmissionIntent } from '../../shared/myself-api';
 import { workshopLayoutSettingsSchema } from '../../shared/workshop-layout-ipc';
 import {
   characterBytesResultSchema,
@@ -98,7 +97,6 @@ const clearLocalDataSchema = z.object({
 
 const chatSubmitSchema = z.object({
   text: z.string().trim().min(1).max(4_000),
-  intent: z.enum(['auto', 'task']).default('auto')
 }).strict();
 
 const actionIdSchema = z.object({
@@ -116,7 +114,7 @@ const capabilityAuthorizationSchema = z.object({
 const emptyArgumentsSchema = z.tuple([]);
 
 export interface AgentIpcService {
-  submit(text: string, intent?: ChatSubmissionIntent): Promise<void>;
+  submit(text: string): Promise<void>;
   hasReportedFailure(error: unknown): boolean;
   cancelActive(): void | Promise<void>;
   resolveFileAction(actionId: string, decision: 'confirm' | 'cancel'): Promise<void>;
@@ -157,10 +155,9 @@ export function registerAgentIpc(
 ): void {
   replaceHandler(ipcMain, ipcChannels.chatSubmit, async (event, raw) => {
     assertCurrentChatSender(event, getCurrentChatWebContents);
-    const { text, intent } = chatSubmitSchema.parse(raw);
+    const { text } = chatSubmitSchema.parse(raw);
     try {
-      if (intent === 'task') await service.submit(text, intent);
-      else await service.submit(text);
+      await service.submit(text);
     } catch (error) {
       // 仅吞掉已发布任务事件的错误，其他 IPC 故障继续交给 Renderer 兜底。
       if (!service.hasReportedFailure(error)) throw error;

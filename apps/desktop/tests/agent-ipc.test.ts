@@ -60,11 +60,11 @@ const agentMutatingInvocations = [
 ] as const;
 
 describe('Agent IPC', () => {
-  test('明确任务只传规范化正文与意图且仍校验当前聊天窗口', async () => {
+  test('单一发送只传规范化正文且仍校验当前聊天窗口', async () => {
     const fixture = createAgentIpcFixture();
     const handler = fixture.handlers.get(ipcChannels.chatSubmit)!;
-    await handler(fixture.currentEvent, { text: '  note.txt 里面写了什么？  ', intent: 'task' });
-    expect(fixture.service.submit).toHaveBeenCalledWith('note.txt 里面写了什么？', 'task');
+    await handler(fixture.currentEvent, { text: '  note.txt 里面写了什么？  ' });
+    expect(fixture.service.submit).toHaveBeenCalledWith('note.txt 里面写了什么？');
     fixture.service.submit.mockClear();
     await expect(handler({ sender: webContents() }, { text: '内容', intent: 'task' })).rejects.toThrow('AGENT_IPC_SENDER_INVALID');
     expect(fixture.service.submit).not.toHaveBeenCalled();
@@ -72,11 +72,13 @@ describe('Agent IPC', () => {
 
   test.each([
     { text: '内容', intent: 'unknown' },
+    { text: '内容', intent: 'task' },
+    { text: '内容', intent: 'auto' },
     { text: '内容', intent: 'task', directory: 'D:\\forged' },
     { text: '内容', intent: 'task', authorized: true },
     { text: '内容', intent: 'task', modelId: 'forged' },
     { text: '内容', intent: 'task', approvedCommands: ['arbitrary'] }
-  ])('明确任务拒绝非法意图与授权字段 %#', async input => {
+  ])('单一发送拒绝旧意图别名与伪造授权字段 %#', async input => {
     const fixture = createAgentIpcFixture();
     await expect(fixture.handlers.get(ipcChannels.chatSubmit)!(fixture.currentEvent, input)).rejects.toThrow();
     expect(fixture.service.submit).not.toHaveBeenCalled();

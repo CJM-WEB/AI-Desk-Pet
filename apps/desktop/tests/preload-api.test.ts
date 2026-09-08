@@ -79,11 +79,11 @@ describe('preload 清除本地数据转发', () => {
 });
 
 describe('preload 公开 API', () => {
-  test('明确任务只传正文和单次意图，普通单参数调用保持兼容', async () => {
-    await exposedApi!.submitMessage('note.txt 里面写了什么？', 'task');
+  test('自然文件问句与普通聊天均只传正文', async () => {
+    await exposedApi!.submitMessage('note.txt 里面写了什么？');
     await exposedApi!.submitMessage('你好');
     expect(invoke.mock.calls).toEqual([
-      [ipcChannels.chatSubmit, { text: 'note.txt 里面写了什么？', intent: 'task' }],
+      [ipcChannels.chatSubmit, { text: 'note.txt 里面写了什么？' }],
       [ipcChannels.chatSubmit, { text: '你好' }]
     ]);
   });

@@ -90,6 +90,8 @@ export type CompletedCharacterPrompt = Readonly<{
   explicitDirective: ExplicitBehaviorDirective | null; explicitPlaybackToken?: string;
   moodUpdate?: CharacterMoodUpdate; expressionPlan?: CharacterExpressionPlanInput; explicitPlayback?: CharacterExplicitPlayback;
   movementControl?: MovementControlPlan | null;
+  expressionStatus?: 'ready' | 'no_match' | 'failed';
+  requestKind?: 'ambient' | 'state' | 'action' | 'movement';
 }>;
 export type AutonomousCharacterDecision = Readonly<{
   lifecycle: number; eventId: string; context: CharacterExpressionContext;

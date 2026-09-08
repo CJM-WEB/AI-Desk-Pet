@@ -82,7 +82,7 @@ it('无正文契约复用云端与本地传输，严格拒绝额外字段且 Dee
   expect(fetcher.mock.calls.length - before).toBe(1);
 });
 
-it('自主 null 归一化为无更新，真实 Main 保持旧心情且不发正文或工具', async () => {
+it('自主 null 归一化为空表现计划，真实 Main 保持旧心情且不发正文或工具', async () => {
   const f = await fixture({ respond: async () => ({ type: 'structured', structured_output: { moodUpdate: null, expressionPlan: null } }) });
   try {
     f.service.applyDecision({ context: f.service.context()!, eventId: 'chat', source: 'chat', moodUpdate: { summary: '旧心情', strength: .8 } });
@@ -98,7 +98,7 @@ it('自主 null 归一化为无更新，真实 Main 保持旧心情且不发正�
     // 验证 Adapter 接纳而非上层吞掉格式错误，正式 Main 决策中不能残留 null。
     const adapter = new ConversationChatAdapter({ respond: async () => ({ type: 'structured', structured_output: { moodUpdate: null, expressionPlan: null } }) }, () => undefined, { inputByteBudget: 19200 });
     expect(await adapter.respondAutonomous({ behaviorContext: f.director.getChatContext(), idleForMs: 5 * minute,
-      signal: new AbortController().signal, beforeProviderCall: () => true })).toEqual({});
+      signal: new AbortController().signal, beforeProviderCall: () => true })).toEqual({ expressionPlan: { states: [] } });
   } finally { await f.close(); }
 });
 

@@ -1,5 +1,4 @@
 import { randomUUID } from 'node:crypto';
-import type { ChatSubmissionIntent } from '../../shared/myself-api';
 import type { ModelMessage } from '@myself/agent-core';
 import type {
   HistoryDisclosureDecision,
@@ -13,7 +12,6 @@ import type {
   ExplicitBehaviorDirective
 } from '../characters/character-behavior-director';
 import type { CodingTaskOutcome, CodingTaskToolResult } from '../agent/coding-task-service';
-import { capabilityIntentRouter } from './capability-intent-router';
 import {
   isPublicFileTaskErrorCode,
   publicFileTaskErrorDetails
@@ -101,11 +99,9 @@ type ConversationState =
 interface TurnContext {
   explicitPlaybackToken?: string;
   text: string;
-  capabilityText: string;
   explicitDirective: ExplicitBehaviorDirective | null;
   generation: string;
   controller: AbortController;
-  modelEscalation?: 'allowed' | 'blocked';
 }
 
 type PendingCapabilityAuthorization = Readonly<{
@@ -171,8 +167,8 @@ export class ConversationCoordinator {
     );
   }
 
-  async submit(text: string, submissionIntent: ChatSubmissionIntent = 'auto'): Promise<void> {
-    if (submissionIntent === 'auto' && this.handleAwaitingConfirmationFollowUp(text)) return;
+  async submit(text: string): Promise<void> {
+    if (this.handleAwaitingConfirmationFollowUp(text)) return;
     try {
       this.assertIdle();
     } catch (error) {
@@ -188,7 +184,7 @@ export class ConversationCoordinator {
       throw normalizedError;
     }
 
-    if (submissionIntent === 'auto' && this.resultSummary !== null && this.resultSummary.phase !== null
+    if (this.resultSummary !== null && this.resultSummary.phase !== null
       && /^(?:上一个任务|任务|上次任务)?(?:完成了吗|成功了吗|结束了吗)[？?。]?$/u.test(normalized)) {
       const summary = this.resultSummary;
       this.options.emit({ type: 'message', role: 'user', text: normalized });
@@ -196,11 +192,9 @@ export class ConversationCoordinator {
       this.options.emit({ type: 'phase', phase: 'success' });
       return;
     }
-    if (capabilityIntentRouter.route(normalized).kind !== 'chat') this.resultSummary = null;
 
     const context: TurnContext = {
       text: normalized,
-      capabilityText: normalized,
       explicitDirective: null,
       generation: this.generation,
       controller: new AbortController()
@@ -218,44 +212,10 @@ export class ConversationCoordinator {
       this.options.emit({ type: 'phase', phase: 'thinking' });
       if (!this.isRunning(context)) return;
 
-      // 明确入口保留原文，跳过角色改写和陪伴模型；授权仍由原范围流程裁决。
-      if (submissionIntent === 'task') {
-        const intent = capabilityIntentRouter.route(normalized);
-        if (intent.kind === 'powershell_task' && intent.evidence.requestedRunMode === 'background') {
-          throw publicErrorForCode('POWERSHELL_BACKGROUND_UNSUPPORTED');
-        }
-        this.state = {
-          kind: 'preparing_capability_task',
-          generation: context.generation,
-          controller: context.controller,
-          taskKind: 'file'
-        };
-        await this.prepareCapabilityTask(context, 'file');
-        return;
-      }
-
       const prepared = await this.options.behavior.prepareUserPrompt(normalized);
       if (!this.isRunning(context)) return;
-      context.capabilityText = prepared.capabilityText;
       context.explicitDirective = prepared.explicitDirective;
       if (prepared.explicitPlaybackToken !== undefined) context.explicitPlaybackToken = prepared.explicitPlaybackToken;
-
-      const intent = capabilityIntentRouter.route(context.capabilityText);
-      if (intent.kind === 'chat') context.modelEscalation = intent.modelEscalation;
-      if (intent.kind === 'file_task' || intent.kind === 'powershell_task') {
-        if (intent.kind === 'powershell_task' && intent.evidence.requestedRunMode === 'background') {
-          throw publicErrorForCode('POWERSHELL_BACKGROUND_UNSUPPORTED');
-        }
-        const taskKind: CapabilityTaskKind = intent.kind === 'file_task' ? 'file' : 'powershell';
-        this.state = {
-          kind: 'preparing_capability_task',
-          generation: context.generation,
-          controller: context.controller,
-          taskKind
-        };
-        await this.prepareCapabilityTask(context, taskKind);
-        return;
-      }
 
       const target = await this.options.chatTurnFactory.create(context.controller.signal);
       if (!this.isRunning(context)) return;
@@ -625,11 +585,12 @@ export class ConversationCoordinator {
       }
     });
     if (!this.isRunning(context)) return;
-    if (context.modelEscalation === 'allowed' && reply.capabilityPlan?.kind === 'agent_task') {
-      await this.prepareModelCapabilityAuthorization(context, reply);
+    if (reply.capabilityPlan?.kind === 'agent_task') {
+      this.state = { kind: 'preparing_capability_task', generation: context.generation, controller: context.controller, taskKind: 'file' };
+      await this.prepareCapabilityTask(context, 'file');
       return;
     }
-    // 能力计划判定前的正文只保存在 Main；普通聊天确认后才允许提交给 Renderer。
+    // 主模型申请只展示原范围卡；正文与表现均通过本轮校验后再交付。
     const streamStarted = bufferedDeltas.length > 0;
     if (streamStarted) {
       this.options.emit({ type: 'assistant_message_start', turnId });
@@ -647,6 +608,8 @@ export class ConversationCoordinator {
       ...(context.explicitPlaybackToken === undefined ? {} : { explicitPlaybackToken: context.explicitPlaybackToken }),
       ...(reply.moodUpdate === undefined ? {} : { moodUpdate: reply.moodUpdate }),
       ...(reply.expressionPlan === undefined ? {} : { expressionPlan: reply.expressionPlan }),
+      ...(reply.expressionStatus === undefined ? {} : { expressionStatus: reply.expressionStatus }),
+      ...(reply.requestKind === undefined ? {} : { requestKind: reply.requestKind }),
       ...(reply.explicitPlayback === undefined ? {} : { explicitPlayback: reply.explicitPlayback })
     });
     if (!this.isRunning(context)) return;
@@ -697,10 +660,6 @@ export class ConversationCoordinator {
     catch (error) { throw publicFileError(error); }
     if (!this.isRunning(context)) return;
     await this.continuePreparedCapabilityTask(context, taskKind, target);
-  }
-
-  private async prepareModelCapabilityAuthorization(context: TurnContext, _reply: Awaited<ReturnType<ConversationChatAdapter['respond']>>): Promise<void> {
-    await this.prepareCapabilityTask(context, 'file');
   }
 
   private requestCapabilityScope(context: TurnContext, taskKind: CapabilityTaskKind, target: PreparedCapabilityTarget, visibleHistory: readonly ModelMessage[]): void {
@@ -764,7 +723,7 @@ export class ConversationCoordinator {
     this.activeCapabilityTurn = active;
     this.state = { kind: 'running_capability_task', generation: context.generation, taskKind };
     try {
-      await this.options.capabilityTasks.submit({ text: context.capabilityText, visibleHistory, generation: context.generation, taskKind });
+      await this.options.capabilityTasks.submit({ text: context.text, visibleHistory, generation: context.generation, taskKind });
       active.outcomeReady = true;
       if (active.terminalPhase !== null && this.activeCapabilityTurn === active) {
         this.activeCapabilityTurn = null;

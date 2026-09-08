@@ -84,7 +84,6 @@ export interface SaveProviderProfileInput {
 }
 
 /** 单次提交意图只选择入口，不携带或保存本地操作授权。 */
-export type ChatSubmissionIntent = 'auto' | 'task';
 
 export interface MyselfApi extends PetWindowInteractionApi {
   commitPetViewport(input: PetViewportCommitInput): Promise<void>;
@@ -107,7 +106,7 @@ export interface MyselfApi extends PetWindowInteractionApi {
   setLocalModelEnabled(enabled: boolean): Promise<SettingsDashboardDto>;
   setIncognitoSession(incognito: boolean): Promise<{ incognito: boolean }>;
   revokeAuthorizedRoot(): Promise<SettingsDashboardDto>;
-  submitMessage(text: string, intent?: ChatSubmissionIntent): Promise<void>;
+  submitMessage(text: string): Promise<void>;
   cancelTask(): Promise<void>;
   confirmAction(actionId: string): Promise<void>;
   cancelAction(actionId: string): Promise<void>;

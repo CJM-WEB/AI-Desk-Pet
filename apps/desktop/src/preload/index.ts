@@ -29,7 +29,6 @@ import {
   type CharacterMotionSnapshot
 } from '../shared/character-motion-ipc';
 import type {
-  ChatSubmissionIntent,
   LocalDataScope,
   MyselfApi,
   PrivacySettingsDto,
@@ -139,8 +138,8 @@ const api: MyselfApi = {
     ipcRenderer.invoke(ipcChannels.settingsIncognitoSet, { incognito })
   ),
   revokeAuthorizedRoot: () => ipcRenderer.invoke(ipcChannels.settingsRootRevoke),
-  submitMessage: (text: string, intent?: ChatSubmissionIntent): Promise<void> => (
-    ipcRenderer.invoke(ipcChannels.chatSubmit, intent === undefined ? { text } : { text, intent })
+  submitMessage: (text: string): Promise<void> => (
+    ipcRenderer.invoke(ipcChannels.chatSubmit, { text })
   ),
   cancelTask: (): Promise<void> => ipcRenderer.invoke(ipcChannels.chatCancel),
   confirmAction: (actionId: string): Promise<void> => (

@@ -512,30 +512,39 @@ async function submitChatMessage(page: Page, text: string): Promise<void> {
   await send.click();
 }
 
-/** 桌宠聊天夹具始终返回完整统一控制对象，避免测试绕过生产严格契约。 */
-function characterChatResponse(
+/** 主正文与表现显式排成两个真实 Provider 请求，任务申请只展示原范围卡。 */
+function characterChatSteps(
   text: string,
-  control: Readonly<Record<string, unknown>> = {}
-): Extract<ProviderStep['response'], { type: 'text' }> {
-  return {
-    type: 'text',
-    text,
-    structured_output: {
-      moodUpdate: null,
-      expressionPlan: null,
-      movementControl: { kind: 'keep' },
-      capabilityPlan: { kind: 'chat' },
-      ...control
-    }
-  };
+  selection: Readonly<Record<string, unknown>> = {},
+  main: Omit<ProviderStep, 'response'> = {},
+  inspectExpression?: ProviderStep['inspect']
+): ProviderStep[] {
+  return [
+    { response: { type: 'text', text }, ...main },
+    { response: { type: 'structured', structured_output: {
+      moodUpdate: null, expressionPlan: null, requestKind: 'ambient', explicitPlayback: null,
+      movementControl: { kind: 'keep' }, ...selection
+    } }, inspect: request => {
+      expect(request.tools).toEqual([]);
+      expect(request.toolChoice).toBe('none');
+      expect(request.responseFormatWasJsonObject).toBe(true);
+      inspectExpression?.(request);
+    } }
+  ];
+}
+
+function taskAuthorizationStep(): ProviderStep {
+  return { response: { type: 'tool_request', request: {
+    requestId: 'request-scope', toolName: 'request_task_authorization', arguments: {}
+  } }, inspect: expectCharacterChatRequest };
 }
 
 function expectCharacterChatRequest(
   request: Parameters<NonNullable<ProviderStep['inspect']>>[0]
 ): void {
-  expect(request.tools).toEqual([]);
-  expect(request.toolChoice).toBe('none');
-  expect(request.responseFormatWasJsonObject).toBe(true);
+  expect(request.tools.map(tool => tool.function.name)).toEqual(['request_task_authorization']);
+  expect(request.toolChoice).toBe('auto');
+  expect(request.responseFormatWasJsonObject).toBe(false);
 }
 
 async function loadElectronFixtureModule(): Promise<ElectronFixtureModule> {
@@ -581,13 +590,14 @@ async function readCodingEvents(page: Page): Promise<TaskEvent[]> {
 }
 
 test.describe('正式 Core 任务 UI', () => {
-  test('明确任务按钮读取随机正文，范围前零模型请求且普通发送仍聊天', async () => {
+  test('单一发送读取随机正文，范围前只有申请请求且普通发送仍聊天', async () => {
     test.setTimeout(120000);
     const nonce = `明确入口正文-${randomBytes(16).toString('hex')}`;
     const provider = await startProviderServer([
+      taskAuthorizationStep(),
       { response: codingResponse([{ name: 'read', args: { path: 'note.txt' }, id: 'explicit-read' }]) },
       { response: request => { const messages = request.messages as Array<{ tool_call_id?: string; content: string }>; expect(messages.find(message => message.tool_call_id === 'explicit-read')?.content).toContain(nonce); return codingResponse(nonce); } },
-      { response: characterChatResponse('普通聊天仍然可用'), inspect: expectCharacterChatRequest }
+      ...characterChatSteps('普通聊天仍然可用', {}, {inspect: expectCharacterChatRequest})
     ]);
     let fixture: AppFixture | undefined;
     try {
@@ -595,11 +605,11 @@ test.describe('正式 Core 任务 UI', () => {
       await writeFile(join(fixture.authorizedRootDirectory, 'note.txt'), nonce);
       const { chat } = await configureCodingApp(fixture, provider);
       await chat.getByRole('textbox', { name: '和我说点什么' }).fill('note.txt 里面写了什么？');
-      await chat.getByRole('button', { name: '作为任务发送' }).click();
+      await chat.getByRole('button', { name: '发送给 AI Pet' }).click();
       const scope = chat.getByRole('article', { name: '本地任务授权' });
       await expect(scope).toContainText('coding-e2e-model');
       await expect(scope).toContainText(await realpath(fixture.authorizedRootDirectory));
-      expect(provider.requests).toHaveLength(0);
+      expect(provider.requests).toHaveLength(1);
       await approveCodingScope(chat);
       await expect(chat.getByText(nonce, { exact: true })).toBeVisible();
       await expect(chat.locator('.phase-pill')).toHaveClass(/phase-success/u);
@@ -616,7 +626,9 @@ test.describe('正式 Core 任务 UI', () => {
     test.setTimeout(120000);
     const nonce = `循环正文-${randomBytes(16).toString('hex')}`;
     const provider = await startProviderServer([
+      taskAuthorizationStep(),
       ...Array.from({ length: 4 }, (_, index) => ({ response: codingResponse([{ name: 'read', args: { path: 'note.txt' }, id: `ui-loop-${index}` }]) })),
+      taskAuthorizationStep(),
       { response: codingResponse([{ name: 'write', args: { path: 'note.txt', content: '禁止覆盖' }, id: 'ui-rejected' }]) },
       { response: codingResponse([{ name: 'read', args: { path: 'note.txt' }, id: 'ui-after-reject' }]), inspectRaw: request => { expect(JSON.stringify(request.messages)).toContain('rejected'); } },
       { response: request => { expect(JSON.stringify(request.messages)).toContain(nonce); return codingResponse('普通拒绝后继续读取成功'); } }
@@ -629,24 +641,24 @@ test.describe('正式 Core 任务 UI', () => {
       await recordCodingEvents(chat);
       await submitChatMessage(chat, '读取 note.txt 文件');
       await expect(chat.getByRole('article', { name: '本地任务授权' })).toBeVisible();
-      expect(provider.requests).toHaveLength(0);
+      expect(provider.requests).toHaveLength(1);
       await approveCodingScope(chat);
       const permission = chat.getByRole('region', { name: '具体操作许可' });
       await expect(permission).toContainText('重复操作保护');
       await expect(permission).toContainText('连续 3 次');
       await expect(permission).toContainText('read');
-      expect(provider.requests).toHaveLength(3);
+      expect(provider.requests).toHaveLength(4);
       const third = (await readCodingEvents(chat)).find(event => event.type === 'task_permission_required');
       if (third?.type !== 'task_permission_required') throw new Error('缺少循环许可');
       expect(third.request).toEqual({ action: 'doom_loop', tool: 'read', repeatCount: 3 });
       await permission.getByRole('button', { name: '仅继续这一次' }).click();
       await expect(permission).toContainText('连续 4 次');
-      expect(provider.requests).toHaveLength(4);
+      expect(provider.requests).toHaveLength(5);
       await expect(chat.evaluate(id => window.myself.confirmAction(id), third.actionId)).rejects.toThrow();
       await permission.getByRole('button', { name: '结束当前任务' }).click();
       await expect(chat.locator('.phase-pill')).toHaveClass(/phase-cancelled/u);
       await expect(permission).toHaveCount(0);
-      expect(provider.requests).toHaveLength(4);
+      expect(provider.requests).toHaveLength(5);
       expect(await readFile(join(fixture.authorizedRootDirectory, 'note.txt'), 'utf8')).toBe(nonce);
       await submitChatMessage(chat, '修改 note.txt 文件');
       await approveCodingScope(chat);
@@ -664,7 +676,7 @@ test.describe('正式 Core 任务 UI', () => {
     test.setTimeout(120000);
     const nonce = `读取正文-${randomBytes(16).toString('hex')}`;
     const provider = await startProviderServer([
-      { response: characterChatResponse('申请读取文件', { capabilityPlan: { kind: 'agent_task' } }), inspect: expectCharacterChatRequest },
+      taskAuthorizationStep(),
       { response: codingResponse([{ name: 'read', args: { path: 'note.txt' }, id: 'ui-read' }]) },
       { response: request => { const messages = request.messages as Array<{ role: string; tool_call_id?: string; content: string }>; const result = messages.find(message => message.tool_call_id === 'ui-read'); expect(result?.content).toContain(nonce); return codingResponse(nonce); } }
     ]);
@@ -678,7 +690,7 @@ test.describe('正式 Core 任务 UI', () => {
       await expect(scope).toContainText('coding-e2e-model');
       await expect(scope).toContainText(await realpath(fixture.authorizedRootDirectory));
       expect(provider.requests).toHaveLength(1);
-      expect(provider.requests[0]?.toolCount).toBe(0);
+      expect(provider.requests[0]?.toolCount).toBe(1);
       await approveCodingScope(chat);
       await expect(chat.getByText(nonce, { exact: true })).toBeVisible();
       await expect(chat.locator('.phase-pill')).toHaveClass(/phase-success/u);
@@ -693,6 +705,7 @@ test.describe('正式 Core 任务 UI', () => {
     const nonce = `回收站正文-${randomBytes(16).toString('hex')}`;
     const finalText = `删除完成-${randomBytes(16).toString('hex')}`;
     const provider = await startProviderServer([
+      taskAuthorizationStep(),
       { response: codingResponse([{ name: 'apply_patch', args: { patchText: '*** Begin Patch\n*** Delete File: target.txt\n*** End Patch' }, id: 'ui-delete' }]) },
       { response: request => { const messages = request.messages as Array<{ tool_call_id?: string; content: string }>; expect(messages.find(message => message.tool_call_id === 'ui-delete')?.content).toContain('target.txt'); return codingResponse(finalText); } }
     ]);
@@ -709,7 +722,7 @@ test.describe('正式 Core 任务 UI', () => {
       for (const page of [pet, chat, settings, characters]) await recordCodingEvents(page);
       await submitChatMessage(chat, '删除 target.txt 文件');
       await expect(chat.getByRole('article', { name: '本地任务授权' })).toBeVisible();
-      expect(provider.requests).toHaveLength(0);
+      expect(provider.requests).toHaveLength(1);
       expect(await pathExistsForAssertion(target)).toBe(true);
       await approveCodingScope(chat);
       const permission = chat.getByRole('region', { name: '具体操作许可' });
@@ -741,8 +754,9 @@ test.describe('正式 Core 任务 UI', () => {
     test(`具体许可等待中${mode}使旧 ID 失效且保留文件`, async () => {
       test.setTimeout(120000);
       const provider = await startProviderServer([
+      taskAuthorizationStep(),
         { response: codingResponse([{ name: 'write', args: { path: 'existing.txt', content: '不应覆盖' } }]) },
-        { response: characterChatResponse('新的普通聊天正常'), inspect: expectCharacterChatRequest }
+        ...characterChatSteps('新的普通聊天正常', {}, {inspect: expectCharacterChatRequest})
       ]);
       let fixture: AppFixture | undefined;
       try {
@@ -770,9 +784,10 @@ test.describe('正式 Core 任务 UI', () => {
     test.setTimeout(120000);
     const gate = createProviderResponseGate();
     const provider = await startProviderServer([
+      taskAuthorizationStep(),
       { response: codingResponse([{ name: 'read', args: { path: 'note.txt' } }]) },
       { response: codingResponse('迟到正文不应显示'), gate },
-      { response: characterChatResponse('取消后普通聊天正常'), inspect: expectCharacterChatRequest }
+      ...characterChatSteps('取消后普通聊天正常', {}, {inspect: expectCharacterChatRequest})
     ]);
     let fixture: AppFixture | undefined;
     try {
@@ -4133,16 +4148,12 @@ test.describe('真实角色工作室闭环', () => {
       }
 
       characterProvider = await startProviderServer([
-        { response: characterChatResponse('我会原地陪伴你。'), inspect: expectCharacterChatRequest },
-        {
-          response: characterChatResponse('听到你的好消息，我也很开心。', {
+        ...characterChatSteps('我会原地陪伴你。', {}, {inspect: expectCharacterChatRequest}),
+        ...characterChatSteps('听到你的好消息，我也很开心。', {
             moodUpdate: { summary: '轻快而安心', strength: 0.8 },
             expressionPlan: { states: [{ stateId: authoredState.id, score: 1,
-              minStrength: 0, maxStrength: 1, actions: [{ actionId: moodActionId, score: 1 }] }],
-              validForMs: 60_000 }
-          }),
-          inspect: request => {
-            expectCharacterChatRequest(request);
+              activity: null, actions: [{ actionId: moodActionId, score: 1 }] }] }
+          }, { inspect: expectCharacterChatRequest }, request => {
             const system = request.messages.filter(message => message.role === 'system')
               .map(message => message.content).join('\n');
             for (const text of [
@@ -4150,12 +4161,8 @@ test.describe('真实角色工作室闭环', () => {
               '收到好消息后轻快而安心地陪伴伙伴。', '喜悦持续时轻轻摇摆。',
               '短暂抬手，向伙伴打个招呼。', authoredState.id, moodActionId, explicitActionId
             ]) expect(system).toContain(text);
-          }
-        },
-        {
-          response: characterChatResponse('向你挥手后，继续陪你开心。'),
-          inspect: expectCharacterChatRequest
-        }
+          }),
+        ...characterChatSteps('向你挥手后，继续陪你开心。', {}, {inspect: expectCharacterChatRequest})
       ]);
       await pet.evaluate(async ({ baseUrl, apiKey }) => {
         await window.myself.saveProviderProfile({
@@ -4575,18 +4582,12 @@ test.describe('自主行为最小闭环', () => {
       test.setTimeout(60_000);
       const fixtureModule = await loadElectronFixtureModule();
       const provider = await startProviderServer([
-        ...('precondition' in movement ? [{
-          response: characterChatResponse(movement.precondition.reply, {
+        ...('precondition' in movement ? [...characterChatSteps(movement.precondition.reply, {
             movementControl: movement.precondition.movementControl
-          }),
-          inspect: expectCharacterChatRequest
-        }] : []),
-        {
-          response: characterChatResponse(movement.reply, {
+          }, {inspect: expectCharacterChatRequest})] : []),
+        ...characterChatSteps(movement.reply, {
             movementControl: movement.movementControl
-          }),
-          inspect: expectCharacterChatRequest
-        }
+          }, {inspect: expectCharacterChatRequest})
       ]);
       const fixture = await fixtureModule.createElectronAppFixture({
         workspaceRoot: resolve(process.cwd()),
@@ -4690,22 +4691,14 @@ test.describe('自主行为最小闭环', () => {
     test.setTimeout(120_000);
     const fixtureModule = await loadElectronFixtureModule();
     const provider = await startProviderServer([
-      {
-        response: characterChatResponse('缺失动作请求已安全处理')
-      },
-      {
-        response: characterChatResponse('停止状态已保存', {
+      ...characterChatSteps('缺失动作请求已安全处理', {}, {}),
+      ...characterChatSteps('停止状态已保存', {
           movementControl: { kind: 'set_mode', mode: 0 }
-        })
-      },
-      {
-        response: characterChatResponse('停止期间仍可挥手回应')
-      },
-      {
-        response: characterChatResponse('停止期间移动请求已处理', {
+        }, {}),
+      ...characterChatSteps('停止期间仍可挥手回应', {}, {}),
+      ...characterChatSteps('停止期间移动请求已处理', {
           movementControl: { kind: 'move_once', target: 'left', distance: 'near' }
-        })
-      }
+        }, {})
     ]);
     const fixture = await fixtureModule.createElectronAppFixture({
       workspaceRoot: resolve(process.cwd()),
@@ -4833,14 +4826,10 @@ test.describe('自主行为最小闭环', () => {
     const fixtureModule = await loadElectronFixtureModule();
     const chattingGate = createProviderResponseGate();
     const provider = await startProviderServer([
-      {
-        response: characterChatResponse('聊天阻塞已释放并挥手'),
-        gate: chattingGate,
-        inspect: request => {
+      ...characterChatSteps('聊天阻塞已释放并挥手', {}, {gate: chattingGate, inspect: request => {
           expectCharacterChatRequest(request);
           expect(request.toolChoiceWasExplicit).toBe(true);
-        }
-      },
+        }}),
 
     ]);
     const fixture = await fixtureModule.createElectronAppFixture({
@@ -5109,15 +5098,12 @@ test.describe('真实 Provider 业务闭环', () => {
       cloudReply,
       'body-canary-local-electron'
     ];
-    const cloud = await startProviderServer([{
-      response: characterChatResponse(cloudReply),
-      inspect: request => {
+    const cloud = await startProviderServer([...characterChatSteps(cloudReply, {}, {inspect: request => {
         expectCharacterChatRequest(request);
         if (request.messages.at(-1)?.content !== cloudPrompt) {
           throw new Error('关闭本地模型后没有恢复持久化云路由');
         }
-      }
-    }]);
+      }})]);
     let fixture: Awaited<ReturnType<ElectronFixtureModule['createElectronAppFixture']>>;
     try {
       fixture = await fixtureModule.createElectronAppFixture({
@@ -5254,7 +5240,7 @@ test.describe('真实 Provider 业务闭环', () => {
 
       await submitChatMessage(chat, cloudPrompt);
       await expect(chat.getByText(cloudReply, { exact: true })).toBeVisible();
-      expect(cloud.requests).toHaveLength(1);
+      expect(cloud.requests).toHaveLength(2);
       cloud.assertComplete();
       expect(cloud.inspectionErrors).toEqual([]);
 
@@ -5367,23 +5353,22 @@ test.describe('真实 Provider 业务闭环', () => {
       fileRequestAfterAuthorization,
       fileReply
     ];
-    const chatSteps: ProviderStep[] = chatReplies.map((reply, index) => ({
-      response: characterChatResponse(reply),
-      inspect: request => {
+    const chatSteps: ProviderStep[] = chatReplies.flatMap((reply, index) => (characterChatSteps(reply, {}, {inspect: request => {
         const systemMessage = request.messages[0];
-        if (!request.responseFormatWasJsonObject
-          || request.tools.length !== 0
+        if (request.responseFormatWasJsonObject
+          || request.tools.length !== 1
           || systemMessage?.role !== 'system'
           || /只输出单个 JSON 对象|规划系统协议/u.test(systemMessage.content)
           || request.messages.at(-1)?.content !== chatInputs[index]) {
           throw new Error(`第 ${index + 1} 轮默认聊天请求越界`);
         }
-      }
-    }));
+      }})));
     const provider = await startProviderServer([
       { response: { type: 'text', text: connectionReplies[0] } },
       { response: { type: 'text', text: connectionReplies[1] } },
       ...chatSteps,
+      taskAuthorizationStep(),
+      taskAuthorizationStep(),
       { response: codingResponse([{ name: 'read', args: { path: '.' } }]) },
       { response: codingResponse(fileReply), inspectRaw: request => { expect(JSON.stringify(request.messages)).toContain('docs'); } }
     ]);
@@ -5500,7 +5485,7 @@ test.describe('真实 Provider 业务闭环', () => {
 
       await submitChatMessage(chat, fileRequestBeforeAuthorization);
       await expect(chat.getByRole('button', { name: '打开设置' })).toBeVisible();
-      expect(provider.requests).toHaveLength(10);
+      expect(provider.requests).toHaveLength(19);
       await chat.getByRole('button', { name: '打开设置' }).click();
       await expect.poll(() => Boolean(pageFor('settings'))).toBe(true);
       settings = pageFor('settings')!;
@@ -5523,8 +5508,8 @@ test.describe('真实 Provider 业务闭环', () => {
 
       provider.assertComplete();
       expect(provider.inspectionErrors).toEqual([]);
-      expect(provider.requests).toHaveLength(12);
-      expect(provider.requests.slice(2, 10).every(request => request.toolCount === 0)).toBe(true);
+      expect(provider.requests).toHaveLength(22);
+      expect(provider.requests.slice(2, 18).map(request => request.toolCount)).toEqual(Array.from({ length: 8 }, () => [1, 0]).flat());
       expect(Object.keys(provider.requests[0] ?? {}).sort()).toEqual([
         'messageRoleCounts', 'method', 'model', 'toolCount'
       ]);
@@ -5561,25 +5546,20 @@ test.describe('真实 Provider 业务闭环', () => {
     ] as const;
     const assistantMessages = ['第一轮回复', '第二轮回复', '第三轮回复'] as const;
     const provider = await startProviderServer([
-      {
-        response: characterChatResponse(assistantMessages[0]),
-        inspect: request => {
-          const visible = request.messages.slice(1);
-          if (!request.responseFormatWasJsonObject
-            || request.tools.length !== 0
+      ...characterChatSteps(assistantMessages[0], {}, {inspect: request => {
+          const visible = request.messages.filter(message => message.role !== 'system');
+          if (request.responseFormatWasJsonObject
+            || request.tools.length !== 1
             || visible.length !== 1
             || visible[0]?.role !== 'user'
             || visible[0].content !== privateUserMessages[0]) {
             throw new Error('第一轮普通聊天上下文不符合预期');
           }
-        }
-      },
-      {
-        response: characterChatResponse(assistantMessages[1]),
-        inspect: request => {
-          const visible = request.messages.slice(1);
-          if (!request.responseFormatWasJsonObject
-            || request.tools.length !== 0
+        }}),
+      ...characterChatSteps(assistantMessages[1], {}, {inspect: request => {
+          const visible = request.messages.filter(message => message.role !== 'system');
+          if (request.responseFormatWasJsonObject
+            || request.tools.length !== 1
             || visible.length !== 3
             || visible[0]?.role !== 'user'
             || visible[0].content !== privateUserMessages[0]
@@ -5589,14 +5569,11 @@ test.describe('真实 Provider 业务闭环', () => {
             || visible[2].content !== privateUserMessages[1]) {
             throw new Error('第二轮普通聊天上下文不符合预期');
           }
-        }
-      },
-      {
-        response: characterChatResponse(assistantMessages[2]),
-        inspect: request => {
-          const visible = request.messages.slice(1);
-          if (!request.responseFormatWasJsonObject
-            || request.tools.length !== 0
+        }}),
+      ...characterChatSteps(assistantMessages[2], {}, {inspect: request => {
+          const visible = request.messages.filter(message => message.role !== 'system');
+          if (request.responseFormatWasJsonObject
+            || request.tools.length !== 1
             || visible.length !== 5
             || visible[0]?.content !== privateUserMessages[0]
             || visible[1]?.content !== assistantMessages[0]
@@ -5605,8 +5582,7 @@ test.describe('真实 Provider 业务闭环', () => {
             || visible[4]?.content !== privateUserMessages[2]) {
             throw new Error('第三轮未收到前两轮完整可见上下文');
           }
-        }
-      }
+        }})
     ]);
     const fixture = await fixtureModule.createElectronAppFixture({
       workspaceRoot: resolve(process.cwd()),
@@ -5681,16 +5657,14 @@ test.describe('真实 Provider 业务闭环', () => {
     const privateLogSentinel = randomBytes(12).toString('hex');
     const fileName = `未授权-${privateLogSentinel}.txt`;
     const provider = await startProviderServer([
-      {
-        response: characterChatResponse('无法确定请求类型'),
-        inspect: request => {
-          if (!request.responseFormatWasJsonObject
-            || request.tools.length !== 0
+      ...characterChatSteps('无法确定请求类型', {}, {inspect: request => {
+          if (request.responseFormatWasJsonObject
+            || request.tools.length !== 1
             || request.messages.at(-1)?.content !== ambiguousText) {
-            throw new Error('模糊请求未走无工具聊天');
+            throw new Error('模糊请求未走正式主请求');
           }
-        }
-      }
+        }}),
+      taskAuthorizationStep()
     ]);
     const fixture = await fixtureModule.createElectronAppFixture({
       workspaceRoot: resolve(process.cwd()),
@@ -5749,7 +5723,7 @@ test.describe('真实 Provider 业务闭环', () => {
         fileConfirmationVisible: false
       });
       expect(await readdir(fixture.authorizedRootDirectory, { recursive: true })).toEqual(before);
-      expect(provider.requests).toHaveLength(1);
+      expect(provider.requests).toHaveLength(3);
       provider.assertComplete();
       expect(provider.inspectionErrors).toEqual([]);
 
@@ -5777,14 +5751,10 @@ test.describe('真实 Provider 业务闭环', () => {
     ] as const;
     const sourceReplies = ['来源服务回复一', '来源服务回复二'] as const;
     const sourceProvider = await startProviderServer([
-      {
-        response: characterChatResponse(sourceReplies[0]),
-        inspect: expectCharacterChatRequest
-      },
-      {
-        response: characterChatResponse(sourceReplies[1]),
-        inspect: expectCharacterChatRequest
-      }
+      ...characterChatSteps(sourceReplies[0], {}, {inspect: expectCharacterChatRequest}),
+      taskAuthorizationStep(),
+      ...characterChatSteps(sourceReplies[1], {}, {inspect: expectCharacterChatRequest}),
+      taskAuthorizationStep()
     ]);
     const targetProvider = await startProviderServer([
       { response: codingResponse('仅当前文件任务已结束'), inspectRaw: request => {
@@ -5923,7 +5893,7 @@ test.describe('真实 Provider 业务闭环', () => {
         historyDisclosureVisible: true
       });
 
-      expect(sourceProvider.requests).toHaveLength(2);
+      expect(sourceProvider.requests).toHaveLength(6);
       // 两种披露决定各只启动获准后的正式 Core 请求。
       expect(targetProvider.requests).toHaveLength(2);
 
@@ -5954,21 +5924,15 @@ test.describe('真实 Provider 业务闭环', () => {
     const oldText = `旧会话正文-${randomBytes(12).toString('hex')}`;
     const newText = `新会话正文-${randomBytes(12).toString('hex')}`;
     const provider = await startProviderServer([
-      {
-        response: characterChatResponse('不得回流的旧回复'),
-        gate: oldGate
-      },
-      {
-        response: characterChatResponse('新会话回复'),
-        inspect: request => {
-          const visible = request.messages.slice(1);
-          if (request.tools.length !== 0
+      { response: { type: 'text', text: '不得回流的旧回复' }, gate: oldGate },
+      ...characterChatSteps('新会话回复', {}, {inspect: request => {
+          const visible = request.messages.filter(message => message.role !== 'system');
+          if (request.tools.length !== 1
             || visible.length !== 1
             || visible[0]?.content !== newText) {
             throw new Error('新会话错误携带了旧会话历史');
           }
-        }
-      }
+        }})
     ]);
     const fixture = await fixtureModule.createElectronAppFixture({
       workspaceRoot: resolve(process.cwd()),
@@ -6064,14 +6028,12 @@ test.describe('真实 Provider 业务闭环', () => {
     test.setTimeout(120_000);
     const fixtureModule = await loadElectronFixtureModule();
     const provider = await startProviderServer([
-      {
-        response: characterChatResponse('你好呀，我在。'),
-        inspect: request => {
-          if (!request.responseFormatWasJsonObject || request.tools.length !== 0) {
-            throw new Error('普通聊天不得获得工具');
+      ...characterChatSteps('你好呀，我在。', {}, {inspect: request => {
+          if (request.responseFormatWasJsonObject || request.tools.length !== 1) {
+            throw new Error('普通聊天只允许无副作用的范围申请');
           }
-        }
-      },
+        }}),
+      taskAuthorizationStep(),
       { response: codingResponse([{ name: 'read', args: { path: '.' } }]) },
       { response: codingResponse('只读目录已列出。'), inspectRaw: request => { expect(JSON.stringify(request.messages)).toContain('docs'); } }
     ]);
@@ -6184,7 +6146,7 @@ test.describe('真实 Provider 业务闭环', () => {
       await expect.poll(() => chatPage.evaluate(() => document.visibilityState)).toBe('visible');
 
       await submitChatMessage(chatPage, '你好呀');
-      await expect.poll(() => provider.requests.length).toBe(1);
+      await expect.poll(() => provider.requests.length).toBe(2);
       expect(provider.inspectionErrors).toEqual([]);
       await expect(chatPage.getByText('你好呀，我在。', { exact: true })).toBeVisible();
       await submitChatMessage(chatPage, '列出当前目录');

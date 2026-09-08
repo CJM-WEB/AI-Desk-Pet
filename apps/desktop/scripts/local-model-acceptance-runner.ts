@@ -1,6 +1,4 @@
 import { createCodingSession } from '@myself/coding-task-core';
-import { capabilityControlPlanSchema } from '@myself/agent-core';
-import { characterMoodUpdateSchema, characterExpressionPlanSchema, characterExplicitPlaybackSchema, movementControlPlanSchema } from '@myself/character-runtime';
 import { randomUUID } from 'node:crypto';
 import { runInNewContext } from 'node:vm';
 import assert from 'node:assert/strict';
@@ -372,23 +370,10 @@ export async function runCodingModelAcceptance(input: ModelAcceptanceEnvironment
       const provider = input.createProvider(profile);
       return new ConversationChatAdapter({ respond: async (request, signal) => {
         const response = await provider.respond(request, signal);
-        const plan = response.type === 'text' ? response.structured_output?.capabilityPlan : undefined;
-        const kind = plan && typeof plan === 'object' ? Reflect.get(plan, 'kind') : undefined;
-        if (response.type === 'text' && response.structured_output) {
-          for (const [field, schema] of Object.entries({ capabilityPlan: capabilityControlPlanSchema, moodUpdate: characterMoodUpdateSchema.optional(), expressionPlan: characterExpressionPlanSchema.optional(), explicitPlayback: characterExplicitPlaybackSchema.optional(), movementControl: movementControlPlanSchema })) {
-            const validation = schema.safeParse(response.structured_output[field]);
-            if (!validation.success) {
-              input.progress?.(`INVALID_${field.toUpperCase()}`);
-              for (const issue of validation.error.issues) {
-                const part = issue.path.filter(value => ['kind', 'summary', 'strength', 'states', 'stateId', 'actions', 'actionId', 'score', 'minStrength', 'maxStrength', 'validForMs'].includes(String(value))).join('_').toUpperCase();
-                input.progress?.(`SCHEMA_${issue.code.toUpperCase()}_${part}`);
-              }
-            }
-          }
-          const preferred = plan && typeof plan === 'object' ? Reflect.get(plan, 'preferredTool') : undefined;
-          if (['read', 'bash', 'edit', 'write', 'read_file', 'powershell'].includes(String(preferred))) input.progress?.(`PREFERENCE_${String(preferred).toUpperCase()}`);
-        }
-        input.progress?.(kind === 'agent_task' ? 'CHAT_AGENT_SUGGESTED' : kind === 'chat' ? 'CHAT_ONLY' : 'CHAT_PLAN_MISSING');
+        // 只记录请求类别与响应分支；原生申请的严格接纳仍由正式适配器负责。
+        input.progress?.(request.responseContract ? 'EXPRESSION_RESPONSE'
+          : response.type === 'tool_request' ? 'CHAT_AUTHORIZATION_REQUEST'
+            : response.type === 'text' ? 'CHAT_ONLY' : 'CHAT_RESPONSE_INVALID');
         return response;
       } }, error => input.progress?.(`CHAT_${error.code}`));
     },
@@ -422,8 +407,8 @@ export async function runCodingModelAcceptance(input: ModelAcceptanceEnvironment
     result.cleanup = true;
   })();
   // 文件场景使用正式明确入口；首条普通中文聊天单独保留自动入口。
-  const turn = (text: string, options: { intent?: 'auto' | 'task'; permission?: (event: PermissionEvent) => Promise<void>; tick?: () => Promise<void>; before?: () => Promise<unknown> } = {}) => submitAcceptanceTurn({
-    events, signal: lifecycle.signal, submit: () => composition.coordinator.submit(text, options.intent ?? 'task'),
+  const turn = (text: string, options: { permission?: (event: PermissionEvent) => Promise<void>; tick?: () => Promise<void>; before?: () => Promise<unknown> } = {}) => submitAcceptanceTurn({
+    events, signal: lifecycle.signal, submit: () => composition.coordinator.submit(text),
     resolveCapabilityAuthorization: (id, choice) => composition.coordinator.resolveCapabilityAuthorization(id, choice),
     assertNoSideEffect: options.before ?? (async () => undefined),
     validateScope: scope => {
@@ -468,7 +453,7 @@ export async function runCodingModelAcceptance(input: ModelAcceptanceEnvironment
         result.modelId = modelId;
         result.activeBackend = input.activeBackend();
         input.progress?.('CHAT');
-        const chat = requireSuccess(await turn('只用简短中文回答：你好。', { intent: 'auto' }));
+        const chat = requireSuccess(await turn('只用简短中文回答：你好。'));
         if (!containsChinese(chat) || /<\/?think>|reasoning_content/iu.test(chat)) throw acceptanceError('CHINESE_CHAT_FAILED');
         result.checks.chineseChat = true;
         if (input.abortProvider) await input.abortProvider();

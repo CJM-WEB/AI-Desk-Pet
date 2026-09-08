@@ -43,32 +43,30 @@ afterEach(() => {
 });
 
 describe('聊天面板本地模型状态', () => {
-  test('明确按钮复用一次提交与停止，随后普通发送不继承任务意图', async () => {
+  test('单一发送按钮和 Enter 共用仅含文本的 API', async () => {
     const api = { submitMessage: vi.fn().mockResolvedValue(undefined), cancelTask: vi.fn().mockResolvedValue(undefined) };
     render(<ChatPanel api={api as never} />);
-    expect((screen.getByRole('button', { name: '作为任务发送' }) as HTMLButtonElement).disabled).toBe(true);
-    fireEvent.change(screen.getByRole('textbox'), { target: { value: '  note.txt 里面写了什么？  ' } });
-    await act(async () => fireEvent.click(screen.getByRole('button', { name: '作为任务发送' })));
-    expect(api.submitMessage).toHaveBeenCalledExactlyOnceWith('note.txt 里面写了什么？', 'task');
     expect(screen.queryByRole('button', { name: '作为任务发送' })).toBeNull();
+    fireEvent.change(screen.getByRole('textbox'), { target: { value: '  note.txt 里面写了什么？  ' } });
+    await act(async () => fireEvent.click(screen.getByRole('button', { name: '发送给 AI Pet' })));
+    expect(api.submitMessage).toHaveBeenCalledExactlyOnceWith('note.txt 里面写了什么？');
     await act(async () => fireEvent.click(screen.getByRole('button', { name: '停止当前任务' })));
     expect(api.cancelTask).toHaveBeenCalledOnce();
     act(() => taskStore.getState().apply({ type: 'phase', phase: 'success' }));
     fireEvent.change(screen.getByRole('textbox'), { target: { value: '你好' } });
-    await act(async () => fireEvent.click(screen.getByRole('button', { name: '发送给 AI Pet' })));
+    await act(async () => fireEvent.keyDown(screen.getByRole('textbox'), { key: 'Enter', code: 'Enter' }));
     expect(api.submitMessage).toHaveBeenLastCalledWith('你好');
+    expect(api.submitMessage).toHaveBeenCalledTimes(2);
   });
 
-  test('两种发送共享许可等待禁用', () => {
+  test('单一发送在许可等待期间禁用', () => {
     const api = { submitMessage: vi.fn() };
     render(<ChatPanel api={api as never} />);
     fireEvent.change(screen.getByRole('textbox'), { target: { value: 'note.txt 里面写了什么？' } });
     act(() => taskStore.getState().apply({ type: 'task_permission_required', actionId: 'pending', summary: '覆盖文件', request: { action: 'overwrite', resources: ['note.txt'] } }));
-    for (const name of ['作为任务发送', '发送给 AI Pet']) {
-      const button = screen.getByRole('button', { name }) as HTMLButtonElement;
-      expect(button.disabled).toBe(true);
-      fireEvent.click(button);
-    }
+    const button = screen.getByRole('button', { name: '发送给 AI Pet' }) as HTMLButtonElement;
+    expect(button.disabled).toBe(true);
+    fireEvent.click(button);
     expect(api.submitMessage).not.toHaveBeenCalled();
   });
 
@@ -147,7 +145,6 @@ describe('聊天面板本地模型状态', () => {
     await act(async () => { await Promise.resolve(); });
 
     expect(screen.getByRole('status').textContent).toContain('本地模型加载中');
-    expect((screen.getByRole('button', { name: '作为任务发送' }) as HTMLButtonElement).disabled).toBe(true);
     expect((screen.getByRole('button', { name: '发送给 AI Pet' }) as HTMLButtonElement).disabled).toBe(true);
   });
 
