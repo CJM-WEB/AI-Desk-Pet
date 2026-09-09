@@ -126,6 +126,8 @@ describe('electron-builder 配置', () => {
     expect(installerText).toContain('DiskSpanning=no');
     expect(installerText).toContain('DefaultDirName={localappdata}\\Programs\\AI Pet');
     expect(installerText).toContain('DisableDirPage=no');
+    expect(installerText).toContain('DisableProgramGroupPage=yes');
+    expect(installerText).toContain('Compression=lzma2/normal');
     expect(installerText).toContain('CloseApplications=no');
     expect(installerText).toContain('recursesubdirs createallsubdirs');
     expect(installerText).not.toContain('[UninstallDelete]');
