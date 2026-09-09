@@ -280,9 +280,9 @@ describe('官网章节降级模式', () => {
       '[data-chapter-id="download"]'
     );
     expect(downloadSection?.dataset.interactive).toBe('true');
-    expect(screen.queryByRole('link', { name: '下载 Windows' })).toBeNull();
-    expect((screen.getByRole('button', { name: '尚未发布' }) as HTMLButtonElement)
-      .disabled).toBe(true);
+    expect(screen.getByRole('link', { name: '下载 Windows' }).getAttribute('href')).toBe(
+      'https://ai-pet-scanner-dev-d0cpbc8094826-1391054083.tcloudbaseapp.com/releases/0.1.0-alpha.1/AI-Pet-0.1.0-alpha.1-windows-x64.exe'
+    );
 
     fireEvent.click(screen.getByRole('button', { name: '选择 macOS' }));
     expect(screen.getByTestId('download-chapter').dataset.activePlatform)
@@ -419,6 +419,9 @@ describe('官网章节降级模式', () => {
     await waitFor(() => {
       expect(experience.dataset.activeChapter).toBe('download');
     });
+    expect(screen.getByRole('link', { name: '下载 Windows' }).getAttribute('href')).toBe(
+      'https://ai-pet-scanner-dev-d0cpbc8094826-1391054083.tcloudbaseapp.com/releases/0.1.0-alpha.1/AI-Pet-0.1.0-alpha.1-windows-x64.exe'
+    );
 
     fireEvent.click(screen.getByRole('button', { name: '选择 macOS' }));
 
@@ -521,8 +524,9 @@ describe('官网章节降级模式', () => {
       .toBe('download');
     expect(document.querySelector('[data-chapter-id="download"]')?.getAttribute('aria-hidden'))
       .toBe('false');
-    expect(screen.queryByRole('link', { name: '下载 Windows' })).toBeNull();
-    expect(screen.getByRole('button', { name: '尚未发布' })).toBeTruthy();
+    expect(screen.getByRole('link', { name: '下载 Windows' }).getAttribute('href')).toBe(
+      'https://ai-pet-scanner-dev-d0cpbc8094826-1391054083.tcloudbaseapp.com/releases/0.1.0-alpha.1/AI-Pet-0.1.0-alpha.1-windows-x64.exe'
+    );
     fireEvent.click(next);
     expect(document.querySelector('[data-chapter-id="community"]')?.getAttribute('aria-hidden'))
       .toBe('false');

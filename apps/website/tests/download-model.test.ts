@@ -5,14 +5,17 @@ import { zhCN } from '../components/i18n/messages';
 import { createDownloadContent } from '../components/website-experience/download/download-content';
 
 const platforms = createDownloadContent((key) => zhCN[key]).platforms;
+const release = releaseManifestSchema.parse(rawManifest);
 
 describe('下载模块数据接口', () => {
-  it('未发布 Windows 版本和 macOS 都不提供下载链接', () => {
+  it('已发布 Windows 版本提供完整下载信息而 macOS 仍无链接', () => {
     expect(platforms[0]).toMatchObject({
       id: 'windows-x64',
-      status: 'unpublished'
+      status: 'available',
+      downloadUrl: release.status === 'published' ? release.downloadUrl : undefined,
+      sizeBytes: release.status === 'published' ? release.sizeBytes : undefined,
+      sha256: release.status === 'published' ? release.sha256 : undefined
     });
-    expect('downloadUrl' in platforms[0]!).toBe(false);
     expect(platforms[1]).toMatchObject({
       id: 'macos',
       status: 'coming-soon'
@@ -20,15 +23,15 @@ describe('下载模块数据接口', () => {
     expect('downloadUrl' in platforms[1]!).toBe(false);
   });
 
-  it('未发布 Windows 平台仅保留未来目标资产名称', () => {
-    const release = releaseManifestSchema.parse(rawManifest);
-
+  it('Windows 平台展示信息与已发布清单一致', () => {
     expect(platforms[0]).toMatchObject({
       versionLabel: release.version,
       fileName: release.fileName,
-      status: 'unpublished'
+      status: 'available',
+      downloadUrl: release.status === 'published' ? release.downloadUrl : undefined,
+      sizeBytes: release.status === 'published' ? release.sizeBytes : undefined,
+      sha256: release.status === 'published' ? release.sha256 : undefined
     });
-    expect('plannedReleaseTag' in platforms[0]!).toBe(false);
   });
 
 });

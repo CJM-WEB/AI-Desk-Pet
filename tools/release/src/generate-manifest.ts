@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
-import { readFile, stat, writeFile } from 'node:fs/promises';
+import { createReadStream } from 'node:fs';
+import { stat, writeFile } from 'node:fs/promises';
 import { basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
@@ -29,7 +30,11 @@ export async function generateReleaseManifest(
   input: GenerateReleaseManifestInput
 ): Promise<ReleaseManifest> {
   const fileName = basename(input.installerPath);
-  const bytes = await readFile(input.installerPath);
+  const sha256 = createHash('sha256');
+  // 流式计算避免大安装包超过 Node 的整包读取上限。
+  for await (const chunk of createReadStream(input.installerPath)) {
+    sha256.update(chunk);
+  }
   const fileInfo = await stat(input.installerPath);
   const manifest = {
     version: versionFromInstallerName(fileName),
@@ -38,7 +43,7 @@ export async function generateReleaseManifest(
     fileName,
     downloadUrl: new URL(fileName, input.downloadBaseUrl).toString(),
     sizeBytes: fileInfo.size,
-    sha256: createHash('sha256').update(bytes).digest('hex'),
+    sha256: sha256.digest('hex'),
     publishedAt: input.publishedAt,
     signed: false
   };

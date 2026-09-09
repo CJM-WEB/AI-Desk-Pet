@@ -14,16 +14,16 @@ describe('下载模块', () => {
     vi.restoreAllMocks();
   });
 
-  it('展示平台标题、文字选择器与未发布状态', () => {
+  it('展示平台标题、文字选择器与已发布下载链接', () => {
     const { container } = render(<DownloadChapter interactive staticFallback />);
 
     expect(screen.getByRole('heading', { name: '选择你的平台' })).toBeTruthy();
     expect(screen.getAllByTestId('pointer-tilt-text')).toHaveLength(2);
     expect(screen.getByRole('button', { name: '当前平台为 Windows' })
       .getAttribute('aria-pressed')).toBe('true');
-    expect(screen.queryByRole('link', { name: '下载 Windows' })).toBeNull();
-    expect((screen.getByRole('button', { name: '尚未发布' }) as HTMLButtonElement)
-      .disabled).toBe(true);
+    expect(screen.getByRole('link', { name: '下载 Windows' }).getAttribute('href')).toBe(
+      'https://ai-pet-scanner-dev-d0cpbc8094826-1391054083.tcloudbaseapp.com/releases/0.1.0-alpha.1/AI-Pet-0.1.0-alpha.1-windows-x64.exe'
+    );
     expect(container.querySelectorAll('[class*="typingChar"]').length).toBeGreaterThan(20);
     expect(screen.queryByText('AI PET')).toBeNull();
     expect(screen.getAllByTestId('pointer-tilt-text')[1]?.className)
@@ -121,7 +121,8 @@ describe('下载模块', () => {
 
     expect(screen.getByRole('heading', { name: 'Choose Your Platform' })).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Current platform: Windows' })).toBeTruthy();
-    expect((screen.getByRole('button', { name: 'Not yet published' }) as HTMLButtonElement)
-      .disabled).toBe(true);
+    expect(screen.getByRole('link', { name: 'Download Windows' }).getAttribute('href')).toBe(
+      'https://ai-pet-scanner-dev-d0cpbc8094826-1391054083.tcloudbaseapp.com/releases/0.1.0-alpha.1/AI-Pet-0.1.0-alpha.1-windows-x64.exe'
+    );
   });
 });

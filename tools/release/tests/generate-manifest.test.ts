@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, open, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, test } from 'vitest';
@@ -17,6 +17,22 @@ async function createFixtureInstaller(): Promise<string> {
   temporaryRoots.push(directory);
   const installerPath = join(directory, 'AI-Pet-0.1.0-alpha.1-windows-x64.exe');
   await writeFile(installerPath, Buffer.from('fixture-installer'), 'utf8');
+  return installerPath;
+}
+
+async function createLargeFixtureInstaller(): Promise<string> {
+  const directory = await mkdtemp(join(tmpdir(), 'myself-release-large-'));
+  temporaryRoots.push(directory);
+  const installerPath = join(directory, 'AI-Pet-0.1.0-alpha.2-windows-x64.exe');
+  const sizeBytes = 2 ** 31 + 1;
+  const tail = Buffer.from('large-installer-tail');
+  const file = await open(installerPath, 'w');
+  try {
+    await file.truncate(sizeBytes);
+    await file.write(tail, 0, tail.length, sizeBytes - tail.length);
+  } finally {
+    await file.close();
+  }
   return installerPath;
 }
 
@@ -48,6 +64,20 @@ describe('generateReleaseManifest', () => {
       signed: false
     });
   });
+
+  test('从超过 2 GiB 的安装包生成完整大小和 SHA-256', async () => {
+    const installerPath = await createLargeFixtureInstaller();
+    const manifest = await generateReleaseManifest({
+      installerPath,
+      downloadBaseUrl: 'https://download.example.com/releases/',
+      publishedAt: '2026-09-09T00:00:00.000Z'
+    });
+
+    expect(manifest).toMatchObject({
+      sizeBytes: 2147483649,
+      sha256: 'd3d8209aabf20ff44e9eef8d72aef8202df8aaeae4ff511fa1c4cafcafbabeaa'
+    });
+  }, 120_000);
 
   test('拒绝不符合第一阶段命名契约的安装包', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'myself-release-invalid-'));

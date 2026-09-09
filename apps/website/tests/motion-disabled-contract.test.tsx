@@ -81,7 +81,7 @@ describe('章节静态回退禁用内部动效', () => {
     expect(notice.getAttribute('aria-hidden')).toBeNull();
   });
 
-  it('下载静态回退关闭标题、平台文字与内容切换过渡且保留未发布状态', () => {
+  it('下载静态回退关闭标题、平台文字与内容切换过渡且保留真实链接', () => {
     render(<DownloadChapter interactive staticFallback />);
 
     const root = screen.getByTestId('download-chapter');
@@ -90,9 +90,9 @@ describe('章节静态回退禁用内部动效', () => {
       /\.downloadChapter\[data-motion-disabled='true'\] \.platformHeader,[\s\S]*\.downloadChapter\[data-motion-disabled='true'\] \.platformCopy,[\s\S]*\.downloadChapter\[data-motion-disabled='true'\] \.downloadAction\s*\{[^}]*transition:\s*none;/s
     );
     expect(downloadCss.match(/\.platformWord\s*\{([^}]*)\}/s)?.[1]).not.toContain('rotate(');
-    expect(screen.queryByRole('link', { name: '下载 Windows' })).toBeNull();
-    expect((screen.getByRole('button', { name: '尚未发布' }) as HTMLButtonElement)
-      .disabled).toBe(true);
+    expect(screen.getByRole('link', { name: '下载 Windows' }).getAttribute('href')).toBe(
+      'https://ai-pet-scanner-dev-d0cpbc8094826-1391054083.tcloudbaseapp.com/releases/0.1.0-alpha.1/AI-Pet-0.1.0-alpha.1-windows-x64.exe'
+    );
   });
 
   it('下载章节减少动态效果时不安排模型挂载且不创建 WebGL', () => {
@@ -111,6 +111,9 @@ describe('章节静态回退禁用内部动效', () => {
     expect(screen.queryByRole('img', { name: /3D 模型/ })).toBeNull();
     expect(setTimeout).not.toHaveBeenCalledWith(expect.any(Function), 120);
     expect(getContext.mock.calls.some(([type]) => type === 'webgl')).toBe(false);
+    expect(screen.getByRole('link', { name: '下载 Windows' }).getAttribute('href')).toBe(
+      'https://ai-pet-scanner-dev-d0cpbc8094826-1391054083.tcloudbaseapp.com/releases/0.1.0-alpha.1/AI-Pet-0.1.0-alpha.1-windows-x64.exe'
+    );
   });
 
   it('捐款静态回退关闭滚筒与付款码进入动效且保留支付按钮', () => {
