@@ -1,8 +1,7 @@
 import { spawn } from 'node:child_process';
 import {
-  E2E_ADMIN_TOKEN,
-  E2E_BUILD_MODE,
   assertCanonicalExportClean,
+  createWebsiteE2eBuildEnvironment,
   createWebsiteExportBuildFinalizer
 } from '../tools/verification/website-export-isolation.mjs';
 
@@ -16,12 +15,7 @@ const child = spawn(
   [pnpmCli, '--filter', '@myself/website', 'build'],
   {
     cwd: process.cwd(),
-    env: {
-      ...process.env,
-      NEXT_PUBLIC_API_BASE_URL: '/api/v1',
-      NEXT_PUBLIC_WEBSITE_E2E_ADMIN_TOKEN: E2E_ADMIN_TOKEN,
-      AI_PET_WEBSITE_E2E_BUILD: E2E_BUILD_MODE
-    },
+    env: createWebsiteE2eBuildEnvironment(),
     stdio: 'inherit'
   }
 );

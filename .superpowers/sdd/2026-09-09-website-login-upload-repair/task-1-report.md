@@ -59,3 +59,17 @@ pnpm.cmd --filter @myself/website typecheck
 - 未引入依赖、未增加新配置文件、未更改页面样式或业务 API。
 - `NEXT_PUBLIC_ADMIN_ORIGIN` 是构建期公开变量，正式配置值及带配置构建验证仍由主智能体完成。
 - 单元测试通过替换全局 `location` 边界验证跳转顺序；真实浏览器的导航行为仍属于主智能体 E2E/人工验收范围。
+
+## E2E 构建环境隔离补充
+
+主智能体规格复审后补充要求：`tests/build-website-export.mjs` 原样继承 `process.env`，可能把正式 `NEXT_PUBLIC_ADMIN_ORIGIN` 带入 Memory E2E 构建。本次将既有 E2E 构建环境组装收口到 `createWebsiteE2eBuildEnvironment`，保留其他继承值，但强制覆盖 `NEXT_PUBLIC_ADMIN_ORIGIN: ''`；未绕过或改动 `AdminApp` 的来源安全逻辑。
+
+RED 命令：
+
+```powershell
+node --test tools/verification/website-export-isolation.test.mjs
+```
+
+结果：退出码 1，25 项中 1 项失败，因构建环境组装函数尚不存在；其余 24 项通过。
+
+GREEN 使用同一命令：退出码 0，25/25 通过。按范围未运行 build 或 E2E，由主智能体统一验证。

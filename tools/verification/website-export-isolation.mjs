@@ -14,6 +14,17 @@ export const E2E_EXPORT_ROOT = resolve(
   E2E_EXPORT_DIRECTORY
 );
 
+/** E2E 静态构建固定使用同源 Memory API，不得继承正式管理员来源。 */
+export function createWebsiteE2eBuildEnvironment(environment = process.env) {
+  return {
+    ...environment,
+    NEXT_PUBLIC_API_BASE_URL: '/api/v1',
+    NEXT_PUBLIC_ADMIN_ORIGIN: '',
+    NEXT_PUBLIC_WEBSITE_E2E_ADMIN_TOKEN: E2E_ADMIN_TOKEN,
+    AI_PET_WEBSITE_E2E_BUILD: E2E_BUILD_MODE
+  };
+}
+
 /** canonical 产物缺失视为尚未构建；一旦存在则不得携带测试认证字面量。 */
 export async function assertCanonicalExportClean(root = CANONICAL_EXPORT_ROOT) {
   const polluted = await findTokenFiles(root, E2E_ADMIN_TOKEN);

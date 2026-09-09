@@ -18,6 +18,22 @@ const E2E_BUILD_ENV = 'AI_PET_WEBSITE_E2E_BUILD';
 const E2E_TOKEN_ENV = 'NEXT_PUBLIC_WEBSITE_E2E_ADMIN_TOKEN';
 const RETIRED_E2E_EXPORT_ENV = 'AI_PET_WEBSITE_E2E_EXPORT_DIRECTORY';
 
+test('E2E 构建环境不继承管理员公开来源', async () => {
+  const isolation = await import('./website-export-isolation.mjs');
+
+  assert.equal(typeof isolation.createWebsiteE2eBuildEnvironment, 'function');
+  const environment = isolation.createWebsiteE2eBuildEnvironment({
+    NEXT_PUBLIC_ADMIN_ORIGIN: 'https://admin.example.com',
+    KEEP_EXISTING_VALUE: 'kept'
+  });
+
+  assert.equal(environment.NEXT_PUBLIC_ADMIN_ORIGIN, '');
+  assert.equal(environment.NEXT_PUBLIC_API_BASE_URL, '/api/v1');
+  assert.equal(environment.NEXT_PUBLIC_WEBSITE_E2E_ADMIN_TOKEN, 'e2e-admin-session');
+  assert.equal(environment.AI_PET_WEBSITE_E2E_BUILD, '1');
+  assert.equal(environment.KEEP_EXISTING_VALUE, 'kept');
+});
+
 async function loadNextConfig(buildMode, e2eToken, retiredExportDirectory) {
   const previousBuildMode = process.env[E2E_BUILD_ENV];
   const previousE2eToken = process.env[E2E_TOKEN_ENV];
