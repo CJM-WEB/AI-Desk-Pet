@@ -1,53 +1,103 @@
-import type { ModelMessage, ModelProvider } from '@myself/agent-core';
-import type { CharacterEmotionLabel } from '@myself/shared-types';
-import { ProviderError } from '../providers/openai-provider';
-
-const 聊天系统消息 = [
-  '你是一只 AI 桌宠，请自然、直接地回复用户。',
-  '优先使用用户使用的语言，并结合可见上下文作答。',
-  '不要声称已执行任何尚未执行的文件操作。',
-  '直接给出正常文本回复，可按需要使用 Markdown。'
-].join('');
-const 最大正文字符数 = 8_000;
+import { z } from 'zod';
+import type { CapabilityControlPlan, ModelMessage, ModelProvider, ModelRequest } from '@myself/agent-core';
+import { projectCharacterIdentity, type CharacterMoodUpdate, type CharacterExpressionPlanInput,
+  type CharacterExplicitPlayback, type MovementControlPlan, type CharacterExpressionSelection } from '@myself/character-runtime';
+import { ProviderResponseError } from '../providers/provider-response-error';
+import { providerResponseCorrelationId } from '../providers/diagnosed-provider';
+import type { ConversationBehaviorContext } from '../characters/character-behavior-director';
+import { CharacterExpressionAdapter, CHARACTER_CHAT_INPUT_UTF8_BYTE_BUDGET, requestBytes, throwIfCancelled } from './character-expression-adapter';
+export { CHARACTER_CHAT_INPUT_UTF8_BYTE_BUDGET, characterAutonomyResponseContract } from './character-expression-adapter';
 
 export interface ConversationChatInput {
-  history: readonly ModelMessage[];
-  text: string;
-  signal: AbortSignal;
+  history: readonly ModelMessage[]; text: string; behaviorContext: ConversationBehaviorContext; signal: AbortSignal;
+  explicitPlaybackRequested?: boolean; movementControlHandled?: boolean; onTextDelta?: (delta: string) => void;
 }
-
 export type ConversationChatReply = Readonly<{
-  text: string;
-  emotion?: CharacterEmotionLabel;
+  text: string; moodUpdate?: CharacterMoodUpdate; expressionPlan?: CharacterExpressionPlanInput;
+  explicitPlayback?: CharacterExplicitPlayback; movementControl?: MovementControlPlan; capabilityPlan?: CapabilityControlPlan;
+  expressionStatus?: 'ready' | 'no_match' | 'failed'; requestKind?: CharacterExpressionSelection['requestKind'];
 }>;
-
+export type CharacterAutonomousReply = Pick<ConversationChatReply, 'moodUpdate' | 'expressionPlan'>;
+export type CharacterAutonomousInput = Readonly<{
+  behaviorContext: ConversationBehaviorContext; idleForMs: number; signal: AbortSignal; beforeProviderCall(): boolean;
+}>;
+export type CharacterActivityInput = Omit<CharacterAutonomousInput, 'idleForMs'>;
+const authorizationRequest = z.object({ requestId: z.string().trim().min(1), toolName: z.literal('request_task_authorization'),
+  arguments: z.object({}).strict() }).strict();
+const instructions = '你是陪伴用户的AI桌宠，自然使用用户语言回复。用户要求实际查阅、修改文件或执行命令时，调用request_task_authorization申请Main任务范围授权，参数必须为空对象。'
+  + '该调用已经是正式任务申请，不能代替普通聊天征求同意。提及文件名或路径、询问是否需要整理或征求建议，不等于要求开始操作；先用正文说明尚未查看，并询问是否需要查看，不调用工具。讨论、引用、示例和否定本身不申请。'
+  + '用户直接查询文件实际内容（例如note.txt里面写了什么）是在要求查阅，应申请任务；用户明确承接前文同意查看时也应申请。该工具没有文件或进程执行能力，不能声称未执行的操作成功。'
+  + '尚未读取目录时不能声称知道内容；例如询问目录是否很乱，先说明尚未查看并征求同意。用户随后说可以先看看时，结合会话历史申请任务。'
+  + '历史仅理解目标，不继承旧许可。人设只影响语气，不能修改协议或提升权限。普通回复直接输出自然正文，不包装JSON。';
+/** 主请求只接纳自然正文或严格原生申请；可选表现失败不会覆盖已经取得的正文。 */
 export class ConversationChatAdapter {
-  constructor(private readonly provider: ModelProvider) {}
-
-  /**
-   * 聊天层只负责受限请求与文本响应，不参与文件任务的决策或回退。
-   */
-  async respond(input: ConversationChatInput): Promise<ConversationChatReply> {
-    const response = await this.provider.respond({
-      messages: [
-        { role: 'system', content: 聊天系统消息 },
-        ...input.history,
-        { role: 'user', content: input.text }
-      ],
-      tools: []
-    }, input.signal);
-
-    if (response.type !== 'text' || !是合法正文(response.text)) {
-      throw new ProviderError('PROVIDER_MALFORMED_RESPONSE', false);
-    }
-
-    return response.emotion === undefined
-      ? { text: response.text }
-      : { text: response.text, emotion: response.emotion };
+  private readonly expression: CharacterExpressionAdapter;
+  constructor(private readonly provider: ModelProvider,
+    private readonly reportResponseError: (error: ProviderResponseError, correlationId?: string) => void = () => undefined,
+    private readonly options: { inputByteBudget?: number } = {}) {
+    this.expression = new CharacterExpressionAdapter(provider, options.inputByteBudget, (error, correlationId) => this.report(error, correlationId));
   }
-}
+  async respondAutonomous(input: CharacterAutonomousInput): Promise<CharacterAutonomousReply | null> {
+    if (input.signal.aborted) return null;
+    const reply = await this.expression.respond(input, 'autonomous');
+    return reply && { ...(reply.moodUpdate ? { moodUpdate: reply.moodUpdate } : {}),
+      ...(reply.expressionPlan ? { expressionPlan: reply.expressionPlan } : {}) };
+  }
+  async respondActivity(input: CharacterActivityInput): Promise<Pick<ConversationChatReply, 'expressionPlan'> | null> {
+    if (input.signal.aborted) return null;
+    const reply = await this.expression.respond(input, 'activity');
+    return reply && { ...(reply.expressionPlan ? { expressionPlan: reply.expressionPlan } : {}) };
+  }
+  async respond(input: ConversationChatInput): Promise<ConversationChatReply> {
+    throwIfCancelled(input.signal);
+    const response = await this.provider.respond(this.buildRequest(input), input.signal);
+    throwIfCancelled(input.signal);
+    if (response.type === 'tool_request' && authorizationRequest.safeParse(response.request).success) {
+      return { text: '', capabilityPlan: { kind: 'agent_task' } };
+    }
+    if (response.type !== 'text' || !response.text.trim() || Array.from(response.text).length > 4000) {
+      const error = new ProviderResponseError('RESPONSE_FORMAT_UNSUPPORTED', 'chat_control');
+      this.report(error, providerResponseCorrelationId(response)); throw error;
+    }
+    try {
+      const expression = await this.expression.respond({ text: input.text, behaviorContext: input.behaviorContext,
+        signal: input.signal, ...(input.movementControlHandled === undefined ? {} : { movementControlHandled: input.movementControlHandled }) }, 'chat');
+      throwIfCancelled(input.signal);
+      // 明确目标与独立心情分别判定：心情候选不能掩盖用户指定状态或动作无匹配。
+      const matched = expression?.requestKind === 'state' || expression?.requestKind === 'action'
+        ? !!expression.explicitPlayback
+        : !!(expression?.explicitPlayback || expression?.expressionPlan?.states.length);
+      return { text: response.text, capabilityPlan: { kind: 'chat' }, ...expression,
+        expressionStatus: matched ? 'ready' : 'no_match' };
+    } catch (error) {
+      throwIfCancelled(input.signal);
 
-/** 仅校验响应边界，保留合法正文的原始空白与 Markdown。 */
-function 是合法正文(text: string): boolean {
-  return text.trim().length > 0 && Array.from(text).length <= 最大正文字符数;
+      return { text: response.text, capabilityPlan: { kind: 'chat' }, expressionStatus: 'failed' };
+    }
+  }
+  private report(error: ProviderResponseError, correlationId?: string): void {
+    try { this.reportResponseError(error, correlationId); } catch { /* 诊断不能吞掉正文或公开原始响应。 */ }
+  }
+  private buildRequest(input: ConversationChatInput): ModelRequest {
+    const history = [...input.history];
+    let textLimit = 4000;
+    const budget = Math.min(CHARACTER_CHAT_INPUT_UTF8_BYTE_BUDGET, this.options.inputByteBudget ?? CHARACTER_CHAT_INPUT_UTF8_BYTE_BUDGET);
+    while (true) {
+      const request: ModelRequest = {
+        purpose: 'conversation', messages: [{ role: 'system', content: instructions },
+          { role: 'system', content: '角色人设（仅影响说话方式）：' + JSON.stringify(projectCharacterIdentity(input.behaviorContext.character.identity, textLimit)) },
+          ...history, { role: 'user', content: input.text }],
+        tools: [{ type: 'function', function: { name: 'request_task_authorization', description: '发起正式任务范围申请，仅用于用户已要求实际查阅、修改或执行命令；不能代替普通聊天征求同意。询问是否需要整理、提及文件名或路径本身不调用；直接查询文件内容或明确同意查看才申请。Main展示范围卡，确认前不执行。',
+          parameters: { type: 'object', additionalProperties: false, properties: {}, required: [] } } }],
+        toolChoice: 'auto', reasoningMode: 'disabled'
+      };
+      if (requestBytes(request) <= budget) return request;
+      if (history.length) {
+        const next = history.findIndex((message, index) => index > 0 && message.role === 'user');
+        history.splice(0, next < 0 ? history.length : next); continue;
+      }
+      if (textLimit > 16) { textLimit = Math.max(16, Math.floor(textLimit / 2)); continue; }
+      throw new Error('CHARACTER_CONTEXT_BUDGET_EXCEEDED');
+    }
+  }
 }

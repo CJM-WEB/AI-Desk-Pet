@@ -21,3 +21,22 @@
 - 单个卡点 15 分钟内换更小的检查或替代方案，单轮任务按用户要求控制在 40 分钟内；长命令使用后台会话读取进度。
 - 不降低安全或业务断言，不将旧验收冒充新结果；浏览器运行器的既存限制须独立复验并如实记录。
 - 这次 Git 集成不代表线上资源上传问题已修复，也不代表生产部署完成；其状态继续以网站登录与上传修复验收记录为准。
+
+## Task 1：合并后范围门基线适配
+
+- 原因：旧固定基线把本次用户明确批准并入的 main 桌宠历史误判为网站越界。仅迁移到上文 main 原始提交，不使用动态 HEAD，不删除范围门。
+- 修改文件：`tools/verification/website-scope-policy.mjs`、`tools/verification/verify-website-scope.test.mjs`。
+- 固定基线改为 `1e1744015fe3ada982cc170670fa772ed715dd7a`。禁止目录、manifest 既有脚本约束和退役检查均保持原样。
+- 精确增加文档白名单：`docs/operations/website-www-https-options-2026-09-03.md`、`docs/superpowers/plans/2026-09-03-website-www-entry-unification.md`、`docs/operations/website-login-upload-repair-2026-09-09.md`、`docs/superpowers/specs/2026-09-09-website-login-upload-repair-design.md`、`docs/superpowers/plans/2026-09-09-website-login-upload-repair.md`、本计划及 `docs/operations/main-website-integration-2026-09-09.md`。
+- 安装已复现 main 原有缺项：`msgpackr-extract` 的可选本机构建未裁决，pnpm 写入占位配置后拒绝后续命令。主智能体将 `pnpm-workspace.yaml` 中该项明确为 false，保留锁文件内的预编译包，不启用额外构建脚本。范围策略须允许这个精确配置路径；不改其他依赖版本。
+- RED：先以真实 Git 固定基线读取 package.json，验证其与合并后的 manifest 比较不误报 main 已批准脚本，同时仍拒绝任意桌宠脚本改写；新增精确文档白名单行为测试，拒绝相似未获批文件。避免只断言一个常量等于自身预期的形式测试。
+- GREEN：仅更新基线与精确路径列表，运行 `node --test tools/verification/verify-website-scope.test.mjs`。实际整仓范围命令要在网站分支合并提交后执行，因为未提交合并的索引仍包含 main 导入差异；此时 main 分支仍不更新。
+- 子智能体不得 Git 写入或修改其他文件；主智能体保留合并索引的唯一控制权。报告记录 RED/GREEN 输出与限制。
+
+## Task 2：网站浏览器测试选项兼容
+
+- 现有失败：合入 main 新增的 E2E 归属测试后，桌面类型检查两次在 `tests/playwright.website.config.ts` 的 `use.reducedMotion` 处报告 TS2769。当前锁定 Playwright 的 TestOptions 未暴露该字段，浏览器上下文则支持；官方 contextOptions 文档也提供该设置方式。
+- 修改范围：仅 `tests/playwright.website.config.ts` 与 `tests/e2e/website.spec.ts`，不改业务代码、依赖版本、超时、重试或已有交互断言。
+- RED：在现有“减少动态效果直接进入稳定首页”用例中，取消测试自己调用 `emulateMedia` 的补救，先直接断言新页面的 `matchMedia('(prefers-reduced-motion: reduce)').matches` 为 true；用实际网站 Playwright 配置运行该单项，记录默认配置未生效的失败。
+- GREEN：仅把网站配置的 `use.reducedMotion` 移到 `use.contextOptions.reducedMotion`，保留值 `reduce`，加中文结构性注释说明当前锁定版本的上下文选项边界。重跑同一单项及桌面 typecheck；不修改桌面文件。
+- 产物复用已构建的 `.e2e-out`；若主智能体仍在运行完整网站 E2E，先等待其结束，避免并行 GPU 测试相互影响。报告存入本计划隔离工作目录的 `task-2-report.md`，禁止 Git 写操作。

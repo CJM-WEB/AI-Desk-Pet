@@ -217,6 +217,18 @@ describe('角色清单协议', () => {
     expect(characterManifestV1Schema.parse(manifest).states[0]?.actions[0]?.fps).toBe(60);
   });
 
+  test.each([
+    ['播放速率低于下限', (action: Record<string, unknown>) => { action.playbackRate = 0.24; }],
+    ['播放速率高于上限', (action: Record<string, unknown>) => { action.playbackRate = 2.01; }],
+    ['播放速率为 NaN', (action: Record<string, unknown>) => { action.playbackRate = Number.NaN; }],
+    ['镜像值不是布尔值', (action: Record<string, unknown>) => { action.mirrorX = 'true'; }]
+  ])('发布清单拒绝非法动作播放参数：%s', (_, changeAction) => {
+    const manifest = createValidManifest();
+    changeAction(getIdleAction(manifest) as Record<string, unknown>);
+
+    expect(() => characterManifestV1Schema.parse(manifest)).toThrow();
+  });
+
   test('发布清单拒绝超出画布的命中区域', () => {
     const manifest = createValidManifest();
     const action = getIdleAction(manifest) as ReturnType<typeof getIdleAction> & {

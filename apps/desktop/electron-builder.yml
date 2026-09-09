@@ -15,6 +15,12 @@ extraResources:
     to: windows/explorer-space-shell-tab-helper.cs
   - from: resources/windows/explorer-space-integrity.json
     to: windows/explorer-space-integrity.json
+  - from: resources/local-model
+    to: local-model
+  - from: ../../packages/coding-task-core/dist
+    to: coding-task-resources
+  - from: ../../vendor/opencode/LICENSE
+    to: coding-task-resources/opencode/LICENSE
 asar: true
 win:
   target:

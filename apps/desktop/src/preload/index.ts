@@ -1,8 +1,9 @@
 import { contextBridge, ipcRenderer } from 'electron';
-import type {
-  HistoryDisclosureDecision,
-  PublicSettings,
-  TaskEvent
+import {
+  taskEventSchema,
+  type HistoryDisclosureDecision,
+  type PublicSettings,
+  type TaskEvent
 } from '@myself/shared-types';
 import { ipcChannels } from '../shared/ipc-channels';
 import type {
@@ -19,43 +20,66 @@ import type {
 import { characterRecoverySnapshotResultSchema } from '../shared/character-ipc';
 import {
   characterMotionEventSchema,
+  characterMotionDeltaProbeSchema,
   characterMotionSnapshotResultSchema,
+  petGeometryRenderViewSchema,
   type CharacterBehaviorProbe,
+  type CharacterMotionDeltaProbe,
   type CharacterMotionEvent,
   type CharacterMotionSnapshot
 } from '../shared/character-motion-ipc';
 import type {
   LocalDataScope,
-  McpServerInput,
   MyselfApi,
   PrivacySettingsDto,
   SaveProviderProfileInput
 } from '../shared/myself-api';
 import type { ModelRouteConfig } from '@myself/shared-types';
+import {
+  localModelPublicStatusSchema,
+  type LocalModelPublicStatus
+} from '../shared/local-model-ipc';
+import { workshopLayoutSettingsSchema } from '../shared/workshop-layout-ipc';
 
 const e2eProbeEnabled = process.argv.includes('--myself-e2e-probe');
 let behaviorProbe: CharacterBehaviorProbe = {
   revision: 0,
-  primaryStateId: '',
-  modifierStateIds: [],
+  stateId: '',
   actionId: null,
   playbackStatus: null
 };
 let behaviorProbePlaybackToken: string | null = null;
+let motionProbeBaseline: { x: number; y: number } | null = null;
+let motionDeltaProbe: CharacterMotionDeltaProbe = {
+  moved: false,
+  horizontal: 0,
+  vertical: 0
+};
 
 if (e2eProbeEnabled) {
-  // preload 在 Main 初始化行为服务前监听，因此不会遗漏首个待机动作。
+  // preload 在 Main 初始化行为与运动服务前监听，测试探针不会遗漏首个合法事件。
   ipcRenderer.on(ipcChannels.characterMotionEvent, (_event, payload: unknown) => {
     const parsed = characterMotionEventSchema.safeParse(payload);
-    if (!parsed.success || parsed.data.type !== 'behavior-action') return;
-    behaviorProbePlaybackToken = parsed.data.playbackToken;
-    behaviorProbe = {
-      revision: parsed.data.revision,
-      primaryStateId: parsed.data.stateId,
-      modifierStateIds: [...(parsed.data.modifierStateIds ?? [])],
-      actionId: parsed.data.actionId,
-      playbackStatus: 'scheduled'
-    };
+    if (!parsed.success) return;
+    if (parsed.data.type === 'behavior-action') {
+      behaviorProbePlaybackToken = parsed.data.playbackToken;
+      behaviorProbe = {
+        revision: parsed.data.revision,
+        stateId: parsed.data.stateId,
+        actionId: parsed.data.actionId,
+        playbackStatus: 'scheduled'
+      };
+      return;
+    }
+    if (parsed.data.type !== 'snapshot') return;
+    motionProbeBaseline ??= { ...parsed.data.snapshot.position };
+    const horizontal = parsed.data.snapshot.position.x - motionProbeBaseline.x;
+    const vertical = parsed.data.snapshot.position.y - motionProbeBaseline.y;
+    motionDeltaProbe = characterMotionDeltaProbeSchema.parse({
+      moved: horizontal !== 0 || vertical !== 0,
+      horizontal,
+      vertical
+    });
   });
 }
 
@@ -88,35 +112,27 @@ const api: MyselfApi = {
   saveModelRoute: (route: ModelRouteConfig) => (
     ipcRenderer.invoke(ipcChannels.settingsRouteSave, { route })
   ),
-  upsertMcpServer: (input: McpServerInput) => (
-    ipcRenderer.invoke(ipcChannels.settingsMcpUpsert, input)
-  ),
-  confirmMcpLaunch: (serverId: string, fingerprint: string) => (
-    ipcRenderer.invoke(ipcChannels.settingsMcpConfirmLaunch, { serverId, fingerprint })
-  ),
-  testMcpServer: (serverId: string) => (
-    ipcRenderer.invoke(ipcChannels.settingsMcpTest, { serverId })
-  ),
-  setMcpServerEnabled: (serverId: string, enabled: boolean) => (
-    ipcRenderer.invoke(ipcChannels.settingsMcpServerToggle, { serverId, enabled })
-  ),
-  setMcpToolEnabled: (serverId: string, toolName: string, enabled: boolean) => (
-    ipcRenderer.invoke(ipcChannels.settingsMcpToolToggle, { serverId, toolName, enabled })
-  ),
-  authorizeMcpToolReadOnly: (serverId: string, toolName: string) => (
-    ipcRenderer.invoke(ipcChannels.settingsMcpToolAuthorizeRead, { serverId, toolName })
-  ),
-  revokeMcpToolReadOnly: (serverId: string, toolName: string) => (
-    ipcRenderer.invoke(ipcChannels.settingsMcpToolRevokeRead, { serverId, toolName })
-  ),
-  deleteMcpServer: (serverId: string) => (
-    ipcRenderer.invoke(ipcChannels.settingsMcpDelete, { serverId })
-  ),
   savePrivacySettings: (input: PrivacySettingsDto) => (
     ipcRenderer.invoke(ipcChannels.settingsPrivacySave, input)
   ),
+  getWorkshopLayout: async () => (
+    workshopLayoutSettingsSchema.parse(
+      await ipcRenderer.invoke(ipcChannels.settingsWorkshopLayoutGet, {})
+    )
+  ),
+  saveWorkshopLayout: async input => (
+    workshopLayoutSettingsSchema.parse(
+      await ipcRenderer.invoke(
+        ipcChannels.settingsWorkshopLayoutSave,
+        workshopLayoutSettingsSchema.parse(input)
+      )
+    )
+  ),
   savePetAlwaysOnTop: (enabled: boolean) => (
     ipcRenderer.invoke(ipcChannels.settingsPetAlwaysOnTopSave, { enabled })
+  ),
+  setLocalModelEnabled: (enabled: boolean) => (
+    ipcRenderer.invoke(ipcChannels.settingsLocalModelEnabledSet, { enabled })
   ),
   setIncognitoSession: (incognito: boolean) => (
     ipcRenderer.invoke(ipcChannels.settingsIncognitoSet, { incognito })
@@ -140,10 +156,24 @@ const api: MyselfApi = {
     ipcChannels.conversationDisclosureResolve,
     { requestId, decision }
   ),
+  resolveCapabilityAuthorization: (requestId, decision) => ipcRenderer.invoke(
+    ipcChannels.capabilityAuthorizationResolve,
+    { requestId, decision }
+  ),
   onTaskEvent: (listener: (event: TaskEvent) => void) => {
-    const handler = (_event: Electron.IpcRendererEvent, payload: TaskEvent) => listener(payload);
+    const handler = (_event: Electron.IpcRendererEvent, payload: unknown): void => {
+      const parsed = taskEventSchema.safeParse(payload);
+      if (parsed.success) listener(parsed.data);
+    };
     ipcRenderer.on(ipcChannels.taskEvent, handler);
     return () => ipcRenderer.removeListener(ipcChannels.taskEvent, handler);
+  },
+  onLocalModelStatus: (listener: (status: LocalModelPublicStatus) => void) => {
+    const handler = (_event: unknown, payload: unknown): void => {
+      listener(localModelPublicStatusSchema.parse(payload));
+    };
+    ipcRenderer.on(ipcChannels.localModelStatus, handler);
+    return () => ipcRenderer.removeListener(ipcChannels.localModelStatus, handler);
   },
   listCharacters: async (): Promise<CharacterSummaryDto[]> => {
     const result = await ipcRenderer.invoke(ipcChannels.characterList, {});
@@ -161,11 +191,16 @@ const api: MyselfApi = {
     const result = await ipcRenderer.invoke(ipcChannels.characterDraftGet, { characterId });
     return result.draft;
   },
-  saveCharacterDraft: async (characterId, draft, draftRevision) => {
+  getCharacterMigrationReview: async characterId => {
+    const result = await ipcRenderer.invoke(ipcChannels.characterDraftGet, { characterId });
+    return result.migrationReview ?? { issues: [], resolutions: [] };
+  },
+  saveCharacterDraft: async (characterId, draft, draftRevision, migrationResolutions) => {
     await ipcRenderer.invoke(ipcChannels.characterDraftSave, {
       characterId,
       draft,
-      draftRevision
+      draftRevision,
+      ...(migrationResolutions === undefined ? {} : { migrationResolutions })
     });
   },
   chooseCharacterSources: (characterId): Promise<CharacterSourceChoiceResult> => (
@@ -239,11 +274,8 @@ const api: MyselfApi = {
     ipcRenderer.on(ipcChannels.characterMotionEvent, handler);
     return () => ipcRenderer.removeListener(ipcChannels.characterMotionEvent, handler);
   },
-  reportCharacterActionPlayed: async (playbackToken, actionId) => {
-    await ipcRenderer.invoke(ipcChannels.characterActionPlayed, { playbackToken, actionId });
-  },
   reportCharacterActionFeedback: async input => {
-    await ipcRenderer.invoke(ipcChannels.characterActionPlayed, {
+    await ipcRenderer.invoke(ipcChannels.characterActionFeedback, {
       playbackToken: input.playbackToken,
       actionId: input.actionId,
       status: input.status
@@ -261,32 +293,33 @@ const api: MyselfApi = {
       behaviorProbe = { ...behaviorProbe, playbackStatus: input.status };
     }
   },
-  reportCharacterActionMilestone: async input => {
-    await ipcRenderer.invoke(ipcChannels.characterActionMilestone, {
-      playbackToken: input.playbackToken,
-      actionId: input.actionId,
-      kind: input.kind,
-      frameId: input.frameId
-    });
-  },
   setPetMousePassthrough: async ignore => {
     await ipcRenderer.invoke(ipcChannels.petMousePassthroughSet, { ignore });
   },
-  beginPetDrag: async () => {
-    await ipcRenderer.invoke(ipcChannels.petDragBegin);
+  beginPetDrag: () => ipcRenderer.send(ipcChannels.petDragBegin),
+  updatePetDrag: () => ipcRenderer.send(ipcChannels.petDragUpdate),
+  endPetDrag: () => ipcRenderer.send(ipcChannels.petDragEnd),
+  commitPetViewport: async input => {
+    await ipcRenderer.invoke(ipcChannels.petViewportCommit, input);
   },
-  endPetDrag: async () => {
-    await ipcRenderer.invoke(ipcChannels.petDragEnd);
-  },
-  openPetContextMenu: async () => {
-    await ipcRenderer.invoke(ipcChannels.petContextMenuOpen);
+  onPetGeometryRender: listener => {
+    const handler = (_event: unknown, payload: unknown): void => {
+      const parsed = petGeometryRenderViewSchema.safeParse(payload);
+      if (parsed.success) listener(parsed.data);
+    };
+    ipcRenderer.on(ipcChannels.petGeometryRender, handler);
+    return () => ipcRenderer.removeListener(ipcChannels.petGeometryRender, handler);
   },
   ...(e2eProbeEnabled
     ? {
+        recordPetInteractionProbeEvent: async event => {
+          await ipcRenderer.invoke(ipcChannels.petInteractionProbeRecord, event);
+        },
         getPetInteractionProbe: async () => (
           ipcRenderer.invoke(ipcChannels.petInteractionProbeGet)
         ),
-        getCharacterBehaviorProbe: async () => structuredClone(behaviorProbe)
+        getCharacterBehaviorProbe: async () => structuredClone(behaviorProbe),
+        getCharacterMotionDeltaProbe: async () => structuredClone(motionDeltaProbe)
       }
     : {}),
   openChat: (): Promise<void> => ipcRenderer.invoke(ipcChannels.windowOpenChat),
@@ -297,13 +330,16 @@ const api: MyselfApi = {
   onCharacterWorkshopFlushRequested: listener => {
     const handler = (_event: Electron.IpcRendererEvent, payload: unknown): void => {
       if (!payload || typeof payload !== 'object') return;
-      const token = (payload as Record<string, unknown>)['token'];
+      const record = payload as Record<string, unknown>;
+      const token = record['token'];
+      const reason = record['reason'];
       if (typeof token !== 'string' || token.length === 0) return;
+      if (reason !== 'window_close' && reason !== 'app_quit') return;
 
       void (async () => {
-        let ok = true;
+        let ok = false;
         try {
-          await listener();
+          ok = await listener(reason);
         } catch {
           ok = false;
         }

@@ -1,8 +1,11 @@
-import type {
-  ModelMessage,
-  ModelProvider,
-  ModelRequest,
-  ModelResponse
+import {
+  decodeResponseContractText,
+  type ModelResponseContract,
+  type ModelMessage,
+  type ModelProvider,
+  type ModelRequest,
+  type ModelResponse,
+  type ToolDefinition
 } from '@myself/agent-core';
 import {
   characterEmotionLabelSchema,
@@ -10,6 +13,11 @@ import {
 } from '@myself/shared-types';
 import { characterAgentBehaviorIntentSchema } from '@myself/character-runtime';
 import { z } from 'zod';
+import {
+  createOpenAIToolNameCodec,
+  type OpenAIToolNameCodec
+} from './openai-tool-name-codec';
+import { ProviderResponseError } from './provider-response-error';
 
 export type FetchLike = (
   input: string | URL | Request,
@@ -21,10 +29,16 @@ export type AdditionalParameterValue = string | number | boolean;
 export interface ProviderAdapterConfig {
   baseUrl: string;
   modelId: string;
+  providerId?: string;
   additionalParameters?: Record<string, AdditionalParameterValue>;
 }
 
 type OpenAICompatibleConfig = ProviderAdapterConfig | ProviderProfile;
+
+export interface OpenAIRequestPolicy {
+  body: Readonly<Record<string, unknown>>;
+  validateResponse(raw: unknown): void;
+}
 
 const compatibleResponseSchema = z.object({
   choices: z.array(z.object({
@@ -39,7 +53,7 @@ const compatibleResponseSchema = z.object({
         type: z.literal('function'),
         function: z.object({
           name: z.string().min(1),
-          arguments: z.string()
+          arguments: z.unknown()
         })
       })).optional()
     })
@@ -99,11 +113,14 @@ export async function readProviderJson(response: Response): Promise<unknown> {
   try {
     return await response.json();
   } catch {
-    throw new ProviderError('PROVIDER_MALFORMED_RESPONSE', false);
+    throw new ProviderResponseError('HTTP_BODY_NOT_JSON', 'transport');
   }
 }
 
-function serializeMessage(message: ModelMessage): Record<string, unknown> {
+function serializeMessage(
+  message: ModelMessage,
+  toolNameCodec: OpenAIToolNameCodec
+): Record<string, unknown> {
   if (message.role === 'tool') {
     return {
       role: 'tool',
@@ -119,7 +136,7 @@ function serializeMessage(message: ModelMessage): Record<string, unknown> {
         id: message.toolRequest.requestId,
         type: 'function',
         function: {
-          name: message.toolRequest.toolName,
+          name: toolNameCodec.encode(message.toolRequest.toolName),
           arguments: JSON.stringify(message.toolRequest.arguments)
         }
       }]
@@ -128,66 +145,107 @@ function serializeMessage(message: ModelMessage): Record<string, unknown> {
   return { role: message.role, content: message.content };
 }
 
-function normalizeResponse(raw: unknown): ModelResponse {
+function normalizeResponse(
+  raw: unknown,
+  toolNameCodec: OpenAIToolNameCodec,
+  responseContract: ModelResponseContract | undefined, purpose?: ModelRequest['purpose']
+): ModelResponse {
   const parsed = compatibleResponseSchema.safeParse(raw);
-  if (!parsed.success) throw new ProviderError('PROVIDER_MALFORMED_RESPONSE', false);
+  if (!parsed.success) throw new ProviderResponseError('RESPONSE_SHAPE_INVALID', 'transport');
 
   const message = parsed.data.choices[0]?.message;
-  if (!message) throw new ProviderError('PROVIDER_MALFORMED_RESPONSE', false);
+  if (!message) throw new ProviderResponseError('RESPONSE_SHAPE_INVALID', 'transport');
   const toolCalls = message.tool_calls ?? [];
-  if (toolCalls.length > 1) throw new ProviderError('PROVIDER_MALFORMED_RESPONSE', false);
+  if (toolCalls.length > 1) throw new ProviderResponseError('RESPONSE_SHAPE_INVALID', 'transport');
   if (
     toolCalls.length === 1
+    && purpose !== 'conversation'
     && typeof message.content === 'string'
     && message.content.length > 0
   ) {
-    throw new ProviderError('PROVIDER_MALFORMED_RESPONSE', false);
+    throw new ProviderResponseError('RESPONSE_SHAPE_INVALID', 'transport');
   }
 
   const toolCall = toolCalls[0];
   if (toolCall) {
     try {
+      if (typeof toolCall.function.arguments !== 'string') {
+        throw new ProviderResponseError('TOOL_ARGUMENTS_INVALID', 'tool_call');
+      }
       const argumentsValue = toolArgumentsSchema.parse(JSON.parse(toolCall.function.arguments));
+      let toolName: string;
+      try {
+        toolName = toolNameCodec.decode(toolCall.function.name);
+      } catch {
+        throw new ProviderError('PROVIDER_UNKNOWN_TOOL_CALL', false);
+      }
       return {
         type: 'tool_request',
         request: {
           requestId: toolCall.id,
-          toolName: toolCall.function.name,
+          toolName,
           arguments: argumentsValue
         }
       };
-    } catch {
-      throw new ProviderError('PROVIDER_MALFORMED_RESPONSE', false);
+    } catch (error) {
+      if (error instanceof ProviderError || error instanceof ProviderResponseError) throw error;
+      throw new ProviderResponseError('TOOL_ARGUMENTS_INVALID', 'tool_call');
     }
   }
 
   if (typeof message.content !== 'string') {
-    throw new ProviderError('PROVIDER_MALFORMED_RESPONSE', false);
+    throw new ProviderResponseError('RESPONSE_SHAPE_INVALID', 'transport');
   }
-  const response: Extract<ModelResponse, { type: 'text' }> = {
-    type: 'text',
-    text: message.content
-  };
-  if (message.metadata?.emotion !== undefined) {
-    const emotion = characterEmotionLabelSchema.safeParse(message.metadata.emotion);
-    if (!emotion.success) {
-      throw new ProviderError('PROVIDER_MALFORMED_RESPONSE', false);
+  const response = responseContract === undefined
+    ? { type: 'text' as const, text: message.content }
+    : normalizeResponseContractText(message.content, responseContract);
+  if (responseContract === undefined && purpose !== 'conversation' && response.type === 'text') {
+    if (message.metadata?.emotion !== undefined) {
+      const emotion = characterEmotionLabelSchema.safeParse(message.metadata.emotion);
+      if (!emotion.success) {
+        throw new ProviderResponseError('CONTROL_SCHEMA_INVALID', 'chat_control');
+      }
+      response.emotion = emotion.data;
     }
-    response.emotion = emotion.data;
+    // 旧元数据只服务无响应契约的能力任务；结构化聊天以正文契约为唯一来源。
+    const behaviorIntent = characterAgentBehaviorIntentSchema.safeParse(
+      message.metadata?.behaviorIntent
+    );
+    if (behaviorIntent.success) response.behaviorIntent = behaviorIntent.data;
   }
-  // 仅使用 OpenAI-compatible message.metadata 这一既有结构化扩展边界。
-  const behaviorIntent = characterAgentBehaviorIntentSchema.safeParse(
-    message.metadata?.behaviorIntent
-  );
-  if (behaviorIntent.success) response.behaviorIntent = behaviorIntent.data;
   return response;
+}
+
+/** 各 Provider 共用严格表现解码，只返回完整有效的无正文信封。 */
+export function normalizeResponseContractText(
+  raw: string,
+  contract: ModelResponseContract
+): Exclude<ModelResponse, { type: 'tool_request' }> {
+  const decoded = decodeResponseContractText(raw, contract);
+  if (decoded.kind === 'invalid') {
+    throw new ProviderResponseError('RESPONSE_FORMAT_UNSUPPORTED', 'chat_control');
+  }
+
+  return { type: 'structured', structured_output: decoded.structured_output };
+}
+
+/** 响应契约没有系统权限，也不得与工具调用复用同一次 Provider 请求。 */
+export function assertResponseContractRequest(request: ModelRequest): void {
+  if (
+    request.responseContract !== undefined
+    && (request.tools.length > 0 || request.toolChoice !== 'none'
+      || request.onTextDelta !== undefined)
+  ) {
+    throw new ProviderError('PROVIDER_RESPONSE_CONTRACT_CONFLICT', false);
+  }
 }
 
 export class OpenAICompatibleProvider implements ModelProvider {
   constructor(
     config: OpenAICompatibleConfig,
     private readonly getSecret: () => Promise<string>,
-    private readonly fetchClient: FetchLike = fetch
+    private readonly fetchClient: FetchLike = fetch,
+    private readonly requestPolicy?: OpenAIRequestPolicy
   ) {
     this.config = resolveOpenAIConfig(config);
   }
@@ -195,6 +253,35 @@ export class OpenAICompatibleProvider implements ModelProvider {
   private readonly config: ProviderAdapterConfig;
 
   async respond(request: ModelRequest, signal: AbortSignal): Promise<ModelResponse> {
+    assertResponseContractRequest(request);
+    const deepSeekConversation = this.config.providerId === 'deepseek' && request.purpose === 'conversation';
+    // 单次请求复用同一映射，确保定义、续传历史与响应名称处于同一 Provider 命名空间。
+    const toolChoice = resolveToolChoice(request);
+    const toolNameCodec = createOpenAIToolNameCodec(codecDefinitions(request));
+    const tools = request.tools.map(definition => ({
+      ...definition,
+      function: {
+        ...definition.function,
+        name: toolNameCodec.encode(definition.function.name)
+      }
+    }));
+    const requestBody = JSON.stringify({
+      ...this.config.additionalParameters,
+      model: this.config.modelId,
+      messages: request.messages.map(message => serializeMessage(message, toolNameCodec)),
+      tools,
+      tool_choice: toolChoice,
+      ...(request.responseContract === undefined
+        ? {}
+        : { response_format: { type: 'json_object' } }),
+      ...(deepSeekConversation
+        ? { thinking: { type: 'disabled' }, max_tokens: 4_096 }
+        : this.config.providerId === 'deepseek' && request.reasoningMode === 'disabled'
+          ? { thinking: { type: 'disabled' } }
+          : {}),
+      ...this.requestPolicy?.body
+    });
+
     let response: Response;
     try {
       response = await this.fetchClient(chatCompletionsUrl(this.config.baseUrl), {
@@ -204,17 +291,47 @@ export class OpenAICompatibleProvider implements ModelProvider {
           'content-type': 'application/json',
           authorization: `Bearer ${await this.getSecret()}`
         },
-        body: JSON.stringify({
-          ...this.config.additionalParameters,
-          model: this.config.modelId,
-          messages: request.messages.map(serializeMessage),
-          tools: request.tools
-        })
+        body: requestBody
       });
     } catch (error) {
+      if (this.requestPolicy !== undefined && error instanceof ProviderError) throw error;
       normalizeFetchError(error, signal);
     }
 
-    return normalizeResponse(await readProviderJson(response));
+    const rawResponse = await readProviderJson(response);
+    this.requestPolicy?.validateResponse(rawResponse);
+    return normalizeResponse(
+      rawResponse,
+      toolNameCodec,
+      request.responseContract, request.purpose
+    );
   }
+}
+
+function resolveToolChoice(request: ModelRequest): ModelRequest['toolChoice'] {
+  if (request.tools.length === 0 && request.toolChoice !== 'none') {
+    throw new ProviderError('PROVIDER_TOOL_CHOICE_INVALID', false);
+  }
+  if (request.tools.length > 0 && request.toolChoice === 'none') {
+    throw new ProviderError('PROVIDER_TOOL_CHOICE_INVALID', false);
+  }
+  return request.toolChoice;
+}
+
+function codecDefinitions(request: ModelRequest): ToolDefinition[] {
+  return [
+    ...request.tools,
+    ...request.messages.flatMap(message => (
+      message.role === 'assistant' && message.toolRequest
+        ? [{
+            type: 'function' as const,
+            function: {
+              name: message.toolRequest.toolName,
+              description: '',
+              parameters: {}
+            }
+          }]
+        : []
+    ))
+  ];
 }

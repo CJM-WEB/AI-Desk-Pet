@@ -1,0 +1,268 @@
+import type {
+  ExplicitBehaviorDirective,
+  PreparedBehaviorPrompt
+} from '../characters/character-behavior-director';
+import type { MovementControlPlan, PublicMotionTarget } from '@myself/character-runtime';
+
+type ParsedBehaviorPrompt = Pick<
+  PreparedBehaviorPrompt,
+  'capabilityText' | 'explicitDirective'
+> & Readonly<{ movementControl: MovementControlPlan }>;
+
+const 引用或代码开头 = /^(?:>|[`'"“”‘’])/u;
+const 文件移动否定 = /^(?:别|不要|无需)移动(?:这个|该|我的)?文件/u;
+const 中文组合分隔 = /^(?:\s*(?:并且?|然后|再)\s*)/u;
+const 英文组合分隔 = /^(?:\s*(?:and|then)\s+)/iu;
+const 行为知识后缀 = /^[，。！？,.!?\s]*(?:是什么意思|为什么|怎么|如何|含义|解释|讨论|meaning\b|why\b|how\b|what\s+does\b)/iu;
+
+const 方向表 = Object.freeze({
+  左: 'left',
+  右: 'right',
+  上: 'up',
+  下: 'down'
+} as const);
+const 英文方向表 = Object.freeze({
+  left: 'left',
+  right: 'right',
+  up: 'up',
+  down: 'down'
+} as const);
+const 相对方向目标表 = Object.freeze({
+  left: 'left',
+  right: 'right',
+  up: 'top',
+  down: 'bottom'
+} as const satisfies Readonly<Record<keyof typeof 英文方向表, PublicMotionTarget>>);
+const 区域表 = Object.freeze({
+  左边: 'left',
+  右边: 'right',
+  顶部: 'top',
+  上边: 'top',
+  底部: 'bottom',
+  下边: 'bottom',
+  左上角: 'top_left',
+  右上角: 'top_right',
+  左下角: 'bottom_left',
+  右下角: 'bottom_right'
+} as const);
+
+/**
+ * 只识别用户消息开头的有限命令语法；引用、代码和讨论文本没有行为权限。
+ * 返回的剩余文本仍须交给既有能力路由，Gate 自身不持有文件或命令端口。
+ */
+export function parseExplicitCharacterBehavior(text: string): ParsedBehaviorPrompt | null {
+  const normalized = text.trim();
+  if (!normalized || 引用或代码开头.test(normalized) || 文件移动否定.test(normalized)) {
+    return null;
+  }
+
+  const parsed = parseChinese(normalized) ?? parseEnglish(normalized);
+  if (!parsed) return null;
+  const remaining = normalized.slice(parsed.consumed);
+  // 后置知识问句讨论的是动作含义，不得借用句首动作短语取得行为控制权。
+  if (行为知识后缀.test(remaining) || !hasDirectiveBoundary(remaining)) return null;
+  return {
+    capabilityText: remainingCapabilityText(normalized, parsed.consumed),
+    explicitDirective: parsed.directive,
+    movementControl: movementControlForDirective(parsed.directive)
+  };
+}
+
+type ParsedDirective = Readonly<{
+  consumed: number;
+  directive: ExplicitBehaviorDirective;
+}>;
+
+function parseChinese(text: string): ParsedDirective | null {
+  // “不要一直跑，隔一会儿动一下”是否定持续模式、肯定间歇模式，必须先于停止和持续规则判定。
+  const intermittentCorrection = /^(?:请)?不要一直(?:跑|走|运动|移动)[，,\s]*(?:而是)?(?:隔一会儿|偶尔|时不时)(?:再)?(?:动一下|动一动|运动|活动|走动)/u.exec(text);
+  if (intermittentCorrection) {
+    return {
+      consumed: intermittentCorrection[0].length,
+      directive: { kind: 'resume_movement' }
+    };
+  }
+
+  const stop = /^(?:请)?(?:你)?(?:停下|停止不动|别走了|不要走了|不要再走了|别动了|不要动了|静止不动|保持静止|不要再动|别乱跑)/u.exec(text);
+  if (stop) return { consumed: stop[0].length, directive: { kind: 'stop_movement' } };
+
+  const continuous = /^(?:请)?(?:(?:让|叫)(?:他|她|它))?(?:保持运动|保持移动|保持跑动|一直运动|一直走|一直跑|继续跑)/u.exec(text);
+  if (continuous) return { consumed: continuous[0].length, directive: { kind: 'continuous_movement' } };
+
+  const resume = /^(?:请)?(?:(?:让|叫)(?:他|她|它))?(?:时不时(?:地)?(?:动一下|运动|活动|走动)|偶尔(?:地)?(?:动一下|动一动|运动|活动|走动)|自己偶尔走动|间歇地?活动|恢复自主活动|恢复活动|恢复移动|可以动了|继续活动|继续走)/u.exec(text);
+  if (resume) return { consumed: resume[0].length, directive: { kind: 'resume_movement' } };
+
+  const region = /^(?:请)?(?:去|走到|移动到)(?:屏幕)?(左上角|右上角|左下角|右下角|左边|右边|顶部|上边|底部|下边)/u.exec(text);
+  if (region?.[1]) {
+    return {
+      consumed: region[0].length,
+      directive: {
+        kind: 'move',
+        motion: { kind: 'region', region: 区域表[region[1] as keyof typeof 区域表] }
+      }
+    };
+  }
+
+  const relative = /^(?:请)?(?:向|往)(左|右|上|下)(?:走|移动)?(远一点|远些|一点|一些|近一点|中等)?/u.exec(text);
+  if (relative?.[1]) {
+    const distanceText = relative[2] ?? '';
+    const distance = distanceText.startsWith('远')
+      ? 'far'
+      : distanceText === '中等'
+        ? 'medium'
+        : distanceText.length > 0
+          ? 'near'
+          : 'medium';
+    return {
+      consumed: relative[0].length,
+      directive: {
+        kind: 'move',
+        motion: {
+          kind: 'relative',
+          direction: 方向表[relative[1] as keyof typeof 方向表],
+          distance
+        }
+      }
+    };
+  }
+
+  // 终止词必须紧接既有句尾／组合边界，名称中的“状态”等字样才不会提前截断。
+  // 进入／切换到只接受状态目标，沿用明确播放授权，不由名称推导真实运动。
+  const play = /^(?:请)?(?:做一个|播放|表演)\s*(.{1,120}?)\s*(动作|状态)(?=\s*(?:$|[，。！？,.!?]|并且?|然后|再|(?:and|then)\s))/iu.exec(text)
+    ?? /^(?:请)?(?:你)?(?:进入|切换到)\s*(.{1,120}?)\s*(状态)(?=\s*(?:$|[，。！？,.!?]|并且?|然后|再|(?:and|then)\s))/iu.exec(text);
+  const targetName = play?.[1] ? validExplicitTargetName(play[1]) : null;
+  if (play && targetName) {
+    return {
+      consumed: play[0].length,
+      directive: {
+        kind: 'play',
+        target: { kind: play[2] === '状态' ? 'state_name' : 'action_name', name: targetName }
+      }
+    };
+  }
+
+  const farWander = /^(?:请你?|你能)?(?:跑|走|移动)(?:得)?(?:远一点|远些)/u.exec(text);
+  if (farWander) {
+    return {
+      consumed: farWander[0].length,
+      directive: { kind: 'move', motion: { kind: 'wander', scope: 'work_area', distance: 'far' } }
+    };
+  }
+
+  const wander = /^(?:请你?|你能|你)?(?:开始运动|活动一下|移动一下|运动一下|跑一跑|跑一下|动一下|移动|跑步|走一走|走走|散散步|到处走走|运动|动|跑)(?:吗)?/u.exec(text);
+  return wander
+    ? {
+        consumed: wander[0].length,
+        directive: { kind: 'move', motion: { kind: 'wander', scope: 'short' } }
+      }
+    : null;
+}
+
+function parseEnglish(text: string): ParsedDirective | null {
+  const stop = /^(?:please\s+)?stop(?:\s+(?:moving|walking))?(?=$|[,.!?]|\s+(?:and|then)\b)/iu.exec(text);
+  if (stop) return { consumed: stop[0].length, directive: { kind: 'stop_movement' } };
+
+  const resume = /^(?:please\s+)?(?:resume|start|continue)(?:\s+(?:moving|walking))?(?=$|[,.!?]|\s+(?:and|then)\b)/iu.exec(text);
+  if (resume) return { consumed: resume[0].length, directive: { kind: 'resume_movement' } };
+
+  const region = /^(?:please\s+)?(?:go|walk|move)\s+to\s+(?:the\s+)?(top left|top right|bottom left|bottom right|left|right|top|bottom)/iu.exec(text);
+  if (region?.[1]) {
+    const normalizedRegion = region[1].toLowerCase().replace(' ', '_') as
+      'left' | 'right' | 'top' | 'bottom' | 'top_left' | 'top_right' | 'bottom_left' | 'bottom_right';
+    return {
+      consumed: region[0].length,
+      directive: { kind: 'move', motion: { kind: 'region', region: normalizedRegion } }
+    };
+  }
+
+  const relative = /^(?:please\s+)?(?:move|walk|go)\s+(left|right|up|down)(?:\s+(a little|slightly|near|medium|far|a lot))?/iu.exec(text);
+  if (relative?.[1]) {
+    const distanceText = relative[2]?.toLowerCase() ?? '';
+    const distance = distanceText === 'far' || distanceText === 'a lot'
+      ? 'far'
+      : distanceText === 'medium' || distanceText.length === 0
+        ? 'medium'
+        : 'near';
+    return {
+      consumed: relative[0].length,
+      directive: {
+        kind: 'move',
+        motion: {
+          kind: 'relative',
+          direction: 英文方向表[relative[1].toLowerCase() as keyof typeof 英文方向表],
+          distance
+        }
+      }
+    };
+  }
+
+  const play = /^(?:please\s+)?(?:(?:play|perform)\s+|do\s+(?:an?\s+)?)(.{1,120}?)\s+(animation|action|state)(?=\s*(?:$|[，。！？,.!?]|并且?|然后|再|(?:and|then)\s))/iu.exec(text);
+  const targetName = play?.[1] ? validExplicitTargetName(play[1]) : null;
+  if (play && targetName) {
+    return {
+      consumed: play[0].length,
+      directive: {
+        kind: 'play',
+        target: { kind: play[2]?.toLowerCase() === 'state' ? 'state_name' : 'action_name', name: targetName }
+      }
+    };
+  }
+
+  const wander = /^(?:please\s+)?(?:walk|move)\s+around/iu.exec(text);
+  return wander
+    ? {
+        consumed: wander[0].length,
+        directive: { kind: 'move', motion: { kind: 'wander', scope: 'short' } }
+      }
+    : null;
+}
+
+/** 旧显式动作仍用于当前 Director；新增字段先提供唯一、可验证的运动策略。 */
+function movementControlForDirective(
+  directive: ExplicitBehaviorDirective
+): MovementControlPlan {
+  if (directive.kind === 'stop_movement') return { kind: 'set_mode', mode: 0 };
+  if (directive.kind === 'continuous_movement') return { kind: 'set_mode', mode: 1 };
+  if (directive.kind === 'resume_movement') return { kind: 'set_mode', mode: 2 };
+  if (directive.kind !== 'move') return { kind: 'keep' };
+
+  if (directive.motion.kind === 'relative') {
+    return {
+      kind: 'move_once',
+      target: 相对方向目标表[directive.motion.direction],
+      distance: directive.motion.distance
+    };
+  }
+  if (directive.motion.kind === 'region') {
+    return { kind: 'move_once', target: directive.motion.region, distance: 'medium' };
+  }
+  return {
+    kind: 'move_once',
+    target: 'random_work_area',
+    distance: directive.motion.distance ?? (directive.motion.scope === 'short' ? 'near' : 'medium')
+  };
+}
+
+/** 状态／动作命令只接收公开短名称，拒绝引用边界、代码和任何路径形态。 */
+function validExplicitTargetName(value: string): string | null {
+  const name = value.trim();
+  if (!name || Array.from(name).length > 120) return null;
+  if (/[\\/`'"“”‘’「」『』<>]/u.test(name) || /^[a-z]:/iu.test(name)) return null;
+  return name;
+}
+
+function remainingCapabilityText(original: string, consumed: number): string {
+  const remaining = original.slice(consumed);
+  const separator = 中文组合分隔.exec(remaining) ?? 英文组合分隔.exec(remaining);
+  if (!separator) return original;
+  const capabilityText = remaining.slice(separator[0].length).trim();
+  return capabilityText || original;
+}
+
+function hasDirectiveBoundary(remaining: string): boolean {
+  const normalized = remaining.trimStart();
+  return normalized.length === 0
+    || /^[，。！？,.!?]/u.test(normalized)
+    || 中文组合分隔.test(remaining)
+    || 英文组合分隔.test(remaining);
+}

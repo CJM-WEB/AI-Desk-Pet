@@ -1,9 +1,14 @@
 import type { CharacterPlaybackFeedback } from './behavior-contracts';
-import type {
-  CharacterActionHistoryEntry,
-  CharacterBehaviorActionSelection
-} from './behavior-action-selector';
-import type { CharacterActionDefinitionV2 } from './character-v2-schema';
+
+/** 播放生命周期只依赖动作策略与真实 ID，V2/V3 均满足此结构。 */
+export type CharacterScheduleActionDefinition = {
+  id: string; interrupt: 'normal' | 'resistant'; loopPolicy: 'never' | 'presentation' | 'until-interrupted';
+  failureFallbackActionId?: string | undefined; interruptedFallbackActionId?: string | undefined;
+};
+export type CharacterActionHistoryEntry = {
+  actionId: string; startedAtMs: number; finishedAtMs: number | null;
+  outcome: 'completed' | 'interrupted' | 'failed' | null;
+};
 
 export type CharacterScheduledAction = {
   actionId: string;
@@ -25,7 +30,7 @@ export type CharacterBehaviorSchedule = {
 export type CharacterScheduleCommand =
   | {
     type: 'schedule';
-    selection: CharacterBehaviorActionSelection;
+    selection: { stateId: string; actionId: string };
     playbackToken: string;
     nowMs: number;
     startConfirmationTimeoutMs: number;
@@ -60,9 +65,9 @@ function appendHistory(
 
 /** 查找当前逻辑动作定义，以读取中断策略和回退动作。 */
 function actionById(
-  actions: readonly CharacterActionDefinitionV2[],
+  actions: readonly CharacterScheduleActionDefinition[],
   actionId: string
-): CharacterActionDefinitionV2 | undefined {
+): CharacterScheduleActionDefinition | undefined {
   return actions.find((action) => action.id === actionId);
 }
 
@@ -106,7 +111,7 @@ function authorizeFeedback(
 function reduceScheduleCommand(
   schedule: CharacterBehaviorSchedule,
   command: Extract<CharacterScheduleCommand, { type: 'schedule' }>,
-  actions: readonly CharacterActionDefinitionV2[]
+  actions: readonly CharacterScheduleActionDefinition[]
 ): CharacterScheduleResult {
   const currentDefinition = schedule.current
     ? actionById(actions, schedule.current.actionId)
@@ -149,7 +154,7 @@ function reduceScheduleCommand(
 function reduceFeedbackCommand(
   schedule: CharacterBehaviorSchedule,
   feedback: CharacterPlaybackFeedback,
-  actions: readonly CharacterActionDefinitionV2[]
+  actions: readonly CharacterScheduleActionDefinition[]
 ): CharacterScheduleResult {
   const current = authorizeFeedback(schedule.current, feedback);
   if (feedback.status === 'started') {
@@ -210,7 +215,7 @@ function reduceExpireCommand(
 export function reduceCharacterActionSchedule(
   schedule: CharacterBehaviorSchedule,
   command: CharacterScheduleCommand,
-  actions: readonly CharacterActionDefinitionV2[]
+  actions: readonly CharacterScheduleActionDefinition[]
 ): CharacterScheduleResult {
   if (command.type === 'schedule') {
     return reduceScheduleCommand(schedule, command, actions);

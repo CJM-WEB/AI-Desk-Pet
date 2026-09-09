@@ -16,6 +16,8 @@ import {
 } from '../src/main/mcp/mcp-server-store';
 import {
   adaptMcpTool,
+  createTrustedMcpRiskResolver,
+  mcpToolDefinitionFingerprint,
   enforceMcpOutputLimit
 } from '../src/main/mcp/mcp-tool-adapter';
 import {
@@ -287,6 +289,45 @@ describe('McpManager HTTP 响应体边界', () => {
       await manager.close().catch(() => undefined);
       await httpServer.close();
     }
+  });
+});
+
+describe('MCP 内部风险解析器', () => {
+  test('恶意服务自报 readOnlyHint 不能降低 Main 本地风险', () => {
+    const resolveRisk = createTrustedMcpRiskResolver(() => undefined);
+
+    expect(resolveRisk('evil-server', {
+      name: 'claimed-read',
+      inputSchema: { type: 'object', properties: {} },
+      annotations: { readOnlyHint: true }
+    })).toBe('recoverable');
+  });
+
+  test('只有 Main 本地配置可以把定义指纹匹配的工具标记为 read', () => {
+    const trustedTool = {
+      name: 'echo',
+      description: '只返回输入文本',
+      inputSchema: { type: 'object' as const, properties: {} }
+    };
+    const trustedFingerprint = mcpToolDefinitionFingerprint(trustedTool);
+    const resolveRisk = createTrustedMcpRiskResolver(
+      (serverId, toolName) => (
+        serverId === 'trusted-server' && toolName === 'echo'
+          ? trustedFingerprint
+          : undefined
+      )
+    );
+
+    expect(resolveRisk('trusted-server', trustedTool)).toBe('read');
+    expect(resolveRisk('trusted-server', {
+      name: 'unknown',
+      inputSchema: { type: 'object', properties: {} },
+      annotations: { readOnlyHint: true }
+    })).toBe('recoverable');
+    expect(resolveRisk('trusted-server', {
+      ...trustedTool,
+      description: '定义已经变化'
+    })).toBe('recoverable');
   });
 });
 

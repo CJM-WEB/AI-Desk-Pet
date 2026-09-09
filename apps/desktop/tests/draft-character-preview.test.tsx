@@ -11,10 +11,11 @@ import {
 } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import type {
-  CharacterDraftV2,
+  CharacterDraftV3,
   CharacterStateId,
   DraftActionClip
 } from '@myself/character-runtime';
+import { resolveCharacterPresentationV3 } from '@myself/character-runtime';
 import type {
   CharacterWorkshopApi,
   CharacterWorkshopState
@@ -27,7 +28,8 @@ import {
   type PreviewState
 } from '../src/renderer/src/characters/workshop/PreviewControls';
 import {
-  DraftCharacterPreview
+  DraftCharacterPreview,
+  draftActionFromResolvedPresentation
 } from '../src/renderer/src/characters/workshop/DraftCharacterPreview';
 import {
   CharacterWorkshopWorkspace
@@ -385,9 +387,9 @@ const actingAction: DraftActionClip = {
 function draftWith(
   idle: DraftActionClip = idleAction,
   acting: DraftActionClip = actingAction
-): CharacterDraftV2 {
+): CharacterDraftV3 {
   return {
-    version: 2,
+    version: 3,
     id: 'nova',
     name: 'Nova',
     identity: {
@@ -403,11 +405,10 @@ function draftWith(
       exampleLines: []
     },
     defaultSkinId: 'default',
-    defaultStateId: 'idle',
+    idleStateId: 'idle',
     skins: [{
       id: 'default',
       name: '默认皮肤',
-      semanticFallbacks: [],
       presentations: [idle, acting].map(action => ({
         actionId: action.id,
         fps: action.fps,
@@ -419,12 +420,8 @@ function draftWith(
     states: [{
       id: 'idle',
       name: '待机',
-      kind: 'primary',
-      semantic: 'idle',
       tags: [],
       intensity: 20,
-      coexistWithStateIds: [],
-      forbiddenStateIds: [],
       enterConditions: [],
       exitConditions: [],
       agentInferable: true,
@@ -432,12 +429,8 @@ function draftWith(
     }, {
       id: 'thinking',
       name: '思考',
-      kind: 'primary',
-      semantic: 'think',
       tags: [],
       intensity: 50,
-      coexistWithStateIds: [],
-      forbiddenStateIds: [],
       enterConditions: [],
       exitConditions: [],
       agentInferable: true,
@@ -445,12 +438,8 @@ function draftWith(
     }, {
       id: 'acting',
       name: '行动',
-      kind: 'primary',
-      semantic: 'working',
       tags: [],
       intensity: 60,
-      coexistWithStateIds: [],
-      forbiddenStateIds: [],
       enterConditions: [],
       exitConditions: [],
       agentInferable: true,
@@ -459,18 +448,14 @@ function draftWith(
     actions: [idle, acting].map(action => ({
       id: action.id,
       name: action.name,
-      semantic: action.id === idle.id ? 'idle' : 'working',
+      semantic: action.id === idle.id ? 'idle' : 'move',
       tags: [],
       preference: action.weight,
       cooldownMs: 0,
       repeatSuppressionMs: 0,
       loopPolicy: action.loop ? 'presentation' : 'never',
       interrupt: 'normal',
-      allowedPrimaryStateIds: [],
-      forbiddenPrimaryStateIds: [],
-      requiredModifierStateIds: [],
-      forbiddenModifierStateIds: [],
-      direction: action.direction
+      direction: action.direction ?? 'any'
     }))
   };
 }
@@ -485,7 +470,7 @@ function previewState(
 }
 
 function previewProps(
-  draft: CharacterDraftV2 = draftWith(),
+  draft: CharacterDraftV3 = draftWith(),
   overrides: Partial<React.ComponentProps<typeof DraftCharacterPreview>> = {}
 ): React.ComponentProps<typeof DraftCharacterPreview> {
   return {
@@ -500,6 +485,21 @@ function previewProps(
     ...overrides
   };
 }
+
+describe('解析表现到预览动作的转换', () => {
+  test('保真复制皮肤动作的倍速与水平反转', () => {
+    const draft = draftWith();
+    const presentation = draft.skins[0]!.presentations[0]!;
+    presentation.playbackRate = 1.5;
+    presentation.mirrorX = true;
+    const resolved = resolveCharacterPresentationV3(draft, 'default', 'idle', 'idle-main');
+
+    expect(draftActionFromResolvedPresentation(resolved!)).toMatchObject({
+      playbackRate: 1.5,
+      mirrorX: true
+    });
+  });
+});
 
 function sceneDouble() {
   let currentFrame: ReturnType<PixiCharacterScene['getCurrentFrame']> = null;
@@ -545,7 +545,7 @@ function toPresentation(action: DraftActionClip) {
 /** 构造彼此独立的四级回退，期望值不复用解析器实现。 */
 function draftForSource(
   source: 'skin-action' | 'skin-semantic' | 'default-action' | 'default-state' | 'none'
-): CharacterDraftV2 {
+): CharacterDraftV3 {
   const base = draftWith();
   const winterFallback: DraftActionClip = {
     ...actingAction,
@@ -579,9 +579,6 @@ function draftForSource(
       id: 'winter',
       name: '冬装',
       presentations: winterPresentations,
-      semanticFallbacks: source === 'skin-semantic'
-        ? [{ semantic: 'working', actionId: winterFallback.id }]
-        : []
     }]
   };
 }
@@ -619,9 +616,7 @@ describe('真实草稿预览', () => {
 
   test.each([
     ['skin-action', '当前使用：当前皮肤精确表现', 'winter-acting-sheet'],
-    ['skin-semantic', '当前使用：当前皮肤语义回退', 'winter-working-sheet'],
-    ['default-action', '当前使用：默认皮肤动作', 'acting-sheet'],
-    ['default-state', '当前使用：默认状态回退', 'idle-sheet']
+    ['default-action', '当前使用：默认皮肤同一动作', 'acting-sheet'],
   ] as const)('%s 来源只加载解析后的候选并显示可访问说明', async (
     source,
     expectedMessage,
@@ -666,7 +661,7 @@ describe('真实草稿预览', () => {
   test('相同动作切换皮肤会先清屏、释放旧 bundle 并加载新候选', async () => {
     const current = sceneDouble();
     pixiFactory.mockResolvedValue(current.scene);
-    const draft = draftForSource('skin-semantic');
+    const draft = draftForSource('skin-action');
     const props = previewProps(draft, {
       stateId: 'acting',
       actionId: 'acting-main'
@@ -679,9 +674,9 @@ describe('真实草稿预览', () => {
 
     expect(current.scene.clear).toHaveBeenCalledOnce();
     expect(revokeObjectURL).toHaveBeenCalledWith('blob:draft-1');
-    expect(await screen.findByText('当前使用：当前皮肤语义回退')).not.toBeNull();
+    expect(await screen.findByText('当前使用：当前皮肤精确表现')).not.toBeNull();
     expect(current.scene.showAction).toHaveBeenLastCalledWith(
-      expect.objectContaining({ id: 'winter-working' }),
+      expect.objectContaining({ id: 'acting-main' }),
       expect.anything()
     );
   });
@@ -940,13 +935,17 @@ describe('真实草稿预览', () => {
           missingRequirements: [],
           migrationRecoveryAvailable: false
         }],
-        selectedCharacterId: 'nova',
+        migrationReview: { issues: [], resolutions: [] },
+    resolveMigrationIssue: vi.fn(),
+    setIdleState: vi.fn(),
+    selectedCharacterId: 'nova',
         draft,
         selectedEntity: { kind: 'action', actionId: 'idle-main' },
         selectedSkinId: 'default',
         selectedStateId: 'idle',
         selectedActionId: 'idle-main',
         draftStatus: 'saved',
+        closeConfirmationPending: false,
         compileStatus: 'idle',
         loadStatus: 'ready',
         busyAction: null,
@@ -988,12 +987,13 @@ describe('真实草稿预览', () => {
               : action)
           }));
         },
+        setCurrentActionCommitFrame: vi.fn(),
+        requestRemoveCurrentFrame: vi.fn(() => ({
+          safeReferencePaths: [], blockingReferencePaths: []
+        })),
         requestRemoveAction: vi.fn(() => ({
           safeReferencePaths: [], blockingReferencePaths: []
         })),
-        removeAction: vi.fn(),
-        addExtensionState: vi.fn(),
-        removeExtensionState: vi.fn(),
         applySpriteSheet: vi.fn(async () => undefined),
         compileAndPublish: vi.fn(async () => undefined),
         publishCharacter: vi.fn(async () => undefined),
@@ -1025,6 +1025,9 @@ describe('真实草稿预览', () => {
             }))
           }));
         },
+        prepareWindowClose: vi.fn(async () => true),
+        resumeAfterClosePrompt: vi.fn(),
+        discardUnsavedDraft: vi.fn(async () => undefined),
         flushDraft: vi.fn(async () => undefined),
         dismissToast: vi.fn(),
         dispose: vi.fn()
@@ -1103,28 +1106,35 @@ describe('真实草稿预览', () => {
       preview: previewState({ playing: true }),
       onFrameChange
     });
-    const view = render(<DraftCharacterPreview {...props} />);
+    let updatePreview: ((
+      updater: (current: PreviewState) => PreviewState
+    ) => void) | null = null;
+    function ControlledPreview() {
+      const [preview, setPreview] = useState(props.preview);
+      updatePreview = updater => setPreview(updater);
+      return <DraftCharacterPreview
+        {...props}
+        preview={preview}
+        onFrameChange={frameIndex => {
+          onFrameChange(frameIndex);
+          setPreview(previous => ({ ...previous, frameIndex }));
+        }}
+      />;
+    }
+
+    render(<ControlledPreview />);
     await screen.findByText('预览已就绪');
+    const beforeSync = vi.mocked(current.scene.showAction).mock.calls.length;
     current.setFrame(1);
     act(() => current.emitFrame());
     expect(onFrameChange).toHaveBeenCalledWith(1);
-    const beforeSync = vi.mocked(current.scene.showAction).mock.calls.length;
-
-    view.rerender(<DraftCharacterPreview
-      {...props}
-      preview={previewState({ playing: true, frameIndex: 1 })}
-    />);
     expect(current.scene.showAction).toHaveBeenCalledTimes(beforeSync);
 
-    view.rerender(<DraftCharacterPreview
-      {...props}
-      preview={previewState({
-        playing: true,
-        frameIndex: 1,
-        direction: 'left',
-        speed: 1.5
-      })}
-    />);
+    act(() => updatePreview?.(previous => ({
+      ...previous,
+      direction: 'left',
+      speed: 1.5
+    })));
     expect(current.scene.showAction).toHaveBeenLastCalledWith(
       idleAction,
       expect.objectContaining({ frameIndex: 1, direction: 'left', speed: 1.5 })
@@ -1258,11 +1268,11 @@ describe('真实草稿预览', () => {
     pixiFactory
       .mockResolvedValueOnce(current.scene)
       .mockReturnValueOnce(nextScene.promise);
-    let oldSignal: AbortSignal | null = null;
+    const oldRequest = { signal: null as AbortSignal | null };
     const pendingBundle = deferred<never>();
     const load = vi.spyOn(DraftPreviewResourceCache.prototype, 'load')
       .mockImplementationOnce((_characterId, _assetIds, signal) => {
-        oldSignal = signal;
+        oldRequest.signal = signal;
         return pendingBundle.promise;
       });
     const props = previewProps();
@@ -1274,7 +1284,8 @@ describe('真实草稿预览', () => {
       api={apiWithReader(vi.fn(async () => PNG_BYTES))}
     />);
 
-    expect(oldSignal?.aborted).toBe(true);
+    if (!oldRequest.signal) throw new Error('未获取旧资源加载信号');
+    expect(oldRequest.signal.aborted).toBe(true);
     view.unmount();
   });
 

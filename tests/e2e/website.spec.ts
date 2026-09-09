@@ -1545,10 +1545,12 @@ test('568x320 五章节主内容避让移动导航且保持完整可见', async 
 
 test('减少动态效果直接进入稳定首页', async ({ page }) => {
   const runtimeErrors = collectRuntimeErrors(page);
-  await page.emulateMedia({ reducedMotion: 'reduce' });
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.goto('/?seed=42');
 
+  expect(await page.evaluate(() => (
+    matchMedia('(prefers-reduced-motion: reduce)').matches
+  ))).toBe(true);
   await expect(page.locator(HOME)).toHaveAttribute('data-phase', 'interactive');
   await expect(page.locator(LIQUID_HOME)).toHaveAttribute('data-active', 'true');
   await expect(page.locator(LIQUID_HOME).locator('canvas')).toBeAttached();

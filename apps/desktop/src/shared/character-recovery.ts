@@ -1,8 +1,52 @@
+import type { CharacterRecoveryIssueErrorCode } from './character-ipc';
+
 export interface CharacterRecoveryMessage {
   text: string;
   actionLabel: '打开角色工作室';
 }
 
+export type CharacterRecoveryPresentation = Readonly<{
+  text: string;
+  affectedCapabilities: readonly ('draft-save' | 'publish' | 'activate')[];
+  suggestion: string;
+}>;
+
+const RECOVERY_PRESENTATIONS = {
+  CHARACTER_DRAFT_RECOVERY_BLOCKED: {
+    text: '角色草稿恢复受阻，当前草稿无法安全保存或发布。',
+    affectedCapabilities: ['draft-save', 'publish'],
+    suggestion: '请先保留恢复证据，再重试读取或重新导入素材。'
+  },
+  CHARACTER_PUBLISH_RECOVERY_BLOCKED: {
+    text: '角色发布恢复受阻，当前发布版本无法安全启用。',
+    affectedCapabilities: ['publish', 'activate'],
+    suggestion: '请重新编译发布；问题持续时先导出恢复包。'
+  },
+  CHARACTER_RECOVERY_DEFERRED: {
+    text: '角色恢复暂未完成，相关编辑与启用操作已暂停。',
+    affectedCapabilities: ['draft-save', 'publish', 'activate'],
+    suggestion: '请稍后重新打开角色工作室重试。'
+  },
+  CHARACTER_IMPORT_RECOVERY_BLOCKED: {
+    text: '角色导入恢复受阻，未完成的导入不会覆盖现有角色。',
+    affectedCapabilities: ['draft-save', 'publish', 'activate'],
+    suggestion: '请检查角色包后重新导入；问题持续时保留现有恢复证据。'
+  },
+  CHARACTER_IMPORT_RECOVERY_DEFERRED: {
+    text: '角色导入恢复暂未完成，现有角色数据保持不变。',
+    affectedCapabilities: ['draft-save', 'publish', 'activate'],
+    suggestion: '请稍后重新打开角色工作室，再重试导入。'
+  }
+} as const satisfies Readonly<
+  Record<CharacterRecoveryIssueErrorCode, CharacterRecoveryPresentation>
+>;
+
+/** 将公开恢复事实转换为 Renderer 专用提示，不携带内部恢复数据。 */
+export function characterRecoveryPresentation(
+  errorCode: CharacterRecoveryIssueErrorCode
+): CharacterRecoveryPresentation {
+  return RECOVERY_PRESENTATIONS[errorCode];
+}
 const RECOVERY_MESSAGES: Readonly<Record<string, string>> = {
   CHARACTER_INDEX_UNAVAILABLE: '角色索引无法读取，已切换到官方默认角色。',
   CHARACTER_MANIFEST_INVALID: '当前角色清单无效，已切换到官方默认角色。',

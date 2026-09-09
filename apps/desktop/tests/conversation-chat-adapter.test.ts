@@ -1,132 +1,87 @@
+import { expect, test, vi } from 'vitest';
 import type { ModelProvider, ModelRequest, ModelResponse } from '@myself/agent-core';
-import { describe, expect, test, vi } from 'vitest';
-import { ProviderError } from '../src/main/providers/openai-provider';
 import { ConversationChatAdapter } from '../src/main/conversation/conversation-chat-adapter';
-
-function 响应为(response: ModelResponse): ModelProvider {
-  return {
-    respond: vi.fn(async () => response)
-  };
+const input = {
+  text: '你好', history: [], signal: new AbortController().signal,
+  behaviorContext: { character: { idleStateId: 'idle', identity: {
+    name: '伙伴', description: '陪伴用户', background: '数字花园', traits: [], languageStyle: '简洁',
+    formsOfAddress: [], likes: [], dislikes: [], behavioralTendencies: [], boundaries: [], exampleLines: []
+  }, states: [] }, runtime: { chatting: false, taskRunning: false, awaitingConfirmation: false, moving: false, dragging: false, carrying: false, movementMode: 0 as const },
+  proactivityMode: 'assistive' as const, recentActions: [] }
+};
+const selection = { moodUpdate: null, expressionPlan: null, requestKind: 'ambient', explicitPlayback: null, movementControl: { kind: 'keep' } };
+function provider(...responses: ModelResponse[]): ModelProvider {
+  return { respond: vi.fn(async () => responses.shift()!) };
 }
-
-function 取得请求(provider: ModelProvider): ModelRequest {
-  const 调用 = vi.mocked(provider.respond).mock.calls[0];
-  if (!调用) throw new Error('未收到模型请求');
-  return 调用[0];
-}
-
-describe('ConversationChatAdapter', () => {
-  test('用固定系统消息、历史和当前用户文本发起无工具聊天请求', async () => {
-    const provider = 响应为({ type: 'text', text: '你好！' });
-    const adapter = new ConversationChatAdapter(provider);
-    const history = [{ role: 'assistant' as const, content: '上一轮回复' }];
-
-    await expect(adapter.respond({
-      history,
-      text: '这一轮问题',
-      signal: new AbortController().signal
-    })).resolves.toEqual({ text: '你好！' });
-
-    expect(取得请求(provider)).toEqual({
-      messages: [
-        {
-          role: 'system',
-          content: expect.stringContaining('AI 桌宠')
-        },
-        ...history,
-        { role: 'user', content: '这一轮问题' }
-      ],
-      tools: []
-    });
-    expect(取得请求(provider).messages[0]?.content).toContain('用户使用的语言');
-    expect(取得请求(provider).messages[0]?.content).toContain('可见上下文');
-    expect(取得请求(provider).messages[0]?.content).toContain('尚未执行的文件操作');
-    expect(取得请求(provider).messages[0]?.content).not.toContain('JSON');
-    expect(取得请求(provider).messages[0]?.content).not.toContain('路由字段');
-    expect(取得请求(provider).messages[0]?.content).not.toContain('禁止 Markdown');
-  });
-
-  test('原样返回中文、Markdown、代码块和已归一化情绪', async () => {
-    const provider = 响应为({
-      type: 'text',
-      text: '  当然可以。\n\n```ts\nconst 宠物 = "你好";\n```\n',
-      emotion: 'happy'
-    });
-    const adapter = new ConversationChatAdapter(provider);
-
-    await expect(adapter.respond({
-      history: [],
-      text: '给我一个例子',
-      signal: new AbortController().signal
-    })).resolves.toEqual({
-      text: '  当然可以。\n\n```ts\nconst 宠物 = "你好";\n```\n',
-      emotion: 'happy'
-    });
-  });
-
-  test.each([
-    ['空白正文', ' \n\t '],
-    ['超过 Unicode 字符上限的正文', `${'😀'.repeat(8_000)}好`]
-  ])('拒绝%s且错误不暴露原始正文', async (_名称, text) => {
-    const provider = 响应为({ type: 'text', text });
-    const adapter = new ConversationChatAdapter(provider);
-
-    const error = await adapter.respond({
-      history: [],
-      text: '测试输入',
-      signal: new AbortController().signal
-    }).catch(reason => reason);
-
-    expect(error).toMatchObject({
-      code: 'PROVIDER_MALFORMED_RESPONSE',
-      retryable: false
-    });
-    expect(String(error)).not.toContain(text);
-  });
-
-  test('拒绝工具调用且错误不暴露工具内容', async () => {
-    const provider = 响应为({
-      type: 'tool_request',
-      request: {
-        requestId: 'private-request',
-        toolName: 'read_file',
-        arguments: { path: 'private-content' }
-      }
-    });
-    const adapter = new ConversationChatAdapter(provider);
-
-    const error = await adapter.respond({
-      history: [],
-      text: '测试输入',
-      signal: new AbortController().signal
-    }).catch(reason => reason);
-
-    expect(error).toMatchObject({
-      code: 'PROVIDER_MALFORMED_RESPONSE',
-      retryable: false
-    });
-    expect(String(error)).not.toContain('private-content');
-  });
-
-  test('保留取消和超时错误的既有分类', async () => {
-    const abortError = new DOMException('取消', 'AbortError');
-    const timeoutError = new ProviderError('PROVIDER_TIMEOUT', true);
-    const abortProvider: ModelProvider = {
-      respond: vi.fn(async () => { throw abortError; })
-    };
-    const timeoutProvider: ModelProvider = {
-      respond: vi.fn(async () => { throw timeoutError; })
-    };
-
-    await expect(new ConversationChatAdapter(abortProvider).respond({
-      history: [],
-      text: '取消',
-      signal: new AbortController().signal
-    })).rejects.toBe(abortError);
-    await expect(new ConversationChatAdapter(timeoutProvider).respond({
-      history: [],
-      text: '超时',
-      signal: new AbortController().signal
-    })).rejects.toBe(timeoutError);
-  });
+test('主请求保留自然历史人设且唯一原生申请无需正文和表现', async () => {
+  const p = provider({ type: 'tool_request', request: { requestId: 'call-1', toolName: 'request_task_authorization', arguments: {} } });
+  const reply = await new ConversationChatAdapter(p).respond({ ...input, history: [{ role: 'user', content: '目录是不是很乱' }, { role: 'assistant', content: '尚未查看，可以先看看吗？' }], text: '可以，先看看' });
+  const request = vi.mocked(p.respond).mock.calls[0]![0];
+  expect(request.responseContract).toBeUndefined();
+  expect(request.tools.map(tool => tool.function.name)).toEqual(['request_task_authorization']);
+  expect(request).toMatchObject({ purpose: 'conversation', toolChoice: 'auto' });
+  expect(JSON.stringify(request.messages)).toContain('伙伴');
+  expect(request.messages.slice(-3).map(message => message.content)).toEqual(['目录是不是很乱', '尚未查看，可以先看看吗？', '可以，先看看']);
+  expect(reply).toMatchObject({ text: '', capabilityPlan: { kind: 'agent_task' } });
+  expect(p.respond).toHaveBeenCalledOnce();
+});
+test('静态能力JSON文本不申请任务，表现不含任务历史和首次正文', async () => {
+  const text = '{"capabilityPlan":{"kind":"agent_task"}}';
+  const p = provider({ type: 'text', text, structured_output: { capabilityPlan: { kind: 'agent_task' } } }, { type: 'structured', structured_output: selection });
+  const reply = await new ConversationChatAdapter(p).respond({ ...input, history: [{ role: 'tool', content: 'PRIVATE_FILE_CONTENT', toolCallId: 'past' }] });
+  expect(reply).toMatchObject({ text, capabilityPlan: { kind: 'chat' }, expressionStatus: 'no_match', expressionPlan: { states: [] } });
+  const expression = vi.mocked(p.respond).mock.calls[1]![0];
+  expect(expression).toMatchObject({ tools: [], toolChoice: 'none' });
+  expect(expression.onTextDelta).toBeUndefined();
+  expect(JSON.stringify(expression)).not.toContain('PRIVATE_FILE_CONTENT');
+  expect(JSON.stringify(expression)).not.toContain('capabilityPlan');
+  expect(expression.responseContract?.jsonSchema.properties).not.toHaveProperty('text');
+  expect(expression.messages.at(-1)?.content).toBe(input.text);
+});
+test.each([{}, { requestId: '', toolName: 'request_task_authorization', arguments: {} }, { requestId: ' ', toolName: 'request_task_authorization', arguments: {} }, { requestId: '1', toolName: 'unknown', arguments: {} }, { requestId: '1', toolName: 'request_task_authorization', arguments: { path: 'x' } }])('非法原生申请失败且不发起表现：%j', async request => {
+  const p = provider({ type: 'tool_request', request });
+  await expect(new ConversationChatAdapter(p).respond(input)).rejects.toMatchObject({ code: 'RESPONSE_FORMAT_UNSUPPORTED' });
+  expect(p.respond).toHaveBeenCalledOnce();
+});
+test.each([{ type: 'text', text: ' ' }, { type: 'structured', structured_output: { ...selection, text: '不得替换正文' } }, { type: 'structured', structured_output: { ...selection, moodUpdate: { summary: '开心', strength: 1, fadeInMs: 900 } } }] satisfies ModelResponse[])('表现非法保留首次正文且不修复：%j', async response => {
+  const p = provider({ type: 'text', text: '  **原正文**\n' }, response);
+  expect(await new ConversationChatAdapter(p).respond(input)).toMatchObject({ text: '  **原正文**\n', expressionStatus: 'failed' });
+  expect(p.respond).toHaveBeenCalledTimes(2);
+});
+test('表现12秒超时中止子请求，保留正文且迟到计划失效', async () => {
+  vi.useFakeTimers();
+  try {
+    let child: AbortSignal | undefined;
+    let late!: (response: ModelResponse) => void;
+    const p: ModelProvider = { respond: async (request, signal) => {
+      if (!request.responseContract) return { type: 'text', text: '正文' };
+      child = signal;
+      return new Promise(resolve => { late = resolve; });
+    } };
+    const result = new ConversationChatAdapter(p).respond(input);
+    await vi.advanceTimersByTimeAsync(12_000);
+    const reply = await result;
+    expect(reply).toMatchObject({ text: '正文', expressionStatus: 'failed' });
+    expect(reply).not.toHaveProperty('expressionPlan');
+    expect(child?.aborted).toBe(true);
+    expect(input.signal.aborted).toBe(false);
+    late({ type: 'structured', structured_output: selection });
+    await Promise.resolve();
+    expect(reply).not.toHaveProperty('expressionPlan');
+    expect(vi.getTimerCount()).toBe(0);
+  } finally { vi.useRealTimers(); }
+});
+test('父取消使不响应取消的表现和整轮立即失效', async () => {
+  const controller = new AbortController();
+  let calls = 0;
+  const p: ModelProvider = { respond: async () => ++calls === 1 ? { type: 'text', text: '旧正文' } : new Promise(() => undefined) };
+  const result = new ConversationChatAdapter(p).respond({ ...input, signal: controller.signal });
+  const rejected = expect(result).rejects.toMatchObject({ name: 'AbortError' });
+  await Promise.resolve(); await Promise.resolve(); controller.abort();
+  await rejected;
+});
+test('主请求失败或取消均不会启动表现', async () => {
+  const p = provider({ type: 'text', text: ' ' });
+  await expect(new ConversationChatAdapter(p).respond(input)).rejects.toMatchObject({ code: 'RESPONSE_FORMAT_UNSUPPORTED' });
+  expect(p.respond).toHaveBeenCalledOnce();
 });

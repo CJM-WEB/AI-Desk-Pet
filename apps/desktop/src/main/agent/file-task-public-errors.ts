@@ -3,10 +3,9 @@ export type PublicFileTaskErrorDetails = Readonly<{
   nextAction?: string;
 }>;
 
-/** 文件能力跨 Service、Adapter 与 Coordinator 只使用这一份脱敏公开错误定义。 */
+/** 文件能力跨 Service 与 Adapter 只使用这一份脱敏公开错误定义。 */
 const 公开文件错误 = Object.freeze({
   FILE_AUTHORIZATION_REQUIRED: { message: '请先在设置中授权文件目录。' },
-  FILE_DISCLOSURE_DENIED: { message: '文件数据类别未授权。' },
   ACTION_EXPIRED: { message: '待确认操作已失效，请重新发起任务。' },
   PATH_INVALID: { message: '文件路径无效。' },
   PATH_OUTSIDE_ROOT: { message: '文件路径超出授权目录。' },
@@ -15,6 +14,14 @@ const 公开文件错误 = Object.freeze({
   ENTRY_CHANGED: {
     message: '文件在确认后发生变化，未执行操作。',
     nextAction: '请重新发起文件操作并确认最新内容。'
+  },
+  MOVE_RESULT_UNCERTAIN: {
+    message: '文件移动后无法确认最终结果，未报告成功。',
+    nextAction: '请检查文件状态后重新发起操作。'
+  },
+  CROSS_VOLUME_UNSUPPORTED: {
+    message: '不支持跨卷移动文件。',
+    nextAction: '请选择同一授权目录所在卷内的目标目录。'
   },
   ENTRY_TYPE_UNSUPPORTED: {
     message: '该文件类型或目录状态不支持此操作。',
@@ -30,11 +37,7 @@ const 公开文件错误 = Object.freeze({
   },
   PERMISSION_DENIED: { message: 'Windows 拒绝了本地文件操作。' },
   TOOL_PERMISSION_DENIED: { message: '该工具操作未获本地权限策略允许。' },
-  FILE_TASK_USER_CANCELLED: { message: '回收站操作已取消，文件未被移动。' },
-  FILE_TASK_PLAYBACK_UNAVAILABLE: { message: '当前角色无法播放搬运动作，文件未被移动。' },
-  FILE_TASK_PLAYBACK_CANCELLED: { message: '搬运动画未完成，文件未被移动。' },
-  FILE_TASK_PLAYBACK_TIMEOUT: { message: '等待搬运动画超时，文件未被移动。' },
-  FILE_TASK_EXECUTION_FAILED: { message: '移入回收站失败，文件仍保留在原位置。' }
+  FILE_TASK_USER_CANCELLED: { message: '文件操作已取消；已完成的本地写入不会自动撤销。' }
 } satisfies Readonly<Record<string, PublicFileTaskErrorDetails>>);
 
 export function publicFileTaskErrorDetails(code: string): PublicFileTaskErrorDetails | null {

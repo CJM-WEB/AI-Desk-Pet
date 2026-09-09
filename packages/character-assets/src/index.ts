@@ -3,3 +3,5 @@ export * from './frame-import';
 export * from './atlas-layout';
 export * from './package-policy';
 export * from './package-structure';
+export * from './alpha-geometry';
+export * from './image-metadata';

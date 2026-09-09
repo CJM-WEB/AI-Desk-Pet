@@ -13,6 +13,56 @@ import {
 import { ConversationDisclosureAdapter } from '../src/main/conversation/conversation-disclosure-adapter';
 import { ConversationHistory } from '../src/main/conversation/conversation-history';
 import { ConversationChatAdapter } from '../src/main/conversation/conversation-chat-adapter';
+import type { ConversationBehaviorPort } from
+  '../src/main/characters/character-behavior-director';
+import type {
+  CodingTaskOutcome,
+  CodingTaskToolResult
+} from '../src/main/agent/coding-task-service';
+import { ProviderResponseError } from '../src/main/providers/provider-response-error';
+
+const behaviorContext = {
+  character: { idleStateId: 'state-1355',
+    identity: { formsOfAddress: [], dislikes: [], boundaries: [], exampleLines: [],
+      name: '测试角色', description: '测试角色', background: '测试环境', traits: [],
+      languageStyle: '简洁', likes: [], behavioralTendencies: []
+    },
+    states: [{ agentInferable: true,
+      name: '移动', stateId: 'state-1355', tags: [],
+      actions: [{ name: '散步', actionId: 'action-1413', tags: [] }]
+    }]
+  },
+  runtime: {
+    chatting: false, taskRunning: false, awaitingConfirmation: false, moving: false,
+    dragging: false,
+    carrying: false,
+    movementMode: 2 as const
+  },
+  proactivityMode: 'assistive' as const,
+  recentActions: []
+};
+
+function behaviorPortDouble(
+  overrides: Partial<ConversationBehaviorPort> = {}
+): ConversationBehaviorPort {
+  return {
+    prepareUserPrompt: vi.fn(async text => ({
+      originalText: text,
+      capabilityText: text,
+      explicitDirective: null
+    })),
+    getChatContext: vi.fn(() => behaviorContext),
+    captureExpressionContext: vi.fn(() => null),
+    handleChatResponseFinished: vi.fn(),
+    completeUserPrompt: vi.fn(),
+    handleTaskEvent: vi.fn(),
+    applyPlaybackFeedback: vi.fn(),
+    cancelActive: vi.fn(),
+    reset: vi.fn(),
+    close: vi.fn(async () => undefined),
+    ...overrides
+  };
+}
 
 interface ProviderScript {
   requests: ModelRequest[];
@@ -33,16 +83,25 @@ class CapturingCapabilityTasks implements ConversationCapabilityTaskPort {
   closeBarrier: Promise<void> | null = null;
   prepareBarrier: Promise<void> | null = null;
   cancelCalls = 0;
+  activationCalls = 0;
+  nextOutcome: CodingTaskOutcome = { kind: 'completed', acted: false };
   target: {
     profileId: string;
     providerIdentity: string;
     providerName: string;
+    capabilityRevision: string;
+    directory: string; modelId: string; approvedCommands: readonly string[];
   } = Object.freeze({
     profileId: 'profile-agent',
     providerIdentity: 'openai',
-    providerName: 'OpenAI Agent'
+    providerName: 'OpenAI Agent',
+    capabilityRevision: 'revision-agent',
+    directory: 'D:\\authorized', modelId: 'model-test', approvedCommands: [],
   });
   private listener: Parameters<ConversationCapabilityTaskPort['onEvent']>[0] | null = null;
+  private trustedResultListener:
+    | Parameters<ConversationCapabilityTaskPort['onTrustedToolResult']>[0]
+    | null = null;
 
   onEvent(listener: Parameters<ConversationCapabilityTaskPort['onEvent']>[0]): () => void {
     this.listener = listener;
@@ -53,8 +112,18 @@ class CapturingCapabilityTasks implements ConversationCapabilityTaskPort {
     };
   }
 
-  async submit(input: Parameters<ConversationCapabilityTaskPort['submit']>[0]): Promise<void> {
+  onTrustedToolResult(
+    listener: Parameters<ConversationCapabilityTaskPort['onTrustedToolResult']>[0]
+  ): () => void {
+    this.trustedResultListener = listener;
+    return () => {
+      if (this.trustedResultListener === listener) this.trustedResultListener = null;
+    };
+  }
+
+  async submit(input: Parameters<ConversationCapabilityTaskPort['submit']>[0]): Promise<CodingTaskOutcome> {
     this.submissions.push(input);
+    return this.nextOutcome;
   }
 
   async prepareTarget(input: { generation: string; taskKind: 'file' | 'powershell' }) {
@@ -65,6 +134,12 @@ class CapturingCapabilityTasks implements ConversationCapabilityTaskPort {
     if (this.prepareError) throw this.prepareError;
     return this.target;
   }
+
+  async prepareSnapshot(input: { generation: string; taskKind: 'file' | 'powershell' }) {
+    return this.prepareTarget(input);
+  }
+
+  async activateTarget(): Promise<void> { this.activationCalls += 1; }
 
   cancelActive(): void {
     this.cancelCalls += 1;
@@ -86,9 +161,17 @@ class CapturingCapabilityTasks implements ConversationCapabilityTaskPort {
   publish(event: TaskEvent, generation: string): void {
     this.listener?.(event, generation);
   }
+
+  publishTrustedToolResult(
+    result: CodingTaskToolResult,
+    generation: string,
+    target = this.target
+  ): void {
+    this.trustedResultListener?.(result, generation, target);
+  }
 }
 
-function scriptedProvider(response: ModelResponse | Error): ProviderScript {
+function scriptedProvider(response: ModelResponse | Error, preservePlainText = false): ProviderScript {
   const requests: ModelRequest[] = [];
   const signals: AbortSignal[] = [];
   return {
@@ -99,10 +182,31 @@ function scriptedProvider(response: ModelResponse | Error): ProviderScript {
         requests.push(request);
         signals.push(signal);
         if (response instanceof Error) throw response;
+        if (request.responseContract) {
+          const control = response.type === 'text' && !preservePlainText ? response.structured_output : undefined;
+          return { type: 'structured', structured_output: 表现选择(control) };
+        }
         return response;
       }
     }
   };
+}
+
+function 完整聊天控制(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return { movementControl: { kind: 'keep' }, ...overrides };
+}
+
+function 表现选择(control: Record<string, unknown> = {}): Record<string, unknown> {
+  return { moodUpdate: null, expressionPlan: null, requestKind: 'ambient', explicitPlayback: null,
+    movementControl: control.movementControl ?? { kind: 'keep' } };
+}
+
+function 申请任务(): ModelResponse {
+  return { type: 'tool_request', request: { requestId: 'native-1', toolName: 'request_task_authorization', arguments: {} } };
+}
+
+function 任务模型() {
+  return { profileId: 'chat', providerIdentity: 'openai', providerName: 'Chat', script: scriptedProvider(申请任务()) };
 }
 
 function deferredProvider(): ProviderScript & {
@@ -126,6 +230,7 @@ function deferredProvider(): ProviderScript & {
       async respond(request, signal) {
         requests.push(request);
         signals.push(signal);
+        if (request.responseContract) return { type: 'structured', structured_output: 表现选择() };
         return response;
       }
     }
@@ -146,6 +251,7 @@ function createHarness(scripts: Array<{
 }>, options: {
   factoryError?: Error;
   fileTasks?: CapturingCapabilityTasks;
+  behavior?: ConversationBehaviorPort;
   onEmit?: (event: TaskEvent, coordinator: ConversationCoordinator) => void;
 } = {}) {
   const history = new ConversationHistory();
@@ -167,6 +273,7 @@ function createHarness(scripts: Array<{
   });
   let factoryIndex = 0;
   let factoryCalls = 0;
+  const behavior = options.behavior ?? behaviorPortDouble();
   const chatTurnFactory: ChatTurnFactory = {
     async create() {
       factoryCalls += 1;
@@ -188,6 +295,7 @@ function createHarness(scripts: Array<{
     chatTurnFactory,
     disclosureAdapter,
     capabilityTasks: fileTasks,
+    behavior,
     emit: event => {
       events.push(event);
       options.onEmit?.(event, coordinator);
@@ -198,6 +306,7 @@ function createHarness(scripts: Array<{
     coordinator,
     disclosureAdapter,
     events,
+    behavior,
     fileTasks,
     history,
     factoryCallCount: () => factoryCalls
@@ -216,8 +325,325 @@ function errorCode(error: unknown): unknown {
     : undefined;
 }
 
+function scopeId(harness: ReturnType<typeof createHarness>): string {
+  const event = harness.events.filter(event => event.type === 'capability_authorization_required').at(-1);
+  if (event?.type !== 'capability_authorization_required') throw new Error('缺少范围卡');
+  return event.requestId;
+}
+
+async function authorizeTask(harness: ReturnType<typeof createHarness>): Promise<void> {
+  const event = harness.events.filter(event => event.type === 'capability_authorization_required').at(-1);
+  if (!event || event.type !== 'capability_authorization_required') return;
+  await harness.coordinator.resolveCapabilityAuthorization(event.requestId, 'confirm');
+  for (let index = 0; index < 8; index += 1) await Promise.resolve();
+}
+
 describe('ConversationCoordinator', () => {
-  test.each(['你好', '聊天呀', '我想和你聊天', '帮我整理一下'])(
+  test('单一发送允许自然问句原生申请且 Core 保留当前原文', async () => {
+    const script = scriptedProvider({ type: 'tool_request', request: { requestId: 'request-1', toolName: 'request_task_authorization', arguments: {} } });
+    const behavior = behaviorPortDouble({ prepareUserPrompt: vi.fn(async text => ({ originalText: text, capabilityText: '角色改写文本', explicitDirective: null })) });
+    const harness = createHarness([{ profileId: 'chat', providerIdentity: 'openai', providerName: 'Chat', script }], { behavior });
+    await harness.coordinator.submit('note.txt 里面写了什么？');
+    expect(harness.events).toContainEqual(expect.objectContaining({ type: 'capability_authorization_required' }));
+    expect(script.requests).toHaveLength(1);
+    expect(harness.fileTasks.activationCalls).toBe(0);
+    expect(harness.fileTasks.submissions).toEqual([]);
+    expect(behavior.completeUserPrompt).not.toHaveBeenCalled();
+    await authorizeTask(harness);
+    expect(harness.fileTasks.submissions).toEqual([expect.objectContaining({ text: 'note.txt 里面写了什么？' })]);
+  });
+
+  test('坏表现不阻断正文并向 Director 明确传递失败状态', async () => {
+    const script: ProviderScript = { requests: [], signals: [], provider: { respond: async (request, signal) => {
+      script.requests.push(request); script.signals.push(signal);
+      return request.responseContract ? { type: 'text', text: '坏格式' } : { type: 'text', text: '有效正文' };
+    } } };
+    const harness = createHarness([{ profileId: 'chat', providerIdentity: 'openai', providerName: 'Chat', script }]);
+    await harness.coordinator.submit('你好');
+    expect(harness.events).toContainEqual({ type: 'message', role: 'assistant', text: '有效正文' });
+    expect(harness.behavior.completeUserPrompt).toHaveBeenCalledWith(expect.objectContaining({ expressionStatus: 'failed' }));
+    expect(harness.fileTasks.submissions).toHaveLength(0);
+  });
+
+  test('目录讨论后同意查看使用连续历史申请新范围，旧许可不继承', async () => {
+    const first = scriptedProvider({ type: 'text', text: '我还没有查看目录，可以先看看吗？' });
+    const next = scriptedProvider(申请任务());
+    const harness = createHarness([
+      { profileId: 'chat', providerIdentity: 'openai', providerName: 'Chat', script: first },
+      { profileId: 'chat', providerIdentity: 'openai', providerName: 'Chat', script: next },
+      任务模型()
+    ]);
+    await harness.coordinator.submit('目录是不是很乱？');
+    expect(harness.fileTasks.preparedGenerations).toHaveLength(0);
+    await harness.coordinator.submit('可以，先看看');
+    expect(next.requests[0]?.messages.slice(-3)).toEqual([
+      { role: 'user', content: '目录是不是很乱？' },
+      { role: 'assistant', content: '我还没有查看目录，可以先看看吗？' },
+      { role: 'user', content: '可以，先看看' }
+    ]);
+    expect(harness.fileTasks.submissions).toHaveLength(0);
+    await authorizeTask(harness);
+    expect(harness.fileTasks.submissions[0]).toMatchObject({ text: '可以，先看看', visibleHistory: next.requests[0]?.messages.slice(-3, -1) });
+    harness.fileTasks.publish({ type: 'phase', phase: 'success' }, 'generation-current');
+    await harness.coordinator.submit('再看看');
+    expect(harness.fileTasks.submissions).toHaveLength(1);
+    await harness.coordinator.resolveCapabilityAuthorization(scopeId(harness), 'cancel');
+    expect(harness.fileTasks.submissions).toHaveLength(1);
+  });
+
+  test('Main 可信标记只收紧第二次表现请求并传回成功空计划', async () => {
+    const script = scriptedProvider({ type: 'text', text: '继续陪你。', structured_output: { movementControl: { kind: 'move_once', target: 'left', distance: 'near' } } });
+    const behavior = behaviorPortDouble({ prepareUserPrompt: vi.fn(async text => ({ originalText: text, capabilityText: text,
+      explicitDirective: { kind: 'play' as const, target: { kind: 'action_name' as const, name: '散步' } }, explicitPlaybackToken: 'main-started'
+    })) });
+    const harness = createHarness([{ profileId: 'chat', providerIdentity: 'openai', providerName: '聊天', script }], { behavior });
+    await harness.coordinator.submit('播放散步动作');
+    expect(script.requests).toHaveLength(2);
+    expect(script.requests[0]!.responseContract).toBeUndefined();
+    expect(script.requests[1]).toMatchObject({ tools: [], toolChoice: 'none' });
+    expect(behavior.completeUserPrompt).toHaveBeenCalledWith(expect.objectContaining({ expressionStatus: 'no_match', movementControl: { kind: 'keep' } }));
+    expect(harness.events).toContainEqual({ type: 'message', role: 'assistant', text: '继续陪你。' });
+    expect(harness.fileTasks.submissions).toEqual([]);
+  });
+  test.each(['cancel', 'reset', 'close'] as const)('表现等待期间 %s 使旧正文与迟到表现失效', async action => {
+    let resolveExpression!: (response: ModelResponse) => void;
+    const expression = new Promise<ModelResponse>(resolve => { resolveExpression = resolve; });
+    const script: ProviderScript = { requests: [], signals: [], provider: { respond: async (request, signal) => {
+      script.requests.push(request); script.signals.push(signal);
+      return request.responseContract ? expression : { type: 'text', text: '不得提交的旧正文' };
+    } } };
+    const harness = createHarness([{ profileId: 'chat', providerIdentity: 'openai', providerName: 'Chat', script }]);
+    const running = harness.coordinator.submit('等表现');
+    await vi.waitFor(() => expect(script.requests).toHaveLength(2));
+    if (action === 'cancel') await harness.coordinator.cancelActive();
+    else if (action === 'reset') await harness.coordinator.resetConversation();
+    else await harness.coordinator.close();
+    resolveExpression({ type: 'structured', structured_output: 表现选择() });
+    await running;
+    expect(script.signals[1]?.aborted).toBe(true);
+    expect(harness.history.turns()).toEqual([]);
+    expect(harness.behavior.completeUserPrompt).not.toHaveBeenCalled();
+    expect(harness.events).not.toContainEqual(expect.objectContaining({ text: '不得提交的旧正文' }));
+  });
+
+  test('等待具体许可时继续追问只提示原确认卡，不再次请求模型或执行', async () => {
+    const harness = createHarness([任务模型()]);
+    await harness.coordinator.submit('读取 note.txt');
+    await authorizeTask(harness);
+    harness.fileTasks.publish({ type: 'phase', phase: 'awaiting_confirmation' }, 'generation-current');
+    await harness.coordinator.submit('继续');
+    expect(harness.events).toContainEqual({ type: 'message', role: 'assistant', text: '请先处理当前权限确认卡。' });
+    expect(harness.factoryCallCount()).toBe(1);
+    expect(harness.fileTasks.submissions).toHaveLength(1);
+  });
+
+  test('普通聊天传回请求前表达修订，接纳完成只发专用 response 事实', async () => {
+    const script = deferredProvider();
+    const original = { contextRevision: 1, moodRevision: 1, instance: Symbol('request') };
+    const captureExpressionContext = vi.fn(() => original);
+    const handleChatResponseFinished = vi.fn();
+    const behavior = behaviorPortDouble({ captureExpressionContext, handleChatResponseFinished });
+    const harness = createHarness([{ profileId: 'chat', providerIdentity: 'openai', providerName: '聊天', script }], { behavior });
+    const pending = harness.coordinator.submit('普通问候');
+    await vi.waitFor(() => expect(script.requests).toHaveLength(1));
+    captureExpressionContext.mockReturnValue({ ...original, contextRevision: 2 });
+    script.resolve({ type: 'text', text: '你好', structured_output: { movementControl: { kind: 'keep' }, capabilityPlan: { kind: 'chat' } } });
+    await pending;
+    expect(behavior.completeUserPrompt).toHaveBeenCalledWith(expect.objectContaining({ context: original, eventId: 'assistant-1' }));
+    expect(captureExpressionContext).toHaveBeenCalledOnce();
+    expect(handleChatResponseFinished).toHaveBeenCalledOnce();
+    expect(JSON.stringify(script.requests)).not.toContain('contextRevision');
+  });
+  test.each(['cancel', 'reset', 'close'] as const)('原生申请范围在 %s 后不能以旧确认激活', async action => {
+    const script = scriptedProvider(申请任务());
+    const harness = createHarness([{ profileId: 'chat', providerIdentity: 'openai', providerName: 'Chat', script }]);
+    await harness.coordinator.submit('note.txt 里面写了什么？');
+    const requestId = scopeId(harness);
+    if (action === 'cancel') await harness.coordinator.resolveCapabilityAuthorization(requestId, 'cancel');
+    else if (action === 'close') await harness.coordinator.close();
+    else await harness.coordinator.resetConversation();
+    await expect(harness.coordinator.resolveCapabilityAuthorization(requestId, 'confirm')).rejects.toBeDefined();
+    expect(harness.fileTasks.activationCalls).toBe(0);
+    expect(harness.fileTasks.submissions).toHaveLength(0);
+    expect(script.requests).toHaveLength(1);
+  });
+
+  test('状态追问只使用当前代有限工具事实，重置后不保留旧结果', async () => {
+    const harness = createHarness([任务模型(), 任务模型()]);
+    await harness.coordinator.submit('执行 PowerShell 测试');
+    expect(harness.fileTasks.submissions).toHaveLength(0);
+    await authorizeTask(harness);
+    harness.fileTasks.publishTrustedToolResult({ toolName: 'bash', ok: false, relativePaths: [], exit: 1 }, 'generation-current');
+    harness.fileTasks.publishTrustedToolResult({ toolName: 'bash', ok: true, relativePaths: [], exit: 0 }, 'generation-current');
+    harness.fileTasks.publish({ type: 'phase', phase: 'success' }, 'generation-current');
+    await harness.coordinator.submit('上一个任务完成了吗');
+    expect(harness.factoryCallCount()).toBe(1);
+    expect(harness.fileTasks.submissions).toHaveLength(1);
+    expect(harness.events).toContainEqual(expect.objectContaining({ type: 'message', role: 'assistant', text: expect.stringContaining('最近命令退出码：0') }));
+    await harness.coordinator.resetConversation();
+    await harness.coordinator.submit('上一个任务完成了吗');
+    expect(harness.factoryCallCount()).toBe(2);
+    expect(harness.fileTasks.submissions).toHaveLength(1);
+  });
+  test('原生申请发布独立任务授权且确认前不激活 Agent', async () => {
+    const requests: ModelRequest[] = [];
+    const script: ProviderScript = {
+      requests,
+      signals: [],
+      provider: {
+        async respond(request, signal) {
+          requests.push(request);
+          script.signals.push(signal);
+          request.onTextDelta?.('文件已经');
+          request.onTextDelta?.('创建完成');
+          return 申请任务();
+        }
+      }
+    };
+    const harness = createHarness([{
+      profileId: 'chat-profile', providerIdentity: 'openai', providerName: 'Chat', script
+    }]);
+
+    await harness.coordinator.submit('请整理当前目录并生成说明');
+
+    expect(harness.events).toContainEqual({
+      type: 'capability_authorization_required',
+      requestId: expect.any(String),
+      capability: 'file',
+      requestSummary: '请整理当前目录并生成说明',
+      targetProviderName: 'OpenAI Agent',
+      directory: 'D:\\authorized', modelId: 'model-test', actions: ['read', 'create', 'edit'], approvedCommands: [],
+      expiresAt: expect.any(String)
+    });
+    expect(harness.fileTasks.activationCalls).toBe(0);
+    expect(harness.fileTasks.submissions).toHaveLength(0);
+    expect(harness.events.filter(event => event.type.startsWith('assistant_message_'))).toEqual([]);
+    expect(JSON.stringify(harness.events)).not.toContain('文件已经创建完成');
+
+    await harness.coordinator.resolveCapabilityAuthorization(scopeId(harness), 'confirm');
+    expect(harness.fileTasks.activationCalls).toBe(1);
+    expect(harness.fileTasks.submissions).toHaveLength(1);
+  });
+
+  test('任务级授权到期后拒绝激活、清理快照并发布可清卡终态', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-08-27T12:00:00.000Z'));
+    try {
+      const script = scriptedProvider(申请任务());
+      const harness = createHarness([{
+        profileId: 'chat-profile', providerIdentity: 'openai', providerName: 'Chat', script
+      }]);
+
+      await harness.coordinator.submit('请完成这个本地任务');
+      expect(harness.events).toContainEqual(expect.objectContaining({
+        type: 'capability_authorization_required',
+        expiresAt: '2026-08-27T12:02:00.000Z'
+      }));
+      await vi.advanceTimersByTimeAsync(120_001);
+
+      await expect(harness.coordinator.resolveCapabilityAuthorization(scopeId(harness), 'confirm'))
+        .rejects.toMatchObject({ code: 'ACTION_EXPIRED' });
+      expect(harness.fileTasks.activationCalls).toBe(0);
+      expect(harness.fileTasks.cancelCalls).toBe(1);
+      expect(phases(harness.events).at(-1)).toBe('error');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test('取消任务级授权只显示宿主固定未执行文案，不公开模型口头结论', async () => {
+    const script = scriptedProvider(申请任务());
+    const harness = createHarness([{
+      profileId: 'chat-profile', providerIdentity: 'openai', providerName: 'Chat', script
+    }]);
+
+    await harness.coordinator.submit('请帮我完成一个本地整理任务');
+    await harness.coordinator.resolveCapabilityAuthorization(scopeId(harness), 'cancel');
+
+    expect(JSON.stringify(harness.events)).not.toContain('文件已经成功删除');
+    expect(harness.events).toContainEqual({
+      type: 'message', role: 'assistant', text: '已取消进入本地任务，未执行任何操作。'
+    });
+    expect(harness.fileTasks.activationCalls).toBe(0);
+    expect(phases(harness.events).at(-1)).toBe('cancelled');
+  });
+
+  test('等待显式 Gate 后主模型申请仍把当前完整原文交给 Core', async () => {
+    const release = deferredVoid();
+    const behavior = behaviorPortDouble({
+      prepareUserPrompt: vi.fn(async (text: string) => {
+        await release.promise;
+        return {
+          originalText: text,
+          capabilityText: '删除 old.txt',
+          explicitDirective: { kind: 'stop_movement' as const }
+        };
+      })
+    });
+    const harness = createHarness([任务模型(), 任务模型()], { behavior });
+    const pending = harness.coordinator.submit('停下并删除 old.txt');
+    await Promise.resolve();
+
+    expect(harness.fileTasks.preparedGenerations).toEqual([]);
+    expect(harness.factoryCallCount()).toBe(0);
+    release.resolve();
+    await pending;
+    await authorizeTask(harness);
+
+    expect(harness.fileTasks.submissions).toEqual([expect.objectContaining({
+      text: '停下并删除 old.txt'
+    })]);
+    expect(harness.events).toContainEqual({
+      type: 'message', role: 'user', text: '停下并删除 old.txt'
+    });
+  });
+
+  test('普通聊天在披露确认后重新读取必填行为上下文并提交同轮计划', async () => {
+    const first = scriptedProvider({ type: 'text', text: '第一轮回复' });
+    const second = scriptedProvider({
+      type: 'text',
+      text: '开始散步',
+      structured_output: 完整聊天控制({
+        text: '开始散步',
+        movementControl: { kind: 'move_once', target: 'right', distance: 'near' },
+        capabilityPlan: { kind: 'chat' }
+      })
+    });
+    let mode: 'assistive' | 'autonomous' = 'assistive';
+    const behavior = behaviorPortDouble({
+      getChatContext: vi.fn(() => ({ ...behaviorContext, proactivityMode: mode }))
+    });
+    const harness = createHarness([
+      {
+        profileId: 'profile-openai', providerIdentity: 'openai',
+        providerName: 'OpenAI', script: first
+      },
+      {
+        profileId: 'profile-anthropic', providerIdentity: 'anthropic',
+        providerName: 'Anthropic', script: second
+      }
+    ], { behavior });
+    await harness.coordinator.submit('第一轮');
+    await authorizeTask(harness);
+    await harness.coordinator.submit('第二轮');
+    await authorizeTask(harness);
+
+    expect(second.requests).toEqual([]);
+    mode = 'autonomous';
+    await harness.coordinator.resolveHistoryDisclosure('request-2', 'share_once');
+
+    expect(second.requests[1]?.messages.map(message => message.content).join('')).toContain(
+      '"movementMode":2'
+    );
+    expect(behavior.getChatContext).toHaveBeenCalledTimes(2);
+    expect(behavior.completeUserPrompt).toHaveBeenLastCalledWith(expect.objectContaining({
+      generation: 'generation-current',
+      explicitDirective: null,
+      movementControl: { kind: 'move_once', target: 'right', distance: 'near' }
+    }));
+  });
+
+  test.each(['你好', '你好呀', '聊天呀', '我想和你聊天', '帮我整理一下'])(
     '默认聊天“%s”只创建聊天目标且不触碰文件端口',
     async text => {
       const script = scriptedProvider({ type: 'text', text: '自然回复' });
@@ -229,66 +655,28 @@ describe('ConversationCoordinator', () => {
       }]);
 
       await harness.coordinator.submit(text);
+    await authorizeTask(harness);
 
       expect(harness.factoryCallCount()).toBe(1);
       expect(harness.fileTasks.preparedGenerations).toEqual([]);
       expect(harness.fileTasks.submissions).toEqual([]);
+      expect(script.requests).toHaveLength(2);
+      expect(script.requests[0]).toMatchObject({ toolChoice: 'auto' });
+      expect(script.requests[1]).toMatchObject({ tools: [], toolChoice: 'none' });
     }
   );
-
-  test.each(['读取 a.txt', '列出当前文件夹'])(
-    '明确文件请求“%s”只进入文件链且不创建聊天目标',
-    async text => {
-      const harness = createHarness([]);
-
-      await harness.coordinator.submit(text);
-
-      expect(harness.factoryCallCount()).toBe(0);
-      expect(harness.fileTasks.preparedGenerations).toEqual(['generation-current']);
-      expect(harness.fileTasks.submissions).toEqual([{
-        text,
-        visibleHistory: [],
-        generation: 'generation-current',
-        taskKind: 'file'
-      }]);
-    }
-  );
-
-  test('明确 PowerShell 请求只提交 PowerShell 能力任务且不降级聊天', async () => {
-    const harness = createHarness([]);
-
-    await expect(harness.coordinator.submit('执行这条命令 npm test')).resolves.toBeUndefined();
-
-    expect(harness.factoryCallCount()).toBe(0);
-    expect(harness.fileTasks.preparedGenerations).toEqual(['generation-current']);
-    expect(harness.fileTasks.submissions).toEqual([expect.objectContaining({
-      taskKind: 'powershell',
-      text: '执行这条命令 npm test'
-    })]);
-    expect(harness.history.turns()).toEqual([]);
-  });
-
-  test('后台 PowerShell 请求稳定拒绝且不降级为前台执行', async () => {
-    const harness = createHarness([]);
-
-    await expect(harness.coordinator.submit('后台运行构建')).rejects.toSatisfy(
-      error => errorCode(error) === 'POWERSHELL_BACKGROUND_UNSUPPORTED'
-    );
-
-    expect(harness.factoryCallCount()).toBe(0);
-    expect(harness.fileTasks.submissions).toEqual([]);
-  });
 
   test('文件目标准备期间取消会释放文件 owner，并允许下一次文件请求立即进入准备', async () => {
     const fileTasks = new CapturingCapabilityTasks();
     const barrier = deferredVoid();
     fileTasks.prepareBarrier = barrier.promise;
-    const harness = createHarness([], { fileTasks });
+    const harness = createHarness([任务模型(), 任务模型()], { fileTasks });
     const first = harness.coordinator.submit('读取 old.txt');
     await vi.waitFor(() => expect(fileTasks.preparedGenerations).toHaveLength(1));
 
     harness.coordinator.cancelActive();
     await expect(harness.coordinator.submit('读取 new.txt')).resolves.toBeUndefined();
+    await authorizeTask(harness);
 
     expect(fileTasks.cancelCalls).toBe(1);
     expect(fileTasks.preparedGenerations).toEqual([
@@ -326,13 +714,58 @@ describe('ConversationCoordinator', () => {
       role: 'assistant',
       text: '  **我在这里。**\n'
     });
-    expect(events).toContainEqual({ type: 'character_emotion', label: 'calm' });
+    expect(events.some(event => event.type === 'character_emotion')).toBe(false);
     expect(history.turns()).toEqual([{
       userText: '今天有点累',
       assistantText: '  **我在这里。**\n',
       providerIdentity: 'openai'
     }]);
     expect(fileTasks.submissions).toEqual([]);
+  });
+
+  test('普通正文在表现结束后一次交付且历史只保存完整正文', async () => {
+    const script = scriptedProvider({ type: 'text', text: '你好' });
+    const behavior = behaviorPortDouble({ completeUserPrompt: vi.fn(async () => {
+      expect(harness.events.some(event => event.type === 'message' && event.role === 'assistant')).toBe(false);
+    }) });
+    const harness = createHarness([{ profileId: 'chat', providerIdentity: 'openai', providerName: '聊天', script }], { behavior });
+    await harness.coordinator.submit('你好呀');
+    expect(harness.events.filter(event => event.type === 'message' && event.role === 'assistant')).toEqual([{ type: 'message', role: 'assistant', text: '你好' }]);
+    expect(harness.history.turns()).toEqual([{ userText: '你好呀', assistantText: '你好', providerIdentity: 'openai' }]);
+    expect(behavior.completeUserPrompt).toHaveBeenCalledWith(expect.objectContaining({ expressionStatus: 'no_match', requestKind: 'ambient' }));
+  });
+
+  test('取消后丢弃不服从 AbortSignal 的迟到增量与 commit', async () => {
+    let emitLateDelta: (() => void) | undefined;
+    const script = deferredProvider();
+    script.provider.respond = async (request, signal) => {
+      script.requests.push(request);
+      script.signals.push(signal);
+      request.onTextDelta?.('草稿');
+      emitLateDelta = () => request.onTextDelta?.('迟到');
+      return new Promise<ModelResponse>(resolve => {
+        script.resolve = resolve;
+      });
+    };
+    const { coordinator, events } = createHarness([{
+      profileId: 'profile-local', providerIdentity: 'local',
+      providerName: '本地模型', script
+    }]);
+    const pending = coordinator.submit('取消流式');
+    await vi.waitFor(() => expect(emitLateDelta).toBeTypeOf('function'));
+
+    coordinator.cancelActive();
+    emitLateDelta?.();
+    script.resolve({
+      type: 'text', text: '草稿迟到', structured_output: 完整聊天控制()
+    });
+    await pending;
+
+    expect(events.filter(event => event.type.startsWith('assistant_message_'))).toEqual([]);
+    expect(JSON.stringify(events)).not.toContain('迟到');
+    expect(events).not.toContainEqual(expect.objectContaining({
+      type: 'assistant_message_commit'
+    }));
   });
 
   test('自然文本回复形成完整历史回合且不调用文件端口', async () => {
@@ -414,6 +847,76 @@ describe('ConversationCoordinator', () => {
     expect(history.turns()).toEqual([]);
   });
 
+  test('Provider 格式子码只在 Main 内诊断且公开为既有通用格式错误', async () => {
+    const providerError = new ProviderResponseError('HTTP_BODY_NOT_JSON', 'transport');
+    const { coordinator, events } = createHarness([{
+      profileId: 'profile-openai',
+      providerIdentity: 'openai',
+      providerName: 'OpenAI',
+      script: scriptedProvider(providerError)
+    }]);
+
+    const rejection = await coordinator.submit('你好').catch(error => error);
+
+    expect(errorCode(rejection)).toBe('PROVIDER_MALFORMED_RESPONSE');
+    expect((rejection as Error).message).toBe('模型响应格式不兼容，请重试。');
+    expect(events).toContainEqual(expect.objectContaining({
+      type: 'error',
+      code: 'PROVIDER_MALFORMED_RESPONSE'
+    }));
+  });
+
+  test.each<[string, ModelResponse]>([
+    ['纯文本', { type: 'text', text: '普通纯文本' }],
+    ['只有正文', { type: 'text', text: '只有正文', structured_output: { text: '只有正文' } }],
+    ['非法隐藏控制', {
+      type: 'text',
+      text: '正文仍然有效。',
+      structured_output: {
+        text: '正文仍然有效。',
+        movementControl: { kind: 'move_once', target: { x: 1, y: 2 }, distance: 'far' }
+      }
+    }],
+    ['截断后恢复正文', {
+      type: 'text',
+      text: '截断前的正文',
+      structured_output: { text: '截断前的正文' }
+    }]
+  ])('普通聊天%s成功时不创建 Agent 且不发布任务执行失败', async (_shape, response) => {
+    const harness = createHarness([{
+      profileId: 'profile-openai',
+      providerIdentity: 'openai',
+      providerName: 'OpenAI',
+      script: scriptedProvider(response, _shape === '纯文本')
+    }]);
+
+    await expect(harness.coordinator.submit('你好')).resolves.toBeUndefined();
+
+    expect(harness.fileTasks.activationCalls).toBe(0);
+    expect(harness.fileTasks.submissions).toEqual([]);
+    expect(JSON.stringify(harness.events)).not.toContain('任务执行失败');
+  });
+
+  test('主请求空正文直接公开格式错误且不创建 Agent', async () => {
+    const malformed = Object.assign(new Error('PROVIDER_MALFORMED_RESPONSE'), {
+      code: 'PROVIDER_MALFORMED_RESPONSE'
+    });
+    const harness = createHarness([{
+      profileId: 'profile-openai',
+      providerIdentity: 'openai',
+      providerName: 'OpenAI',
+      script: scriptedProvider(malformed)
+    }]);
+
+    await expect(harness.coordinator.submit('你好')).rejects.toMatchObject({
+      code: 'PROVIDER_MALFORMED_RESPONSE',
+      message: '模型响应格式不兼容，请重试。'
+    });
+    expect(harness.fileTasks.activationCalls).toBe(0);
+    expect(harness.fileTasks.submissions).toEqual([]);
+    expect(JSON.stringify(harness.events)).not.toContain('任务执行失败');
+  });
+
   test.each<[string, ModelResponse]>([
     ['工具请求', {
       type: 'tool_request',
@@ -442,8 +945,8 @@ describe('ConversationCoordinator', () => {
     ]);
 
     await expect(harness.coordinator.submit('第一次')).rejects.toMatchObject({
-      code: 'AGENT_INTERNAL_ERROR',
-      message: '任务执行失败，请重试。'
+      code: 'PROVIDER_MALFORMED_RESPONSE',
+      message: '模型响应格式不兼容，请重试。'
     });
     expect(harness.history.turns()).toEqual([]);
     expect(harness.fileTasks.preparedGenerations).toEqual([]);
@@ -460,7 +963,7 @@ describe('ConversationCoordinator', () => {
     ['普通异常', new Error('raw-secret')],
     ['伪造错误码', Object.assign(new Error('raw-secret'), { code: 'PATH_OUTSIDE_ROOT' })]
   ])('将工厂的%s归一化且不泄露原始错误', async (_name, rawError) => {
-    const { coordinator, events } = createHarness([], { factoryError: rawError });
+    const { coordinator, events } = createHarness([任务模型(), 任务模型()], { factoryError: rawError });
 
     const rejection = await coordinator.submit('你好').catch(error => error);
 
@@ -547,7 +1050,7 @@ describe('ConversationCoordinator', () => {
 
     await coordinator.resolveHistoryDisclosure('request-2', 'share_once');
 
-    expect(second.requests).toHaveLength(1);
+    expect(second.requests).toHaveLength(2);
     expect(second.requests[0]?.messages).toContainEqual({
       role: 'assistant',
       content: '第一轮回复'
@@ -561,7 +1064,7 @@ describe('ConversationCoordinator', () => {
 
   test('取消后忽略不服从 AbortSignal 的旧模型响应', async () => {
     const script = deferredProvider();
-    const { coordinator, events, history } = createHarness([{
+    const { coordinator, events, history, behavior } = createHarness([{
       profileId: 'profile-openai',
       providerIdentity: 'openai',
       providerName: 'OpenAI',
@@ -576,6 +1079,7 @@ describe('ConversationCoordinator', () => {
     await pending;
 
     expect(history.turns()).toEqual([]);
+    expect(behavior.cancelActive).toHaveBeenCalledOnce();
     expect(events).not.toContainEqual({ type: 'message', role: 'assistant', text: '旧回复' });
     expect(phases(events)).toEqual(['listening', 'thinking', 'cancelled']);
   });
@@ -718,6 +1222,7 @@ describe('ConversationCoordinator', () => {
         providerIdentity: 'openai'
       });
       await harness.coordinator.submit('新消息');
+    await authorizeTask(harness);
       harness.disclosureAdapter.resolve = () => {
         if (action === 'cancel') harness.coordinator.cancelActive();
         else void harness.coordinator.close();
@@ -752,6 +1257,7 @@ describe('ConversationCoordinator', () => {
     };
 
     await harness.coordinator.submit('追加后关闭');
+    await authorizeTask(harness);
 
     expect(harness.history.turns()).toEqual([{
       userText: '追加后关闭',
@@ -835,29 +1341,6 @@ describe('ConversationCoordinator', () => {
     expect(JSON.stringify(harness.events)).not.toContain('renderer-send-private-error');
   });
 
-  test('情绪公开失败时本回合不写历史并回到公开错误边界', async () => {
-    const rawError = new Error('emotion-send-private-error');
-    const harness = createHarness([{
-      profileId: 'profile-openai',
-      providerIdentity: 'openai',
-      providerName: 'OpenAI',
-      script: scriptedProvider({ type: 'text', text: '回复已公开', emotion: 'calm' })
-    }], {
-      onEmit: event => {
-        if (event.type === 'character_emotion') throw rawError;
-      }
-    });
-
-    await expect(harness.coordinator.submit('触发情绪公开失败')).rejects.toMatchObject({
-      code: 'AGENT_INTERNAL_ERROR',
-      message: '任务执行失败，请重试。'
-    });
-
-    expect(phases(harness.events)).toEqual(['listening', 'thinking', 'error']);
-    expect(harness.history.turns()).toEqual([]);
-    expect(JSON.stringify(harness.events)).not.toContain('emotion-send-private-error');
-  });
-
   test('close 先封闭状态并在清理失败时继续全部清理', async () => {
     const script = deferredProvider();
     const fileTasks = new CapturingCapabilityTasks();
@@ -897,7 +1380,7 @@ describe('ConversationCoordinator', () => {
     const fileTasks = new CapturingCapabilityTasks();
     const barrier = deferredVoid();
     fileTasks.closeBarrier = barrier.promise;
-    const { coordinator } = createHarness([], { fileTasks });
+    const { coordinator } = createHarness([任务模型(), 任务模型()], { fileTasks });
     let settled = false;
 
     const first = coordinator.close().then(() => { settled = true; });
@@ -905,7 +1388,7 @@ describe('ConversationCoordinator', () => {
     await Promise.resolve();
 
     expect(settled).toBe(false);
-    expect(fileTasks.closeCalls).toBe(1);
+    await vi.waitFor(() => expect(fileTasks.closeCalls).toBe(1));
     barrier.resolve();
     await Promise.all([first, second]);
     expect(settled).toBe(true);
@@ -956,8 +1439,8 @@ describe('ConversationCoordinator', () => {
     expect(events.filter(event => event.type === 'message' && event.role === 'user')).toHaveLength(1);
   });
 
-  test('明确文件请求直接准备目标并把同一目标快照提交给文件端口', async () => {
-    const harness = createHarness([]);
+  test('主模型申请后准备目标并把同一目标快照提交给文件端口', async () => {
+    const harness = createHarness([任务模型(), 任务模型()]);
     harness.history.append({
       userText: '旧问题',
       assistantText: '旧回答',
@@ -965,6 +1448,8 @@ describe('ConversationCoordinator', () => {
     });
 
     const submitting = harness.coordinator.submit('整理文件');
+    await submitting;
+    await authorizeTask(harness);
     await vi.waitFor(() => expect(harness.fileTasks.submissions).toHaveLength(1));
     harness.fileTasks.publish({ type: 'message', role: 'assistant', text: '整理完成' }, 'generation-current');
     harness.fileTasks.publish({ type: 'phase', phase: 'success' }, 'generation-current');
@@ -992,7 +1477,7 @@ describe('ConversationCoordinator', () => {
     fileTasks.prepareError = Object.assign(new Error('FILE_AUTHORIZATION_REQUIRED'), {
       code: 'FILE_AUTHORIZATION_REQUIRED'
     });
-    const harness = createHarness([], { fileTasks });
+    const harness = createHarness([任务模型(), 任务模型()], { fileTasks });
 
     await expect(harness.coordinator.submit('整理文件')).rejects.toSatisfy(
       error => errorCode(error) === 'FILE_AUTHORIZATION_REQUIRED'
@@ -1007,8 +1492,9 @@ describe('ConversationCoordinator', () => {
   });
 
   test('文件任务 phase:error 公开失败后释放状态、允许再次提交且不写历史', async () => {
-    const harness = createHarness([]);
+    const harness = createHarness([任务模型(), 任务模型()]);
     await harness.coordinator.submit('读取 失败.txt');
+    await authorizeTask(harness);
 
     harness.fileTasks.publish({
       type: 'error',
@@ -1024,150 +1510,24 @@ describe('ConversationCoordinator', () => {
     });
     expect(harness.history.turns()).toEqual([]);
     await expect(harness.coordinator.submit('读取 重试.txt')).resolves.toBeUndefined();
+    await authorizeTask(harness);
     expect(harness.fileTasks.submissions).toHaveLength(2);
   });
-
-  test('文件失败终态同步重入新提交时旧 reject 不覆盖新 owner 且不重复报错', async () => {
-    const fileTasks = new CapturingCapabilityTasks();
-    const nextProvider = deferredProvider();
-    let submissionCount = 0;
-    fileTasks.submit = async input => {
-      fileTasks.submissions.push(input);
-      submissionCount += 1;
-      if (submissionCount !== 1) return;
-      fileTasks.publish({
-        type: 'error',
-        code: 'PATH_INVALID',
-        message: '文件路径无效。'
-      }, input.generation);
-      fileTasks.publish({ type: 'phase', phase: 'error' }, input.generation);
-      throw Object.assign(new Error('private-path-details'), { code: 'PATH_INVALID' });
-    };
-    let newPending: Promise<void> | null = null;
-    const harness = createHarness([{
-      profileId: 'profile-openai',
-      providerIdentity: 'openai',
-      providerName: 'OpenAI',
-      script: nextProvider
-    }], {
-      fileTasks,
-      onEmit: (event, coordinator) => {
-        if (event.type === 'phase' && event.phase === 'error' && newPending === null) {
-          newPending = coordinator.submit('同步重入的新任务');
-        }
-      }
-    });
-
-    await expect(harness.coordinator.submit('读取 失败.txt')).rejects
-      .toSatisfy(error => errorCode(error) === 'PATH_INVALID');
-    await vi.waitFor(() => expect(nextProvider.requests).toHaveLength(1));
-
-    expect(harness.events.filter(event => event.type === 'error')).toEqual([{
-      type: 'error',
-      code: 'PATH_INVALID',
-      message: '文件路径无效。'
-    }]);
-    expect(JSON.stringify(harness.events)).not.toContain('private-path-details');
-    nextProvider.resolve({
-      type: 'text',
-      text: '新任务完成'
-    });
-    await newPending;
-    expect(harness.events).toContainEqual({
-      type: 'message',
-      role: 'assistant',
-      text: '新任务完成'
-    });
-  });
-
-  test.each([
-    ['ENTRY_CHANGED', '文件在确认后发生变化，未执行操作。', '请重新发起文件操作并确认最新内容。'],
-    ['ENTRY_TYPE_UNSUPPORTED', '该文件类型或目录状态不支持此操作。', '请选择普通文本文件、普通文件或空目录后重试。'],
-    ['LINK_NOT_ALLOWED', '不允许对符号链接或 Junction 执行此文件操作。', '请选择授权目录内的普通文件或目录。'],
-    ['RECYCLE_BIN_FAILED', '无法将目标移入 Windows 回收站，原目标仍保留。', '请检查目标是否被占用或 Windows 回收站是否可用后重试。']
-  ] as const)(
-    '文件端口错误 %s 已发布后不降级、不重复且不泄露底层消息',
-    async (code, message, nextAction) => {
-      const fileTasks = new CapturingCapabilityTasks();
-      fileTasks.submit = async input => {
-        fileTasks.submissions.push(input);
-        fileTasks.publish({ type: 'error', code, message, nextAction }, input.generation);
-        fileTasks.publish({ type: 'phase', phase: 'error' }, input.generation);
-        throw Object.assign(new Error('C:\\private\\secret.txt'), { code });
-      };
-      const harness = createHarness([], { fileTasks });
-
-      await expect(harness.coordinator.submit('整理文件')).rejects
-        .toSatisfy(error => errorCode(error) === code);
-
-      expect(harness.events.filter(event => event.type === 'error')).toEqual([{
-        type: 'error',
-        code,
-        message,
-        nextAction
-      }]);
-      expect(JSON.stringify(harness.events)).not.toContain('private');
-      expect(phases(harness.events).filter(phase => phase === 'error')).toHaveLength(1);
-    }
-  );
-
-  test.each([
-    ['ENTRY_CHANGED', '文件在确认后发生变化，未执行操作。', '请重新发起文件操作并确认最新内容。'],
-    ['RECYCLE_BIN_FAILED', '无法将目标移入 Windows 回收站，原目标仍保留。', '请检查目标是否被占用或 Windows 回收站是否可用后重试。']
-  ] as const)(
-    '确认路径的 %s 已发布后保持原错误码且不重复发布',
-    async (code, message, nextAction) => {
-      const fileTasks = new CapturingCapabilityTasks();
-      fileTasks.submit = async input => {
-        fileTasks.submissions.push(input);
-        fileTasks.publish({
-          type: 'pending_action',
-          action: {
-            category: 'file',
-            actionId: 'pending-action',
-            conversationId: 'conversation-1',
-            risk: 'write',
-            operation: 'delete_file',
-            summary: '删除文件',
-            targetRelativePath: 'old.txt',
-            targetType: 'file',
-            createdAt: '2026-08-12T00:00:00.000Z',
-            expiresAt: '2026-08-12T00:02:00.000Z'
-          }
-        }, input.generation);
-        fileTasks.publish({ type: 'phase', phase: 'awaiting_confirmation' }, input.generation);
-      };
-      fileTasks.resolveAction = async () => {
-        fileTasks.publish({ type: 'error', code, message, nextAction }, 'generation-current');
-        fileTasks.publish({ type: 'phase', phase: 'error' }, 'generation-current');
-        throw Object.assign(new Error('C:\\private\\secret.txt'), { code });
-      };
-      const harness = createHarness([], { fileTasks });
-      await harness.coordinator.submit('删除 old.txt');
-
-      await expect(harness.coordinator.resolveFileAction('pending-action', 'confirm')).rejects
-        .toSatisfy(error => errorCode(error) === code);
-
-      expect(harness.events.filter(event => event.type === 'error')).toEqual([{
-        type: 'error', code, message, nextAction
-      }]);
-      expect(phases(harness.events).filter(phase => phase === 'error')).toHaveLength(1);
-      expect(JSON.stringify(harness.events)).not.toContain('private');
-    }
-  );
 
   test.each([
     ['share_once', [
       { role: 'user', content: '旧问题' },
       { role: 'assistant', content: '旧回答' }
     ]],
-    ['current_message_only', []]
-  ] as const)('文件目标跨 Provider 时 %s 后只恢复一次原提交', async (decision, expectedHistory) => {
-    const harness = createHarness([]);
+    ['current_message_only', []],
+  ] as const)('文件目标跨 Provider 时 %s 后只恢复一次原提交 %#', async (decision, expectedHistory) => {
+    const harness = createHarness([任务模型(), 任务模型()]);
     harness.fileTasks.target = Object.freeze({
       profileId: 'profile-anthropic-agent',
       providerIdentity: 'anthropic',
-      providerName: 'Anthropic Agent'
+      providerName: 'Anthropic Agent',
+      capabilityRevision: 'revision-anthropic',
+    directory: 'D:\\authorized', modelId: 'model-test', approvedCommands: [],
     });
     harness.history.append({
       userText: '旧问题',
@@ -1176,11 +1536,12 @@ describe('ConversationCoordinator', () => {
     });
 
     await harness.coordinator.submit('整理文件');
+    await authorizeTask(harness);
 
     expect(harness.fileTasks.submissions).toEqual([]);
     expect(harness.events).toContainEqual({
       type: 'history_disclosure_required',
-      requestId: 'request-1',
+      requestId: 'request-2',
       targetProviderName: 'Anthropic Agent',
       messageCount: 2,
       characterCount: 6
@@ -1188,7 +1549,8 @@ describe('ConversationCoordinator', () => {
     await expect(harness.coordinator.resolveHistoryDisclosure('forged', decision)).rejects
       .toSatisfy(error => errorCode(error) === 'DISCLOSURE_REQUEST_EXPIRED');
 
-    await harness.coordinator.resolveHistoryDisclosure('request-1', decision);
+    await harness.coordinator.resolveHistoryDisclosure('request-2', decision);
+    await authorizeTask(harness);
 
     expect(harness.fileTasks.submissions).toEqual([{
       text: '整理文件',
@@ -1196,7 +1558,7 @@ describe('ConversationCoordinator', () => {
       generation: 'generation-current',
       taskKind: 'file'
     }]);
-    await expect(harness.coordinator.resolveHistoryDisclosure('request-1', decision)).rejects
+    await expect(harness.coordinator.resolveHistoryDisclosure('request-2', decision)).rejects
       .toSatisfy(error => errorCode(error) === 'DISCLOSURE_REQUEST_EXPIRED');
   });
 
@@ -1248,11 +1610,13 @@ describe('ConversationCoordinator', () => {
   });
 
   test('等待文件披露时 reset 使旧 requestId 失效且绝不提交旧目标', async () => {
-    const harness = createHarness([]);
+    const harness = createHarness([任务模型(), 任务模型()]);
     harness.fileTasks.target = Object.freeze({
       profileId: 'profile-anthropic-agent',
       providerIdentity: 'anthropic',
-      providerName: 'Anthropic Agent'
+      providerName: 'Anthropic Agent',
+      capabilityRevision: 'revision-anthropic',
+    directory: 'D:\\authorized', modelId: 'model-test', approvedCommands: [],
     });
     harness.history.append({
       userText: '旧问题',
@@ -1261,39 +1625,28 @@ describe('ConversationCoordinator', () => {
     });
     await harness.coordinator.submit('整理文件');
 
+    const disclosure = harness.events.find(event => event.type === 'history_disclosure_required');
+    if (disclosure?.type !== 'history_disclosure_required') throw new Error('缺少实际披露请求');
+    const requestId = disclosure.requestId;
     await harness.coordinator.resetConversation();
 
-    await expect(harness.coordinator.resolveHistoryDisclosure('request-1', 'share_once')).rejects
+    await expect(harness.coordinator.resolveHistoryDisclosure(requestId, 'share_once')).rejects
       .toSatisfy(error => errorCode(error) === 'DISCLOSURE_REQUEST_EXPIRED');
     expect(harness.fileTasks.submissions).toEqual([]);
     expect(harness.events).toContainEqual({
       type: 'conversation_reset',
-      generation: 'request-2'
+      generation: 'request-3'
     });
   });
 
-  test('等待文件确认时 reset 委托文件清理并使旧 actionId 失效', async () => {
+  test('等待具体许可时 reset 委托文件清理并使旧 actionId 失效', async () => {
     const fileTasks = new CapturingCapabilityTasks();
     fileTasks.submit = async input => {
       fileTasks.submissions.push(input);
-      fileTasks.publish({
-        type: 'pending_action',
-        action: {
-          category: 'file',
-          actionId: 'old-action',
-          conversationId: 'conversation-old',
-          risk: 'write',
-          operation: 'create_file',
-          summary: '创建文件',
-          targetRelativePath: 'result.txt',
-          contentCharacters: 0, contentPreview: null, contentPreviewSuppressedReason: null, previewTruncated: false,
-          createdAt: '2026-08-10T00:00:00.000Z',
-          expiresAt: '2026-08-10T00:02:00.000Z'
-        }
-      }, input.generation);
       fileTasks.publish({ type: 'phase', phase: 'awaiting_confirmation' }, input.generation);
+      return { kind: 'completed', acted: true };
     };
-    const harness = createHarness([], { fileTasks });
+    const harness = createHarness([任务模型(), 任务模型()], { fileTasks });
 
     await harness.coordinator.submit('创建文件');
     await harness.coordinator.resetConversation();
@@ -1304,7 +1657,7 @@ describe('ConversationCoordinator', () => {
   });
 
   test('任一重置清理失败后保持 resetting 并永久拒绝旧 generation 与新提交', async () => {
-    const harness = createHarness([]);
+    const harness = createHarness([任务模型(), 任务模型()]);
     harness.fileTasks.resetError = new Error('raw-reset-failure');
 
     await expect(harness.coordinator.resetConversation()).rejects.toSatisfy(

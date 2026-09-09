@@ -1,23 +1,22 @@
 import {
-  STANDARD_CHARACTER_SEMANTICS,
-  type CharacterActionDefinitionV2,
-  type CharacterActionPresentationV2,
-  type CharacterStateDefinitionV2
+  type CharacterActionDefinitionV3,
+  type CharacterActionPresentationV3,
+  type CharacterStateDefinitionV3
 } from '@myself/character-runtime';
 import { TagEditor } from './TagEditor';
 
 export interface ActionInspectorProps {
-  action: CharacterActionDefinitionV2;
-  actions: CharacterActionDefinitionV2[];
-  states: CharacterStateDefinitionV2[];
-  presentation?: Pick<CharacterActionPresentationV2, 'frames' | 'commitFrameId'> | null;
+  action: CharacterActionDefinitionV3;
+  actions: CharacterActionDefinitionV3[];
+  states: CharacterStateDefinitionV3[];
+  presentation?: Pick<CharacterActionPresentationV3, 'frames' | 'commitFrameId'> | null;
   disabled: boolean;
-  onChange(patch: Partial<CharacterActionDefinitionV2>): void;
+  onChange(patch: Partial<CharacterActionDefinitionV3>): void;
   onCommitFrameChange?(frameId: string | null): void;
 }
 
 function fallbackOptions(
-  actions: CharacterActionDefinitionV2[],
+  actions: CharacterActionDefinitionV3[],
   currentActionId: string
 ) {
   const actionsById = new Map(actions.map(action => [action.id, action]));
@@ -43,51 +42,6 @@ function fallbackOptions(
   ));
 }
 
-type StateReferenceKey =
-  | 'allowedPrimaryStateIds'
-  | 'forbiddenPrimaryStateIds'
-  | 'requiredModifierStateIds'
-  | 'forbiddenModifierStateIds';
-
-interface StateReferenceEditorProps {
-  title: string;
-  labelVerb: string;
-  states: CharacterStateDefinitionV2[];
-  selectedIds: string[];
-  disabled: boolean;
-  onChange(ids: string[]): void;
-}
-
-/** 统一维护动作的状态 ID 集合，始终以稳定 state.id 作为值与 React key。 */
-function StateReferenceEditor(props: StateReferenceEditorProps) {
-  return (
-    <fieldset className="state-reference-editor">
-      <legend>{props.title}</legend>
-      {props.states.length === 0 ? (
-        <p className="field-help">当前没有可选状态。</p>
-      ) : props.states.map(state => {
-        const checked = props.selectedIds.includes(state.id);
-        return (
-          <label key={state.id}>
-            <input
-              type="checkbox"
-              checked={checked}
-              disabled={props.disabled}
-              aria-label={`${props.labelVerb}“${state.name}”`}
-              onChange={() => props.onChange(
-                checked
-                  ? props.selectedIds.filter(id => id !== state.id)
-                  : [...props.selectedIds, state.id]
-              )}
-            />
-            <span>{state.name}</span>
-          </label>
-        );
-      })}
-    </fieldset>
-  );
-}
-
 /** 动作 Inspector 只维护行为策略；帧与 FPS 属于当前皮肤表现。 */
 export function ActionInspector(props: ActionInspectorProps) {
   const candidates = fallbackOptions(props.actions, props.action.id);
@@ -95,11 +49,6 @@ export function ActionInspector(props: ActionInspectorProps) {
   const stablePresentationFrames = props.presentation?.frames.filter(
     (frame): frame is typeof frame & { id: string } => typeof frame.id === 'string'
   ) ?? [];
-  const primaryStates = props.states.filter(state => state.kind === 'primary');
-  const modifierStates = props.states.filter(state => state.kind === 'modifier');
-  const updateStateReferences = (key: StateReferenceKey, ids: string[]) => {
-    props.onChange({ [key]: ids });
-  };
   return (
     <form className="inspector-form action-properties" onSubmit={event => event.preventDefault()}>
       <label>
@@ -112,21 +61,17 @@ export function ActionInspector(props: ActionInspectorProps) {
         />
       </label>
       <label>
-        动作语义
-        <select
-          value={props.action.semantic}
+        动作详细描述
+        <textarea
+          value={props.action.description ?? ''}
+          maxLength={2_000}
           disabled={props.disabled}
           onChange={event => props.onChange({
-            semantic: event.currentTarget.value as typeof STANDARD_CHARACTER_SEMANTICS[number]
+            description: event.currentTarget.value || undefined
           })}
-        >
-          {STANDARD_CHARACTER_SEMANTICS.map(semantic => (
-            <option key={semantic} value={semantic}>{semantic}</option>
-          ))}
-        </select>
-        <span className="field-help">动作语义只影响表现选择与素材播放。</span>
+        />
       </label>
-      {props.action.semantic === 'carry' ? (
+      {props.onCommitFrameChange ? (
         <label>
           任务提交帧
           <select
@@ -142,7 +87,7 @@ export function ActionInspector(props: ActionInspectorProps) {
             ))}
           </select>
           <span className="field-help">
-            文件任务只会在该稳定帧到达时提交；普通搬运动画不会触发文件操作。
+            保留稳定帧标记；实际提交仍由 Main 的任务授权决定。
           </span>
         </label>
       ) : null}
@@ -235,7 +180,7 @@ export function ActionInspector(props: ActionInspectorProps) {
           value={props.action.loopPolicy}
           disabled={props.disabled}
           onChange={event => props.onChange({
-            loopPolicy: event.currentTarget.value as CharacterActionDefinitionV2['loopPolicy']
+            loopPolicy: event.currentTarget.value as CharacterActionDefinitionV3['loopPolicy']
           })}
         >
           <option value="never">不循环</option>
@@ -249,7 +194,7 @@ export function ActionInspector(props: ActionInspectorProps) {
           value={props.action.interrupt}
           disabled={props.disabled}
           onChange={event => props.onChange({
-            interrupt: event.currentTarget.value as CharacterActionDefinitionV2['interrupt']
+            interrupt: event.currentTarget.value as CharacterActionDefinitionV3['interrupt']
           })}
         >
           <option value="normal">正常</option>
@@ -292,7 +237,7 @@ export function ActionInspector(props: ActionInspectorProps) {
           value={props.action.direction}
           disabled={props.disabled}
           onChange={event => props.onChange({
-            direction: event.currentTarget.value as CharacterActionDefinitionV2['direction']
+            direction: event.currentTarget.value as CharacterActionDefinitionV3['direction']
           })}
         >
           <option value="any">任意</option>
@@ -300,40 +245,6 @@ export function ActionInspector(props: ActionInspectorProps) {
           <option value="right">向右</option>
         </select>
       </label>
-      <div className="state-reference-grid">
-        <StateReferenceEditor
-          title="允许的主状态"
-          labelVerb="允许主状态"
-          states={primaryStates}
-          selectedIds={props.action.allowedPrimaryStateIds}
-          disabled={props.disabled}
-          onChange={ids => updateStateReferences('allowedPrimaryStateIds', ids)}
-        />
-        <StateReferenceEditor
-          title="禁止的主状态"
-          labelVerb="禁止主状态"
-          states={primaryStates}
-          selectedIds={props.action.forbiddenPrimaryStateIds}
-          disabled={props.disabled}
-          onChange={ids => updateStateReferences('forbiddenPrimaryStateIds', ids)}
-        />
-        <StateReferenceEditor
-          title="要求的修饰状态"
-          labelVerb="要求修饰状态"
-          states={modifierStates}
-          selectedIds={props.action.requiredModifierStateIds}
-          disabled={props.disabled}
-          onChange={ids => updateStateReferences('requiredModifierStateIds', ids)}
-        />
-        <StateReferenceEditor
-          title="禁止的修饰状态"
-          labelVerb="禁止修饰状态"
-          states={modifierStates}
-          selectedIds={props.action.forbiddenModifierStateIds}
-          disabled={props.disabled}
-          onChange={ids => updateStateReferences('forbiddenModifierStateIds', ids)}
-        />
-      </div>
       <dl className="inspector-summary">
         <div><dt>动作标识</dt><dd>{props.action.id}</dd></div>
       </dl>

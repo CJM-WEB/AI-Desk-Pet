@@ -2,6 +2,10 @@ import {
   ModelRouter,
   type ModelSelection
 } from '@myself/agent-core';
+import { createHash, randomUUID } from 'node:crypto';
+import { readFile, realpath } from 'node:fs/promises';
+import { join } from 'node:path';
+import { taskApprovedCommandsSchema } from '@myself/shared-types';
 import type {
   ProviderCatalogEntry,
   ProviderProfileV2,
@@ -10,6 +14,7 @@ import type {
 import { DisclosurePolicy, type PrivacySessionRegistry } from
   '../agent/disclosure-policy';
 import type { ProviderSettingsSnapshot } from '../storage/settings-store';
+import { resolveProviderProfile } from '../providers/provider-registry';
 import {
   normalizeModelRoutePreflightError,
   settingsIncompleteError
@@ -20,55 +25,64 @@ import { ConversationDisclosureAdapter } from './conversation-disclosure-adapter
 import { ConversationHistory } from './conversation-history';
 import {
   CapabilityTaskAdapter,
-  type CapabilityTaskAgentPort
+  type CapabilityTaskServicePort
 } from './capability-task-adapter';
 import type { CapabilityTaskKind } from './conversation-coordinator';
+import type { CodingTaskToolResult } from '../agent/coding-task-service';
+import type { ConversationBehaviorPort } from
+  '../characters/character-behavior-director';
+import type { CharacterBehaviorDirector } from '../characters/character-behavior-director';
+import type { CharacterAutonomousRequest } from '../characters/character-proactivity-runtime';
 
-export type MainConversationAgentSnapshot<TPrivacy, TReadTool> = Readonly<{
+export type MainConversationCodingTaskSnapshot<TPrivacy> = Readonly<{
   taskKind: CapabilityTaskKind;
   providerSettings: ProviderSettingsSnapshot;
   authorizedRootPath: string;
   privacySettings: TPrivacy;
-  enabledReadTools: readonly TReadTool[];
+  approvedCommands: readonly string[];
 }>;
 
-export interface MainConversationAgentFactoryInput<TPrivacy, TReadTool> {
-  snapshot: MainConversationAgentSnapshot<TPrivacy, TReadTool>;
+export interface MainConversationCodingTaskFactoryInput<TPrivacy> {
+  snapshot: MainConversationCodingTaskSnapshot<TPrivacy>;
   generation: string;
   selection: ModelSelection;
   primaryProfile: ProviderProfileV2;
   fallbackProfiles: readonly ProviderProfileV2[];
   emit(event: TaskEvent): void;
+  emitTrustedToolResult(result: CodingTaskToolResult): void;
 }
 
-export interface MainConversationCompositionOptions<TPrivacy, TReadTool> {
+export interface MainConversationCompositionOptions<TPrivacy> {
   catalog: readonly ProviderCatalogEntry[];
   privacySessions: PrivacySessionRegistry;
   sessionId: string;
   readProviderSettings(): Promise<ProviderSettingsSnapshot>;
+  assertProviderReady?(profile: ProviderProfileV2): void;
   readAuthorizedRootPath(): Promise<string | null>;
   readPrivacySettings(): Promise<TPrivacy>;
-  readEnabledReadTools(): Promise<readonly TReadTool[]>;
   createChatAdapter(profile: ProviderProfileV2): ConversationChatAdapter;
-  createAgentService(
-    input: MainConversationAgentFactoryInput<TPrivacy, TReadTool>
-  ): CapabilityTaskAgentPort;
+  createCodingTaskService(
+    input: MainConversationCodingTaskFactoryInput<TPrivacy>
+  ): CapabilityTaskServicePort;
+  behavior: ConversationBehaviorPort;
+  autonomy?: Pick<CharacterBehaviorDirector, 'getActivityBlockers' | 'getBehaviorLifecycleGeneration' | 'applyAutonomousDecision' | 'applyActivityDecision'>;
   emit(event: TaskEvent): void;
 }
 
 export interface MainConversationComposition {
   coordinator: ConversationCoordinator;
   capabilityTasks: CapabilityTaskAdapter;
+  requestAutonomousDecision(input: CharacterAutonomousRequest): Promise<void>;
   resetForConfigurationChange(): Promise<void>;
   close(): Promise<void>;
 }
 
 /**
  * Main 会话深模块统一持有路由、披露、文件目标快照和关闭所有权。
- * Electron 平台层只需提供设置读取与 Provider/File Agent 构造适配器。
+ * Electron 平台层只需提供设置读取与 Provider/CodingTaskService 构造适配器。
  */
-export function createMainConversationComposition<TPrivacy, TReadTool>(
-  options: MainConversationCompositionOptions<TPrivacy, TReadTool>
+export function createMainConversationComposition<TPrivacy>(
+  options: MainConversationCompositionOptions<TPrivacy>
 ): MainConversationComposition {
   const disclosureTargets = new Map<string, string>();
   const disclosurePolicy = new DisclosurePolicy({
@@ -76,9 +90,22 @@ export function createMainConversationComposition<TPrivacy, TReadTool>(
     resolveProfileProvider: profileId => disclosureTargets.get(profileId) ?? null,
     resolveCurrentSourceProvider: () => null
   });
-  let preparedAgentSnapshot: MainConversationAgentSnapshot<TPrivacy, TReadTool> | null = null;
-  let activeAgentRootPath: string | null = null;
+  let preparedCodingTaskSnapshot: MainConversationCodingTaskSnapshot<TPrivacy> | null = null;
+  let preparedCodingTaskTarget: Readonly<{
+    generation: string;
+    taskKind: CapabilityTaskKind;
+    selection: ModelSelection;
+    primaryProfile: ProviderProfileV2;
+    fallbackProfiles: readonly ProviderProfileV2[];
+    capabilityRevision: string;
+  }> | null = null;
+  let activeCodingTaskRootPath: string | null = null;
   let closePromise: Promise<void> | null = null;
+  let autonomousFlight: { controller: AbortController; signal: AbortSignal } | null = null;
+  const invalidateAutonomy = () => { autonomousFlight?.controller.abort(); autonomousFlight = null; };
+  const assertProviderReady = options.assertProviderReady ?? (profile => {
+    if (!profile.hasStoredSecret) throw settingsIncompleteError();
+  });
 
   const select = (
     providerSettings: ProviderSettingsSnapshot,
@@ -104,7 +131,7 @@ export function createMainConversationComposition<TPrivacy, TReadTool>(
     const providerSettings = await options.readProviderSettings();
     const selection = select(providerSettings, 'chat');
     const profile = selection.profile;
-    if (!profile.hasStoredSecret) throw settingsIncompleteError();
+    assertProviderReady(profile);
     rememberTarget(selection);
     return {
       adapter: options.createChatAdapter(profile),
@@ -115,62 +142,106 @@ export function createMainConversationComposition<TPrivacy, TReadTool>(
   };
 
   const getAuthorizedRootPath = async (taskKind: CapabilityTaskKind): Promise<string | null> => {
-    const [providerSettings, authorizedRootPath, privacySettings, enabledReadTools] =
+    const [providerSettings, rootPath, privacySettings] =
       await Promise.all([
         options.readProviderSettings(),
         options.readAuthorizedRootPath(),
-        options.readPrivacySettings(),
-        options.readEnabledReadTools()
+        options.readPrivacySettings()
       ]);
-    preparedAgentSnapshot = authorizedRootPath === null
+    const authorizedRootPath = rootPath === null ? null : await realpath(rootPath);
+    const approvedCommands = authorizedRootPath === null ? [] : await projectCommands(authorizedRootPath);
+    preparedCodingTaskSnapshot = authorizedRootPath === null
       ? null
       : Object.freeze({
           providerSettings,
           authorizedRootPath,
           taskKind,
           privacySettings,
-          enabledReadTools
+          approvedCommands
         });
-    if (activeAgentRootPath !== null && activeAgentRootPath !== authorizedRootPath) return null;
+    if (activeCodingTaskRootPath !== null && activeCodingTaskRootPath !== authorizedRootPath) return null;
     return authorizedRootPath;
   };
 
-  const createAgentTarget = (input: {
+  const createCodingTaskTarget = (input: {
     generation: string;
     taskKind: CapabilityTaskKind;
     emit: (event: TaskEvent) => void;
+    emitTrustedToolResult: (result: CodingTaskToolResult) => void;
   }) => {
-    const snapshot = preparedAgentSnapshot;
-    preparedAgentSnapshot = null;
-    if (!snapshot) throw settingsIncompleteError();
-    const selection = select(snapshot.providerSettings, 'agent');
-    const primaryProfile = selection.profile;
-    if (!primaryProfile.hasStoredSecret) throw settingsIncompleteError();
-    const fallbackProfiles = sameProviderAgentFallbacks(
-      snapshot.providerSettings,
-      selection,
-      options.catalog
-    );
-    activeAgentRootPath = snapshot.authorizedRootPath;
+    const snapshot = preparedCodingTaskSnapshot;
+    const descriptor = preparedCodingTaskTarget;
+    preparedCodingTaskSnapshot = null;
+    preparedCodingTaskTarget = null;
+    if (!snapshot || !descriptor || descriptor.generation !== input.generation
+      || descriptor.taskKind !== input.taskKind) throw settingsIncompleteError();
+    const { selection, primaryProfile, fallbackProfiles, capabilityRevision } = descriptor;
+    activeCodingTaskRootPath = snapshot.authorizedRootPath;
     rememberTarget(selection);
     return {
-      service: options.createAgentService({
+      service: options.createCodingTaskService({
         snapshot,
         generation: input.generation,
         selection,
         primaryProfile,
         fallbackProfiles,
-        emit: input.emit
+        emit: input.emit,
+        emitTrustedToolResult: input.emitTrustedToolResult
       }),
       profileId: selection.disclosureTarget.profileId,
       providerIdentity: selection.disclosureTarget.providerIdentity,
-      providerName: primaryProfile.displayName
+      providerName: primaryProfile.displayName,
+      directory: snapshot.authorizedRootPath,
+      modelId: primaryProfile.modelId,
+      approvedCommands: snapshot.approvedCommands,
+      capabilityRevision
     };
+  };
+
+  const createTargetSnapshot = (input: {
+    generation: string;
+    taskKind: CapabilityTaskKind;
+  }) => {
+    const snapshot = preparedCodingTaskSnapshot;
+    if (!snapshot || snapshot.taskKind !== input.taskKind) throw settingsIncompleteError();
+    const selection = select(snapshot.providerSettings, 'agent');
+    const primaryProfile = selection.profile;
+    assertProviderReady(primaryProfile);
+    if (resolveProviderProfile(primaryProfile, options.catalog).protocol !== 'openai-compatible') {
+      throw Object.assign(new Error('CODING_MODEL_PROTOCOL_UNSUPPORTED'), { code: 'CODING_MODEL_PROTOCOL_UNSUPPORTED' });
+    }
+    const fallbackProfiles: readonly ProviderProfileV2[] = [];
+    const capabilityRevision = createHash('sha256').update(JSON.stringify({
+      generation: input.generation,
+      taskKind: snapshot.taskKind,
+      authorizedRootPath: snapshot.authorizedRootPath,
+      approvedCommands: snapshot.approvedCommands,
+      providerSettings: snapshot.providerSettings
+    })).digest('hex');
+    preparedCodingTaskTarget = Object.freeze({
+      generation: input.generation,
+      taskKind: input.taskKind,
+      selection,
+      primaryProfile,
+      fallbackProfiles,
+      capabilityRevision
+    });
+    rememberTarget(selection);
+    return Object.freeze({
+      profileId: selection.disclosureTarget.profileId,
+      providerIdentity: selection.disclosureTarget.providerIdentity,
+      providerName: primaryProfile.displayName,
+      directory: snapshot.authorizedRootPath,
+      modelId: primaryProfile.modelId,
+      approvedCommands: snapshot.approvedCommands,
+      capabilityRevision
+    });
   };
 
   const capabilityTasks = new CapabilityTaskAdapter({
     getAuthorizedRootPath,
-    createAgentTarget
+    createTargetSnapshot,
+    createCodingTaskTarget
   });
   const coordinator = new ConversationCoordinator({
     history: new ConversationHistory(),
@@ -181,19 +252,56 @@ export function createMainConversationComposition<TPrivacy, TReadTool>(
       disclosurePolicy
     }),
     capabilityTasks,
+    behavior: options.behavior,
     emit: options.emit
   });
 
   return {
     coordinator,
     capabilityTasks,
+    /** 当前聊天 Provider 的独立无工具请求；不经过会话消息、历史或任务路由。 */
+    async requestAutonomousDecision(input): Promise<void> {
+      const autonomy = options.autonomy;
+      if (!autonomy || closePromise || input.signal.aborted || autonomousFlight && !autonomousFlight.signal.aborted) return;
+      const controller = new AbortController();
+      const current = { controller, signal: AbortSignal.any([input.signal, controller.signal]) };
+      autonomousFlight = current;
+      const lifecycle = autonomy.getBehaviorLifecycleGeneration();
+      const context = options.behavior.captureExpressionContext();
+      const behaviorContext = options.behavior.getChatContext();
+      const isCurrent = () => {
+        const blockers = autonomy.getActivityBlockers();
+        return autonomousFlight === current && !current.signal.aborted && !closePromise
+          && lifecycle === autonomy.getBehaviorLifecycleGeneration() && !blockers.closed
+          && !blockers.chatting && !blockers.capabilityTask && !blockers.awaitingConfirmation && !blockers.dragging;
+      };
+      try {
+        if (!context || !isCurrent()) return;
+        const turn = await createChatTurn();
+        if (!isCurrent()) return;
+        const request = { behaviorContext, signal: current.signal, beforeProviderCall: () => isCurrent() && input.beforeProviderCall() };
+        const decision = input.purpose === 'activity'
+          ? await turn.adapter.respondActivity(request)
+          : await turn.adapter.respondAutonomous({ ...request, idleForMs: input.idleForMs });
+        if (decision && isCurrent()) {
+          const accepted = { ...decision, context, lifecycle, eventId: randomUUID() };
+          if (input.purpose === 'activity') autonomy.applyActivityDecision(accepted);
+          else autonomy.applyAutonomousDecision(accepted);
+        }
+      } finally {
+        if (autonomousFlight === current) autonomousFlight = null;
+      }
+    },
     async resetForConfigurationChange(): Promise<void> {
-      preparedAgentSnapshot = null;
-      activeAgentRootPath = null;
+      invalidateAutonomy();
+      preparedCodingTaskSnapshot = null;
+      preparedCodingTaskTarget = null;
+      activeCodingTaskRootPath = null;
       await coordinator.resetConversation();
     },
     close(): Promise<void> {
       if (closePromise) return closePromise;
+      invalidateAutonomy();
       closePromise = Promise.resolve().then(async () => {
         let firstFailure: unknown;
         try {
@@ -220,27 +328,20 @@ export function createMainConversationComposition<TPrivacy, TReadTool>(
   }
 }
 
-/** 使用 ModelRouter 解析每个候选目标，绝不复制 Provider identity 算法。 */
-function sameProviderAgentFallbacks(
-  providerSettings: ProviderSettingsSnapshot,
-  selection: ModelSelection,
-  catalog: readonly ProviderCatalogEntry[]
-): ProviderProfileV2[] {
-  return selection.fallbackProfiles.filter(profile => {
-    const router = new ModelRouter({
-      profiles: providerSettings.profiles,
-      route: {
-        ...providerSettings.route,
-        agentProfileId: profile.id,
-        fallbackProfileIds: [],
-        allowCrossProviderFallback: false
-      },
-      catalog: [...catalog]
-    });
-    const candidate = router.select('agent', {
-      allowedCrossProviderProfileIds: new Set()
-    });
-    return candidate.disclosureTarget.providerIdentity
-      === selection.disclosureTarget.providerIdentity;
-  });
+/** 只列出当前项目确实存在的固定质量脚本；未知命令交由原 Core 具体许可。 */
+async function projectCommands(directory: string): Promise<readonly string[]> {
+  try {
+    const packageInfo: unknown = JSON.parse(await readFile(join(directory, 'package.json'), 'utf8'));
+    if (!packageInfo || typeof packageInfo !== 'object') return [];
+    const scripts = Reflect.get(packageInfo, 'scripts');
+    if (!scripts || typeof scripts !== 'object' || Array.isArray(scripts)) return [];
+    const manager = Reflect.get(packageInfo, 'packageManager');
+    const executable = typeof manager === 'string' && manager.startsWith('pnpm@') ? 'pnpm.cmd' : typeof manager === 'string' && manager.startsWith('yarn@') ? 'yarn.cmd' : 'npm.cmd';
+    return Object.freeze(taskApprovedCommandsSchema.parse(['build', 'test', 'typecheck', 'lint']
+      .filter(name => typeof Reflect.get(scripts, name) === 'string' && Reflect.get(scripts, name).trim().length > 0)
+      .map(name => `${executable} run ${name}`)));
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT' || error instanceof SyntaxError) return [];
+    throw error;
+  }
 }

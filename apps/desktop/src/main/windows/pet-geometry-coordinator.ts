@@ -1,0 +1,994 @@
+import type { Rectangle } from 'electron';
+import type { CharacterGeometryBinding } from '../characters/character-behavior-service';
+import {
+  type PetGeometryRenderView,
+  petGeometryRenderViewSchema
+} from '../../shared/character-motion-ipc';
+import type {
+  PetViewportCommitInput
+} from '../../shared/pet-window-interaction';
+import type { PetVisualGeometryAuthority } from '../characters/pet-visual-geometry';
+import type {
+  PetPlacementStateSnapshot,
+  SettingsStore,
+  StoredPetPlacement
+} from '../storage/settings-store';
+import { migrateLegacyPetPosition, restorePetPlacement } from './pet-position';
+import {
+  clampIntegerWindowPositionToVisualWorkArea,
+  PET_WINDOW_SIZE
+} from './window-manager';
+
+const DEFAULT_SCALE_TICK = 10;
+
+type BoundsWindow = {
+  getBounds(): Rectangle;
+  setBounds(bounds: Rectangle): void;
+  isDestroyed(): boolean;
+};
+
+type CoordinatorOptions = {
+  window: BoundsWindow;
+  authority: PetVisualGeometryAuthority;
+  settings: Pick<
+    SettingsStore,
+    'getPetPlacementState' | 'savePetPlacement' | 'commitPetPlacementMigration'
+  >;
+  getGeometryBinding(): CharacterGeometryBinding | null;
+  displays(): readonly Readonly<{ id: string; workAreaDip: Rectangle }>[];
+  primaryDisplayId(): string;
+  publishRenderView(view: PetGeometryRenderView): void;
+  expectProgrammaticPosition(
+    point: Readonly<{ x: number; y: number }>
+  ): void | (() => void);
+  isLayoutBlocked?(): boolean;
+  isUserMoving?(): boolean;
+  setTimeout?: typeof globalThis.setTimeout;
+  clearTimeout?: typeof globalThis.clearTimeout;
+};
+
+type CanonicalViewport = Readonly<{
+  baseWidth: number;
+  baseHeight: number;
+  insetLeft: number;
+  insetTop: number;
+}>;
+
+export type PetGeometryRelativeInspection = Readonly<{
+  revision: number;
+  scaleTick: number;
+  settled: boolean;
+  viewportInWindowDip: Rectangle;
+  footOffsetInViewportDip: Readonly<{ x: number; y: number }>;
+}>;
+
+/**
+ * Main 单 FIFO 编排窗口、几何权威与位置持久化；Renderer 只提供实际 viewport ack。
+ */
+export class PetGeometryCoordinator {
+  private queue = Promise.resolve();
+  /** 覆盖排队、执行与持久化的完整 FIFO 生命周期。 */
+  private pendingOperations = 0;
+  private drainPromise: Promise<void> | null = null;
+  private cachedViewport: PetViewportCommitInput['viewportInWindowDip'] | null = null;
+  private canonical: CanonicalViewport | null = null;
+  private committedTick = DEFAULT_SCALE_TICK;
+  private initialized = false;
+  private committedBindingGeneration: number | null = null;
+  private frozen = false;
+  private viewportDirty = false;
+  private placementDirty = false;
+  private bindingDirty = false;
+  /** ready 恢复的脚底是持久事实；OS 量化期间只允许窗口事务暂时偏离，不能反向覆盖它。 */
+  private readyRestoreTarget: StoredPetPlacement | null = null;
+  /** actual 可在容差内成为持久 target，但后续 viewport 仍从本轮理想脚底反算，避免量化累积。 */
+  private readyRestoreIdealFoot: Readonly<{ x: number; y: number }> | null = null;
+  private moveTimer: ReturnType<typeof setTimeout> | null = null;
+  constructor(private readonly options: CoordinatorOptions) {}
+
+  commitViewport(input: PetViewportCommitInput): Promise<void> {
+    const viewport = structuredClone(input.viewportInWindowDip);
+    const previous = this.cachedViewport;
+    this.cachedViewport = viewport;
+    if (!this.initialized) {
+      if (this.frozen) return Promise.resolve();
+      return this.enqueue(() => this.initializeFromViewport(viewport));
+    }
+    if (!previous || !sameViewportSize(previous, viewport)) {
+      this.viewportDirty = !this.activeShapeMatches(viewport);
+    }
+    if (
+      this.readyRestoreTarget
+      && !this.readyRestoreSatisfied()
+      && (!previous || !sameViewport(previous, viewport))
+    ) this.viewportDirty = true;
+    if (this.frozen || this.options.isLayoutBlocked?.()) return Promise.resolve();
+    return this.resumePendingLayout();
+  }
+
+  /** 拖拽或自动运动释放后收敛待处理的视口、位置与角色绑定。 */
+  resumePendingLayout(): Promise<void> {
+    const layoutBlocked = this.options.isLayoutBlocked?.() ?? false;
+    const canRefreshBindingDuringMotion = this.bindingDirty
+      && this.options.isUserMoving?.() === false;
+    if (
+      this.frozen
+      || (layoutBlocked && !canRefreshBindingDuringMotion)
+      || (
+        !this.viewportDirty && !this.placementDirty && !this.bindingDirty
+      )
+    ) return Promise.resolve();
+    if (this.drainPromise) return this.drainPromise;
+    const running = this.enqueue(() => this.drainPendingLayout(false));
+    this.drainPromise = running.finally(() => {
+      this.drainPromise = null;
+    });
+    return this.drainPromise;
+  }
+
+  initialize(): Promise<void> {
+    if (this.initialized || !this.cachedViewport || this.frozen) return Promise.resolve();
+    return this.enqueue(() => this.initializeFromViewport(this.cachedViewport!));
+  }
+
+  /** 正式行为绑定晚于 viewport 或发生切换时，复用缓存 viewport 与同一几何 FIFO。 */
+  refreshBinding(): Promise<void> {
+    if (this.frozen || !this.cachedViewport) return Promise.resolve();
+    const available = this.options.getGeometryBinding();
+    if (!available || available.generation === this.committedBindingGeneration) {
+      this.bindingDirty = false;
+      return Promise.resolve();
+    }
+    this.bindingDirty = true;
+    const snapshot = this.options.authority.getSnapshot();
+    if (
+      this.options.isLayoutBlocked?.()
+      && this.options.isUserMoving?.() !== false
+    ) return Promise.resolve();
+    return this.resumePendingLayout();
+  }
+
+  handleWindowMoved(): void {
+    if (this.frozen || !this.initialized) return;
+    const userMoving = this.options.isUserMoving?.() ?? true;
+    if (this.readyRestoreTarget && !userMoving) return;
+    const layoutBlocked = this.options.isLayoutBlocked?.() ?? false;
+    // ready 恢复目标只允许真实用户拖拽接管；程序化窗口消息不能改写持久脚底。
+    if (this.readyRestoreTarget) {
+      this.readyRestoreTarget = null;
+      this.readyRestoreIdealFoot = null;
+    }
+    this.placementDirty = true;
+    if (layoutBlocked) return;
+    if (this.moveTimer) this.clearTimer(this.moveTimer);
+    const schedule = this.options.setTimeout ?? globalThis.setTimeout;
+    this.moveTimer = schedule(() => {
+      this.moveTimer = null;
+      void this.enqueue(() => this.drainPendingLayout(false)).catch(() => undefined);
+    }, 250);
+  }
+
+  /** 普通 move 与退出 flush 后续复用同一 FIFO；G4 不在运动 tick 内改写目标。 */
+  async freezeAndFlush(): Promise<void> {
+    this.frozen = true;
+    if (this.moveTimer) {
+      this.clearTimer(this.moveTimer);
+      this.moveTimer = null;
+    }
+    await this.enqueue(() => this.drainPendingLayout(true));
+    await this.queue;
+  }
+
+  /** 视口、位置与角色绑定全部通过同一 FIFO 收敛。 */
+  private async drainPendingLayout(ignoreBlocked: boolean): Promise<void> {
+    while (true) {
+      const layoutBlocked = this.options.isLayoutBlocked?.() ?? false;
+      // 自动运动只允许最新动作 shape 经同一 FIFO 提交；真实拖拽仍封锁全部布局。
+      if (
+        this.bindingDirty
+        && (ignoreBlocked || !layoutBlocked || this.options.isUserMoving?.() === false)
+      ) {
+        await this.applyPendingBinding();
+        continue;
+      }
+      if (!ignoreBlocked && layoutBlocked) return;
+      if (this.viewportDirty || this.placementDirty) {
+        await this.settleViewportAndPlacement();
+        continue;
+      }
+      return;
+    }
+  }
+
+  private activeShapeMatches(
+    viewport: PetViewportCommitInput['viewportInWindowDip']
+  ): boolean {
+    const snapshot = this.options.authority.getSnapshot();
+    const layout = snapshot ? this.options.authority.getShapeLayout(snapshot.revision) : null;
+    return Boolean(layout
+      && layout.viewportSizeDip.width === viewport.width
+      && layout.viewportSizeDip.height === viewport.height);
+  }
+
+  private readyRestoreSatisfied(): boolean {
+    const target = this.readyRestoreTarget;
+    if (!target) return true;
+    const snapshot = this.options.authority.getSnapshot();
+    return Boolean(snapshot
+      && snapshot.characterId === target.characterId
+      && snapshot.scale === target.scale
+      && snapshot.displayId === target.displayId
+      && samePoint(snapshot.footAnchorDip, target.footAnchorDip));
+  }
+
+  /**
+   * 固定尺寸 settle 只改 shape key；有 placementDirty 时采纳当前窗口，
+   * 否则保留已提交脚底并仅校正原点。
+   */
+  private async settleViewportAndPlacement(): Promise<void> {
+    const viewport = this.cachedViewport;
+    const oldSnapshot = this.options.authority.getSnapshot();
+    if (!viewport || !oldSnapshot) {
+      this.viewportDirty = false;
+      this.placementDirty = false;
+      return;
+    }
+    const restoreTarget = this.readyRestoreTarget;
+    const restoreIdealFoot = this.readyRestoreIdealFoot;
+    const adoptCurrentWindow = this.placementDirty && !restoreTarget;
+    this.viewportDirty = false;
+    this.placementDirty = false;
+    if (this.activeShapeMatches(viewport) && !restoreTarget) {
+      if (adoptCurrentWindow) await this.persistCurrentWindowPlacement();
+      return;
+    }
+
+    const binding = this.requireBinding();
+    const oldBounds = this.options.window.getBounds();
+    const oldCanonical = this.canonical;
+    const shape = this.updateShape(binding, this.committedTick, viewport);
+    const layout = this.requireShapeLayout(shape.revision);
+    const footOffset = footOffsetInWindow(viewport, layout.footOffsetInViewportDip);
+    const preservedFoot = restoreIdealFoot
+      ?? restoreTarget?.footAnchorDip
+      ?? oldSnapshot.footAnchorDip;
+    const candidatePosition = adoptCurrentWindow
+      ? oldBounds
+      : {
+          x: preservedFoot.x - footOffset.x,
+          y: preservedFoot.y - footOffset.y
+        };
+    let candidateBounds = {
+      x: candidatePosition.x,
+      y: candidatePosition.y,
+      ...PET_WINDOW_SIZE
+    };
+    const candidateFoot = adoptCurrentWindow
+      ? { x: candidateBounds.x + footOffset.x, y: candidateBounds.y + footOffset.y }
+      : preservedFoot;
+    const visualBoundsInWindowDip = visualBoundsInWindow(
+      footOffset,
+      layout.visualBoundsFromFootDip
+    );
+    const display = this.requireDisplayForPlacement(
+      candidateBounds,
+      candidateFoot,
+      oldSnapshot.displayId,
+      visualBoundsInWindowDip
+    );
+    candidateBounds = constrainBoundsToVisualWorkArea(
+      candidateBounds,
+      visualBoundsInWindowDip,
+      display.workAreaDip
+    );
+    const prepared = this.options.authority.preparePlacement({
+      baseRevision: shape.revision,
+      viewportInWindowDip: viewport,
+      windowBoundsDip: candidateBounds,
+      display
+    });
+    if (!prepared.ok) {
+      this.options.authority.discardPendingShape();
+      throw new Error(prepared.code);
+    }
+    let transaction: Readonly<{ token: string; baseRevision: number }> | null = {
+      token: prepared.token,
+      baseRevision: shape.revision
+    };
+    const boundsChanged = !sameBounds(oldBounds, candidateBounds);
+    try {
+      if (boundsChanged) {
+        this.setCoordinatorPosition(candidateBounds);
+        const actualBounds = this.options.window.getBounds();
+        if (!sameBounds(actualBounds, candidateBounds)) {
+          this.options.authority.rollbackPreparedPlacement(transaction);
+          transaction = null;
+          // 普通布局采纳 OS actual；ready 恢复则保留持久脚底，等待真实 viewport 后再校正原点。
+          if (!restoreTarget) this.placementDirty = true;
+          const actualShape = this.updateShape(binding, this.committedTick, viewport);
+          const actualDisplay = this.requireDisplayForPlacement(actualBounds, {
+            x: actualBounds.x + footOffset.x,
+            y: actualBounds.y + footOffset.y
+          }, display.id, visualBoundsInWindowDip);
+          const actualPrepared = this.options.authority.preparePlacement({
+            baseRevision: actualShape.revision,
+            viewportInWindowDip: viewport,
+            windowBoundsDip: actualBounds,
+            display: actualDisplay
+          });
+          if (!actualPrepared.ok) {
+            this.options.authority.discardPendingShape();
+            throw new Error(actualPrepared.code);
+          }
+          transaction = { token: actualPrepared.token, baseRevision: actualShape.revision };
+        }
+      }
+      const committed = this.commitPrepared(transaction, binding.generation);
+      const restoredExactly = Boolean(restoreTarget
+        && samePoint(committed.footAnchorDip, restoreTarget.footAnchorDip));
+      const acceptsActualQuantization = Boolean(
+        restoreTarget
+        && footWithinQuantizationTolerance(
+          committed.footAnchorDip,
+          restoreTarget.footAnchorDip
+        )
+      );
+      if (acceptsActualQuantization) {
+        this.readyRestoreTarget = placementFromSnapshot(committed);
+      }
+      if (restoreTarget && !restoredExactly && !acceptsActualQuantization) {
+        await this.options.settings.savePetPlacement(restoreTarget);
+      } else {
+        await this.saveSnapshot(committed);
+      }
+      this.options.authority.discardPreparedPlacement(transaction);
+      transaction = null;
+      this.canonical = canonicalViewport(viewport, this.committedTick);
+      this.committedBindingGeneration = binding.generation;
+      this.publish(committed);
+    } catch (error) {
+      this.readyRestoreTarget = restoreTarget;
+      this.readyRestoreIdealFoot = restoreIdealFoot;
+      if (transaction) this.options.authority.rollbackPreparedPlacement(transaction);
+      else this.options.authority.discardPendingShape();
+      this.canonical = oldCanonical;
+      if (boundsChanged && !this.options.window.isDestroyed()) {
+        this.setCoordinatorPosition(oldBounds);
+      }
+      throw error;
+    } finally {
+      if (this.cachedViewport && !this.activeShapeMatches(this.cachedViewport)) {
+        this.viewportDirty = true;
+      }
+    }
+  }
+
+  private async persistCurrentWindowPlacement(): Promise<void> {
+    const snapshot = this.options.authority.getSnapshot();
+    const viewport = this.cachedViewport;
+    if (!snapshot || !viewport) return;
+    const bounds = this.options.window.getBounds();
+    const layout = this.options.authority.getShapeLayout(snapshot.revision);
+    if (!layout) throw new Error('PET_GEOMETRY_SHAPE_MISSING');
+    const footOffset = footOffsetInWindow(viewport, layout.footOffsetInViewportDip);
+    const display = this.requireDisplayForPlacement(bounds, {
+      x: bounds.x + footOffset.x,
+      y: bounds.y + footOffset.y
+    }, snapshot.displayId, visualBoundsInWindow(
+      footOffset,
+      layout.visualBoundsFromFootDip
+    ));
+    const prepared = this.options.authority.preparePlacement({
+      baseRevision: snapshot.revision,
+      viewportInWindowDip: viewport,
+      windowBoundsDip: bounds,
+      display
+    });
+    if (!prepared.ok) throw new Error(prepared.code);
+    const transaction = { token: prepared.token, baseRevision: snapshot.revision };
+    try {
+      const committed = this.commitPrepared(transaction, this.requireBinding().generation);
+      await this.saveSnapshot(committed);
+      this.options.authority.discardPreparedPlacement(transaction);
+    } catch (error) {
+      this.options.authority.rollbackPreparedPlacement(transaction);
+      // 用户移动已经发生；失败只回滚内部事实，实际窗口保持原位并等待同 FIFO 重试。
+      this.placementDirty = true;
+      throw error;
+    }
+  }
+
+  isLayoutInFlight(): boolean {
+    return this.pendingOperations > 0;
+  }
+
+  /**
+   * 只返回窗口局部几何，供 Main 的 E2E 私有边界证明收敛关系；禁止包含屏幕坐标。
+   */
+  inspectRelativeGeometry(): PetGeometryRelativeInspection | null {
+    const snapshot = this.options.authority.getSnapshot();
+    const viewport = this.cachedViewport;
+    const layout = snapshot ? this.options.authority.getShapeLayout(snapshot.revision) : null;
+    if (!snapshot || !viewport || !layout) return null;
+    return Object.freeze({
+      revision: snapshot.revision,
+      scaleTick: this.committedTick,
+      settled: this.initialized
+        && !this.viewportDirty
+        && !this.placementDirty
+        && !this.bindingDirty
+        && this.readyRestoreSatisfied()
+        && this.activeShapeMatches(viewport),
+      viewportInWindowDip: Object.freeze({ ...viewport }),
+      footOffsetInViewportDip: Object.freeze({ ...layout.footOffsetInViewportDip })
+    });
+  }
+
+  private enqueue(operation: () => Promise<void>): Promise<void> {
+    this.pendingOperations += 1;
+    const running = this.queue.then(operation);
+    const tracked = running.finally(() => {
+      this.pendingOperations -= 1;
+    });
+    this.queue = tracked.catch(() => undefined);
+    return tracked;
+  }
+
+  private async initializeFromViewport(
+    viewport: PetViewportCommitInput['viewportInWindowDip']
+  ): Promise<void> {
+    if (this.initialized || this.frozen) return;
+    const binding = this.requireBinding();
+    const state = await this.options.settings.getPetPlacementState(binding.manifest.id);
+    // 历史位置仍可读取脚底与屏幕信息，但运行时尺寸固定为 100%。
+    const tick = DEFAULT_SCALE_TICK;
+    const oldCanonical = this.canonical;
+    this.canonical = canonicalViewport(viewport, tick);
+    try {
+    await this.applyLayout(tick, viewport, state);
+      const snapshot = this.options.authority.getSnapshot();
+      if (snapshot) this.canonical = canonicalViewport(viewport, tick);
+      this.committedTick = tick;
+    this.initialized = true;
+      const latestViewport = this.cachedViewport;
+      if (latestViewport && (
+        !this.activeShapeMatches(latestViewport)
+        || !this.readyRestoreSatisfied()
+      )) {
+        this.viewportDirty = true;
+        await this.drainPendingLayout(false);
+      }
+    } catch (error) {
+      this.canonical = oldCanonical;
+      throw error;
+    }
+  }
+
+  private async applyLayout(
+    tick: number,
+    viewport: PetViewportCommitInput['viewportInWindowDip'],
+    state: PetPlacementStateSnapshot
+  ): Promise<void> {
+    const binding = this.requireBinding();
+    const oldBounds = this.options.window.getBounds();
+    const oldViewport = this.cachedViewport;
+    const oldSnapshot = this.options.authority.getSnapshot();
+    const oldReadyRestoreTarget = this.readyRestoreTarget;
+    const oldReadyRestoreIdealFoot = this.readyRestoreIdealFoot;
+    const preserveCurrentWindowFoot = Boolean(
+      oldSnapshot
+      && oldSnapshot.characterId === binding.manifest.id
+      && this.options.isUserMoving?.() === false
+      && (
+        oldBounds.x !== oldSnapshot.windowBoundsDip.x
+        || oldBounds.y !== oldSnapshot.windowBoundsDip.y
+      )
+    );
+    const movingWindowFoot = preserveCurrentWindowFoot && oldSnapshot
+      ? {
+          x: oldBounds.x + oldSnapshot.footAnchorDip.x - oldSnapshot.windowBoundsDip.x,
+          y: oldBounds.y + oldSnapshot.footAnchorDip.y - oldSnapshot.windowBoundsDip.y
+        }
+      : null;
+    const movingDisplayId = movingWindowFoot && oldSnapshot
+      ? this.requireDisplayForPlacement(
+          oldBounds,
+          movingWindowFoot,
+          oldSnapshot.displayId,
+          oldSnapshot.visualBoundsInWindowDip
+        ).id
+      : oldSnapshot?.displayId;
+    const hasReadyRestoreSource = state.kind === 'ready'
+      && oldSnapshot?.characterId !== binding.manifest.id
+      && state.placement?.characterId === binding.manifest.id;
+    const shape = this.options.authority.updateShape({
+      manifest: binding.manifest,
+      skinId: binding.skinId,
+      actionId: binding.actionId,
+      actionRevision: binding.actionRevision,
+      resourceRevision: binding.resourceRevision,
+      direction: binding.direction,
+      scale: tick / 10,
+      viewportSizeDip: { width: viewport.width, height: viewport.height }
+    }, binding.manifest.id);
+    if (!shape.ok) throw new Error(shape.code);
+    const layout = this.options.authority.getShapeLayout(shape.revision);
+    if (!layout) throw new Error('PET_GEOMETRY_SHAPE_MISSING');
+    const windowSize = PET_WINDOW_SIZE;
+    const footOffset = {
+      x: viewport.x + layout.footOffsetInViewportDip.x,
+      y: viewport.y + layout.footOffsetInViewportDip.y
+    };
+    const displays = this.options.displays();
+    let placement: StoredPetPlacement;
+    let windowPosition: Readonly<{ x: number; y: number }>;
+    if (state.kind === 'pending-legacy') {
+      const migrated = migrateLegacyPetPosition({
+        legacyPosition: state.windowPosition,
+        characterId: binding.manifest.id,
+        geometry: {
+          geometryRevision: shape.revision,
+          windowSizeDip: windowSize,
+          footOffsetInWindowDip: footOffset,
+          visualBoundsFromFootDip: layout.visualBoundsFromFootDip
+        },
+        displays,
+        primaryDisplayId: this.options.primaryDisplayId()
+      });
+      if (!migrated.ok) throw new Error(migrated.code);
+      placement = { ...migrated.placement, scale: tick / 10 };
+      windowPosition = migrated.windowPosition;
+    } else {
+      const previous = oldSnapshot && oldSnapshot.characterId === binding.manifest.id
+        ? {
+            characterId: binding.manifest.id,
+            scale: tick / 10,
+            footAnchorDip: movingWindowFoot ?? oldSnapshot.footAnchorDip,
+            displayId: movingDisplayId ?? oldSnapshot.displayId
+          }
+        : state.placement?.characterId === binding.manifest.id
+          ? { ...state.placement, scale: tick / 10 }
+          : null;
+      const restored = restorePetPlacement({
+        savedPlacement: previous,
+        characterId: binding.manifest.id,
+        geometryForScale: () => ({
+          geometryRevision: shape.revision,
+          windowSizeDip: windowSize,
+          footOffsetInWindowDip: footOffset,
+          visualBoundsFromFootDip: layout.visualBoundsFromFootDip
+        }),
+        displays,
+        primaryDisplayId: this.options.primaryDisplayId()
+      });
+      if (!restored.ok) throw new Error(restored.code);
+      placement = restored.placement;
+      windowPosition = restored.windowPosition;
+    }
+    let candidateBounds = {
+      x: windowPosition.x,
+      y: windowPosition.y,
+      width: windowSize.width,
+      height: windowSize.height
+    };
+    const display = displays.find(item => item.id === placement.displayId)
+      ?? displays.find(item => item.id === this.options.primaryDisplayId());
+    if (!display) throw new Error('PET_GEOMETRY_DISPLAY_INVALID');
+    const visualBoundsInWindowDip = visualBoundsInWindow(
+      footOffset,
+      layout.visualBoundsFromFootDip
+    );
+    candidateBounds = constrainBoundsToVisualWorkArea(
+      candidateBounds,
+      visualBoundsInWindowDip,
+      display.workAreaDip
+    );
+    const prepared = this.options.authority.preparePlacement({
+      baseRevision: shape.revision,
+      viewportInWindowDip: viewport,
+      windowBoundsDip: candidateBounds,
+      display
+    });
+    if (!prepared.ok) {
+      this.options.authority.discardPendingShape();
+      throw new Error(prepared.code);
+    }
+    let transaction: Readonly<{ token: string; baseRevision: number }> | null = {
+      token: prepared.token,
+      baseRevision: shape.revision
+    };
+    let boundsChanged = false;
+    this.readyRestoreTarget = hasReadyRestoreSource ? placement : null;
+    this.readyRestoreIdealFoot = hasReadyRestoreSource ? placement.footAnchorDip : null;
+    try {
+      if (this.options.window.isDestroyed()) throw new Error('PET_GEOMETRY_WINDOW_INVALID');
+      boundsChanged = !sameBounds(oldBounds, candidateBounds);
+      if (boundsChanged) {
+        this.setCoordinatorPosition(candidateBounds);
+        const actualBounds = this.options.window.getBounds();
+        if (!sameBounds(actualBounds, candidateBounds)) {
+          this.options.authority.rollbackPreparedPlacement(transaction);
+          transaction = null;
+          const actualShape = this.updateShape(binding, tick, viewport);
+          const actualDisplay = this.requireDisplayForPlacement(actualBounds, {
+            x: actualBounds.x + footOffset.x,
+            y: actualBounds.y + footOffset.y
+          }, display.id, visualBoundsInWindowDip);
+          const actualPrepared = this.options.authority.preparePlacement({
+            baseRevision: actualShape.revision,
+            viewportInWindowDip: viewport,
+            windowBoundsDip: actualBounds,
+            display: actualDisplay
+          });
+          if (!actualPrepared.ok) {
+            this.options.authority.discardPendingShape();
+            throw new Error(actualPrepared.code);
+          }
+          transaction = { token: actualPrepared.token, baseRevision: actualShape.revision };
+          if (!hasReadyRestoreSource) {
+            placement = placementFromSnapshot(actualPrepared.snapshot);
+          }
+        }
+      }
+      const committed = this.commitPrepared(transaction, binding.generation);
+      const committedPlacement = placementFromSnapshot(committed);
+      placement = this.readyRestoreTarget ?? committedPlacement;
+      if (state.kind === 'pending-legacy') {
+        await this.options.settings.commitPetPlacementMigration({
+          expectedWindowPosition: state.windowPosition,
+          placement
+        });
+      } else {
+        await this.options.settings.savePetPlacement(placement);
+      }
+      this.options.authority.discardPreparedPlacement(transaction);
+      transaction = null;
+      this.committedBindingGeneration = binding.generation;
+      this.publish(committed);
+      if (this.readyRestoreTarget && !this.readyRestoreSatisfied()) {
+        this.viewportDirty = true;
+      }
+    } catch (error) {
+      this.readyRestoreTarget = oldReadyRestoreTarget;
+      this.readyRestoreIdealFoot = oldReadyRestoreIdealFoot;
+      if (transaction) this.options.authority.rollbackPreparedPlacement(transaction);
+      else this.options.authority.discardPendingShape();
+      if (boundsChanged && !this.options.window.isDestroyed()) {
+        this.setCoordinatorPosition(oldBounds);
+        if (oldViewport) this.cachedViewport = oldViewport;
+      }
+      throw error;
+    }
+  }
+
+  private publish(snapshot: NonNullable<ReturnType<PetVisualGeometryAuthority['getSnapshot']>>): void {
+    const view = petGeometryRenderViewSchema.parse({
+      revision: snapshot.revision,
+      scale: snapshot.scale,
+      visualBoundsInWindowDip: snapshot.visualBoundsInWindowDip
+    });
+    try { this.options.publishRenderView(view); } catch { /* 广播失败不回滚已持久化事实。 */ }
+  }
+
+  private requireBinding(): CharacterGeometryBinding {
+    const binding = this.options.getGeometryBinding();
+    if (!binding) throw new Error('PET_GEOMETRY_BINDING_UNAVAILABLE');
+    return binding;
+  }
+
+  private updateShape(
+    binding: CharacterGeometryBinding,
+    tick: number,
+    viewport: PetViewportCommitInput['viewportInWindowDip']
+  ) {
+    const shape = this.options.authority.updateShape({
+      manifest: binding.manifest,
+      skinId: binding.skinId,
+      actionId: binding.actionId,
+      actionRevision: binding.actionRevision,
+      resourceRevision: binding.resourceRevision,
+      direction: binding.direction,
+      scale: tick / 10,
+      viewportSizeDip: { width: viewport.width, height: viewport.height }
+    }, binding.manifest.id);
+    if (!shape.ok) throw new Error(shape.code);
+    return shape;
+  }
+
+  private requireShapeLayout(revision: number) {
+    const layout = this.options.authority.getShapeLayout(revision);
+    if (!layout) throw new Error('PET_GEOMETRY_SHAPE_MISSING');
+    return layout;
+  }
+
+  /** 用户跨屏后按实际窗口与视觉脚底裁决 display；旧 id 只用于同分稳定选择。 */
+  private requireDisplayForPlacement(
+    bounds: Rectangle,
+    footAnchorDip: Readonly<{ x: number; y: number }>,
+    preferredId: string,
+    visualBoundsInWindowDip: Rectangle
+  ) {
+    const displays = this.options.displays();
+    const globalVisualBounds = {
+      ...visualBoundsInWindowDip,
+      x: bounds.x + visualBoundsInWindowDip.x,
+      y: bounds.y + visualBoundsInWindowDip.y
+    };
+    const ranked = displays.map((display, index) => ({
+      display,
+      index,
+      containsFoot: pointInside(footAnchorDip, display.workAreaDip),
+      visualArea: rectangleIntersectionArea(globalVisualBounds, display.workAreaDip),
+      distance: pointDistanceToRectangle(footAnchorDip, display.workAreaDip)
+    })).sort((left, right) => (
+      Number(right.containsFoot) - Number(left.containsFoot)
+      || right.visualArea - left.visualArea
+      || left.distance - right.distance
+      || Number(right.display.id === preferredId) - Number(left.display.id === preferredId)
+      || left.index - right.index
+    ));
+    const selected = ranked[0]?.display;
+    if (!selected) throw new Error('PET_GEOMETRY_DISPLAY_INVALID');
+    return selected;
+  }
+
+  private async applyPendingBinding(): Promise<void> {
+    const binding = this.options.getGeometryBinding();
+    if (!binding || binding.generation === this.committedBindingGeneration) {
+      this.bindingDirty = false;
+      return;
+    }
+    this.bindingDirty = false;
+    try {
+      if (!this.initialized) {
+        await this.initializeFromViewport(this.cachedViewport!);
+      } else {
+        const snapshot = this.options.authority.getSnapshot();
+        const characterChanged = snapshot?.characterId !== binding.manifest.id;
+        const state = await this.options.settings.getPetPlacementState(binding.manifest.id);
+        const currentBinding = this.options.getGeometryBinding();
+        if (!currentBinding || currentBinding.generation !== binding.generation) {
+          // 异步状态只属于捕获它的 generation；换绑后由 FIFO 下一轮读取最新角色。
+          this.bindingDirty = Boolean(
+            currentBinding
+            && currentBinding.generation !== this.committedBindingGeneration
+          );
+          return;
+        }
+        const tick = DEFAULT_SCALE_TICK;
+        const viewport = viewportForTick(this.canonical!, tick);
+        await this.applyLayout(tick, viewport, state);
+        const bindingAfterLayout = this.options.getGeometryBinding();
+        const bindingStillCurrent = Boolean(
+          bindingAfterLayout
+          && bindingAfterLayout.generation === binding.generation
+        );
+        if (characterChanged) {
+          this.committedTick = tick;
+        }
+        if (!bindingStillCurrent) {
+          this.bindingDirty = Boolean(
+            bindingAfterLayout
+            && bindingAfterLayout.generation !== this.committedBindingGeneration
+          );
+          return;
+        }
+      }
+    } catch (error) {
+      this.bindingDirty = true;
+      throw error;
+    }
+    const latest = this.options.getGeometryBinding();
+    this.bindingDirty = Boolean(
+      latest && latest.generation !== this.committedBindingGeneration
+    );
+  }
+
+  private commitPrepared(
+    transaction: Readonly<{ token: string; baseRevision: number }>,
+    bindingGeneration: number
+  ) {
+    if (this.requireBinding().generation !== bindingGeneration) {
+      throw new Error('PET_GEOMETRY_BINDING_STALE');
+    }
+    const committed = this.options.authority.commitPreparedPlacement(transaction);
+    if (!committed.ok || !committed.snapshot) {
+      throw new Error(committed.ok ? 'PET_GEOMETRY_COMMIT_INVALID' : committed.code);
+    }
+    return committed.snapshot;
+  }
+
+  private async saveSnapshot(
+    snapshot: NonNullable<ReturnType<PetVisualGeometryAuthority['getSnapshot']>>
+  ): Promise<void> {
+    await this.options.settings.savePetPlacement({
+      characterId: snapshot.characterId,
+      scale: snapshot.scale,
+      footAnchorDip: snapshot.footAnchorDip,
+      displayId: snapshot.displayId
+    });
+  }
+
+  private setCoordinatorPosition(bounds: Rectangle): void {
+    const cancelExpectation = this.options.expectProgrammaticPosition({
+      x: bounds.x,
+      y: bounds.y
+    });
+    try {
+      this.options.window.setBounds({
+        x: bounds.x,
+        y: bounds.y,
+        ...PET_WINDOW_SIZE
+      });
+    } catch (error) {
+      cancelExpectation?.();
+      throw error;
+    }
+  }
+
+  private clearTimer(timer: ReturnType<typeof setTimeout>): void {
+    (this.options.clearTimeout ?? globalThis.clearTimeout)(timer);
+  }
+}
+
+function canonicalViewport(
+  viewport: PetViewportCommitInput['viewportInWindowDip'],
+  tick: number
+): CanonicalViewport {
+  const scale = tick / 10;
+  return {
+    baseWidth: viewport.width / scale,
+    baseHeight: viewport.height / scale,
+    insetLeft: viewport.x,
+    insetTop: viewport.y
+  };
+}
+
+function viewportForTick(canonical: CanonicalViewport, tick: number) {
+  return {
+    x: canonical.insetLeft,
+    y: canonical.insetTop,
+    width: Math.round(canonical.baseWidth * tick / 10),
+    height: Math.round(canonical.baseHeight * tick / 10)
+  };
+}
+
+function sameViewport(left: Rectangle, right: Rectangle): boolean {
+  return left.x === right.x && left.y === right.y
+    && left.width === right.width && left.height === right.height;
+}
+
+function sameViewportSize(left: Rectangle, right: Rectangle): boolean {
+  return left.width === right.width && left.height === right.height;
+}
+
+function samePoint(
+  left: Readonly<{ x: number; y: number }>,
+  right: Readonly<{ x: number; y: number }>
+): boolean {
+  return left.x === right.x && left.y === right.y;
+}
+
+/** Windows DIP 原点量化允许每轴最多 0.5 DIP；超限仍保留 desired 等待后续真实 viewport。 */
+function footWithinQuantizationTolerance(
+  actual: Readonly<{ x: number; y: number }>,
+  desired: Readonly<{ x: number; y: number }>
+): boolean {
+  return Math.abs(actual.x - desired.x) <= 0.5
+    && Math.abs(actual.y - desired.y) <= 0.5;
+}
+
+function footOffsetInWindow(
+  viewport: Rectangle,
+  footOffsetInViewport: Readonly<{ x: number; y: number }>
+) {
+  return {
+    x: viewport.x + footOffsetInViewport.x,
+    y: viewport.y + footOffsetInViewport.y
+  };
+}
+
+function visualBoundsInWindow(
+  footOffset: Readonly<{ x: number; y: number }>,
+  visualBoundsFromFoot: Rectangle
+): Rectangle {
+  return {
+    x: footOffset.x + visualBoundsFromFoot.x,
+    y: footOffset.y + visualBoundsFromFoot.y,
+    width: visualBoundsFromFoot.width,
+    height: visualBoundsFromFoot.height
+  };
+}
+
+/** 所有几何布局统一向可见区内侧量化，拒绝无合法整数窗口原点的形状。 */
+function constrainBoundsToVisualWorkArea(
+  bounds: Rectangle,
+  visualBoundsInWindowDip: Rectangle,
+  workAreaDip: Rectangle
+): Rectangle {
+  const roundedVisualLeft = Math.round(bounds.x) + visualBoundsInWindowDip.x;
+  const roundedVisualTop = Math.round(bounds.y) + visualBoundsInWindowDip.y;
+  const roundedVisualRight = roundedVisualLeft + visualBoundsInWindowDip.width;
+  const roundedVisualBottom = roundedVisualTop + visualBoundsInWindowDip.height;
+  if (
+    roundedVisualLeft >= workAreaDip.x
+    && roundedVisualTop >= workAreaDip.y
+    && roundedVisualRight <= workAreaDip.x + workAreaDip.width
+    && roundedVisualBottom <= workAreaDip.y + workAreaDip.height
+  ) return bounds;
+  const position = clampIntegerWindowPositionToVisualWorkArea({
+    windowPositionDip: bounds,
+    visualBoundsInWindowDip,
+    workAreaDip
+  });
+  if (!position) throw new Error('PET_GEOMETRY_DISPLAY_INVALID');
+  return { ...bounds, ...position };
+}
+
+function boundsForFoot(
+  footAnchorDip: Readonly<{ x: number; y: number }>,
+  viewport: Rectangle,
+  footOffsetInViewport: Readonly<{ x: number; y: number }>,
+  size: Readonly<{ width: number; height: number }>
+): Rectangle {
+  const offset = footOffsetInWindow(viewport, footOffsetInViewport);
+  return {
+    x: footAnchorDip.x - offset.x,
+    y: footAnchorDip.y - offset.y,
+    width: size.width,
+    height: size.height
+  };
+}
+
+function placementFromSnapshot(
+  snapshot: NonNullable<ReturnType<PetVisualGeometryAuthority['getSnapshot']>>
+): StoredPetPlacement {
+  return {
+    characterId: snapshot.characterId,
+    scale: snapshot.scale,
+    footAnchorDip: snapshot.footAnchorDip,
+    displayId: snapshot.displayId
+  };
+}
+
+function sameBounds(left: Rectangle, right: Rectangle): boolean {
+  return sameViewport(left, right);
+}
+
+function pointInside(
+  point: Readonly<{ x: number; y: number }>,
+  rectangle: Rectangle
+): boolean {
+  return point.x >= rectangle.x && point.x < rectangle.x + rectangle.width
+    && point.y >= rectangle.y && point.y < rectangle.y + rectangle.height;
+}
+
+function rectangleIntersectionArea(left: Rectangle, right: Rectangle): number {
+  const width = Math.max(
+    0,
+    Math.min(left.x + left.width, right.x + right.width) - Math.max(left.x, right.x)
+  );
+  const height = Math.max(
+    0,
+    Math.min(left.y + left.height, right.y + right.height) - Math.max(left.y, right.y)
+  );
+  const area = width * height;
+  return Number.isFinite(area) ? area : 0;
+}
+
+function pointDistanceToRectangle(
+  point: Readonly<{ x: number; y: number }>,
+  rectangle: Rectangle
+): number {
+  const dx = Math.max(
+    rectangle.x - point.x,
+    0,
+    point.x - (rectangle.x + rectangle.width)
+  );
+  const dy = Math.max(
+    rectangle.y - point.y,
+    0,
+    point.y - (rectangle.y + rectangle.height)
+  );
+  return dx * dx + dy * dy;
+}

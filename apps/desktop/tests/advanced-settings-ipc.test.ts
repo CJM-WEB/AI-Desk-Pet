@@ -2,6 +2,7 @@ import type { IpcMain } from 'electron';
 import { describe, expect, test, vi } from 'vitest';
 import { registerAdvancedSettingsIpc } from '../src/main/ipc/register-ipc';
 import { ipcChannels } from '../src/shared/ipc-channels';
+import { DEFAULT_WORKSHOP_LAYOUT } from '../src/shared/workshop-layout-ipc';
 
 type Handler = (event: unknown, input?: unknown) => unknown;
 
@@ -21,35 +22,36 @@ function serviceDouble() {
     deleteProviderProfile: vi.fn(async () => ({ marker: 'deleted' })),
     saveModelRoute: vi.fn(async () => ({ marker: 'route' })),
     testProviderProfile: vi.fn(async () => ({ ok: true, message: '连接成功。' })),
-    upsertMcpServer: vi.fn(async (): Promise<
-      | { kind: 'saved' }
-      | {
-        kind: 'confirmation_required';
-        summary: {
-          command: string;
-          args: string[];
-          cwd: string;
-          explicitEnvNames: string[];
-          inheritedEnvNames: string[];
-          fingerprint: string;
-        };
-      }
-    > => ({ kind: 'saved' })),
-    confirmMcpLaunch: vi.fn(async () => ({ marker: 'confirmed' })),
-    testMcpServer: vi.fn(async () => ({ ok: true, message: '连接成功。' })),
-    setMcpServerEnabled: vi.fn(async () => ({ marker: 'server-toggle' })),
-    setMcpToolEnabled: vi.fn(async () => ({ marker: 'tool-toggle' })),
-    authorizeMcpToolReadOnly: vi.fn(async () => ({ marker: 'tool-authorized' })),
-    revokeMcpToolReadOnly: vi.fn(async () => ({ marker: 'tool-revoked' })),
-    deleteMcpServer: vi.fn(async () => ({ marker: 'mcp-deleted' })),
     savePrivacySettings: vi.fn(async () => ({ marker: 'privacy' })),
+    getWorkshopLayout: vi.fn(async () => DEFAULT_WORKSHOP_LAYOUT),
+    saveWorkshopLayout: vi.fn(async () => DEFAULT_WORKSHOP_LAYOUT),
     savePetAlwaysOnTop: vi.fn(async () => ({ marker: 'topmost' })),
+    setLocalModelEnabled: vi.fn(async () => ({ marker: 'local-model' })),
     setIncognitoSession: vi.fn(async () => ({ incognito: true })),
     revokeAuthorizedRoot: vi.fn(async () => ({ marker: 'root-revoked' }))
   };
 }
 
 describe('高级设置白名单 IPC', () => {
+  test('不注册 MCP 高级设置 handler', () => {
+    const { handlers, ipcMain } = createIpcMain();
+    const service = serviceDouble();
+    registerAdvancedSettingsIpc(ipcMain, service);
+    const removedChannels = [
+      'settings:mcp-upsert',
+      'settings:mcp-confirm-launch',
+      'settings:mcp-test',
+      'settings:mcp-server-toggle',
+      'settings:mcp-tool-toggle',
+      'settings:mcp-tool-authorize-read',
+      'settings:mcp-tool-revoke-read',
+      'settings:mcp-delete'
+    ];
+
+    for (const channel of removedChannels) expect(handlers.has(channel)).toBe(false);
+    expect(removedChannels.filter(channel => handlers.has(channel))).toEqual([]);
+  });
+
   test('桌宠置顶使用独立严格布尔通道', async () => {
     const { handlers, ipcMain } = createIpcMain();
     const service = serviceDouble();
@@ -65,18 +67,55 @@ describe('高级设置白名单 IPC', () => {
     })).rejects.toMatchObject({ code: 'SETTINGS_INPUT_INVALID' });
   });
 
+  test('本地模型开关只接受严格布尔负载且不重复触发通用配置重置', async () => {
+    const { handlers, ipcMain } = createIpcMain();
+    const service = serviceDouble();
+    const lifecycle = { onConfigurationChanged: vi.fn() };
+    registerAdvancedSettingsIpc(ipcMain, service, lifecycle);
+
+    await expect(handlers.get(ipcChannels.settingsLocalModelEnabledSet)?.({}, {
+      enabled: true
+    })).resolves.toEqual({ marker: 'local-model' });
+    expect(service.setLocalModelEnabled).toHaveBeenCalledExactlyOnceWith(true);
+    expect(lifecycle.onConfigurationChanged).not.toHaveBeenCalled();
+
+    await expect(handlers.get(ipcChannels.settingsLocalModelEnabledSet)?.({}, {
+      enabled: false,
+      injected: 'forbidden'
+    })).rejects.toMatchObject({ code: 'SETTINGS_INPUT_INVALID' });
+    await expect(handlers.get(ipcChannels.settingsLocalModelEnabledSet)?.({}, {
+      enabled: 'true'
+    })).rejects.toMatchObject({ code: 'SETTINGS_INPUT_INVALID' });
+    expect(service.setLocalModelEnabled).toHaveBeenCalledExactlyOnceWith(true);
+  });
+
   test('隐私保存负载拒绝混入桌宠窗口偏好', async () => {
     const { handlers, ipcMain } = createIpcMain();
     const service = serviceDouble();
     registerAdvancedSettingsIpc(ipcMain, service);
 
     await expect(handlers.get(ipcChannels.settingsPrivacySave)?.({}, {
-      dataCategories: { file: false, screenshot: false, clipboard: false, memory: false },
+      dataCategories: { memory: false },
       longTermMemory: false,
       proactivityMode: 'assistive',
       petAlwaysOnTop: true
     })).rejects.toMatchObject({ code: 'SETTINGS_INPUT_INVALID' });
     expect(service.savePrivacySettings).not.toHaveBeenCalled();
+  });
+
+  test('隐私保存负载拒绝混入停止锁，不向 Renderer 暴露写入通道', async () => {
+    const { handlers, ipcMain } = createIpcMain();
+    const service = serviceDouble();
+    registerAdvancedSettingsIpc(ipcMain, service);
+
+    await expect(handlers.get(ipcChannels.settingsPrivacySave)?.({}, {
+      dataCategories: { memory: false },
+      longTermMemory: false,
+      proactivityMode: 'assistive',
+      movementStopped: true
+    })).rejects.toMatchObject({ code: 'SETTINGS_INPUT_INVALID' });
+    expect(service.savePrivacySettings).not.toHaveBeenCalled();
+    expect(Object.values(ipcChannels).some(channel => channel.includes('movement-stopped'))).toBe(false);
   });
 
   test('保存 Provider 档案时严格校验并仅把密钥交给 Main 服务', async () => {
@@ -151,63 +190,4 @@ describe('高级设置白名单 IPC', () => {
     expect(service.saveProviderProfile).not.toHaveBeenCalled();
   });
 
-  test('stdio MCP 先返回启动摘要，确认指纹后才允许测试连接', async () => {
-    const { handlers, ipcMain } = createIpcMain();
-    const service = serviceDouble();
-    service.upsertMcpServer.mockResolvedValueOnce({
-      kind: 'confirmation_required',
-      summary: {
-        command: 'C:\\tools\\mcp.exe',
-        args: ['--stdio'],
-        cwd: 'C:\\work',
-        explicitEnvNames: ['TOKEN'],
-        inheritedEnvNames: [],
-        fingerprint: 'fingerprint-1'
-      }
-    });
-    registerAdvancedSettingsIpc(ipcMain, service);
-
-    const saved = await handlers.get(ipcChannels.settingsMcpUpsert)?.({}, {
-      id: 'local-tools',
-      enabled: true,
-      transport: {
-        type: 'stdio',
-        command: 'C:\\tools\\mcp.exe',
-        args: ['--stdio'],
-        cwd: 'C:\\work',
-        env: { TOKEN: 'secret-token' },
-        inheritEnv: []
-      }
-    });
-    expect(saved).toMatchObject({ kind: 'confirmation_required' });
-    expect(service.testMcpServer).not.toHaveBeenCalled();
-
-    await handlers.get(ipcChannels.settingsMcpConfirmLaunch)?.({}, {
-      serverId: 'local-tools',
-      fingerprint: 'fingerprint-1'
-    });
-    expect(service.confirmMcpLaunch).toHaveBeenCalledWith(
-      'local-tools',
-      'fingerprint-1'
-    );
-  });
-
-  test('MCP 本地只读授权使用严格 serverId/toolName 白名单输入', async () => {
-    const { handlers, ipcMain } = createIpcMain();
-    const service = serviceDouble();
-    registerAdvancedSettingsIpc(ipcMain, service);
-
-    await handlers.get(ipcChannels.settingsMcpToolAuthorizeRead)?.({}, {
-      serverId: 'local-tools',
-      toolName: 'echo'
-    });
-    expect(service.authorizeMcpToolReadOnly).toHaveBeenCalledWith('local-tools', 'echo');
-
-    await expect(handlers.get(ipcChannels.settingsMcpToolRevokeRead)?.({}, {
-      serverId: 'local-tools',
-      toolName: 'echo',
-      injected: true
-    })).rejects.toMatchObject({ code: 'SETTINGS_INPUT_INVALID' });
-    expect(service.revokeMcpToolReadOnly).not.toHaveBeenCalled();
-  });
 });

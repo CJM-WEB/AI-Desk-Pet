@@ -1,16 +1,19 @@
-import { describe, expect, test } from 'vitest';
+import { describe, expect, expectTypeOf, test } from 'vitest';
 import {
   type ActionFrame,
   type AnchorSet,
   type CharacterActionPresentationV2,
   type CharacterDraftV2,
   type CharacterManifestV2,
+  type PreparedCharacterManifestV2,
+  type PresentationGeometryV2,
   type CharacterResource,
   type InteractionRegion,
   actionFrameSchema,
   anchorSetSchema,
   characterDraftV2Schema,
   characterManifestV2Schema,
+  preparedCharacterManifestV2Schema,
   characterResourceSchema,
   characterV2Completeness,
   interactionRegionSchema
@@ -115,8 +118,14 @@ function createCharacterDraftV2Fixture(): CharacterDraftV2 {
 
 /** 为草稿补齐发布所需资源字段。 */
 function createCharacterManifestV2Fixture(): CharacterManifestV2 {
-  return {
-    ...createCharacterDraftV2Fixture(),
+  const draft = createCharacterDraftV2Fixture();
+  draft.skins[0]!.presentations[0]!.geometry = {
+    visualBounds: { x: 0.1, y: 0.2, width: 0.8, height: 0.8 },
+    groundAnchor: { x: 0.5, y: 1 },
+    resourceRevision: RESOURCE_SHA_256.atlas
+  };
+  return characterManifestV2Schema.parse({
+    ...draft,
     thumbnailAssetId: 'thumbnail-1',
     compilerVersion: 'compiler-2.0.0',
     resources: [
@@ -133,7 +142,7 @@ function createCharacterManifestV2Fixture(): CharacterManifestV2 {
         byteLength: 4096
       }
     ]
-  };
+  });
 }
 
 /** 构造动作失败回退循环。 */
@@ -179,6 +188,13 @@ function withoutPlayableDefault<T extends CharacterDraftV2>(draft: T): T {
 }
 
 describe('角色包 V2 严格契约', () => {
+  test('正式清单与迁移准备态在静态类型上区分表现几何', () => {
+    expectTypeOf<CharacterManifestV2['skins'][number]['presentations'][number]['geometry']>()
+      .toEqualTypeOf<PresentationGeometryV2>();
+    expectTypeOf<PreparedCharacterManifestV2['skins'][number]['presentations'][number]['geometry']>()
+      .toEqualTypeOf<PresentationGeometryV2 | undefined>();
+  });
+
   test('表现提交帧必须引用同一表现内的唯一稳定帧标识', () => {
     const draft = createCharacterDraftV2Fixture();
     const presentation = draft.skins[0]!.presentations[0]!;
@@ -234,10 +250,149 @@ describe('角色包 V2 严格契约', () => {
     expect(resource.assetId).toBe('atlas-1');
   });
 
+  test.each([0.25, 2])('V2 表现接受边界内的播放速率：%s', (playbackRate) => {
+    const draft = createCharacterDraftV2Fixture();
+    draft.skins[0]!.presentations[0]!.playbackRate = playbackRate;
+
+    expect(characterDraftV2Schema.parse(draft).skins[0]!.presentations[0]!.playbackRate)
+      .toBe(playbackRate);
+  });
+
+  test('V2 表现允许省略播放参数', () => {
+    const draft = createCharacterDraftV2Fixture();
+
+    expect(characterDraftV2Schema.parse(draft).skins[0]!.presentations[0]!.playbackRate)
+      .toBeUndefined();
+  });
+
+  test.each([true, false])('V2 表现接受布尔镜像值：%s', (mirrorX) => {
+    const draft = createCharacterDraftV2Fixture();
+    draft.skins[0]!.presentations[0]!.mirrorX = mirrorX;
+
+    expect(characterDraftV2Schema.parse(draft).skins[0]!.presentations[0]!.mirrorX).toBe(mirrorX);
+  });
+
+  test.each(['true', 1, null])('V2 表现拒绝非布尔镜像值：%s', (mirrorX) => {
+    const draft = createCharacterDraftV2Fixture();
+    (draft.skins[0]!.presentations[0]! as Record<string, unknown>).mirrorX = mirrorX;
+
+    expect(() => characterDraftV2Schema.parse(draft)).toThrow();
+  });
+
+  test.each([0.24, 2.01, Number.NaN])('V2 表现拒绝越界或非有限播放速率：%s', (playbackRate) => {
+    const draft = createCharacterDraftV2Fixture();
+    draft.skins[0]!.presentations[0]!.playbackRate = playbackRate;
+
+    expect(() => characterDraftV2Schema.parse(draft)).toThrow();
+  });
+
   test('草稿接受合法的 V2 纯数据结构', () => {
     const draft = createCharacterDraftV2Fixture();
 
     expect(characterDraftV2Schema.parse(draft)).toEqual(draft);
+  });
+
+  test('状态与动作详细描述可选且原样进入草稿和正式清单', () => {
+    const draft = createCharacterDraftV2Fixture();
+    Object.assign(draft.states[0]!, { description: '安静陪伴用户的基础状态。' });
+    Object.assign(draft.actions[0]!, { description: '缓慢呼吸并保持放松。' });
+
+    const parsedDraft = characterDraftV2Schema.parse(draft);
+    expect(parsedDraft.states[0]).toMatchObject({ description: '安静陪伴用户的基础状态。' });
+    expect(parsedDraft.actions[0]).toMatchObject({ description: '缓慢呼吸并保持放松。' });
+
+    const manifest = createCharacterManifestV2Fixture();
+    Object.assign(manifest.states[0]!, { description: '发布后的状态描述。' });
+    Object.assign(manifest.actions[0]!, { description: '发布后的动作描述。' });
+    const parsedManifest = characterManifestV2Schema.parse(manifest);
+    expect(parsedManifest.states[0]).toMatchObject({ description: '发布后的状态描述。' });
+    expect(parsedManifest.actions[0]).toMatchObject({ description: '发布后的动作描述。' });
+  });
+
+  test('旧 V2 草稿和正式清单省略状态与动作描述时继续合法', () => {
+    const draft = createCharacterDraftV2Fixture();
+    const manifest = createCharacterManifestV2Fixture();
+
+    expect(characterDraftV2Schema.parse(draft)).toEqual(draft);
+    expect(characterManifestV2Schema.parse(manifest)).toEqual(manifest);
+  });
+
+  test.each(['state', 'action'] as const)('%s 详细描述拒绝超过 2000 字符', target => {
+    const draft = createCharacterDraftV2Fixture();
+    Object.assign(target === 'state' ? draft.states[0]! : draft.actions[0]!, {
+      description: '描'.repeat(2_001)
+    });
+
+    expect(() => characterDraftV2Schema.parse(draft)).toThrow();
+  });
+
+  test('正式清单要求不可拆分的表现几何并绑定所引用资源修订', () => {
+    const manifest = createCharacterManifestV2Fixture();
+    const presentation = manifest.skins[0]!.presentations[0]!;
+
+    const missing = structuredClone(manifest);
+    Reflect.deleteProperty(missing.skins[0]!.presentations[0]!, 'geometry');
+    expect(() => characterManifestV2Schema.parse(missing)).toThrow(/几何/u);
+
+    for (const geometry of [
+      { ...presentation.geometry!, visualBounds: { x: 0, y: 0, width: 0, height: 1 } },
+      { ...presentation.geometry!, visualBounds: { x: 0.5, y: 0, width: 0.6, height: 1 } },
+      { ...presentation.geometry!, groundAnchor: { x: Number.NaN, y: 1 } },
+      { ...presentation.geometry!, resourceRevision: RESOURCE_SHA_256.thumbnail }
+    ]) {
+      const invalid = structuredClone(manifest);
+      invalid.skins[0]!.presentations[0]!.geometry = geometry;
+      expect(() => characterManifestV2Schema.parse(invalid)).toThrow();
+    }
+  });
+
+  test.each([
+    {
+      name: '501 帧',
+      mutate(manifest: ReturnType<typeof createCharacterManifestV2Fixture>) {
+        const frame = manifest.skins[0]!.presentations[0]!.frames[0]!;
+        manifest.skins[0]!.presentations[0]!.frames = Array.from(
+          { length: 501 },
+          (_, index) => ({ ...frame, id: `frame-${index}` })
+        );
+      }
+    },
+    {
+      name: '单帧尺寸超过上限',
+      mutate(manifest: ReturnType<typeof createCharacterManifestV2Fixture>) {
+        manifest.skins[0]!.presentations[0]!.frames[0]!.width = 4097;
+      }
+    },
+    {
+      name: '累计帧面积超过画布预算',
+      mutate(manifest: ReturnType<typeof createCharacterManifestV2Fixture>) {
+        const frame = manifest.skins[0]!.presentations[0]!.frames[0]!;
+        manifest.skins[0]!.presentations[0]!.frames = [
+          { ...frame, id: 'frame-a', width: 4096, height: 4096 },
+          { ...frame, id: 'frame-b', width: 1, height: 1 }
+        ];
+      }
+    },
+    {
+      name: '空表现',
+      mutate(manifest: ReturnType<typeof createCharacterManifestV2Fixture>) {
+        const emptyPresentation = structuredClone(
+          manifest.skins[0]!.presentations[0]!
+        );
+        emptyPresentation.frames = [];
+        manifest.skins.push({
+          ...structuredClone(manifest.skins[0]!),
+          id: 'winter',
+          presentations: [emptyPresentation]
+        });
+      }
+    }
+  ])('prepared 与正式清单均拒绝$name', ({ mutate }) => {
+    const manifest = createCharacterManifestV2Fixture();
+    mutate(manifest);
+
+    expect(() => preparedCharacterManifestV2Schema.parse(manifest)).toThrow();
+    expect(() => characterManifestV2Schema.parse(manifest)).toThrow();
   });
 
   test.each(['hide', 'emerge'])('草稿拒绝已退出标准动作集合的目录表现语义：%s', (semantic) => {

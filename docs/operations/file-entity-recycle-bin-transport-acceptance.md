@@ -1,5 +1,7 @@
 # 文件实体回收站搬运验收记录
 
+> **现行状态（2026-08-25）：** 本文以下“动画提交帧决定文件提交”的内容仅是 2026-08-07 历史证据，已被 `docs/superpowers/specs/2026-08-25-ai-pet-file-behavior-scale-free-model-repair-design.md` 替代。现行规则是用户确认后由 Electron Main 立即执行受控文件操作；角色 carrying 只提供尽力而为的视觉反馈，Renderer、动作播放和提交帧均无权批准、延迟或阻断文件写入。
+
 ## 1. 验收范围与结论
 
 - 验收日期：2026-08-07（Asia/Shanghai）。

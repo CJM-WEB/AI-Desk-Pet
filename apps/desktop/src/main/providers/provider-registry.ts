@@ -12,6 +12,19 @@ import {
   OpenAICompatibleProvider,
   ProviderError
 } from './openai-provider';
+import { isBuiltinLocalProviderProfile } from '../local-model/local-model-route';
+import {
+  ProviderResponseDiagnostics,
+  type ProviderResponseDiagnosticSink
+} from './diagnosed-provider';
+import type { ProviderResponseError } from './provider-response-error';
+
+export type BuiltinLocalProviderFactory = () => ModelProvider;
+
+export interface ProviderRegistryDiagnosticsOptions {
+  sink: ProviderResponseDiagnosticSink;
+  createCorrelationId?: () => string;
+}
 
 const reservedAdditionalParameters = new Set([
   'model',
@@ -23,6 +36,8 @@ const reservedAdditionalParameters = new Set([
   'tool_choice',
   'stream',
   'max_tokens',
+  'response_format',
+  'output_config',
   'generationconfig',
   'authorization',
   'x-api-key',
@@ -41,7 +56,7 @@ function validateAdditionalParameters(
   }
 }
 
-function resolveProfile(
+export function resolveProviderProfile(
   profile: ProviderProfileV2,
   catalog: readonly ProviderCatalogEntry[]
 ): { protocol: ProviderProtocol; config: ProviderAdapterConfig } {
@@ -65,27 +80,68 @@ function resolveProfile(
     protocol: entry.protocol,
     config: {
       baseUrl: entry.baseUrl,
-      modelId: profile.modelId
+      modelId: profile.modelId,
+      providerId: entry.providerId
     }
   };
 }
 
 export class ProviderRegistry {
-  constructor(private readonly catalog: readonly ProviderCatalogEntry[]) {}
+  constructor(
+    private readonly catalog: readonly ProviderCatalogEntry[],
+    private readonly builtinLocalProviderFactory?: BuiltinLocalProviderFactory,
+    private readonly diagnosticsOptions?: ProviderRegistryDiagnosticsOptions
+  ) {}
 
   create(
     profile: ProviderProfileV2,
     getSecret: () => Promise<string>,
     fetchClient?: FetchLike
   ): ModelProvider {
-    const { protocol, config } = resolveProfile(profile, this.catalog);
+    if (isBuiltinLocalProviderProfile(profile)) {
+      if (!this.builtinLocalProviderFactory) {
+        throw new ProviderError('LOCAL_MODEL_PROVIDER_FACTORY_NOT_CONFIGURED', false);
+      }
+      return this.wrapWithDiagnostics(profile, this.builtinLocalProviderFactory());
+    }
+
+    const { protocol, config } = resolveProviderProfile(profile, this.catalog);
 
     if (protocol === 'anthropic') {
-      return new AnthropicProvider(config, getSecret, fetchClient);
+      return this.wrapWithDiagnostics(profile,
+        new AnthropicProvider(config, getSecret, fetchClient)
+      );
     }
     if (protocol === 'gemini') {
-      return new GeminiProvider(config, getSecret, fetchClient);
+      return this.wrapWithDiagnostics(profile,
+        new GeminiProvider(config, getSecret, fetchClient)
+      );
     }
-    return new OpenAICompatibleProvider(config, getSecret, fetchClient);
+    return this.wrapWithDiagnostics(profile,
+      new OpenAICompatibleProvider(config, getSecret, fetchClient)
+    );
+  }
+
+  reportResponseError(
+    profile: ProviderProfileV2,
+    error: ProviderResponseError,
+    correlationId?: string
+  ): void {
+    this.createDiagnostics(profile)?.report(error, correlationId);
+  }
+
+  private wrapWithDiagnostics(profile: ProviderProfileV2, provider: ModelProvider): ModelProvider {
+    return this.createDiagnostics(profile)?.wrap(provider) ?? provider;
+  }
+
+  private createDiagnostics(profile: ProviderProfileV2): ProviderResponseDiagnostics | null {
+    if (!this.diagnosticsOptions) return null;
+    return new ProviderResponseDiagnostics({
+      providerType: profile.mode === 'preset' ? profile.providerId : profile.protocol,
+      sink: this.diagnosticsOptions.sink,
+      ...(this.diagnosticsOptions.createCorrelationId === undefined
+        ? {}
+        : { createCorrelationId: this.diagnosticsOptions.createCorrelationId })
+    });
   }
 }

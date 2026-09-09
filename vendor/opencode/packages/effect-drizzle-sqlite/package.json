@@ -1,0 +1,15 @@
+{
+  "name": "@opencode-ai/effect-drizzle-sqlite",
+  "version": "1.18.21",
+  "private": true,
+  "type": "module",
+  "license": "MIT",
+  "exports": {
+    ".": "./src/index.ts",
+    "./effect-sqlite/migrator": "./src/effect-sqlite/migrator.ts"
+  },
+  "dependencies": {
+    "drizzle-orm": "1.0.0-rc.2",
+    "effect": "4.0.0-beta.83"
+  }
+}

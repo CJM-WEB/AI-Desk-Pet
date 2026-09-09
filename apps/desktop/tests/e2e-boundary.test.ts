@@ -5,6 +5,12 @@ import { join, resolve } from 'node:path';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 
 type BoundaryModule = {
+  createCoalescedAsyncPublisher(
+    operation: () => Promise<void>
+  ): {
+    publish(): Promise<void>;
+    close(): Promise<void>;
+  };
   resolveMainE2eBoundary(options: {
     appIsPackaged: boolean;
     env: NodeJS.ProcessEnv;
@@ -32,6 +38,70 @@ type BoundaryModule = {
     close(): Promise<void>;
   };
 };
+
+test('E2E 状态刷新在慢读盘期间只合并一次最新发布', async () => {
+  const boundary = await loadBoundaryModule();
+  if (!boundary) return;
+  let releaseFirst!: () => void;
+  const first = new Promise<void>(resolveFirst => {
+    releaseFirst = resolveFirst;
+  });
+  let calls = 0;
+  const publisher = boundary.createCoalescedAsyncPublisher(async () => {
+    calls += 1;
+    if (calls === 1) await first;
+  });
+
+  const initial = publisher.publish();
+  const repeated = Array.from({ length: 50 }, () => publisher.publish());
+  await Promise.resolve();
+  expect(calls).toBe(1);
+
+  releaseFirst();
+  await Promise.all([initial, ...repeated]);
+  expect(calls).toBe(2);
+  await publisher.close();
+});
+
+test('E2E 状态发布临时失败后不阻断显式重试或关闭', async () => {
+  const boundary = await loadBoundaryModule();
+  if (!boundary) return;
+  let calls = 0;
+  const publisher = boundary.createCoalescedAsyncPublisher(async () => {
+    calls += 1;
+    if (calls === 1) throw new Error('WRITE_FAILED');
+  });
+
+  await expect(publisher.publish()).resolves.toBeUndefined();
+  await expect(publisher.publish()).resolves.toBeUndefined();
+  expect(calls).toBe(2);
+  await expect(publisher.close()).resolves.toBeUndefined();
+});
+
+test('E2E 状态发布首轮失败时仍处理在途期间合并的最新信号', async () => {
+  const boundary = await loadBoundaryModule();
+  if (!boundary) return;
+  let releaseFirst!: () => void;
+  const first = new Promise<void>(resolveFirst => {
+    releaseFirst = resolveFirst;
+  });
+  let calls = 0;
+  const publisher = boundary.createCoalescedAsyncPublisher(async () => {
+    calls += 1;
+    if (calls === 1) {
+      await first;
+      throw new Error('WRITE_FAILED');
+    }
+  });
+
+  const initial = publisher.publish();
+  const latest = publisher.publish();
+  releaseFirst();
+
+  await expect(Promise.all([initial, latest])).resolves.toEqual([undefined, undefined]);
+  expect(calls).toBe(2);
+  await expect(publisher.close()).resolves.toBeUndefined();
+});
 
 async function loadBoundaryModule(): Promise<BoundaryModule | null> {
   try {
@@ -331,6 +401,15 @@ describe('Main E2E 安全边界', () => {
     expect(main).toContain('dialog.showOpenDialog');
   });
 
+  test('新 Core 工厂复用既有 E2E 隔离回收站宿主端口，正常运行仍使用系统回收站', async () => {
+    const main = await readFile(new URL('../src/main/index.ts', import.meta.url), 'utf8');
+    const factory = main.slice(main.indexOf('createCodingTaskService: ({ snapshot'), main.indexOf('const conversationCoordinator'));
+    expect(factory).toContain('new CodingTaskService(');
+    expect(factory).toMatch(/trashFile:\s*absolutePath\s*=>\s*e2eBoundary\s*\?\s*moveToE2eRecycleBin\(absolutePath\)\s*:\s*shell\.trashItem\(absolutePath\)/u);
+    expect(main).toContain("'.force-failure'");
+    expect(main).toContain('e2eBoundary.recycleBinDirectory');
+  });
+
   test('不向 Renderer、preload 或共享白名单暴露 E2E 路径与控制能力', async () => {
     const sources = await Promise.all([
       '../src/preload/index.ts',
@@ -341,6 +420,46 @@ describe('Main E2E 安全边界', () => {
 
     expect(sources.join('\n')).not.toMatch(
       /MYSELF_E2E|E2E_USER_DATA|E2E_AUTHORIZED_ROOT|E2E_RECYCLE_BIN|FAKE_EXPLORER/u
+    );
+  });
+
+  test('几何探针只发布已收敛且与实际窗口尺寸一致的同一 revision 快照', async () => {
+    const main = await readFile(new URL('../src/main/index.ts', import.meta.url), 'utf8');
+    const probeStart = main.indexOf('inspectPetGeometryForE2e = async () => {');
+    const probeEnd = main.indexOf('const persistMovedPetGeometry', probeStart);
+    const probe = main.slice(probeStart, probeEnd);
+    const boundsReadIndex = probe.indexOf('const actualBounds = pet.getBounds();');
+
+    expect(probeStart).toBeGreaterThanOrEqual(0);
+    expect(probeEnd).toBeGreaterThan(probeStart);
+    expect(probe).toContain('petGeometry.isLayoutInFlight()');
+    expect(probe).toContain('!relative.settled');
+    expect(boundsReadIndex).toBeGreaterThanOrEqual(0);
+    expect(probe.lastIndexOf('petGeometryAuthority.getSnapshot()')).toBeGreaterThan(
+      boundsReadIndex
+    );
+    expect(probe.lastIndexOf('petGeometry.inspectRelativeGeometry()')).toBeGreaterThan(
+      boundsReadIndex
+    );
+    expect(probe).toContain('!currentRelative.settled');
+    expect(probe).toContain('actualBounds.width !== currentSnapshot.windowBoundsDip.width');
+    expect(probe).toContain('actualBounds.height !== currentSnapshot.windowBoundsDip.height');
+  });
+
+  test('几何探针仅以 1e-6 数值容差判断可见矩形是否越界', async () => {
+    const main = await readFile(new URL('../src/main/index.ts', import.meta.url), 'utf8');
+    const probeStart = main.indexOf('inspectPetGeometryForE2e = async () => {');
+    const probeEnd = main.indexOf('const persistMovedPetGeometry', probeStart);
+    const probe = main.slice(probeStart, probeEnd);
+
+    expect(probe).toContain('const boundsEpsilonDip = 1e-6;');
+    expect(probe).toContain('globalVisual.x >= display.workArea.x - boundsEpsilonDip');
+    expect(probe).toContain('globalVisual.y >= display.workArea.y - boundsEpsilonDip');
+    expect(probe).toContain(
+      'globalVisual.x + globalVisual.width <= display.workArea.x + display.workArea.width + boundsEpsilonDip'
+    );
+    expect(probe).toContain(
+      'globalVisual.y + globalVisual.height <= display.workArea.y + display.workArea.height + boundsEpsilonDip'
     );
   });
 });

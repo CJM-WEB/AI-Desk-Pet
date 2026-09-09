@@ -1,11 +1,12 @@
 import { execFile, spawn } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { EventEmitter } from 'node:events';
-import { appendFile, mkdir, mkdtemp, readFile, rm } from 'node:fs/promises';
+import { appendFile, copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { createServer } from 'node:net';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
-import { isAbsolute, join, resolve } from 'node:path';
+import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { StringDecoder } from 'node:string_decoder';
 import { chromium, type Browser } from '@playwright/test';
 import { materializeCharacterWorkshopFixtures } from './character-workshop-assets';
@@ -22,6 +23,10 @@ export interface ElectronLaunchPlanOptions {
   characterExportDestination?: string;
   parentEnvironment?: NodeJS.ProcessEnv;
   enableSoftwareRasterizer?: boolean;
+  localModelFixture?: {
+    modulePath: string;
+    configPath: string;
+  };
 }
 
 export interface ElectronLaunchPlan {
@@ -78,6 +83,12 @@ export function createElectronLaunchPlan(options: ElectronLaunchPlanOptions): El
         : {}),
       ...(options.characterExportDestination
         ? { MYSELF_E2E_CHARACTER_EXPORT: options.characterExportDestination }
+        : {}),
+      ...(options.localModelFixture
+        ? {
+            MYSELF_E2E_LOCAL_MODEL_OPTIONS_MODULE: options.localModelFixture.modulePath,
+            MYSELF_E2E_LOCAL_MODEL_CONFIG: options.localModelFixture.configPath
+          }
         : {})
     }
   };
@@ -216,13 +227,21 @@ export interface ElectronAppFixture {
   sendExplorerEvent(event: MainE2eExplorerEvent): Promise<void>;
   getMainE2eState(): Promise<MainE2eState>;
   getMainDescendantProcesses(): Promise<ElectronDescendantProcess[]>;
-  getPetInteractionProbe(): Promise<{ passthrough: boolean; dragging: boolean }>;
+  getPetInteractionProbe(): Promise<{
+    passthrough: boolean;
+    dragging: boolean;
+    mouseMoveHitCount: number;
+  }>;
   getCharacterBehaviorProbe(): Promise<{
     revision: number;
-    primaryStateId: string;
-    modifierStateIds: string[];
+    stateId: string;
     actionId: string | null;
     playbackStatus: 'scheduled' | 'started' | 'completed' | 'interrupted' | 'failed' | null;
+  }>;
+  getCharacterMotionDeltaProbe(): Promise<{
+    moved: boolean;
+    horizontal: number;
+    vertical: number;
   }>;
   getConversationProbe(): Promise<{
     phase: 'idle' | 'listening' | 'thinking' | 'awaiting_confirmation'
@@ -231,8 +250,29 @@ export interface ElectronAppFixture {
     historyDisclosureVisible: boolean;
     fileConfirmationVisible: boolean;
   }>;
+  markLocalModelValidationReady(): Promise<void>;
+  markLocalModelReady(): Promise<void>;
+  getLocalModelFixturePrivatePaths(): readonly string[];
+  getLocalModelFixtureEvidence(): Promise<LocalModelFixtureEvidence>;
+  inspectCapturedLogCanaries(canaries: readonly string[]): readonly boolean[];
   restart(): Promise<void>;
+  closeApplicationForInspection(): Promise<void>;
   dispose(): Promise<void>;
+}
+
+export interface LocalModelFixtureEvidence {
+  processId: number;
+  port: number;
+  token: string;
+  fixtureScriptPath: string;
+  modelPath: string;
+  requestedRuntimePath: string;
+  actualRuntimePath: string;
+  resourceRoot: string;
+  tokenFilePath: string;
+  stderrCanary: string;
+  requestedSpawnOptions: { shell: false; windowsHide: true };
+  actualSpawnOptions: { shell: false; windowsHide: true };
 }
 
 export interface CapturedLogEvidenceTracker {
@@ -240,6 +280,90 @@ export interface CapturedLogEvidenceTracker {
   snapshot(): ElectronAppFixture['capturedLogEvidence'];
   resetStreams(): void;
   dispose(): void;
+}
+
+export interface CompleteLogCanaryTracker {
+  capture(source: 'stdout' | 'stderr', chunk: string | Buffer): void;
+  inspect(canaries: readonly string[]): readonly boolean[];
+}
+
+function normalizedPrivateArtifact(value: string): string {
+  let normalized = value.normalize('NFC')
+    .replace(/\\u([0-9a-f]{4})/giu, (_match, hex: string) => (
+      String.fromCharCode(Number.parseInt(hex, 16))
+    ))
+    .replace(/(?:%[0-9a-f]{2})+/giu, encoded => {
+      try {
+        return decodeURIComponent(encoded);
+      } catch {
+        return encoded;
+      }
+    })
+    .replace(/\\\//gu, '/');
+  while (normalized.includes('\\\\')) normalized = normalized.replace(/\\\\/gu, '\\');
+  normalized = normalized.replace(/\\/gu, '/').toLocaleLowerCase('en-US');
+  return normalized.replace(/file:\/{2,}(?=[a-z]:\/)/gu, '');
+}
+
+/** 递归检查原始诊断字符串叶节点，编码和路径表现变化不能绕过泄漏证据。 */
+export function inspectPrivateArtifactCanaries(
+  artifacts: readonly unknown[],
+  canaries: readonly string[]
+): readonly boolean[] {
+  if (canaries.some(canary => canary.length === 0)) throw new Error('EMPTY_LOG_SENTINEL');
+  const leaves: string[] = [];
+  const visited = new WeakSet<object>();
+  const visit = (value: unknown): void => {
+    if (typeof value === 'string') {
+      leaves.push(normalizedPrivateArtifact(value));
+      return;
+    }
+    if (!value || typeof value !== 'object' || visited.has(value)) return;
+    visited.add(value);
+    if (Array.isArray(value)) {
+      value.forEach(visit);
+      return;
+    }
+    Object.values(value).forEach(visit);
+  };
+  artifacts.forEach(visit);
+  return Object.freeze(canaries.map(canary => {
+    const normalizedCanary = normalizedPrivateArtifact(canary);
+    return leaves.some(leaf => leaf.includes(normalizedCanary));
+  }));
+}
+
+/**
+ * 动态 canary 在进程启动后才可得，因此保留有界的完整原始流；一旦超限就失败关闭，
+ * 绝不以滚动尾部冒充全生命周期证据。
+ */
+export function createCompleteLogCanaryTracker(maxBytes: number): CompleteLogCanaryTracker {
+  if (!Number.isSafeInteger(maxBytes) || maxBytes < 1) {
+    throw new Error('RAW_LOG_CAPTURE_LIMIT_INVALID');
+  }
+  const chunks: Record<'stdout' | 'stderr', Buffer[]> = { stdout: [], stderr: [] };
+  let capturedBytes = 0;
+  let overflowed = false;
+  return {
+    capture(source, chunk) {
+      const bytes = Buffer.isBuffer(chunk) ? Buffer.from(chunk) : Buffer.from(chunk, 'utf8');
+      if (capturedBytes + bytes.byteLength > maxBytes) {
+        overflowed = true;
+        return;
+      }
+      capturedBytes += bytes.byteLength;
+      chunks[source].push(bytes);
+    },
+    inspect(canaries) {
+      if (canaries.some(canary => canary.length === 0)) throw new Error('EMPTY_LOG_SENTINEL');
+      if (overflowed) throw new Error('RAW_LOG_CAPTURE_LIMIT_EXCEEDED');
+      const streams = [
+        Buffer.concat(chunks.stdout).toString('utf8'),
+        Buffer.concat(chunks.stderr).toString('utf8')
+      ];
+      return inspectPrivateArtifactCanaries(streams, canaries);
+    }
+  };
 }
 
 /** 仅累计原始日志中的布尔泄漏证据，不保留完整正文。 */
@@ -323,6 +447,8 @@ export interface CreateElectronAppFixtureOptions {
   launchTimeoutMs?: number;
   operationTimeoutMs?: number;
   enableSoftwareRasterizer?: boolean;
+  enableLocalModelFixture?: boolean;
+  localModelStderrCanary?: string;
   prepareUserData?(directories: ElectronTemporaryDirectories): Promise<void>;
   beforeRestart?(directories: ElectronTemporaryDirectories): Promise<void>;
   dependencies?: ElectronAppDependencies;
@@ -340,8 +466,14 @@ export type MainE2eExplorerEvent =
 
 export interface MainE2eState {
   revision: number;
+  buildIdentity: {
+    commitShortHash: string;
+    buildRootCategory: 'primary_checkout' | 'linked_worktree' | 'source_archive';
+  };
   petWindowVisible: boolean;
   petWindowAlwaysOnTop: boolean;
+  petWindowBoundsDip: { x: number; y: number; width: number; height: number };
+  petNativeDragging: boolean;
   processedExplorerEventRevision: number;
   processedExplorerEvent: MainE2eExplorerEvent | null;
   bridge: {
@@ -355,6 +487,12 @@ export interface MainE2eState {
     activationRevision: number;
     errorRevision: number;
   };
+  geometry: {
+    revision: number;
+    scaleTick: number;
+    visualBoundsInWindowRatio: { x: number; y: number; width: number; height: number };
+    outOfBounds: boolean;
+  } | null;
 }
 
 const MAIN_E2E_EXPLORER_EVENTS = new Set<MainE2eExplorerEvent>([
@@ -367,6 +505,93 @@ const MAIN_E2E_EXPLORER_EVENTS = new Set<MainE2eExplorerEvent>([
   'blurred',
   'crash'
 ]);
+
+function isObject(candidate: unknown): candidate is Record<string, unknown> {
+  return Boolean(candidate) && typeof candidate === 'object' && !Array.isArray(candidate);
+}
+
+function validNormalizedVisualBounds(candidate: unknown): boolean {
+  if (!isObject(candidate) || Object.keys(candidate).length !== 4) return false;
+  const x = candidate.x;
+  const y = candidate.y;
+  const width = candidate.width;
+  const height = candidate.height;
+  if (
+    !Number.isFinite(x) || !Number.isFinite(y)
+    || !Number.isFinite(width) || !Number.isFinite(height)
+  ) return false;
+  const values = { x: Number(x), y: Number(y), width: Number(width), height: Number(height) };
+  return values.x >= 0
+    && values.y >= 0
+    && values.width > 0
+    && values.height > 0
+    && values.x + values.width <= 1.000001
+    && values.y + values.height <= 1.000001;
+}
+
+/** E2E 状态文件是测试进程唯一入口；构建身份与几何字段均按最小披露契约拒绝扩展。 */
+export function parseMainE2eState(candidate: unknown): MainE2eState {
+  if (!isObject(candidate)) throw new Error('ELECTRON_E2E_MAIN_STATE_INVALID');
+  const buildIdentity = candidate.buildIdentity;
+  const bridge = candidate.bridge;
+  const layer = candidate.layer;
+  const geometry = candidate.geometry;
+  const petWindowBoundsDip = candidate.petWindowBoundsDip;
+  const validPetWindowBounds = Boolean(
+    isObject(petWindowBoundsDip)
+    && Object.keys(petWindowBoundsDip).length === 4
+    && Number.isSafeInteger(petWindowBoundsDip.x)
+    && Number.isSafeInteger(petWindowBoundsDip.y)
+    && Number.isSafeInteger(petWindowBoundsDip.width)
+    && Number(petWindowBoundsDip.width) > 0
+    && Number.isSafeInteger(petWindowBoundsDip.height)
+    && Number(petWindowBoundsDip.height) > 0
+  );
+  const validGeometry = geometry === null || Boolean(
+    isObject(geometry)
+    && Object.keys(geometry).length === 4
+    && Number.isSafeInteger(geometry.revision)
+    && Number(geometry.revision) > 0
+    && Number.isSafeInteger(geometry.scaleTick)
+    && Number(geometry.scaleTick) >= 5
+    && Number(geometry.scaleTick) <= 20
+    && validNormalizedVisualBounds(geometry.visualBoundsInWindowRatio)
+    && typeof geometry.outOfBounds === 'boolean'
+  );
+  if (
+    !Number.isSafeInteger(candidate.revision)
+    || Number(candidate.revision) <= 0
+    || !isObject(buildIdentity)
+    || Object.keys(buildIdentity).length !== 2
+    || typeof buildIdentity.commitShortHash !== 'string'
+    || !/^[0-9a-f]{12}$/u.test(buildIdentity.commitShortHash)
+    || !new Set(['primary_checkout', 'linked_worktree', 'source_archive']).has(
+      String(buildIdentity.buildRootCategory)
+    )
+    || typeof candidate.petWindowVisible !== 'boolean'
+    || typeof candidate.petWindowAlwaysOnTop !== 'boolean'
+    || !validPetWindowBounds
+    || typeof candidate.petNativeDragging !== 'boolean'
+    || !Number.isSafeInteger(candidate.processedExplorerEventRevision)
+    || Number(candidate.processedExplorerEventRevision) < 0
+    || (candidate.processedExplorerEvent !== null
+      && !MAIN_E2E_EXPLORER_EVENTS.has(candidate.processedExplorerEvent as MainE2eExplorerEvent))
+    || !isObject(bridge)
+    || !new Set(['idle', 'ready', 'failed', 'closed']).has(String(bridge.state))
+    || typeof bridge.observing !== 'boolean'
+    || typeof bridge.polling !== 'boolean'
+    || !Number.isSafeInteger(bridge.eventRevision)
+    || Number(bridge.eventRevision) < 0
+    || !isObject(layer)
+    || !new Set(['idle', 'active', 'failed', 'closed']).has(String(layer.status))
+    || !Number.isSafeInteger(layer.activationRevision)
+    || Number(layer.activationRevision) < 0
+    || !Number.isSafeInteger(layer.errorRevision)
+    || Number(layer.errorRevision) < 0
+    || !validGeometry
+  ) throw new Error('ELECTRON_E2E_MAIN_STATE_INVALID');
+  return candidate as unknown as MainE2eState;
+}
 
 /** fixture 只追加固定无参数令牌，禁止把路径、HWND 或任意命令写入 Main。 */
 export async function writeMainE2eExplorerEvent(
@@ -509,6 +734,13 @@ async function waitForProcessExit(
       return;
     }
     timeout = setTimeout(() => finish(hasProcessExited(process)), timeoutMs);
+  });
+}
+
+/** child_process 的 close 事件发生在 exit 之后且 stdio 已关闭，用于封存完整日志证据。 */
+export function observeElectronProcessStreamsClosed(process: EventEmitter): Promise<void> {
+  return new Promise<void>(resolveClosed => {
+    process.once('close', () => resolveClosed());
   });
 }
 
@@ -964,6 +1196,156 @@ const defaultDependencies: ElectronAppDependencies = {
   })
 };
 
+type MaterializedLocalModelFixture = ElectronLaunchPlanOptions['localModelFixture'] & {
+  serverScriptPath: string;
+  root: string;
+  cachePath: string;
+  tokenRoot: string;
+  validationReadyFile: string;
+  readyFile: string;
+  evidenceFile: string;
+};
+
+const localModelFixtureContents = {
+  cpuExe: 'fixture-cpu-runtime',
+  cpuDll: 'fixture-cpu-dll',
+  vulkanExe: 'fixture-vulkan-runtime',
+  vulkanDll: 'fixture-vulkan-dll',
+  model: 'fixture-small-gguf',
+  runtimeLicense: 'fixture-runtime-license',
+  modelLicense: 'fixture-model-license',
+  notices: 'fixture-third-party-notices'
+} as const;
+
+function localModelFixtureSha256(value: string): string {
+  return createHash('sha256').update(value, 'utf8').digest('hex');
+}
+
+async function materializeLocalModelRuntimeFixture(input: {
+  workspaceRoot: string;
+  baseDirectory: string;
+  stderrCanary: string;
+}): Promise<MaterializedLocalModelFixture> {
+  const modulePath = join(input.baseDirectory, 'local-model-runtime-options.mjs');
+  const serverScriptPath = join(input.baseDirectory, 'fake-local-model-process.mjs');
+  const configPath = join(input.baseDirectory, 'local-model-runtime-config.json');
+  const root = join(input.baseDirectory, 'local-model-resources');
+  const cachePath = join(input.baseDirectory, 'local-model-cache.json');
+  const tokenRoot = join(input.baseDirectory, 'local-model-tokens');
+  const validationReadyFile = join(input.baseDirectory, 'local-model-validation-ready');
+  const readyFile = join(input.baseDirectory, 'local-model-ready');
+  const evidenceFile = join(input.baseDirectory, 'local-model-evidence.json');
+  await Promise.all([
+    copyFile(
+      resolve(input.workspaceRoot, 'tests/fixtures/local-model-runtime-options.mjs'),
+      modulePath
+    ),
+    copyFile(
+      resolve(input.workspaceRoot, 'tests/fixtures/fake-local-model-process.mjs'),
+      serverScriptPath
+    )
+  ]);
+  const writeResource = async (relativePath: string, content: string): Promise<void> => {
+    const path = join(root, ...relativePath.split('/'));
+    await mkdir(dirname(path), { recursive: true });
+    await writeFile(path, content, 'utf8');
+  };
+  const entry = (path: string, content: string) => ({
+    path,
+    size: Buffer.byteLength(content),
+    sha256: localModelFixtureSha256(content)
+  });
+  const runtimeRevision = 'b95502ba9aa0eb73a2f4fc8878d7fbe6a847a0b9';
+  const modelRevision = '851bf6e806efd8d0a36b00ddf55e13ccb7b8cd0a';
+  const quantizationRevision = 'e87f176479d0855a907a41277aca2f8ee7a09523';
+  const modelFileName = 'Qwen3.5-4B-Q4_K_M.gguf';
+  const releasePolicy = {
+    schemaVersion: 1,
+    platform: 'win32',
+    arch: 'x64',
+    runtimeRevision,
+    model: {
+      id: 'ai-pet-local',
+      sourceRepository: 'Qwen/Qwen3.5-4B',
+      sourceRevision: modelRevision,
+      quantizationRepository: 'unsloth/Qwen3.5-4B-GGUF',
+      quantizationRevision,
+      fileName: modelFileName,
+      size: Buffer.byteLength(localModelFixtureContents.model),
+      sha256: localModelFixtureSha256(localModelFixtureContents.model)
+    }
+  } as const;
+  const manifest = {
+    schemaVersion: 1,
+    platform: 'win32',
+    arch: 'x64',
+    notices: entry('THIRD-PARTY-NOTICES.txt', localModelFixtureContents.notices),
+    runtime: {
+      revision: runtimeRevision,
+      license: entry('licenses/llama.cpp-LICENSE.txt', localModelFixtureContents.runtimeLicense),
+      backends: {
+        cpu: {
+          executable: 'payload/cpu/llama-server.exe',
+          files: [
+            entry('payload/cpu/llama-server.exe', localModelFixtureContents.cpuExe),
+            entry('payload/cpu/ggml-cpu.dll', localModelFixtureContents.cpuDll)
+          ]
+        },
+        vulkan: {
+          executable: 'payload/vulkan/llama-server.exe',
+          files: [
+            entry('payload/vulkan/llama-server.exe', localModelFixtureContents.vulkanExe),
+            entry('payload/vulkan/ggml-vulkan.dll', localModelFixtureContents.vulkanDll)
+          ]
+        }
+      }
+    },
+    model: {
+      id: releasePolicy.model.id,
+      sourceRepository: releasePolicy.model.sourceRepository,
+      sourceRevision: modelRevision,
+      quantizationRepository: releasePolicy.model.quantizationRepository,
+      quantizationRevision,
+      file: entry(`payload/model/${modelFileName}`, localModelFixtureContents.model),
+      license: entry('licenses/Qwen3.5-4B-LICENSE.txt', localModelFixtureContents.modelLicense)
+    }
+  };
+  await Promise.all([
+    writeResource('payload/cpu/llama-server.exe', localModelFixtureContents.cpuExe),
+    writeResource('payload/cpu/ggml-cpu.dll', localModelFixtureContents.cpuDll),
+    writeResource('payload/vulkan/llama-server.exe', localModelFixtureContents.vulkanExe),
+    writeResource('payload/vulkan/ggml-vulkan.dll', localModelFixtureContents.vulkanDll),
+    writeResource(`payload/model/${modelFileName}`, localModelFixtureContents.model),
+    writeResource('licenses/llama.cpp-LICENSE.txt', localModelFixtureContents.runtimeLicense),
+    writeResource('licenses/Qwen3.5-4B-LICENSE.txt', localModelFixtureContents.modelLicense),
+    writeResource('THIRD-PARTY-NOTICES.txt', localModelFixtureContents.notices)
+  ]);
+  await writeFile(join(root, 'manifest.json'), JSON.stringify(manifest), 'utf8');
+  await writeFile(configPath, JSON.stringify({
+    root,
+    applicationVersion: 'local-model-e2e',
+    cachePath,
+    tokenRoot,
+    releasePolicy,
+    serverScriptPath,
+    validationReadyFile,
+    readyFile,
+    evidenceFile,
+    stderrCanary: input.stderrCanary
+  }), 'utf8');
+  return {
+    modulePath,
+    configPath,
+    serverScriptPath,
+    root,
+    cachePath,
+    tokenRoot,
+    validationReadyFile,
+    readyFile,
+    evidenceFile
+  };
+}
+
 /**
  * 启动构建后的项目 Electron 并连接 Renderer CDP；任一失败路径都执行同一清理流程。
  */
@@ -992,14 +1374,29 @@ export async function createElectronAppFixture(
         directories.packagesDirectory!,
         directories.exportsDirectory!
       );
+  const localModelFixture = options.enableLocalModelFixture
+    ? await materializeLocalModelRuntimeFixture({
+        workspaceRoot: options.workspaceRoot,
+        baseDirectory: directories.baseDirectory,
+        stderrCanary: options.localModelStderrCanary ?? ''
+      })
+    : undefined;
+  if (localModelFixture && !options.localModelStderrCanary) {
+    throw new Error('LOCAL_MODEL_E2E_FIXTURE_OPTIONS_INVALID');
+  }
   await options.prepareUserData?.(directories);
   const capturedChunks: string[] = [];
+  const completeLogCanaryTracker = createCompleteLogCanaryTracker(16 * 1024 * 1024);
   const capturedLogEvidenceTracker = createCapturedLogEvidenceTracker({
     apiKey: options.apiKey,
     authorizedRootDirectory: directories.authorizedRootDirectory,
     sentinels: options.logSentinels ?? []
   });
   let child: SpawnedElectronProcess | null = null;
+  let childStreamsClosed: Readonly<{
+    process: SpawnedElectronProcess;
+    completion: Promise<void>;
+  }> | null = null;
   let browser: Pick<Browser, 'close'> | null = null;
   let plan: ElectronLaunchPlan | null = null;
   let disposed = false;
@@ -1013,6 +1410,7 @@ export async function createElectronAppFixture(
 
   const capture = (source: 'stdout' | 'stderr', chunk: string | Buffer): void => {
     capturedLogEvidenceTracker.capture(source, chunk);
+    completeLogCanaryTracker.capture(source, chunk);
     capturedChunks.push(String(chunk).slice(0, 4_000));
     if (capturedChunks.length > 100) capturedChunks.shift();
   };
@@ -1125,6 +1523,7 @@ export async function createElectronAppFixture(
         if (child === currentChild) {
           child = null;
           plan = null;
+          childStreamsClosed = null;
         }
       } catch (error) {
         cleanupErrors.push(error as Error);
@@ -1151,11 +1550,18 @@ export async function createElectronAppFixture(
       recycleBinDirectory: directories.recycleBinDirectory,
       ...characterFixtures,
       parentEnvironment: globalThis.process.env,
-      enableSoftwareRasterizer: options.enableSoftwareRasterizer
+      enableSoftwareRasterizer: options.enableSoftwareRasterizer,
+      localModelFixture: localModelFixture
+        ? { modulePath: localModelFixture.modulePath, configPath: localModelFixture.configPath }
+        : undefined
     });
     const nextChild = dependencies.spawnProcess(nextPlan);
     plan = nextPlan;
     child = nextChild;
+    childStreamsClosed = {
+      process: nextChild,
+      completion: observeElectronProcessStreamsClosed(nextChild)
+    };
     nextChild.stdout?.on('data', chunk => {
       if (currentLogStreamEpoch === logStreamEpoch) capture('stdout', chunk);
     });
@@ -1267,33 +1673,10 @@ export async function createElectronAppFixture(
         event
       ),
       async getMainE2eState() {
-        const parsed = JSON.parse(await readFile(
+        return parseMainE2eState(JSON.parse(await readFile(
           join(directories.userDataDirectory, 'main-e2e-state.json'),
           'utf8'
-        )) as MainE2eState;
-        if (
-          !Number.isSafeInteger(parsed.revision)
-          || parsed.revision <= 0
-          || typeof parsed.petWindowVisible !== 'boolean'
-          || typeof parsed.petWindowAlwaysOnTop !== 'boolean'
-          || !Number.isSafeInteger(parsed.processedExplorerEventRevision)
-          || parsed.processedExplorerEventRevision < 0
-          || (parsed.processedExplorerEvent !== null
-            && !MAIN_E2E_EXPLORER_EVENTS.has(parsed.processedExplorerEvent))
-          || !parsed.bridge
-          || !new Set(['idle', 'ready', 'failed', 'closed']).has(parsed.bridge.state)
-          || typeof parsed.bridge.observing !== 'boolean'
-          || typeof parsed.bridge.polling !== 'boolean'
-          || !Number.isSafeInteger(parsed.bridge.eventRevision)
-          || parsed.bridge.eventRevision < 0
-          || !parsed.layer
-          || !new Set(['idle', 'active', 'failed', 'closed']).has(parsed.layer.status)
-          || !Number.isSafeInteger(parsed.layer.activationRevision)
-          || parsed.layer.activationRevision < 0
-          || !Number.isSafeInteger(parsed.layer.errorRevision)
-          || parsed.layer.errorRevision < 0
-        ) throw new Error('ELECTRON_E2E_MAIN_STATE_INVALID');
-        return parsed;
+        )));
       },
       getMainDescendantProcesses() {
         const processId = child?.pid;
@@ -1323,7 +1706,10 @@ export async function createElectronAppFixture(
           !probe
           || typeof probe.passthrough !== 'boolean'
           || typeof probe.dragging !== 'boolean'
-          || Object.keys(probe).length !== 2
+          || ![
+            probe.mouseMoveHitCount
+          ].every(value => Number.isSafeInteger(value) && value >= 0)
+          || Object.keys(probe).length !== 3
         ) {
           throw new Error('ELECTRON_E2E_PROBE_RESULT_INVALID');
         }
@@ -1353,14 +1739,40 @@ export async function createElectronAppFixture(
           !probe
           || !Number.isInteger(probe.revision)
           || probe.revision < 0
-          || typeof probe.primaryStateId !== 'string'
-          || !Array.isArray(probe.modifierStateIds)
-          || !probe.modifierStateIds.every(value => typeof value === 'string')
+          || typeof probe.stateId !== 'string'
           || (probe.actionId !== null && typeof probe.actionId !== 'string')
           || !statuses.has(probe.playbackStatus)
-          || Object.keys(probe).length !== 5
+          || Object.keys(probe).length !== 4
         ) {
           throw new Error('ELECTRON_E2E_BEHAVIOR_PROBE_RESULT_INVALID');
+        }
+        return probe;
+      },
+      async getCharacterMotionDeltaProbe() {
+        if (!browser || !('contexts' in browser) || typeof browser.contexts !== 'function') {
+          throw new Error('ELECTRON_E2E_PROBE_BROWSER_UNAVAILABLE');
+        }
+        const petPage = browser.contexts()
+          .flatMap(context => context.pages())
+          .find(page => {
+            try {
+              return new URL(page.url()).searchParams.get('view') === 'pet';
+            } catch {
+              return false;
+            }
+          });
+        if (!petPage) throw new Error('ELECTRON_E2E_PROBE_PET_PAGE_UNAVAILABLE');
+        const probe = await petPage.evaluate(async () => (
+          window.myself.getCharacterMotionDeltaProbe?.()
+        ));
+        if (
+          !probe
+          || typeof probe.moved !== 'boolean'
+          || !Number.isFinite(probe.horizontal)
+          || !Number.isFinite(probe.vertical)
+          || Object.keys(probe).length !== 3
+        ) {
+          throw new Error('ELECTRON_E2E_MOTION_DELTA_PROBE_RESULT_INVALID');
         }
         return probe;
       },
@@ -1409,6 +1821,47 @@ export async function createElectronAppFixture(
         }
         return probe as Awaited<ReturnType<ElectronAppFixture['getConversationProbe']>>;
       },
+      async markLocalModelValidationReady() {
+        if (!localModelFixture) throw new Error('LOCAL_MODEL_E2E_FIXTURE_UNAVAILABLE');
+        await writeFile(localModelFixture.validationReadyFile, 'ready\n', 'utf8');
+      },
+      async markLocalModelReady() {
+        if (!localModelFixture) throw new Error('LOCAL_MODEL_E2E_FIXTURE_UNAVAILABLE');
+        await writeFile(localModelFixture.readyFile, 'ready\n', 'utf8');
+      },
+      getLocalModelFixturePrivatePaths() {
+        if (!localModelFixture) throw new Error('LOCAL_MODEL_E2E_FIXTURE_UNAVAILABLE');
+        return Object.freeze([
+          directories.baseDirectory,
+          localModelFixture.modulePath,
+          localModelFixture.configPath,
+          localModelFixture.serverScriptPath,
+          localModelFixture.root,
+          localModelFixture.cachePath,
+          localModelFixture.tokenRoot,
+          localModelFixture.validationReadyFile,
+          localModelFixture.readyFile,
+          localModelFixture.evidenceFile
+        ]);
+      },
+      async getLocalModelFixtureEvidence() {
+        if (!localModelFixture) throw new Error('LOCAL_MODEL_E2E_FIXTURE_UNAVAILABLE');
+        const evidence = JSON.parse(await readFile(localModelFixture.evidenceFile, 'utf8')) as unknown;
+        if (
+          typeof evidence !== 'object'
+          || evidence === null
+          || !Number.isSafeInteger(Reflect.get(evidence, 'processId'))
+          || !Number.isSafeInteger(Reflect.get(evidence, 'port'))
+          || typeof Reflect.get(evidence, 'token') !== 'string'
+          || Object.keys(evidence).length !== 12
+        ) {
+          throw new Error('LOCAL_MODEL_E2E_EVIDENCE_INVALID');
+        }
+        return evidence as LocalModelFixtureEvidence;
+      },
+      inspectCapturedLogCanaries(canaries) {
+        return completeLogCanaryTracker.inspect(canaries);
+      },
       async restart() {
         if (disposeStarted) throw new Error('ELECTRON_FIXTURE_DISPOSED');
         await cleanupCurrentProcess();
@@ -1424,6 +1877,30 @@ export async function createElectronAppFixture(
             throw aggregatePrimaryWithCleanup(primaryError, cleanupError);
           }
           throw primaryError;
+        }
+      },
+      async closeApplicationForInspection() {
+        if (disposeStarted) throw new Error('ELECTRON_FIXTURE_DISPOSED');
+        const currentChild = child;
+        const currentBrowser = browser;
+        if (!currentChild) throw new Error('ELECTRON_PROCESS_NOT_RUNNING');
+        const streamsClosed = childStreamsClosed;
+        if (!streamsClosed || streamsClosed.process !== currentChild) {
+          throw new Error('ELECTRON_PROCESS_CLOSE_OBSERVER_MISSING');
+        }
+        await runStage(
+          'wait_application_streams_closed',
+          () => streamsClosed.completion,
+          operationTimeoutMs
+        );
+        if (child === currentChild) {
+          child = null;
+          plan = null;
+          childStreamsClosed = null;
+        }
+        if (currentBrowser) {
+          await currentBrowser.close();
+          if (browser === currentBrowser) browser = null;
         }
       },
       dispose

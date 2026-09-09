@@ -2,15 +2,25 @@ import { useEffect, useRef } from 'react';
 import { X } from 'lucide-react';
 
 /** 通用提示的最小展示形状；队列归调用方所有。 */
+export type TransientToastAction = Readonly<{
+  id: string;
+  label: string;
+  tone?: 'default' | 'danger';
+}>;
+
 export type TransientToast = Readonly<{
   id: string;
   tone: 'success' | 'info' | 'warning' | 'error';
   text: string;
+  persistent?: boolean;
+  dismissible?: boolean;
+  actions?: readonly TransientToastAction[];
 }>;
 
 export interface TransientToastLayerProps {
   queue: readonly TransientToast[];
   onDismiss(id: string): void;
+  onAction?(toastId: string, actionId: string): void;
   durationMs(toast: TransientToast): number;
   ariaLabel: string;
 }
@@ -22,6 +32,7 @@ export interface TransientToastLayerProps {
 export function TransientToastLayer({
   queue,
   onDismiss,
+  onAction,
   durationMs,
   ariaLabel
 }: TransientToastLayerProps) {
@@ -53,7 +64,12 @@ export function TransientToastLayer({
   }
 
   function startTimer(): void {
-    if (!toast || dismissedRef.current || timerRef.current !== undefined) return;
+    if (
+      !toast
+      || toast.persistent
+      || dismissedRef.current
+      || timerRef.current !== undefined
+    ) return;
     if (pausedRef.current.hover || pausedRef.current.focus) return;
     startedAtRef.current = performance.now();
     timerRef.current = setTimeout(() => {
@@ -111,15 +127,39 @@ export function TransientToastLayer({
           if (!event.currentTarget.contains(event.relatedTarget)) resume('focus');
         }}
       >
-        <span>{toast.text}</span>
-        <button
-          type="button"
-          aria-label={`关闭${ariaLabel}：${toast.text}`}
-          title="关闭提示"
-          onClick={dismissCurrent}
-        >
-          <X size={15} aria-hidden="true" />
-        </button>
+        <div className="transient-toast-content">
+          <span>{toast.text}</span>
+          {toast.actions?.length ? (
+            <div className="transient-toast-actions">
+              {toast.actions.map(action => (
+                <button
+                  key={action.id}
+                  className={action.tone === 'danger' ? 'is-danger' : undefined}
+                  type="button"
+                  onClick={() => {
+                    try {
+                      onAction?.(toast.id, action.id);
+                    } catch {
+                      /** 业务动作自行呈现失败；提示层不重复触发用户选择。 */
+                    }
+                  }}
+                >
+                  {action.label}
+                </button>
+              ))}
+            </div>
+          ) : null}
+        </div>
+        {toast.dismissible === false ? null : (
+          <button
+            type="button"
+            aria-label={`关闭${ariaLabel}：${toast.text}`}
+            title="关闭提示"
+            onClick={dismissCurrent}
+          >
+            <X size={15} aria-hidden="true" />
+          </button>
+        )}
       </div>
     </aside>
   );

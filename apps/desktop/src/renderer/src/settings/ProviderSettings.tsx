@@ -9,10 +9,14 @@ import type {
   SaveProviderProfileInput,
   SettingsDashboardDto
 } from '../../../shared/myself-api';
+import type { LocalModelPublicStatus } from '../../../shared/local-model-ipc';
+import { LocalModelSettingsCard } from './LocalModelSettingsCard';
 
 export interface ProviderSettingsProps {
   dashboard: SettingsDashboardDto;
   busy: boolean;
+  localModel?: LocalModelPublicStatus;
+  onLocalModelEnabledChange?: ((enabled: boolean) => void) | undefined;
   onSave(input: SaveProviderProfileInput): void;
   onTest(profileId: string): void;
   onRouteSave(route: ModelRouteConfig): void;
@@ -129,6 +133,13 @@ export function ProviderSettings(props: ProviderSettingsProps) {
 
   return (
     <div className="settings-pane provider-settings">
+      {props.localModel ? (
+        <LocalModelSettingsCard
+          status={props.localModel}
+          busy={props.busy}
+          onEnabledChange={props.onLocalModelEnabledChange}
+        />
+      ) : null}
       <section className="settings-band" aria-labelledby="provider-heading">
         <div className="pane-heading">
           <div>
@@ -164,17 +175,19 @@ export function ProviderSettings(props: ProviderSettingsProps) {
             </label>
             <label>
               模型
-              <input
-                list="preset-model-options"
-                value={modelId}
-                disabled={customMode || props.busy}
-                onChange={event => setModelId(event.target.value.trim())}
-              />
-              <datalist id="preset-model-options">
-                {selectedProvider?.models.map(model => (
-                  <option key={model.modelId} value={model.modelId}>{model.displayName}</option>
-                ))}
-              </datalist>
+              <>
+                <input
+                  list="preset-model-options"
+                  value={modelId}
+                  disabled={customMode || props.busy}
+                  onChange={event => setModelId(event.target.value.trim())}
+                />
+                <datalist id="preset-model-options">
+                  {selectedProvider?.models.map(model => (
+                    <option key={model.modelId} value={model.modelId}>{model.displayName}</option>
+                  ))}
+                </datalist>
+              </>
             </label>
             <small>列表没有新模型时，可直接输入服务商公布的模型 ID；未知模型默认仅启用聊天。</small>
             <label className="wide-field">
@@ -252,7 +265,11 @@ export function ProviderSettings(props: ProviderSettingsProps) {
               />
               使用 Windows 安全存储
             </label>
-            <button className="primary-button" type="submit" disabled={props.busy}>
+            <button
+              className="primary-button"
+              type="submit"
+              disabled={props.busy}
+            >
               <Save size={16} />保存档案
             </button>
           </div>

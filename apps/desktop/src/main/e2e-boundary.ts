@@ -3,7 +3,9 @@ import { readFile, stat } from 'node:fs/promises';
 import { EventEmitter } from 'node:events';
 import { tmpdir } from 'node:os';
 import { dirname, isAbsolute, relative, resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import type { ExplorerSnapshot } from './explorer/explorer-space-protocol';
+import type { LocalModelRuntimeOptions } from './local-model/local-model-runtime';
 
 type ExplorerSnapshotFacts<T> = T extends ExplorerSnapshot
   ? Omit<T, 'version' | 'type' | 'nonce' | 'sequence'>
@@ -19,12 +21,81 @@ export interface MainE2eBoundary {
   safeCharacterPackage: string;
   maliciousCharacterPackage: string;
   characterExportDestination: string;
+  localModelFixture?: {
+    modulePath: string;
+    configPath: string;
+  };
+}
+
+/** 动态测试装配只返回正式 Runtime 构造参数；fixture 源码不会进入 Main 静态依赖图。 */
+export async function loadMainE2eLocalModelRuntimeOptions(
+  fixture: NonNullable<MainE2eBoundary['localModelFixture']>
+): Promise<LocalModelRuntimeOptions> {
+  const loaded = await import(pathToFileURL(fixture.modulePath).href) as Record<string, unknown>;
+  const factory = loaded['createLocalModelRuntimeOptions'];
+  if (typeof factory !== 'function') throw new Error('LOCAL_MODEL_E2E_FACTORY_INVALID');
+  const options = await factory(fixture.configPath) as unknown;
+  if (
+    typeof options !== 'object'
+    || options === null
+    || typeof Reflect.get(options, 'root') !== 'string'
+    || typeof Reflect.get(options, 'applicationVersion') !== 'string'
+    || typeof Reflect.get(options, 'cachePath') !== 'string'
+    || typeof Reflect.get(options, 'tokenRoot') !== 'string'
+    || typeof Reflect.get(options, 'processPort') !== 'object'
+  ) {
+    throw new Error('LOCAL_MODEL_E2E_OPTIONS_INVALID');
+  }
+  return options as LocalModelRuntimeOptions;
 }
 
 export interface MainE2eBoundaryOptions {
   appIsPackaged: boolean;
   env: NodeJS.ProcessEnv;
   temporaryDirectory?: string;
+}
+
+/**
+ * 周期性 E2E 观测只保留一个在途发布和一个最新待发布信号，
+ * 慢磁盘不会把读写任务按定时器频率无界排队。
+ */
+export function createCoalescedAsyncPublisher(operation: () => Promise<void>): {
+  publish(): Promise<void>;
+  close(): Promise<void>;
+} {
+  let active: Promise<void> | null = null;
+  let pending = false;
+  let closing = false;
+
+  const publish = (): Promise<void> => {
+    if (closing) return active ?? Promise.resolve();
+    if (active) {
+      pending = true;
+      return active;
+    }
+    const drain = async (): Promise<void> => {
+      do {
+        pending = false;
+        try {
+          await operation();
+        } catch {
+          // E2E 状态是轮询观测而非业务事实；临时写盘失败由后续信号重试，不能阻断关闭。
+        }
+      } while (pending);
+    };
+    active = drain().finally(() => {
+      active = null;
+    });
+    return active;
+  };
+
+  return {
+    publish,
+    async close() {
+      closing = true;
+      await active;
+    }
+  };
 }
 
 /**
@@ -331,6 +402,8 @@ export function resolveMainE2eBoundary(
   const rawSafePackage = options.env['MYSELF_E2E_SAFE_CHARACTER_PACKAGE'];
   const rawMaliciousPackage = options.env['MYSELF_E2E_MALICIOUS_CHARACTER_PACKAGE'];
   const rawExportDestination = options.env['MYSELF_E2E_CHARACTER_EXPORT'];
+  const rawLocalModelOptionsModule = options.env['MYSELF_E2E_LOCAL_MODEL_OPTIONS_MODULE'];
+  const rawLocalModelConfig = options.env['MYSELF_E2E_LOCAL_MODEL_CONFIG'];
   if (
     !rawUserData
     || !rawAuthorizedRoot
@@ -385,7 +458,6 @@ export function resolveMainE2eBoundary(
       ? target
       : null;
   };
-
   const userDataDirectory = resolveTemporaryChild(rawUserData);
   const authorizedRootDirectory = resolveTemporaryChild(rawAuthorizedRoot);
   const recycleBinDirectory = resolveTemporaryChild(rawRecycleBin);
@@ -408,6 +480,18 @@ export function resolveMainE2eBoundary(
     recycleBinDirectory,
     characterAssetsDirectory
   ]).size !== 4) return null;
+  const hasAnyLocalModelFixtureValue = Boolean(
+    rawLocalModelOptionsModule
+    || rawLocalModelConfig
+  );
+  let localModelFixture: MainE2eBoundary['localModelFixture'];
+  if (hasAnyLocalModelFixtureValue) {
+    if (!rawLocalModelOptionsModule || !rawLocalModelConfig) return null;
+    const modulePath = resolveTemporaryFile(rawLocalModelOptionsModule);
+    const configPath = resolveTemporaryFile(rawLocalModelConfig);
+    if (!modulePath || !configPath) return null;
+    localModelFixture = { modulePath, configPath };
+  }
 
   return {
     userDataDirectory,
@@ -418,6 +502,7 @@ export function resolveMainE2eBoundary(
     characterAssetsDirectory,
     safeCharacterPackage,
     maliciousCharacterPackage,
-    characterExportDestination
+    characterExportDestination,
+    ...(localModelFixture ? { localModelFixture } : {})
   };
 }

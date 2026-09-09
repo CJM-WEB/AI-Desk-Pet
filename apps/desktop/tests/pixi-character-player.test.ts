@@ -1,8 +1,8 @@
+import { testPlaybackView } from './fixtures/character-v3-playback';
 // @vitest-environment jsdom
 
 import type {
   ActionClip,
-  ActionSelectionResult,
   CharacterManifestV1,
   DraftActionClip
 } from '@myself/character-runtime';
@@ -11,6 +11,7 @@ import type { CharacterAssetBundle } from '../src/renderer/src/characters/player
 import {
   createBrowserPixiCharacterScene,
   PixiCharacterPlayer,
+  type CharacterPlaybackSelection as ActionSelectionResult,
   type PixiCharacterScene
 } from '../src/renderer/src/characters/player/pixi-character-player';
 import {
@@ -66,10 +67,57 @@ describe('共享 Pixi 角色动作场景', () => {
         complete = listener;
         return unsubscribeComplete;
       }),
+      resize: vi.fn(),
       destroy: vi.fn()
     };
     return { complete: () => complete?.(), scene, unsubscribeComplete };
   }
+
+  test('Main 的 once 命令覆盖素材 loop 并产生唯一自然终态', () => {
+    const fixture = lifecycleScene();
+    const player = new PixiCharacterPlayer(fixture.scene);
+    const listener = vi.fn();
+    player.subscribePlaybackLifecycle(listener);
+    player.play({ stateId: 'quiet-afternoon', action: { ...action, frames: action.frames as ActionClip['frames'] }, reason: 'matched', playback: { mode: 'once', durationMs: 1000 } }, 'animated');
+    expect(fixture.scene.showAction).toHaveBeenLastCalledWith(expect.any(Object), expect.objectContaining({ loop: false }));
+    fixture.complete();
+    expect(listener).toHaveBeenCalledWith(expect.objectContaining({ status: 'completed' }));
+    player.destroy();
+  });
+
+  test('有界 loop 到期静止且旧持续时间不能结束替换后的播放', () => {
+    vi.useFakeTimers();
+    try {
+      const fixture = lifecycleScene();
+      const player = new PixiCharacterPlayer(fixture.scene);
+      const listener = vi.fn();
+      player.subscribePlaybackLifecycle(listener);
+      const first = player.play({ stateId: 'rest', action, playback: { mode: 'loop', durationMs: 100 } }, 'animated');
+      vi.advanceTimersByTime(50);
+      const second = player.play({ stateId: 'rest', action, playback: { mode: 'loop', durationMs: 200 } }, 'animated');
+      vi.advanceTimersByTime(50);
+      expect(listener).not.toHaveBeenCalledWith(expect.objectContaining({ playbackId: second, status: 'completed' }));
+      vi.advanceTimersByTime(150);
+      expect(listener).toHaveBeenCalledWith(expect.objectContaining({ playbackId: first, status: 'interrupted' }));
+      expect(listener).toHaveBeenCalledWith(expect.objectContaining({ playbackId: second, status: 'completed' }));
+      expect(fixture.scene.showAction).toHaveBeenLastCalledWith(expect.any(Object), expect.objectContaining({ motionMode: 'static' }));
+      player.destroy();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test('播放器 resize 复用正式 Pixi 场景并刷新命中区域', () => {
+    const fixture = lifecycleScene();
+    const player = new PixiCharacterPlayer(fixture.scene);
+    const hitRegionChanged = vi.fn();
+    player.subscribeHitRegion(hitRegionChanged);
+
+    player.resize(200, 160);
+
+    expect(fixture.scene.resize).toHaveBeenCalledWith(200, 160);
+    expect(hitRegionChanged).toHaveBeenCalledOnce();
+  });
 
   test('非循环动作自然结束时只报告一次 completed', () => {
     const fixture = lifecycleScene();
@@ -237,7 +285,7 @@ describe('共享 Pixi 角色动作场景', () => {
       stateId: 'idle', action: currentManifest.states[0]!.actions[0]!, reason: 'matched'
     };
 
-    await player.load(currentManifest, { characterId: 'character-a', atlasUrls: new Map([['atlas', 'blob:atlas']]) });
+    await player.load(testPlaybackView(currentManifest), { characterId: 'character-a', atlasUrls: new Map([['atlas', 'blob:atlas']]) });
     expect(notify).toHaveBeenCalledTimes(1);
     player.play(selection, 'static');
     expect(notify).toHaveBeenCalledTimes(2);
@@ -247,7 +295,7 @@ describe('共享 Pixi 角色动作场景', () => {
     expect(notify).toHaveBeenCalledTimes(4);
   });
 
-  test('播放器只将动作帧白名单 Blob URL 映射给共享场景并展示动作', async () => {
+  test('播放器只将动作帧白名单 Blob URL 映射给共享场景，缺失发布倍速时使用默认值', async () => {
     const scene: PixiCharacterScene = {
       loadAssets: vi.fn().mockResolvedValue(undefined),
       clear: vi.fn(),
@@ -271,7 +319,7 @@ describe('共享 Pixi 角色动作场景', () => {
       ])
     };
 
-    await player.load(currentManifest, assets);
+    await player.load(testPlaybackView(currentManifest), assets);
     player.play(selection, 'animated');
 
     expect(scene.loadAssets).toHaveBeenCalledWith(new Map([['atlas', 'blob:atlas']]));
@@ -282,6 +330,74 @@ describe('共享 Pixi 角色动作场景', () => {
       loop: true
     });
   });
+
+  test.each([
+    ['right', false, 'right'],
+    ['left', false, 'left'],
+    ['right', true, 'left'],
+    ['left', true, 'right']
+  ] as const)(
+    '首次播放将运动方向 %s 与素材反转 %s 裁决为有效方向 %s',
+    (direction, mirrorX, effectiveDirection) => {
+      const scene: PixiCharacterScene = {
+        loadAssets: vi.fn().mockResolvedValue(undefined),
+        clear: vi.fn(),
+        showAction: vi.fn(),
+        getCurrentFrame: vi.fn().mockReturnValue(null),
+        subscribeFrame: vi.fn(() => vi.fn()),
+        destroy: vi.fn()
+      };
+      const publishedAction: ActionClip = {
+        ...manifest().states[0]!.actions[0]!,
+        playbackRate: 1.5,
+        mirrorX
+      };
+      const player = new PixiCharacterPlayer(scene);
+
+      player.setDirection(direction);
+      player.play({ stateId: 'idle', action: publishedAction, reason: 'matched' }, 'animated');
+
+      expect(scene.showAction).toHaveBeenCalledWith(publishedAction, {
+        direction: effectiveDirection,
+        motionMode: 'animated',
+        speed: 1.5,
+        loop: true
+      });
+    }
+  );
+
+  test.each([
+    ['right', false, { x: 0.2, y: 0.4 }],
+    ['left', false, { x: 0.8, y: 0.4 }],
+    ['right', true, { x: 0.8, y: 0.4 }],
+    ['left', true, { x: 0.2, y: 0.4 }]
+  ] as const)(
+    '附着物锚点按运动方向 %s 与素材反转 %s 的有效画面方向定位',
+    (direction, mirrorX, expectedAnchor) => {
+      const scene: PixiCharacterScene = {
+        loadAssets: vi.fn().mockResolvedValue(undefined),
+        clear: vi.fn(),
+        showAction: vi.fn(),
+        getCurrentFrame: vi.fn().mockReturnValue(null),
+        subscribeFrame: vi.fn(() => vi.fn()),
+        destroy: vi.fn()
+      };
+      const publishedAction: ActionClip = {
+        ...manifest().states[0]!.actions[0]!,
+        mirrorX,
+        anchors: {
+          ...manifest().states[0]!.actions[0]!.anchors,
+          carry: { x: 0.2, y: 0.4 }
+        }
+      };
+      const player = new PixiCharacterPlayer(scene);
+
+      player.setDirection(direction);
+      player.play({ stateId: 'idle', action: publishedAction, reason: 'matched' }, 'animated');
+
+      expect(player.getAnchor('carry')).toEqual(expectedAnchor);
+    }
+  );
 
   test('加载阶段缺失动作帧资源时保持原有失败语义', async () => {
     const scene: PixiCharacterScene = {
@@ -297,9 +413,10 @@ describe('共享 Pixi 角色动作场景', () => {
       ...currentManifest.states[0]!.actions[0]!.frames,
       { assetId: 'missing', x: 0, y: 0, width: 16, height: 16 }
     ];
+    currentManifest.resources.push({ assetId: 'missing', fileName: 'missing.png', sha256: 'c'.repeat(64), byteLength: 1 });
     const player = new PixiCharacterPlayer(scene);
 
-    await expect(player.load(currentManifest, {
+    await expect(player.load(testPlaybackView(currentManifest), {
       characterId: 'character-a',
       atlasUrls: new Map([['atlas', 'blob:atlas']])
     })).rejects.toThrow('CHARACTER_RUNTIME_ASSET_MISSING');
@@ -316,9 +433,14 @@ describe('共享 Pixi 角色动作场景', () => {
       destroy: vi.fn()
     };
     const currentManifest = manifest();
+    const publishedAction: ActionClip = {
+      ...currentManifest.states[0]!.actions[0]!,
+      playbackRate: 1.5,
+      mirrorX: true
+    };
     const selection: ActionSelectionResult = {
       stateId: 'idle',
-      action: currentManifest.states[0]!.actions[0]!,
+      action: publishedAction,
       reason: 'matched'
     };
     const player = new PixiCharacterPlayer(scene);
@@ -327,9 +449,9 @@ describe('共享 Pixi 角色动作场景', () => {
     player.setDirection('left');
 
     expect(scene.showAction).toHaveBeenLastCalledWith(selection.action, {
-      direction: 'left',
+      direction: 'right',
       motionMode: 'animated',
-      speed: 1,
+      speed: 1.5,
       loop: true
     });
   });
@@ -426,6 +548,70 @@ describe('共享 Pixi 角色动作场景', () => {
     } satisfies PixiCharacterScene & { isTickerRunning(): boolean };
 
     expect(new PixiCharacterPlayer(scene).isTickerRunning()).toBe(true);
+  });
+
+  test('真实 Pixi 单帧 once 等待作者帧时长，微任务不完成且中断后不再计时', async () => {
+    const pixi = await import('pixi.js');
+    const applications: TestApplication[] = [];
+    // 只替换图形设备和图片解码；帧时长归约使用安装版本的真实 AnimatedSprite 与 Ticker。
+    class TestTexture extends pixi.Texture {
+      static override from() {
+        return new pixi.Texture({ source: new pixi.TextureSource({ width: 32, height: 32 }) });
+      }
+    }
+    class TestApplication {
+      canvas = document.createElement('canvas');
+      screen = { width: 100, height: 100 };
+      stage = new pixi.Container();
+      ticker = new pixi.Ticker();
+      init = vi.fn(async () => undefined);
+      render = vi.fn();
+      destroy = () => { this.ticker.destroy(); this.stage.destroy(); };
+      constructor() { applications.push(this); }
+    }
+    vi.stubGlobal('Image', class { src = ''; decode = async () => undefined; });
+    vi.stubGlobal('requestAnimationFrame', vi.fn(() => 1));
+    vi.stubGlobal('cancelAnimationFrame', vi.fn());
+    let scene: PixiCharacterScene | undefined;
+    try {
+      scene = await createBrowserPixiCharacterScene(document.createElement('div'), async () => ({
+        ...pixi, Application: TestApplication, Texture: TestTexture
+      }) as never);
+      await scene.loadAssets(new Map([['atlas', 'blob:single-frame']]));
+      const single = { ...action, fps: 8, frames: [{ ...action.frames[0]!, durationMs: 1200 }] };
+      const options = { direction: 'right' as const, motionMode: 'animated' as const, speed: 1, loop: false };
+      const complete = vi.fn();
+      scene.subscribeActionComplete!(complete);
+      scene.showAction(single, options);
+      const ticker = applications[0]!.ticker;
+      await Promise.resolve();
+      expect(complete).not.toHaveBeenCalled();
+      expect(ticker.started).toBe(true);
+      ticker.update(0);
+      for (let time = 100; time <= 1100; time += 100) ticker.update(time);
+      ticker.update(1199);
+      expect(complete).not.toHaveBeenCalled();
+      ticker.update(1201);
+      expect(complete).toHaveBeenCalledOnce();
+      ticker.update(1300);
+      expect(complete).toHaveBeenCalledOnce();
+
+      scene.showAction(single, options);
+      ticker.update(0); ticker.update(100);
+      scene.clear();
+      ticker.update(1300);
+      expect(complete).toHaveBeenCalledOnce();
+      expect(ticker.count).toBe(0);
+      for (const stationary of [{ ...options, loop: true }, { ...options, motionMode: 'static' as const }]) {
+        scene.showAction(single, stationary);
+        await Promise.resolve();
+        expect(ticker.started).toBe(false);
+        expect(complete).toHaveBeenCalledOnce();
+      }
+    } finally {
+      scene?.destroy();
+      vi.unstubAllGlobals();
+    }
   });
 
   test('动作重建复用帧订阅，静态逐帧不启动 ticker 且取消后不再通知', async () => {

@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import { useLayoutEffect, useState } from 'react';
-import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, test, vi } from 'vitest';
 import type { DraftActionClip } from '@myself/character-runtime';
 import {
@@ -13,9 +13,25 @@ import {
   type PreviewState
 } from '../src/renderer/src/characters/workshop/PreviewControls';
 import {
+  CharacterWorkshopWorkspace,
   previewActionIdentity,
   previewAtActionStart
 } from '../src/renderer/src/characters/workshop/CharacterWorkshopView';
+import type { CharacterWorkshopState } from '../src/renderer/src/characters/store/character-workshop-store';
+
+vi.mock(
+  '../src/renderer/src/characters/workshop/DraftCharacterPreview',
+  async importOriginal => ({
+    ...await importOriginal(),
+    DraftCharacterPreview: (props: { preview: PreviewState }) => (
+      <div
+        data-testid="工作台预览"
+        data-direction={props.preview.direction}
+        data-speed={String(props.preview.speed)}
+      />
+    )
+  })
+);
 
 const action: DraftActionClip = {
   id: 'idle-main',
@@ -34,6 +50,86 @@ const action: DraftActionClip = {
     height: 64
   }]
 };
+
+function workshopState(
+  updateCurrentAction = vi.fn(),
+  selectedSkinId = 'default',
+  selectedActionId = 'idle-main'
+): CharacterWorkshopState {
+  const frame = {
+    id: 'frame-a', assetId: 'idle-atlas', x: 0, y: 0, width: 64, height: 64
+  };
+  const actionDefinition = (id: string, name: string) => ({
+    id, name, tags: [], preference: 1, cooldownMs: 0,
+    repeatSuppressionMs: 0, loopPolicy: 'presentation' as const, interrupt: 'normal' as const, direction: 'any' as const
+  });
+  return {
+    characters: [{
+      id: 'nova', name: 'Nova', thumbnailAssetId: null, active: true,
+      completeness: 'complete', missingRequirements: [], migrationRecoveryAvailable: false
+    }],
+    draft: {
+      version: 3,
+      id: 'nova',
+      name: 'Nova',
+      identity: {
+        description: '桌面伙伴', background: '来自桌面', traits: ['友好'],
+        languageStyle: '简洁', formsOfAddress: ['朋友'], likes: ['晴天'], dislikes: ['噪声'],
+        behavioralTendencies: ['问候'], boundaries: ['尊重隐私'], exampleLines: ['你好。']
+      },
+      defaultSkinId: 'default',
+      idleStateId: 'idle',
+      skins: [{
+        id: 'default', name: '默认皮肤', presentations: [{
+          actionId: 'idle-main', fps: 12, playbackRate: 1.5, mirrorX: true,
+          anchors: { ground: { x: 0.5, y: 1 } }, frames: [frame]
+        }, {
+          actionId: 'wave-main', fps: 12, playbackRate: 0.5, mirrorX: false,
+          anchors: { ground: { x: 0.5, y: 1 } }, frames: [frame]
+        }]
+      }, {
+        id: 'winter', name: '冬装', presentations: [{
+          actionId: 'idle-main', fps: 12, playbackRate: 0.75, mirrorX: false,
+          anchors: { ground: { x: 0.5, y: 1 } }, frames: [frame]
+        }]
+      }],
+      states: [{
+        id: 'idle', name: '待机', tags: [], intensity: 20, enterConditions: [], exitConditions: [],
+        agentInferable: true, actionIds: ['idle-main', 'wave-main']
+      }],
+      actions: [actionDefinition('idle-main', '待机'), actionDefinition('wave-main', '挥手')]
+    },
+    migrationReview: { issues: [], resolutions: [] },
+    resolveMigrationIssue: vi.fn(),
+    setIdleState: vi.fn(),
+    selectedCharacterId: 'nova',
+    selectedEntity: { kind: 'action', actionId: selectedActionId },
+    selectedSkinId,
+    selectedStateId: 'idle',
+    selectedActionId,
+    draftStatus: 'saved', closeConfirmationPending: false,
+    compileStatus: 'idle', loadStatus: 'ready', busyAction: null,
+    toastQueue: [], availableSources: [],
+    load: vi.fn(async () => undefined), mount: vi.fn(() => () => undefined),
+    selectCharacter: vi.fn(async () => undefined), selectIdentity: vi.fn(), selectSkin: vi.fn(),
+    selectState: vi.fn(), selectAction: vi.fn(), createCharacter: vi.fn(async () => undefined),
+    duplicateCharacter: vi.fn(async () => undefined), deleteCharacter: vi.fn(async () => undefined),
+    activateCharacter: vi.fn(async () => undefined), importCharacterPackage: vi.fn(async () => undefined),
+    exportCharacterPackage: vi.fn(async () => undefined), importSources: vi.fn(async () => undefined),
+    updateIdentity: vi.fn(), addSkin: vi.fn(), duplicateSkin: vi.fn(), updateSkin: vi.fn(),
+    setDefaultSkin: vi.fn(), requestRemoveSkin: vi.fn(() => ({ safeReferencePaths: [], blockingReferencePaths: [] })),
+    addState: vi.fn(), updateState: vi.fn(),
+    requestRemoveState: vi.fn(() => ({ safeReferencePaths: [], blockingReferencePaths: [] })),
+    addAction: vi.fn(), updateAction: vi.fn(), setCurrentActionCommitFrame: vi.fn(),
+    requestRemoveCurrentFrame: vi.fn(() => ({ safeReferencePaths: [], blockingReferencePaths: [] })),
+    requestRemoveAction: vi.fn(() => ({ safeReferencePaths: [], blockingReferencePaths: [] })),
+    applySpriteSheet: vi.fn(async () => undefined), compileAndPublish: vi.fn(async () => undefined),
+    publishCharacter: vi.fn(async () => undefined), updateCurrentAction,
+    prepareWindowClose: vi.fn(async () => true), resumeAfterClosePrompt: vi.fn(),
+    discardUnsavedDraft: vi.fn(async () => undefined),
+    flushDraft: vi.fn(async () => undefined), dismissToast: vi.fn(), dispose: vi.fn()
+  };
+}
 
 afterEach(() => {
   cleanup();
@@ -71,8 +167,18 @@ function pointerEvent(
 
 describe('预览组件帧数同步', () => {
   test('跨角色复用相同状态动作标识时仍形成新的预览身份', () => {
-    expect(previewActionIdentity('nova', 'nova', 'idle', 'idle-main'))
-      .not.toBe(previewActionIdentity('luna', 'luna', 'idle', 'idle-main'));
+    expect(previewActionIdentity('nova', 'nova', 'idle', 'idle-main', 'default'))
+      .not.toBe(previewActionIdentity('luna', 'luna', 'idle', 'idle-main', 'default'));
+  });
+
+  test('仅切换皮肤也形成新的预览身份', () => {
+    expect(previewActionIdentity('nova', 'nova', 'idle', 'idle-main', 'default'))
+      .not.toBe(previewActionIdentity('nova', 'nova', 'idle', 'idle-main', 'winter'));
+  });
+
+  test('预览身份调用必须显式携带皮肤标识', () => {
+    // @ts-expect-error 预览身份必须携带皮肤标识。
+    previewActionIdentity('nova', 'nova', 'idle', 'idle-main');
   });
 
   test('切换到帧数相同的新动作时预览与时间轴都回到首帧', () => {
@@ -156,6 +262,50 @@ describe('预览组件帧数同步', () => {
       mountedFile: true,
       tourAllStates: true
     });
+  });
+
+  test('工作台按皮肤与动作恢复表现播放参数，只持久化速度和方向控件', async () => {
+    const updateCurrentAction = vi.fn();
+    const workspace = render(
+      <CharacterWorkshopWorkspace
+        state={workshopState(updateCurrentAction)}
+        api={{ readCharacterSource: vi.fn(async () => new Uint8Array()) }}
+      />
+    );
+
+    await waitFor(() => {
+      expect((screen.getByRole('slider') as HTMLInputElement).value).toBe('1.5');
+      expect(screen.getByTestId('工作台预览').dataset.direction).toBe('left');
+    });
+    fireEvent.change(screen.getByRole('slider'), { target: { value: '1.25' } });
+    expect(updateCurrentAction).toHaveBeenLastCalledWith({ playbackRate: 1.25 });
+    fireEvent.click(screen.getByRole('button', { name: '切换左右方向' }));
+    expect(updateCurrentAction).toHaveBeenLastCalledWith({ mirrorX: false });
+    const persistentCallCount = updateCurrentAction.mock.calls.length;
+    fireEvent.click(screen.getByRole('button', { name: '播放' }));
+    fireEvent.click(screen.getAllByRole('button', { name: '下一帧' })[0]!);
+    expect(updateCurrentAction).toHaveBeenCalledTimes(persistentCallCount);
+
+    workspace.rerender(
+      <CharacterWorkshopWorkspace
+        state={workshopState(updateCurrentAction, 'default', 'wave-main')}
+        api={{ readCharacterSource: vi.fn(async () => new Uint8Array()) }}
+      />
+    );
+    await waitFor(() => expect(
+      (screen.getByRole('slider') as HTMLInputElement).value
+    ).toBe('0.5'));
+    expect(screen.getByTestId('工作台预览').dataset.direction).toBe('right');
+    workspace.rerender(
+      <CharacterWorkshopWorkspace
+        state={workshopState(updateCurrentAction, 'winter', 'idle-main')}
+        api={{ readCharacterSource: vi.fn(async () => new Uint8Array()) }}
+      />
+    );
+    await waitFor(() => expect(
+      (screen.getByRole('slider') as HTMLInputElement).value
+    ).toBe('0.75'));
+    expect(screen.getByTestId('工作台预览').dataset.direction).toBe('right');
   });
 
   test('rerender 从大帧数缩减到小帧数和零帧时提交合法状态', () => {

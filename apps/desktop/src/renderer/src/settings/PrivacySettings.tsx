@@ -21,9 +21,6 @@ export interface PrivacySettingsProps {
 }
 
 const categoryLabels = {
-  file: ['文件', '仅在明确任务中发送所需文件内容'],
-  screenshot: ['截图', '允许发送当前任务需要的屏幕图像'],
-  clipboard: ['剪贴板', '允许读取并发送当前剪贴板内容'],
   memory: ['长期记忆', '允许模型请求使用本地长期记忆']
 } as const;
 
@@ -112,6 +109,14 @@ export function PrivacySettings(props: PrivacySettingsProps) {
           </label>
         </div>
 
+        <label className="permission-row">
+          <span>
+            <strong>自主心情</strong>
+            <small>未互动 5 分钟后可重新理解心情，此后至少间隔 15 分钟，每小时最多 4 次模型请求。关闭后已有心情仍会自然平复，动画继续变化。</small>
+          </span>
+          <input type="checkbox" aria-label="自主心情" checked={privacy.autonomousMoodEnabled ?? true}
+            disabled={props.busy} onChange={event => setPrivacy(current => ({ ...current, autonomousMoodEnabled: event.target.checked }))} />
+        </label>
         <fieldset className="proactivity-fieldset">
           <legend>
             主动性{!props.runtimeSupport.proactivity ? '（尚未接入运行时）' : ''}

@@ -15,9 +15,8 @@ import type {
   CharacterDesktopAnchors,
   CharacterMotionPresentation
 } from '../characters/player/CharacterPlayer';
-import type { ExtensionTriggerDefinition } from '../characters/player/extension-trigger-controller';
 import { presentationFor } from '../character/state-map';
-import { useTaskStore } from '../stores/task-store';
+import { taskStore, useTaskStore } from '../stores/task-store';
 import {
   PetInteractionController,
   createElementBoundsHitTestPort,
@@ -25,24 +24,9 @@ import {
   type PetInteractionControllerOptions
 } from './pet-interaction-controller';
 import {
-  characterErrorCode,
   characterRecoveryMessage
 } from '../../../shared/character-recovery';
 import type { MyselfApi } from '../../../shared/myself-api';
-
-/** Renderer 挂载后主动读取恢复快照，避免一次性启动事件早于订阅而丢失。 */
-export async function loadCharacterStartupRecovery(
-  api: Pick<MyselfApi, 'getCharacterRecoverySnapshot'>,
-  apply: (errorCode: string) => void
-): Promise<void> {
-  try {
-    const snapshot = await api.getCharacterRecoverySnapshot();
-    if (snapshot.errorCode) apply(snapshot.errorCode);
-  } catch (error) {
-    const message = error instanceof Error ? error.message : '';
-    apply(characterErrorCode(message));
-  }
-}
 
 export interface PetCharacterProps {
   state: CharacterState;
@@ -107,19 +91,13 @@ export function PetView({
   createInteractionController?: PetInteractionControllerFactory;
 } = {}) {
   const characterState = useTaskStore(state => state.characterState.stateId);
-  const fallbackState: CharacterState = characterState.startsWith('custom:')
-    ? 'idle'
-    : characterState as CharacterState;
+  const fallbackState: CharacterState = 'idle';
   const reducedMotion = useReducedMotion();
   const motionMode = motionModeFor(reducedMotion);
-  const configureExtensions = useTaskStore(state => state.configureCharacterExtensions);
-  const triggerIdle = useTaskStore(state => state.triggerCharacterIdle);
-  const applyCharacterMotion = useTaskStore(state => state.applyCharacterMotion);
+  useEffect(() => window.myself.subscribeCharacterMotion(event => {
+    if (event.type === 'behavior-action') taskStore.getState().applyCharacterPlayback(event.stateId);
+  }), []);
   const shellRef = useRef<HTMLElement>(null);
-  const capturedPointerRef = useRef<{
-    pointerId: number;
-    element: HTMLElement;
-  } | null>(null);
   const formalHitTestPortRef = useRef<CharacterHitTestPort | null>(null);
   const fallbackElementRef = useRef<HTMLSpanElement | null>(null);
   const interactionControllerRef = useRef<PetInteractionController | null>(null);
@@ -134,41 +112,42 @@ export function PetView({
     moving: false,
     carrying: false
   });
-  const [runtimeError, setRuntimeError] = useState<string | null>(null);
-  const [extensionDefinitions, setExtensionDefinitions] = useState<
-    readonly ExtensionTriggerDefinition[]
-  >([]);
+  const [startupFallbackError, setStartupFallbackError] = useState<string | null>(null);
+  const [playerRuntimeError, setPlayerRuntimeError] = useState<string | null>(null);
+  const handlePlayerRuntimeError = useCallback((errorCode: string | null): void => {
+    setPlayerRuntimeError(errorCode);
+    if (errorCode === null) setStartupFallbackError(null);
+  }, []);
+  const runtimeError = startupFallbackError ?? playerRuntimeError;
+  const runtimeErrorText = startupFallbackError
+    ? characterRecoveryMessage(startupFallbackError).text
+    : playerRuntimeError
+      ? '当前角色无法加载，请打开角色工作室检查并修复。'
+      : null;
   useEffect(() => {
     let disposed = false;
-    void loadCharacterStartupRecovery(window.myself, errorCode => {
-      if (!disposed) setRuntimeError(errorCode);
-    });
+    void window.myself.getCharacterRecoverySnapshot().then(
+      snapshot => {
+        if (!disposed && snapshot.fallbackErrorCode) {
+          setStartupFallbackError(snapshot.fallbackErrorCode);
+        }
+      },
+      () => undefined
+    );
     return () => {
       disposed = true;
     };
   }, []);
-  const handleExtensionDefinitions = useCallback((
-    definitions: readonly ExtensionTriggerDefinition[]
-  ): void => {
-    setExtensionDefinitions(definitions);
-    configureExtensions(definitions);
-  }, [configureExtensions]);
   const handleMotionChange = useCallback((next: CharacterMotionPresentation): void => {
     setMotion(next);
-    applyCharacterMotion({
-      moving: next.moving,
-      carrying: next.carrying
-    });
-  }, [applyCharacterMotion]);
+  }, []);
   const syncHitTestPort = useCallback((): void => {
     const formalPort = formalHitTestPortRef.current;
     const fallbackElement = fallbackElementRef.current;
-    interactionControllerRef.current?.setHitTestPort(
-      formalPort
-      ?? (fallbackElement
-        ? createElementBoundsHitTestPort(fallbackElement)
-        : null)
-    );
+    const characterPort = formalPort ?? (fallbackElement
+      ? createElementBoundsHitTestPort(fallbackElement)
+      : null);
+    interactionControllerRef.current?.setHitTestPort(characterPort);
   }, []);
   const handleHitTestPortChange = useCallback((
     port: CharacterHitTestPort | null
@@ -184,39 +163,10 @@ export function PetView({
   }, [syncHitTestPort]);
 
   useEffect(() => {
-    const interactionController = createInteractionController(window.myself, {
-      onDragStart: pointerId => {
-        const shell = shellRef.current;
-        if (!shell || typeof shell.setPointerCapture !== 'function') return;
-        try {
-          shell.setPointerCapture(pointerId);
-          capturedPointerRef.current = { pointerId, element: shell };
-        } catch {
-          capturedPointerRef.current = null;
-        }
-      },
-      onDragEnd: () => {
-        const captured = capturedPointerRef.current;
-        capturedPointerRef.current = null;
-        if (
-          !captured
-          || typeof captured.element.releasePointerCapture !== 'function'
-        ) {
-          return;
-        }
-        try {
-          captured.element.releasePointerCapture(captured.pointerId);
-        } catch {
-          // capture 可能已由平台隐式释放，清理保持幂等。
-        }
-      }
-    });
+    const interactionController = createInteractionController(window.myself, {});
     interactionControllerRef.current = interactionController;
     syncHitTestPort();
-    const cancelDrag = (): void => interactionController.handlePointerCancel();
-    window.addEventListener('blur', cancelDrag);
     return () => {
-      window.removeEventListener('blur', cancelDrag);
       interactionController.dispose();
       if (interactionControllerRef.current === interactionController) {
         interactionControllerRef.current = null;
@@ -233,55 +183,60 @@ export function PetView({
       data-seat-anchor={serializeAnchor(desktopAnchors.seat)}
       data-focus-anchor={serializeAnchor(desktopAnchors.focus)}
       data-character-state={characterState}
-      data-extension-states={extensionDefinitions.map(item => item.stateId).join(',')}
+      onPointerDown={event => {
+        if (event.button !== 0) return;
+        const started = interactionControllerRef.current?.handlePointerDown({
+          x: event.clientX,
+          y: event.clientY
+        });
+        if (!started) return;
+        // 浏览器指针捕获让窗口内拖拽持续收到终态；测试环境或旧内核缺失 API 时由 Main 生命周期兜底。
+        event.currentTarget.setPointerCapture?.(event.pointerId);
+        event.preventDefault();
+      }}
       onPointerMove={event => {
         interactionControllerRef.current?.handlePointerMove({
           x: event.clientX,
           y: event.clientY
         });
       }}
-      onPointerDown={event => {
-        interactionControllerRef.current?.handlePointerMove({
-          x: event.clientX,
-          y: event.clientY
-        });
-        interactionControllerRef.current?.handlePointerDown({
-          button: event.button,
-          pointerId: event.pointerId
-        });
-      }}
+      onPointerLeave={() => interactionControllerRef.current?.handlePointerLeave()}
       onPointerUp={event => {
-        interactionControllerRef.current?.handlePointerMove({
-          x: event.clientX,
-          y: event.clientY
-        });
         interactionControllerRef.current?.handlePointerUp();
+        if (event.currentTarget.hasPointerCapture?.(event.pointerId)) {
+          event.currentTarget.releasePointerCapture?.(event.pointerId);
+        }
       }}
-      onPointerCancel={() => interactionControllerRef.current?.handlePointerCancel()}
-      onLostPointerCapture={() => (
-        interactionControllerRef.current?.handlePointerCancel()
-      )}
-      onContextMenu={event => {
-        event.preventDefault();
-        interactionControllerRef.current?.handlePointerMove({
+      onPointerCancel={event => {
+        interactionControllerRef.current?.handlePointerUp();
+        if (event.currentTarget.hasPointerCapture?.(event.pointerId)) {
+          event.currentTarget.releasePointerCapture?.(event.pointerId);
+        }
+      }}
+      // Windows 透明窗口 forward 保证的是 mouse 消息，复用既有命中控制器保持单一状态机。
+      onMouseMove={event => {
+        const hit = interactionControllerRef.current?.handlePointerMove({
           x: event.clientX,
           y: event.clientY
         });
-        interactionControllerRef.current?.handleContextMenu();
+        if (hit) {
+          void window.myself.recordPetInteractionProbeEvent?.('mouse_hit')
+            .catch(() => undefined);
+        }
+      }}
+      onMouseLeave={() => interactionControllerRef.current?.handlePointerLeave()}
+      onMouseUp={event => {
+        if (event.button === 0) interactionControllerRef.current?.handlePointerUp();
       }}
     >
-      <div className="pet-drag-hint" aria-hidden="true">拖动我</div>
       <div className="pet-character-surface">
         <CharacterPlayer
           stateId={characterState}
           motionMode={motionMode}
-          behaviorAuthorityMode="main-v2"
-          onExtensionDefinitionsChange={handleExtensionDefinitions}
-          onIdleTrigger={triggerIdle}
           onHitTestPortChange={handleHitTestPortChange}
           onDesktopAnchors={setDesktopAnchors}
           onMotionChange={handleMotionChange}
-          onRuntimeError={setRuntimeError}
+          onRuntimeError={handlePlayerRuntimeError}
           fallback={(
             <PetCharacter
               state={fallbackState}
@@ -293,7 +248,7 @@ export function PetView({
       </div>
       {runtimeError ? (
         <span className="pet-runtime-recovery" role="alert">
-          <span>{characterRecoveryMessage(runtimeError).text}</span>
+          <span>{runtimeErrorText}</span>
           <button
             type="button"
             onClick={() => void window.myself.openCharacterWorkshop()}

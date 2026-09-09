@@ -1,9 +1,8 @@
 import type {
   ActionClip,
-  ActionSelectionResult,
   AnchorPoint,
   AnchorSet,
-  CharacterManifestV1,
+  CharacterPlaybackView,
   CharacterMotionMode,
   DraftActionClip
 } from '@myself/character-runtime';
@@ -14,9 +13,19 @@ import {
   type CharacterHitSnapshot
 } from './character-alpha-hit-tester';
 
+/** 播放身份来自 Main；帧数据复用共享场景，无旧状态选择器。 */
+export type CharacterPlaybackSelection = {
+  stateId: string;
+  action: DraftActionClip;
+  reason?: string;
+  playback?: { mode: 'once' | 'loop' | 'static'; durationMs: number | null };
+};
+
 export interface CharacterPlayerPort {
-  load(manifest: CharacterManifestV1, assets: CharacterAssetBundle): Promise<void>;
-  play(selection: ActionSelectionResult, motionMode: CharacterMotionMode): number | void;
+  load(manifest: CharacterPlaybackView, assets: CharacterAssetBundle): Promise<void>;
+  play(selection: CharacterPlaybackSelection, motionMode: CharacterMotionMode): number | void;
+  setMotionMode?(motionMode: CharacterMotionMode): void;
+  stopPlayback(): void;
   setDirection(direction: 'left' | 'right'): void;
   getAnchor(name: keyof AnchorSet): AnchorPoint | null;
   getFrameBounds?(): { x: number; y: number; width: number; height: number } | null;
@@ -26,6 +35,7 @@ export interface CharacterPlayerPort {
   subscribePlaybackLifecycle?(
     listener: (event: CharacterPlaybackLifecycleEvent) => void
   ): () => void;
+  resize?(width: number, height: number): void;
   destroy(): void;
 }
 
@@ -65,26 +75,13 @@ export interface PixiCharacterScene {
   destroy(): void;
 }
 
-/**
- * 兼容边界：旧播放器端口的场景替身与运行时实现仍可被适配器接收。
- */
-type LegacyPixiCharacterScene = {
-  load(manifest: CharacterManifestV1, assets: CharacterAssetBundle): Promise<void>;
-  show(selection: ActionSelectionResult, motionMode: CharacterMotionMode): void;
-  setDirection(direction: 'left' | 'right'): void;
-  getAnchor(name: keyof AnchorSet): AnchorPoint | null;
-  getFrameBounds?(): { x: number; y: number; width: number; height: number } | null;
-  stop(): void;
-  destroy(): void;
-  isTickerRunning(): boolean;
-};
-
 export class PixiCharacterPlayer implements CharacterPlayerPort {
   private destroyed = false;
   private direction: 'left' | 'right' = 'right';
-  private currentSelection: ActionSelectionResult | null = null;
+  private currentSelection: CharacterPlaybackSelection | null = null;
   private currentMotionMode: CharacterMotionMode | null = null;
   private nextPlaybackId = 0;
+  private durationTimer: ReturnType<typeof setTimeout> | null = null;
   private activePlayback: {
     playbackId: number;
     actionId: string;
@@ -98,16 +95,12 @@ export class PixiCharacterPlayer implements CharacterPlayerPort {
   private readonly unsubscribeSceneFrame: (() => void) | null;
   private readonly unsubscribeSceneComplete: (() => void) | null;
 
-  constructor(private readonly scene: PixiCharacterScene | LegacyPixiCharacterScene) {
-    this.unsubscribeSceneFrame = isLegacyScene(scene)
-      ? null
-      : scene.subscribeFrame(() => {
+  constructor(private readonly scene: PixiCharacterScene) {
+    this.unsubscribeSceneFrame = scene.subscribeFrame(() => {
           this.notifyHitRegion();
           this.notifyFrame();
         });
-    this.unsubscribeSceneComplete = isLegacyScene(scene)
-      ? null
-      : scene.subscribeActionComplete?.(() => this.completeActivePlayback()) ?? null;
+    this.unsubscribeSceneComplete = scene.subscribeActionComplete?.(() => this.completeActivePlayback()) ?? null;
   }
 
   static async create(
@@ -117,12 +110,9 @@ export class PixiCharacterPlayer implements CharacterPlayerPort {
     return new PixiCharacterPlayer(await sceneFactory(container));
   }
 
-  load(manifest: CharacterManifestV1, assets: CharacterAssetBundle): Promise<void> {
-    if (isLegacyScene(this.scene)) return this.scene.load(manifest, assets);
+  load(manifest: CharacterPlaybackView, assets: CharacterAssetBundle): Promise<void> {
     const actionAssetIds = new Set(
-      manifest.states.flatMap(state => (
-        state.actions.flatMap(action => action.frames.map(frame => frame.assetId))
-      ))
+      manifest.presentations.flatMap(item => item.presentation.frames.map(frame => frame.assetId))
     );
     for (const assetId of actionAssetIds) {
       if (!assets.atlasUrls.has(assetId)) {
@@ -136,26 +126,22 @@ export class PixiCharacterPlayer implements CharacterPlayerPort {
     return this.scene.loadAssets(visualAssets).then(() => this.notifyHitRegion());
   }
 
-  play(selection: ActionSelectionResult, motionMode: CharacterMotionMode): number {
+  play(selection: CharacterPlaybackSelection, motionMode: CharacterMotionMode): number {
     this.finishActivePlayback('interrupted');
     const playbackId = ++this.nextPlaybackId;
     this.activePlayback = {
       playbackId,
       actionId: selection.action.id,
-      loop: selection.action.loop
+      loop: selection.playback ? selection.playback.mode === 'loop' : selection.action.loop
     };
     this.currentSelection = selection;
     this.currentMotionMode = motionMode;
     try {
-      if (isLegacyScene(this.scene)) {
-        this.scene.show(selection, motionMode);
-      } else {
-        this.scene.showAction(selection.action, {
-          direction: this.direction,
-          motionMode,
-          speed: 1,
-          loop: selection.action.loop
-        });
+      {
+        this.scene.showAction(
+          selection.action,
+          resolvePublishedPlaybackOptions(selection.action, this.direction, motionMode, undefined, selection.playback)
+        );
         this.notifyHitRegion();
         // AnimatedSprite 首帧可能不会触发 onFrameChange，展示成功后显式发布当前稳定帧。
         this.notifyFrame();
@@ -164,27 +150,34 @@ export class PixiCharacterPlayer implements CharacterPlayerPort {
       this.finishActivePlayback('failed');
       throw error;
     }
+    // showAction 成功后才开始有界播放计时；Main 另有独立截止，不依赖此反馈存活。
+    if (selection.playback?.durationMs !== null && selection.playback?.durationMs !== undefined) {
+      this.durationTimer = setTimeout(() => {
+        if (this.activePlayback?.playbackId !== playbackId) return;
+        this.setMotionMode('static');
+        this.finishActivePlayback('completed');
+      }, selection.playback.durationMs);
+    }
     return playbackId;
   }
 
   setDirection(direction: 'left' | 'right'): void {
     const changed = this.direction !== direction;
     this.direction = direction;
-    if (isLegacyScene(this.scene)) {
-      this.scene.setDirection(direction);
-      return;
-    }
     // 终态动作仅保留只读快照供锚点查询，不能再通过方向切换恢复播放。
     if (!changed || !this.activePlayback || !this.currentSelection || !this.currentMotionMode) return;
     const frameIndex = this.scene.getCurrentFrame()?.frameIndex;
     try {
-      this.scene.showAction(this.currentSelection.action, {
-        direction,
-        motionMode: this.currentMotionMode,
-        ...(frameIndex === undefined ? {} : { frameIndex }),
-        speed: 1,
-        loop: this.currentSelection.action.loop
-      });
+      this.scene.showAction(
+        this.currentSelection.action,
+        resolvePublishedPlaybackOptions(
+          this.currentSelection.action,
+          direction,
+          this.currentMotionMode,
+          frameIndex,
+          this.currentSelection.playback
+        )
+      );
       this.notifyHitRegion();
     } catch (error) {
       // 方向重建失败即终结当前播放；播放器仍保留调用方提交的新方向。
@@ -193,8 +186,45 @@ export class PixiCharacterPlayer implements CharacterPlayerPort {
     }
   }
 
+  /** 切换静态播放时复用当前动作与帧，避免拖拽打断 Main 已裁决的播放令牌。 */
+  setMotionMode(motionMode: CharacterMotionMode): void {
+    if (
+      this.destroyed
+      || this.currentMotionMode === motionMode
+      || !this.activePlayback
+      || !this.currentSelection
+    ) return;
+    const frameIndex = this.scene.getCurrentFrame()?.frameIndex;
+    this.currentMotionMode = motionMode;
+    try {
+      this.scene.showAction(
+        this.currentSelection.action,
+        resolvePublishedPlaybackOptions(
+          this.currentSelection.action,
+          this.direction,
+          motionMode,
+          frameIndex,
+          this.currentSelection.playback
+        )
+      );
+      this.notifyHitRegion();
+      this.notifyFrame();
+    } catch (error) {
+      this.finishActivePlayback('failed');
+      throw error;
+    }
+  }
+
+  /** 行为终止保留静止帧，但清除播放生命周期，后续属性同步不得复活动作。 */
+  stopPlayback(): void {
+    try {
+      this.setMotionMode('static');
+    } finally {
+      this.finishActivePlayback('interrupted');
+    }
+  }
+
   getAnchor(name: keyof AnchorSet): AnchorPoint | null {
-    if (isLegacyScene(this.scene)) return this.scene.getAnchor(name);
     const currentFrame = this.scene.getCurrentFrame();
     const action = currentFrame?.action ?? this.currentSelection?.action;
     if (!action) return null;
@@ -202,17 +232,18 @@ export class PixiCharacterPlayer implements CharacterPlayerPort {
       ? action.frames[currentFrame.frameIndex]?.anchors?.[name]
       : undefined;
     const anchor = frameAnchor ?? action.anchors[name] ?? null;
-    return anchor ? resolveDirectionalAnchor(anchor, this.direction) : null;
+    return anchor
+      ? resolveDirectionalAnchor(anchor, resolveEffectiveDirection(action, this.direction))
+      : null;
   }
 
   getFrameBounds() {
-    if (isLegacyScene(this.scene)) return this.scene.getFrameBounds?.() ?? null;
     return this.scene.getCurrentFrame()?.bounds ?? null;
   }
 
   /** 仅复用正式场景已生成的快照；旧场景或掩码不可用时默认穿透。 */
   hitTest(point: { x: number; y: number }, threshold?: number): boolean {
-    if (this.destroyed || isLegacyScene(this.scene) || !this.scene.getHitSnapshot) return false;
+    if (this.destroyed || !this.scene.getHitSnapshot) return false;
     return hitTestCharacterAlpha(this.scene.getHitSnapshot(), point, threshold);
   }
 
@@ -240,7 +271,6 @@ export class PixiCharacterPlayer implements CharacterPlayerPort {
   }
 
   isTickerRunning(): boolean {
-    if (isLegacyScene(this.scene)) return this.scene.isTickerRunning();
     return hasTickerState(this.scene) && this.scene.isTickerRunning();
   }
 
@@ -253,14 +283,6 @@ export class PixiCharacterPlayer implements CharacterPlayerPort {
     this.hitRegionListeners.clear();
     this.frameListeners.clear();
     this.playbackLifecycleListeners.clear();
-    if (isLegacyScene(this.scene)) {
-      try {
-        this.scene.stop();
-      } finally {
-        this.scene.destroy();
-      }
-      return;
-    }
     this.scene.destroy();
   }
 
@@ -269,8 +291,14 @@ export class PixiCharacterPlayer implements CharacterPlayerPort {
     for (const listener of this.hitRegionListeners) listener();
   }
 
+  resize(width: number, height: number): void {
+    if (this.destroyed) return;
+    this.scene.resize?.(width, height);
+    this.notifyHitRegion();
+  }
+
   private notifyFrame(): void {
-    if (this.destroyed || isLegacyScene(this.scene)) return;
+    if (this.destroyed) return;
     const current = this.scene.getCurrentFrame();
     const frameId = current?.action.frames[current.frameIndex]?.id ?? null;
     for (const listener of this.frameListeners) listener(frameId);
@@ -286,6 +314,8 @@ export class PixiCharacterPlayer implements CharacterPlayerPort {
   ): void {
     const playback = this.activePlayback;
     if (!playback) return;
+    if (this.durationTimer !== null) clearTimeout(this.durationTimer);
+    this.durationTimer = null;
     this.activePlayback = null;
     const event: CharacterPlaybackLifecycleEvent = {
       playbackId: playback.playbackId,
@@ -294,6 +324,34 @@ export class PixiCharacterPlayer implements CharacterPlayerPort {
     };
     for (const listener of this.playbackLifecycleListeners) listener(event);
   }
+}
+
+/**
+ * 正式播放入口统一在此解析发布表现，避免首次播放与方向重建出现不同的画面语义。
+ */
+function resolvePublishedPlaybackOptions(
+  action: DraftActionClip,
+  motionDirection: 'left' | 'right',
+  motionMode: CharacterMotionMode,
+  frameIndex?: number,
+  playback?: CharacterPlaybackSelection['playback']
+): Parameters<PixiCharacterScene['showAction']>[1] {
+  return {
+    direction: resolveEffectiveDirection(action, motionDirection),
+    motionMode: playback?.mode === 'static' ? 'static' : motionMode,
+    ...(frameIndex === undefined ? {} : { frameIndex }),
+    speed: action.playbackRate ?? 1,
+    loop: playback ? playback.mode === 'loop' : action.loop
+  };
+}
+
+function resolveEffectiveDirection(
+  action: Pick<DraftActionClip, 'mirrorX' | 'direction'>,
+  motionDirection: 'left' | 'right'
+): 'left' | 'right' {
+  const direction = action.direction && action.direction !== 'any' ? action.direction : motionDirection;
+  if (!action.mirrorX) return direction;
+  return direction === 'left' ? 'right' : 'left';
 }
 
 type PixiModule = typeof import('pixi.js');
@@ -318,15 +376,6 @@ export function resolveDirectionalAnchor(
   return direction === 'left'
     ? { x: 1 - anchor.x, y: anchor.y }
     : anchor;
-}
-
-/**
- * 适配判定：运行时旧端口以 load 方法为特征，避免要求既有调用方同步迁移。
- */
-function isLegacyScene(
-  scene: PixiCharacterScene | LegacyPixiCharacterScene
-): scene is LegacyPixiCharacterScene {
-  return 'load' in scene;
 }
 
 /**
@@ -500,7 +549,8 @@ class BrowserPixiCharacterScene implements PixiCharacterScene {
       Math.max(0, frames.length - 1)
     );
 
-    if (options.motionMode === 'animated' && frames.length > 1) {
+    // 单帧 once 也由 Pixi 累计作者时长；只有单帧循环和静态预览无需推进 ticker。
+    if (options.motionMode === 'animated' && (frames.length > 1 || !options.loop)) {
       sprite.gotoAndStop(frameIndex);
       sprite.play();
       this.application.ticker.add(sprite.update, sprite);
@@ -508,13 +558,6 @@ class BrowserPixiCharacterScene implements PixiCharacterScene {
     } else {
       sprite.gotoAndStop(frameIndex);
       this.application.ticker.stop();
-      if (options.motionMode === 'animated' && !options.loop) {
-        queueMicrotask(() => {
-          if (!this.destroyed && this.sprite === sprite) {
-            this.notifyActionCompleteListeners();
-          }
-        });
-      }
     }
     this.application.render();
   }

@@ -2,6 +2,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, test, vi } from 'vitest';
 import type {
   AnchorSet,
+  ActionFrame,
   CharacterActionDefinitionV2,
   DraftActionClip,
   InteractionRegion
@@ -38,7 +39,7 @@ import {
   ActionInspector
 } from '../src/renderer/src/characters/workshop/ActionInspector';
 
-const action: DraftActionClip = {
+const action: DraftActionClip & { frames: (ActionFrame & { id: string })[] } = {
   id: 'idle-main',
   name: '待机',
   fps: 12,

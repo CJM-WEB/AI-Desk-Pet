@@ -19,22 +19,42 @@ import {
   resolve
 } from 'node:path';
 import {
-  characterDraftV2Schema,
-  characterManifestV2Schema,
-  characterV2Completeness,
-  projectCharacterManifestV2ToLegacy,
-  type CharacterDraftV2,
-  type CharacterManifestV1,
-  type CharacterManifestV2,
-  type CharacterV2CompletenessIssue
+  characterDraftV3Schema,
+  characterManifestV3Schema,
+
+  createCharacterPlaybackView,
+  resolveCharacterPresentationV3,
+  type CharacterDraftV3,
+  type CharacterPlaybackView,
+  type CharacterManifestV3,
+  type CharacterMigrationManifestV3,
+  type CharacterMigrationIssueV3
 } from '@myself/character-runtime';
 import { z } from 'zod';
+import { characterMigrationReviewSchema, characterMigrationResolutionSchema, type CharacterMigrationReview, type CharacterMigrationResolution } from '../../shared/character-ipc';
 import { atomicWriteText } from '../storage/atomic-file-coordinator';
 import { characterError } from './character-errors';
 import {
+  finalizeCharacterManifestMigration,
+  requirePublishedCharacterMigration,
   migrateCharacterDocument,
-  migrateCharacterManifest
+  prepareCharacterManifestMigration,
+  type CharacterGeometryMigrationDependencies,
+  type FinalizedCharacterManifestMigration,
+  type PreparedCharacterManifestMigration
 } from './character-migrations';
+import {
+  CharacterTransactionRecovery,
+  type CharacterTransactionRecoveryReport
+} from './character-transaction-recovery';
+
+/** 每个皮肤必须具备同一 idle 状态的可播放动作。 */
+function characterCompleteness(draft: CharacterDraftV3): CharacterSummary['missingRequirements'] {
+  const idle = draft.states.find(state => state.id === draft.idleStateId);
+  if (!idle?.actionIds.length) return ['default-state-action-missing'];
+  return draft.skins.every(skin => idle.actionIds.some(id => resolveCharacterPresentationV3(draft, skin.id, idle.id, id)))
+    ? [] : ['default-presentation-unplayable'];
+}
 
 const DEFAULT_CHARACTER_ID = 'builtin-default';
 const SAFE_CHARACTER_ID = /^[a-z0-9][a-z0-9_-]{0,119}$/u;
@@ -55,8 +75,9 @@ const indexEntrySchema = z.object({
   name: z.string().trim().min(1).max(120),
   thumbnailAssetId: z.string().regex(SAFE_CHARACTER_ID).nullable(),
   draftRevision: z.string().regex(DRAFT_REVISION).optional(),
-  draftVersion: z.literal(2).optional(),
-  compiledVersion: z.literal(2).optional(),
+  draftVersion: z.union([z.literal(2), z.literal(3)]).optional(),
+  compiledVersion: z.union([z.literal(2), z.literal(3)]).optional(),
+  migrationReview: characterMigrationReviewSchema.optional(),
   migrationErrorCode: z.literal('CHARACTER_MIGRATION_FAILED').optional()
 }).strict();
 
@@ -129,13 +150,19 @@ export type CharacterCreateOptions = {
   importTransactionId?: string;
 };
 
+export type ImportedCharacterRollbackResult =
+  | Readonly<{ kind: 'rolled-back' }>
+  | Readonly<{ kind: 'absent' }>
+  | Readonly<{ kind: 'ownership-mismatch' }>
+  | Readonly<{ kind: 'active-character' }>;
+
 export type CharacterSummary = {
   id: string;
   name: string;
   thumbnailAssetId: string | null;
   active: boolean;
   completeness: 'complete' | 'incomplete' | 'broken';
-  missingRequirements: CharacterV2CompletenessIssue[];
+  missingRequirements: Array<'default-state-action-missing' | 'default-presentation-unplayable'>;
   migrationErrorCode?: 'CHARACTER_MIGRATION_FAILED';
   migrationRecoveryAvailable: boolean;
   activationConfirmationRequired: boolean;
@@ -160,6 +187,8 @@ export type CharacterStoreDependencies = {
     checkpoint: 'before-rename',
     characterId: string
   ) => Promise<void>;
+  recoveryNow?: () => number;
+  geometryMigration?: CharacterGeometryMigrationDependencies;
 };
 
 export type CharacterIndexRecoveryResult = {
@@ -178,6 +207,21 @@ type RuntimePathIdentity = {
   physicalPath: string;
   kind: 'directory' | 'file';
 };
+
+type ImportedCharacterOwnershipIdentity = Readonly<{
+  directoryDev: number;
+  directoryIno: number;
+  ownerDev: number;
+  ownerIno: number;
+}>;
+
+type ImportedCharacterOwnershipLookup =
+  | Readonly<{ kind: 'absent' }>
+  | Readonly<{ kind: 'ownership-mismatch' }>
+  | Readonly<{
+      kind: 'owned';
+      identity: ImportedCharacterOwnershipIdentity;
+    }>;
 
 function emptyIndex(): CharacterIndex {
   return {
@@ -206,7 +250,7 @@ function sha256(bytes: Uint8Array | string): string {
   return createHash('sha256').update(bytes).digest('hex');
 }
 
-function activationFingerprint(manifest: CharacterManifestV2): string {
+function activationFingerprint(manifest: CharacterManifestV3): string {
   // 指纹绑定当前发布清单；重新发布后必须重新确认不完整状态。
   return sha256(JSON.stringify(manifest));
 }
@@ -220,13 +264,13 @@ function indexEntry(
   name: string,
   thumbnailAssetId: string | null,
   versions: Pick<CharacterIndexEntry, 'draftVersion' | 'compiledVersion'> = {
-    draftVersion: 2
+    draftVersion: 3
   }
 ): CharacterIndexEntry {
   return { id: characterId, name, thumbnailAssetId, ...versions };
 }
 
-function entryMatchesDraft(entry: CharacterIndexEntry, draft: CharacterDraftV2): boolean {
+function entryMatchesDraft(entry: CharacterIndexEntry, draft: CharacterDraftV3): boolean {
   return (
     entry.id === draft.id
     && entry.name === draft.name
@@ -236,7 +280,7 @@ function entryMatchesDraft(entry: CharacterIndexEntry, draft: CharacterDraftV2):
 
 function entryMatchesManifest(
   entry: CharacterIndexEntry,
-  manifest: Pick<CharacterManifestV2, 'id' | 'name' | 'thumbnailAssetId'>
+  manifest: Pick<CharacterManifestV3, 'id' | 'name' | 'thumbnailAssetId'>
 ): boolean {
   return (
     entry.id === manifest.id
@@ -261,8 +305,8 @@ async function exists(path: string): Promise<boolean> {
 }
 
 function sameFileIdentity(
-  left: { directoryDev: number; directoryIno: number; ownerDev: number; ownerIno: number },
-  right: { directoryDev: number; directoryIno: number; ownerDev: number; ownerIno: number }
+  left: ImportedCharacterOwnershipIdentity,
+  right: ImportedCharacterOwnershipIdentity
 ): boolean {
   return left.directoryDev === right.directoryDev
     && left.directoryIno === right.directoryIno
@@ -307,6 +351,12 @@ export class CharacterStore {
   private readonly onImportRollbackCheckpoint: NonNullable<
     CharacterStoreDependencies['onImportRollbackCheckpoint']
   >;
+  private readonly transactionRecovery: CharacterTransactionRecovery;
+  private readonly geometryMigration: CharacterGeometryMigrationDependencies;
+  private recoveryActiveCharacterId: string | null = null;
+  private transactionRecoveryReport: CharacterTransactionRecoveryReport = {
+    characters: []
+  };
 
   constructor(
     private readonly directory: string,
@@ -321,6 +371,22 @@ export class CharacterStore {
       ?? (async () => undefined);
     this.onImportRollbackCheckpoint = dependencies.onImportRollbackCheckpoint
       ?? (async () => undefined);
+    this.geometryMigration = dependencies.geometryMigration ?? {
+      decodeAlpha: async () => {
+        throw characterError('CHARACTER_RESOURCE_INTEGRITY_FAILED');
+      }
+    };
+    this.transactionRecovery = new CharacterTransactionRecovery({
+      activeCharacterId: () => this.recoveryActiveCharacterId,
+      ...(dependencies.recoveryNow === undefined
+        ? {}
+        : { now: dependencies.recoveryNow })
+    });
+  }
+
+  /** 返回最近一次有效索引加载产生的脱敏事务恢复裁决。 */
+  getTransactionRecoveryReport(): CharacterTransactionRecoveryReport {
+    return structuredClone(this.transactionRecoveryReport);
   }
 
   list(): Promise<CharacterSummary[]> {
@@ -440,8 +506,8 @@ export class CharacterStore {
 
       const characterDirectory = this.characterDirectory(input.id);
       await this.assertSafePath(characterDirectory);
-      const draft = characterDraftV2Schema.parse({
-        version: 2,
+      const draft = characterDraftV3Schema.parse({
+        version: 3,
         id: input.id,
         name,
         identity: {
@@ -457,23 +523,18 @@ export class CharacterStore {
           exampleLines: []
         },
         defaultSkinId: 'default',
-        defaultStateId: 'idle',
+        idleStateId: 'idle',
         skins: [{
           id: 'default',
           name: '默认皮肤',
-          presentations: [],
-          semanticFallbacks: []
+          presentations: []
         }],
         states: [{
           id: 'idle',
           name: '待机',
-          kind: 'primary',
-          semantic: 'idle',
           tags: [],
           intensity: 0.5,
           suggestedDurationMs: 3000,
-          coexistWithStateIds: [],
-          forbiddenStateIds: [],
           enterConditions: [],
           exitConditions: [],
           agentInferable: true,
@@ -510,7 +571,7 @@ export class CharacterStore {
   rollbackImportedCharacter(
     characterId: string,
     importTransactionId: string
-  ): Promise<boolean> {
+  ): Promise<ImportedCharacterRollbackResult> {
     return this.enqueue(async () => {
       assertCharacterId(characterId);
       z.string().regex(IMPORT_TRANSACTION_ID).parse(importTransactionId);
@@ -522,11 +583,13 @@ export class CharacterStore {
         characterId,
         importTransactionId
       );
-      if (!originalIdentity) return false;
+      if (originalIdentity.kind === 'absent') return { kind: 'absent' };
+      if (originalIdentity.kind === 'ownership-mismatch') {
+        return { kind: 'ownership-mismatch' };
+      }
 
       const index = await this.requireWritableIndex();
-      if (index.activeCharacterId === characterId) return false;
-      const originalIndex = cloneIndex(index);
+      if (index.activeCharacterId === characterId) return { kind: 'active-character' };
       const tombstone = this.deleteTombstone(characterId);
       await this.assertSafePath(characterDirectory);
       await this.assertSafePath(tombstone);
@@ -537,9 +600,17 @@ export class CharacterStore {
         characterId,
         importTransactionId
       );
-      if (!currentIdentity || !sameFileIdentity(originalIdentity, currentIdentity)) {
-        return false;
+      if (
+        currentIdentity.kind !== 'owned'
+        || !sameFileIdentity(originalIdentity.identity, currentIdentity.identity)
+      ) {
+        return { kind: 'ownership-mismatch' };
       }
+      const currentIndex = await this.requireWritableIndex();
+      if (currentIndex.activeCharacterId === characterId) {
+        return { kind: 'active-character' };
+      }
+      const originalIndex = cloneIndex(currentIndex);
       try {
         await this.removePath(tombstone, { recursive: true, force: true });
         await this.renamePath(characterDirectory, tombstone);
@@ -549,15 +620,18 @@ export class CharacterStore {
           characterId,
           importTransactionId
         );
-        if (!movedIdentity || !sameFileIdentity(originalIdentity, movedIdentity)) {
+        if (
+          movedIdentity.kind !== 'owned'
+          || !sameFileIdentity(originalIdentity.identity, movedIdentity.identity)
+        ) {
           if (!(await exists(characterDirectory))) {
             await this.renamePath(tombstone, characterDirectory);
           }
-          return false;
+          return { kind: 'ownership-mismatch' };
         }
-        index.characters = index.characters.filter(entry => entry.id !== characterId);
-        delete index.incompleteActivationConfirmations[characterId];
-        await this.writeIndex(index);
+        currentIndex.characters = currentIndex.characters.filter(entry => entry.id !== characterId);
+        delete currentIndex.incompleteActivationConfirmations[characterId];
+        await this.writeIndex(currentIndex);
       } catch (error) {
         if (await exists(tombstone)) {
           await this.renamePath(tombstone, characterDirectory).catch(() => undefined);
@@ -567,7 +641,7 @@ export class CharacterStore {
       }
       await this.removePath(tombstone, { recursive: true, force: true })
         .catch(() => undefined);
-      return true;
+      return { kind: 'rolled-back' };
     });
   }
 
@@ -576,46 +650,59 @@ export class CharacterStore {
     ownerFile: string,
     characterId: string,
     importTransactionId: string
-  ): Promise<{ directoryDev: number; directoryIno: number; ownerDev: number; ownerIno: number } | null> {
+  ): Promise<ImportedCharacterOwnershipLookup> {
     await this.assertSafePath(characterDirectory);
     await this.assertSafePath(ownerFile);
+    let directoryStats: Awaited<ReturnType<typeof lstat>>;
     try {
-      const [directoryStats, ownerStats, ownerText] = await Promise.all([
-        lstat(characterDirectory),
-        lstat(ownerFile),
-        readFile(ownerFile, 'utf8')
-      ]);
-      if (
-        !directoryStats.isDirectory()
-        || directoryStats.isSymbolicLink()
-        || !ownerStats.isFile()
-        || ownerStats.isSymbolicLink()
-      ) {
-        return null;
-      }
-      const owner = JSON.parse(ownerText) as unknown;
-      if (
-        typeof owner !== 'object'
-        || owner === null
-        || !('version' in owner)
-        || owner.version !== 1
-        || !('characterId' in owner)
-        || owner.characterId !== characterId
-        || !('importTransactionId' in owner)
-        || owner.importTransactionId !== importTransactionId
-      ) {
-        return null;
-      }
-      return {
+      directoryStats = await lstat(characterDirectory);
+    } catch (error) {
+      if (isMissingFile(error)) return { kind: 'absent' };
+      throw error;
+    }
+    if (!directoryStats.isDirectory() || directoryStats.isSymbolicLink()) {
+      return { kind: 'ownership-mismatch' };
+    }
+
+    let ownerStats: Awaited<ReturnType<typeof lstat>>;
+    try {
+      ownerStats = await lstat(ownerFile);
+    } catch (error) {
+      if (isMissingFile(error)) return { kind: 'ownership-mismatch' };
+      throw error;
+    }
+    if (!ownerStats.isFile() || ownerStats.isSymbolicLink()) {
+      return { kind: 'ownership-mismatch' };
+    }
+
+    let owner: unknown;
+    try {
+      owner = JSON.parse(await readFile(ownerFile, 'utf8'));
+    } catch (error) {
+      if (isMissingFile(error)) return { kind: 'ownership-mismatch' };
+      throw error;
+    }
+    if (
+      typeof owner !== 'object'
+      || owner === null
+      || !('version' in owner)
+      || owner.version !== 1
+      || !('characterId' in owner)
+      || owner.characterId !== characterId
+      || !('importTransactionId' in owner)
+      || owner.importTransactionId !== importTransactionId
+    ) {
+      return { kind: 'ownership-mismatch' };
+    }
+    return {
+      kind: 'owned',
+      identity: {
         directoryDev: directoryStats.dev,
         directoryIno: directoryStats.ino,
         ownerDev: ownerStats.dev,
         ownerIno: ownerStats.ino
-      };
-    } catch (error) {
-      if (isMissingFile(error)) return null;
-      throw error;
-    }
+      }
+    };
   }
 
   completeImportedCharacter(
@@ -653,8 +740,9 @@ export class CharacterStore {
 
   saveDraft(
     characterId: string,
-    draft: CharacterDraftV2,
-    draftRevision?: string
+    draft: CharacterDraftV3,
+    draftRevision?: string,
+    migrationResolutions?: readonly CharacterMigrationResolution[]
   ): Promise<void> {
     const parsedRevision = draftRevision === undefined
       ? undefined
@@ -676,13 +764,14 @@ export class CharacterStore {
       if (revisionReservation?.reused) {
         throw characterError('CHARACTER_DRAFT_REVISION_CONFLICT');
       }
-      const parsed = characterDraftV2Schema.safeParse(draft);
+      const parsed = characterDraftV3Schema.safeParse(draft);
       if (!parsed.success) throw characterError('CHARACTER_MIGRATION_FAILED');
       if (parsed.data.id !== characterId) {
         throw characterError('CHARACTER_ID_MISMATCH');
       }
 
-      const index = await this.requireCharacter(characterId);
+      const index = await this.requireCharacter(characterId, false);
+      this.transactionRecovery.assertDraftSaveAllowed(characterId);
       if (
         revisionReservation
         && this.entry(index, characterId).draftRevision === revisionReservation.revision
@@ -690,29 +779,132 @@ export class CharacterStore {
         revisionReservation.reused = true;
         throw characterError('CHARACTER_DRAFT_REVISION_CONFLICT');
       }
+      await this.ensureDraftV3(characterId, index);
+      const resolvedIndex = cloneIndex(index);
+      this.applyMigrationResolutions(resolvedIndex, characterId, parsed.data, migrationResolutions);
       await this.assertSafeCharacterPath(characterId, join('draft'));
-      await this.recoverDraftTransaction(characterId, index);
       await this.installDraftTransaction(
         characterId,
         index,
         parsed.data,
-        parsedRevision?.success ? { draftRevision: parsedRevision.data } : {}
+        { ...(parsedRevision?.success ? { draftRevision: parsedRevision.data } : {}),
+          migrationReview: this.entry(resolvedIndex, characterId).migrationReview }
       );
     });
   }
 
-  getDraft(characterId: string): Promise<CharacterDraftV2> {
+
+  /** 导入边界保留原始文档及素材；有问题的包仅供编辑，不安装正式清单。 */
+  retainImportedMigration(characterId: string, evidence: { draftText: string; manifestText: string; issues: CharacterMigrationIssueV3[]; assets: Readonly<Record<string, Uint8Array>> }): Promise<void> {
+    return this.enqueue(async () => {
+      const index = await this.requireCharacter(characterId);
+      await this.recordMigrationReview(characterId, index, evidence.issues);
+      await this.preserveMigrationOriginal(characterId, 'draft', evidence.draftText);
+      await this.preserveMigrationAssets(characterId, evidence.manifestText, evidence.assets);
+      if (!evidence.issues.length) return;
+      const raw: unknown = JSON.parse(evidence.manifestText);
+      const migrated = prepareCharacterManifestMigration(raw);
+      this.validateAssets(migrated.document, evidence.assets);
+      if (typeof raw !== 'object' || raw === null) throw characterError('CHARACTER_MIGRATION_FAILED');
+      await this.safeWriteText(join(this.compiledDirectory(characterId), 'manifest.json'), json({ ...raw, id: characterId }));
+      for (const resource of migrated.document.resources) {
+        const target = join(this.compiledDirectory(characterId), resource.fileName);
+        await this.assertSafePath(target);
+        await durableWrite(target, evidence.assets[resource.fileName]!);
+      }
+    });
+  }
+
+  getMigrationReview(characterId: string): Promise<CharacterMigrationReview> {
+    return this.enqueue(async () => {
+      const index = await this.requireCharacter(characterId);
+      await this.ensureDraftV3(characterId, index);
+      await this.refreshPublishedMigrationReview(characterId, index);
+      return structuredClone(this.entry(index, characterId).migrationReview ?? { issues: [], resolutions: [] });
+    });
+  }
+
+  /** 迁移问题只追加；保存与重启不能清除尚未确认的原规则。 */
+  private async recordMigrationReview(characterId: string, index: CharacterIndex, issues: readonly CharacterMigrationIssueV3[]): Promise<void> {
+    if (!issues.length) return;
+    const entry = this.entry(index, characterId);
+    const review = entry.migrationReview ?? { issues: [], resolutions: [] };
+    for (const issue of issues) {
+      const issueId = sha256(new TextEncoder().encode(JSON.stringify(issue)));
+      if (!review.issues.some(item => item.issueId === issueId)) review.issues.push({ ...issue, issueId });
+    }
+    entry.migrationReview = characterMigrationReviewSchema.parse(review);
+    await this.writeIndex(index);
+  }
+
+  private applyMigrationResolutions(index: CharacterIndex, characterId: string, draft: CharacterDraftV3, resolutions?: readonly CharacterMigrationResolution[]): void {
+    if (!resolutions?.length) return;
+    const entry = this.entry(index, characterId);
+    const review = structuredClone(entry.migrationReview ?? { issues: [], resolutions: [] });
+    for (const resolution of resolutions) {
+      const issue = review.issues.find(issue => issue.issueId === resolution.issueId);
+      if (!issue || (issue.code.startsWith('idle-') && draft.idleStateId === null)) throw characterError('CHARACTER_MIGRATION_REVIEW_REQUIRED');
+      const parsed = characterMigrationResolutionSchema.parse(resolution);
+      review.resolutions = [...review.resolutions.filter(item => item.issueId !== parsed.issueId), parsed];
+    }
+    entry.migrationReview = review;
+  }
+
+  private async refreshPublishedMigrationReview(characterId: string, index: CharacterIndex): Promise<void> {
+    const file = join(this.compiledDirectory(characterId), 'manifest.json');
+    await this.assertSafePath(file);
+    if (!(await exists(file))) return;
+    const migrated = await this.readPublishedFrom(this.compiledDirectory(characterId), characterId);
+    if (migrated.sourceVersion < 3) {
+      await this.preserveMigrationAssets(characterId, migrated.manifestText, migrated.assets);
+      await this.recordMigrationReview(characterId, index, migrated.issues);
+    }
+  }
+
+  private assertMigrationReviewed(index: CharacterIndex, characterId: string): void {
+    const review = this.entry(index, characterId).migrationReview;
+    if (review?.issues.some(issue => !review.resolutions.some(item => item.issueId === issue.issueId))) {
+      throw characterError('CHARACTER_MIGRATION_REVIEW_REQUIRED');
+    }
+  }
+
+  private async preserveMigrationOriginal(characterId: string, kind: 'draft' | 'manifest' | 'draft-v1' | 'draft-v2', text: string): Promise<void> {
+    const file = join(this.characterDirectory(characterId), `migration-original-${kind}.json`);
+    await this.assertSafePath(file);
+    if (!(await exists(file))) await this.safeWriteText(file, text);
+  }
+
+  /** 首次迁移证据独立于发布事务备份；已存在的原文与素材永不覆盖。 */
+  private async preserveMigrationAssets(characterId: string, manifestText: string, assets: Readonly<Record<string, Uint8Array>>): Promise<void> {
+    await this.preserveMigrationOriginal(characterId, 'manifest', manifestText);
+    const originalFile = join(this.characterDirectory(characterId), 'migration-original-manifest.json');
+    const original = prepareCharacterManifestMigration(JSON.parse(await readFile(originalFile, 'utf8'))).document;
+    const directory = join(this.characterDirectory(characterId), 'migration-original-assets');
+    await this.assertSafePath(directory);
+    await mkdir(directory, { recursive: true });
+    for (const resource of original.resources) {
+      const file = join(directory, resource.fileName);
+      await this.assertSafePath(file);
+      if (await exists(file)) continue;
+      const bytes = assets[resource.fileName];
+      if (!bytes || bytes.byteLength !== resource.byteLength || sha256(bytes) !== resource.sha256) {
+        throw characterError('CHARACTER_RESOURCE_INTEGRITY_FAILED');
+      }
+      await durableWrite(file, bytes);
+    }
+  }
+
+  getDraft(characterId: string): Promise<CharacterDraftV3> {
     return this.enqueue(async () => {
       assertCharacterId(characterId);
       const index = await this.requireCharacter(characterId);
-      await this.recoverDraftTransaction(characterId, index);
-      return this.ensureDraftV2(characterId, index);
+      return this.ensureDraftV3(characterId, index);
     });
   }
 
   publishCompiled(
     characterId: string,
-    manifest: CharacterManifestV2,
+    manifest: CharacterManifestV3,
     assets: Readonly<Record<string, Uint8Array>>,
     draftRevision?: string
   ): Promise<void> {
@@ -724,11 +916,15 @@ export class CharacterStore {
     }
     return this.enqueue(async () => {
       assertCharacterId(characterId);
-      const index = await this.requireCharacter(characterId);
+      const index = await this.requireCharacter(characterId, false);
+      this.transactionRecovery.assertPublishAllowed(characterId);
       if (draftRevision !== undefined) {
         z.string().regex(DRAFT_REVISION).parse(draftRevision);
         this.assertDraftRevision(characterId, index, draftRevision);
       }
+      await this.ensureDraftV3(characterId, index);
+      await this.refreshPublishedMigrationReview(characterId, index);
+      this.assertMigrationReviewed(index, characterId);
       const parsedManifest = this.parseManifest(manifest);
       if (parsedManifest.id !== characterId) {
         throw characterError('CHARACTER_ID_MISMATCH');
@@ -736,7 +932,6 @@ export class CharacterStore {
       this.validateAssets(parsedManifest, assets);
 
       await this.assertSafeCharacterPath(characterId);
-      await this.recoverPublishTransaction(characterId, index);
       await this.installPublishedTransaction(
         characterId,
         index,
@@ -747,32 +942,32 @@ export class CharacterStore {
     });
   }
 
-  getRuntimeManifest(characterId: string): Promise<CharacterManifestV1> {
+  getRuntimeManifest(characterId: string): Promise<CharacterPlaybackView> {
     return this.enqueue(async () => {
       assertCharacterId(characterId);
-      const index = await this.requireCharacter(characterId);
-      await this.recoverPublishTransaction(characterId, index);
-      return projectCharacterManifestV2ToLegacy(
-        await this.ensurePublishedV2(characterId, index)
-      );
+      const index = await this.requireCharacter(characterId, false);
+      this.transactionRecovery.assertRuntimeAllowed(characterId);
+      const manifest = await this.ensurePublishedV3(characterId, index);
+      return createCharacterPlaybackView(manifest, manifest.defaultSkinId);
     });
   }
 
-  getPublishedManifest(characterId: string): Promise<CharacterManifestV2> {
+  getPublishedManifest(characterId: string): Promise<CharacterManifestV3> {
     return this.enqueue(async () => {
       assertCharacterId(characterId);
-      const index = await this.requireCharacter(characterId);
-      await this.recoverPublishTransaction(characterId, index);
-      return this.ensurePublishedV2(characterId, index);
+      const index = await this.requireCharacter(characterId, false);
+      this.transactionRecovery.assertRuntimeAllowed(characterId);
+      return this.ensurePublishedV3(characterId, index);
     });
   }
 
   setActive(characterId: string, confirmIncomplete = false): Promise<void> {
     return this.enqueue(async () => {
       assertCharacterId(characterId);
-      const index = await this.requireCharacter(characterId);
-      const manifest = await this.ensurePublishedV2(characterId, index);
-      const missing = characterV2Completeness(manifest);
+      const index = await this.requireCharacter(characterId, false);
+      this.transactionRecovery.assertRuntimeAllowed(characterId);
+      const manifest = await this.ensurePublishedV3(characterId, index);
+      const missing = characterCompleteness(manifest);
       const fingerprint = activationFingerprint(manifest);
       const confirmed = index.incompleteActivationConfirmations[characterId];
       if (missing.length > 0 && confirmed !== fingerprint && !confirmIncomplete) {
@@ -785,29 +980,31 @@ export class CharacterStore {
       }
       index.activeCharacterId = characterId;
       await this.writeIndex(index);
+      this.recoveryActiveCharacterId = characterId;
     });
   }
 
-  getActive(): Promise<CharacterManifestV1> {
+  getActive(): Promise<CharacterPlaybackView> {
     return this.enqueue(async () => {
       const loaded = await this.requireWritableIndex();
       if (loaded.activeCharacterId === null) {
         throw characterError('CHARACTER_RUNTIME_UNAVAILABLE');
       }
-      return projectCharacterManifestV2ToLegacy(
-        await this.ensurePublishedV2(loaded.activeCharacterId, loaded)
-      );
+      this.transactionRecovery.assertRuntimeAllowed(loaded.activeCharacterId);
+      const manifest = await this.ensurePublishedV3(loaded.activeCharacterId, loaded);
+      return createCharacterPlaybackView(manifest, manifest.defaultSkinId);
     });
   }
 
-  /** 仅供 Main 行为引擎读取发布后的 V2 清单，不经过 Renderer 边界。 */
-  getActiveManifestV2(): Promise<CharacterManifestV2> {
+  /** 仅供 Main 行为引擎读取发布后的 V3 清单，不经过 Renderer 边界。 */
+  getActiveManifestV3(): Promise<CharacterManifestV3> {
     return this.enqueue(async () => {
       const loaded = await this.requireWritableIndex();
       if (loaded.activeCharacterId === null) {
         throw characterError('CHARACTER_RUNTIME_UNAVAILABLE');
       }
-      return this.ensurePublishedV2(loaded.activeCharacterId, loaded);
+      this.transactionRecovery.assertRuntimeAllowed(loaded.activeCharacterId);
+      return this.ensurePublishedV3(loaded.activeCharacterId, loaded);
     });
   }
 
@@ -818,7 +1015,8 @@ export class CharacterStore {
       if (index.activeCharacterId === null) {
         throw characterError('CHARACTER_RUNTIME_UNAVAILABLE');
       }
-      await this.ensurePublishedV2(index.activeCharacterId, index);
+      this.transactionRecovery.assertRuntimeAllowed(index.activeCharacterId);
+      await this.ensurePublishedV3(index.activeCharacterId, index);
       try {
         return await this.readRuntimeAssetFrom(
           this.compiledDirectory(index.activeCharacterId),
@@ -897,6 +1095,8 @@ export class CharacterStore {
       if (!isMissingFile(error)) throw error;
       const index = emptyIndex();
       await this.writeIndex(index);
+      this.recoveryActiveCharacterId = null;
+      this.transactionRecoveryReport = await this.transactionRecovery.recoverAll([]);
       return { index, writable: true };
     }
 
@@ -910,11 +1110,26 @@ export class CharacterStore {
     const parsed = characterIndexSchema.safeParse(raw);
     if (!parsed.success) {
       await this.preserveCorruptText(file, source);
+      this.recoveryActiveCharacterId = null;
+      this.transactionRecoveryReport = await this.transactionRecovery.recoverAll([]);
       return { index: emptyIndex(), writable: false };
     }
 
+    this.recoveryActiveCharacterId = parsed.data.activeCharacterId;
     await this.recoverDeleteTombstones(parsed.data);
-    await this.recoverAllCharacterTransactions(parsed.data);
+    this.transactionRecoveryReport = await this.transactionRecovery.recoverAll(
+      parsed.data.characters.map(entry => ({
+        characterId: entry.id,
+        recoverDraft: async () => {
+          await this.assertSafeCharacterPath(entry.id, 'draft');
+          await this.recoverDraftTransaction(entry.id, parsed.data);
+        },
+        recoverPublish: async () => {
+          await this.assertSafeCharacterPath(entry.id);
+          await this.recoverPublishTransaction(entry.id, parsed.data);
+        }
+      }))
+    );
     return { index: parsed.data, writable: true };
   }
 
@@ -924,12 +1139,17 @@ export class CharacterStore {
     return loaded.index;
   }
 
-  private async requireCharacter(characterId: string): Promise<CharacterIndex> {
+  private async requireCharacter(
+    characterId: string,
+    assertPath = true
+  ): Promise<CharacterIndex> {
     const index = await this.requireWritableIndex();
     if (!index.characters.some(character => character.id === characterId)) {
       throw characterError('CHARACTER_NOT_FOUND');
     }
-    await this.assertSafeCharacterPath(characterId);
+    if (assertPath) {
+      await this.assertSafeCharacterPath(characterId);
+    }
     return index;
   }
 
@@ -994,12 +1214,12 @@ export class CharacterStore {
     Object.assign(index, cloneIndex(nextIndex));
   }
 
-  /** 复用草稿事务安装 V2；迁移时仅在提交成功后保留 V1 恢复点。 */
+  /** 复用草稿事务安装 V3；迁移时仅在提交成功后保留旧版本恢复点。 */
   private async installDraftTransaction(
     characterId: string,
     index: CharacterIndex,
-    draft: CharacterDraftV2,
-    options: { keepBackup?: boolean; draftRevision?: string } = {}
+    draft: CharacterDraftV3,
+    options: { keepBackup?: boolean; draftRevision?: string; migrationReview?: CharacterMigrationReview | undefined } = {}
   ): Promise<void> {
     const originalIndex = cloneIndex(index);
     const previousEntry = this.entry(index, characterId);
@@ -1007,9 +1227,10 @@ export class CharacterStore {
       characterId,
       draft.name,
       draft.thumbnailAssetId ?? null,
-      { draftVersion: 2, compiledVersion: previousEntry.compiledVersion }
+      { draftVersion: 3, compiledVersion: previousEntry.compiledVersion }
     );
     nextEntry.draftRevision = options.draftRevision ?? previousEntry.draftRevision;
+    nextEntry.migrationReview = options.migrationReview ?? previousEntry.migrationReview;
     const transaction: DraftTransaction = {
       version: 1,
       phase: 'prepared',
@@ -1036,37 +1257,55 @@ export class CharacterStore {
     await this.cleanupDraftTransaction(characterId, transaction.keepBackup);
   }
 
-  private async ensureDraftV2(
+  private async ensureDraftV3(
     characterId: string,
     index: CharacterIndex
-  ): Promise<CharacterDraftV2> {
+  ): Promise<CharacterDraftV3> {
     const migrated = await this.readDraftMigration(
       this.draftFile(characterId),
       characterId,
       true
     );
-    if (migrated.sourceVersion === 2) return migrated.document;
+    if (this.transactionRecovery.resultFor(characterId).draftErrorCode !== null) return migrated.document;
+    await this.recordMigrationReview(characterId, index, migrated.issues);
+    if (migrated.sourceVersion === 3) return migrated.document;
+    await this.preserveMigrationOriginal(characterId, 'draft', await readFile(this.draftFile(characterId), 'utf8'));
+    const previousBackup = this.draftBackupFile(characterId);
+    await this.assertSafePath(previousBackup);
+    if (await exists(previousBackup)) {
+      const text = await readFile(previousBackup, 'utf8');
+      try {
+        const backup = migrateCharacterDocument(JSON.parse(text));
+        if (backup.sourceVersion < migrated.sourceVersion && backup.sourceVersion !== 3) {
+          await this.preserveMigrationOriginal(characterId, backup.sourceVersion === 1 ? 'draft-v1' : 'draft-v2', text);
+        }
+      } catch { /* 损坏的可选恢复点继续由原事务恢复规则处理。 */ }
+    }
+    if (this.transactionRecovery.resultFor(characterId).draftErrorCode !== null) {
+      return migrated.document;
+    }
     await this.installDraftTransaction(characterId, index, migrated.document, {
       keepBackup: true
     });
     return migrated.document;
   }
 
-  /** 复用发布事务安装 V2 清单及原资源字节，不复制 source 目录。 */
+  /** 复用发布事务安装 V3 清单及原资源字节，不复制 source 目录。 */
   private async installPublishedTransaction(
     characterId: string,
     index: CharacterIndex,
-    manifest: CharacterManifestV2,
+    manifest: CharacterManifestV3,
     assets: Readonly<Record<string, Uint8Array>>,
     options: { keepBackup?: boolean; expectedDraftRevision?: string } = {}
   ): Promise<void> {
     const originalIndex = cloneIndex(index);
     const previousEntry = structuredClone(this.entry(index, characterId));
     const nextEntry = indexEntry(characterId, manifest.name, manifest.thumbnailAssetId, {
-      draftVersion: previousEntry.draftVersion ?? 2,
-      compiledVersion: 2
+      draftVersion: previousEntry.draftVersion ?? 3,
+      compiledVersion: 3
     });
     nextEntry.draftRevision = previousEntry.draftRevision;
+    nextEntry.migrationReview = previousEntry.migrationReview;
     const transaction: PublishTransaction = {
       version: 2,
       phase: 'prepared',
@@ -1136,31 +1375,31 @@ export class CharacterStore {
     await this.cleanupPublishTransaction(characterId, transaction.keepBackup);
   }
 
-  private async ensurePublishedV2(
+  private async ensurePublishedV3(
     characterId: string,
     index: CharacterIndex
-  ): Promise<CharacterManifestV2> {
+  ): Promise<CharacterManifestV3> {
     const migrated = await this.readPublishedFrom(
       this.compiledDirectory(characterId),
       characterId
     );
-    if (migrated.sourceVersion === 2) return migrated.document;
+    const recoveryResult = this.transactionRecovery.resultFor(characterId);
+    // 坏事务只能在内存投影，读取素材不得新增任何迁移证据或索引写入。
+    if (recoveryResult.draftErrorCode !== null || recoveryResult.publishErrorCode !== null) {
+      return requirePublishedCharacterMigration(migrated);
+    }
+    await this.recordMigrationReview(characterId, index, migrated.issues);
+    if (migrated.sourceVersion < 3) await this.preserveMigrationAssets(characterId, migrated.manifestText, migrated.assets);
+    const manifest = requirePublishedCharacterMigration(migrated);
+    if (!migrated.requiresPersistence) return manifest;
     await this.installPublishedTransaction(
       characterId,
       index,
-      migrated.document,
+      manifest,
       migrated.assets,
       { keepBackup: true }
     );
-    return migrated.document;
-  }
-
-  private async recoverAllCharacterTransactions(index: CharacterIndex): Promise<void> {
-    for (const entry of index.characters) {
-      await this.assertSafeCharacterPath(entry.id);
-      await this.recoverDraftTransaction(entry.id, index);
-      await this.recoverPublishTransaction(entry.id, index);
-    }
+    return manifest;
   }
 
   private async recoverDeleteTombstones(index: CharacterIndex): Promise<void> {
@@ -1206,7 +1445,7 @@ export class CharacterStore {
         const current = await this.readDraftMigration(currentFile, characterId);
         try {
           const backup = await this.readDraftMigration(backupFile, characterId);
-          if (!(current.sourceVersion === 2 && backup.sourceVersion === 1)) {
+          if (!(current.sourceVersion > backup.sourceVersion)) {
             await this.removePath(backupFile, { force: true });
           }
         } catch {
@@ -1336,25 +1575,26 @@ export class CharacterStore {
         let preserveBackup = false;
         try {
           const backupManifest = await this.readPublishedFrom(backup, characterId);
-          preserveBackup = current.sourceVersion === 2 && backupManifest.sourceVersion === 1;
+          preserveBackup = current.sourceVersion > backupManifest.sourceVersion;
         } catch {
           // 无 marker 的 backup 只是可选恢复点，损坏时不得阻断有效 current。
           preserveBackup = true;
         }
 
-        if (current.sourceVersion === 2) {
+        if (current.sourceVersion === 3) {
           const manifest = current.document;
           if (!(
-            previousEntry.compiledVersion === 2
+            previousEntry.compiledVersion === 3
             && entryMatchesManifest(previousEntry, manifest)
           )) {
             await this.commitIndexUpdate(index, nextIndex => {
-              this.replaceEntry(nextIndex, indexEntry(
+              // 恢复发布元数据不撤销已保存草稿的修订与迁移审阅。
+              this.replaceEntry(nextIndex, { ...previousEntry, ...indexEntry(
                 characterId,
                 manifest.name,
                 manifest.thumbnailAssetId,
-                { draftVersion: previousEntry.draftVersion ?? 2, compiledVersion: 2 }
-              ));
+                { draftVersion: previousEntry.draftVersion ?? 3, compiledVersion: 3 }
+              ) });
               delete nextIndex.incompleteActivationConfirmations[characterId];
             });
           }
@@ -1497,7 +1737,7 @@ export class CharacterStore {
   private async readDraftFrom(
     file: string,
     characterId: string
-  ): Promise<CharacterDraftV2> {
+  ): Promise<CharacterDraftV3> {
     return (await this.readDraftMigration(file, characterId)).document;
   }
 
@@ -1533,8 +1773,8 @@ export class CharacterStore {
     }
   }
 
-  private parseManifest(raw: unknown): CharacterManifestV2 {
-    const parsed = characterManifestV2Schema.safeParse(raw);
+  private parseManifest(raw: unknown): CharacterManifestV3 {
+    const parsed = characterManifestV3Schema.safeParse(raw);
     if (!parsed.success) {
       throw characterError('CHARACTER_MANIFEST_INVALID');
     }
@@ -1542,7 +1782,7 @@ export class CharacterStore {
   }
 
   private validateAssets(
-    manifest: CharacterManifestV2,
+    manifest: Pick<CharacterManifestV3, 'resources'>,
     assets: Readonly<Record<string, Uint8Array>>
   ): void {
     const expectedFiles = new Set(manifest.resources.map(resource => resource.fileName));
@@ -1570,16 +1810,16 @@ export class CharacterStore {
   private async readRuntimeFrom(
     directory: string,
     characterId: string
-  ): Promise<CharacterManifestV1> {
-    const migrated = await this.readPublishedFrom(directory, characterId);
-    return projectCharacterManifestV2ToLegacy(migrated.document);
+  ): Promise<CharacterManifestV3> {
+    return requirePublishedCharacterMigration(await this.readPublishedFrom(directory, characterId));
   }
 
   private async readPublishedFrom(
     directory: string,
     characterId: string
-  ): Promise<ReturnType<typeof migrateCharacterManifest> & {
+  ): Promise<FinalizedCharacterManifestMigration & {
     assets: Readonly<Record<string, Uint8Array>>;
+    manifestText: string;
   }> {
     await this.assertSafePath(directory);
     const directoryIdentity = await this.captureRuntimeIdentity(directory, 'directory');
@@ -1590,9 +1830,9 @@ export class CharacterStore {
       directoryIdentity,
       'runtime:manifest-after-open'
     );
-    let migrated: ReturnType<typeof migrateCharacterManifest>;
+    let migrated: PreparedCharacterManifestMigration;
     try {
-      migrated = migrateCharacterManifest(JSON.parse(manifestBytes.toString('utf8')));
+      migrated = prepareCharacterManifestMigration(JSON.parse(manifestBytes.toString('utf8')));
     } catch (error) {
       if (
         error instanceof Error
@@ -1619,7 +1859,12 @@ export class CharacterStore {
       ));
     }
     this.validateAssets(migrated.document, assets);
-    return { ...migrated, assets };
+    const finalized = await finalizeCharacterManifestMigration(
+      migrated,
+      assets,
+      this.geometryMigration
+    );
+    return { ...finalized, assets, manifestText: manifestBytes.toString('utf8') };
   }
 
   private async readRuntimeAssetFrom(
@@ -1627,37 +1872,12 @@ export class CharacterStore {
     characterId: string,
     assetId: string
   ): Promise<Uint8Array> {
-    await this.assertSafePath(directory);
-    const directoryIdentity = await this.captureRuntimeIdentity(directory, 'directory');
-    const manifestFile = join(directory, 'manifest.json');
-    const manifestBytes = await this.readStableRuntimeFile(
-      manifestFile,
-      directory,
-      directoryIdentity,
-      'runtime:manifest-after-open'
-    );
-    const migrated = migrateCharacterManifest(JSON.parse(manifestBytes.toString('utf8')));
-    const manifest = migrated.document;
-    if (manifest.id !== characterId) {
-      throw characterError('CHARACTER_RUNTIME_UNAVAILABLE');
-    }
+    // 与清单读取共享迁移门禁及稳定句柄校验，允许旧磁盘格式的只读投影。
+    const migrated = await this.readPublishedFrom(directory, characterId);
+    const manifest = requirePublishedCharacterMigration(migrated);
     const resource = manifest.resources.find(candidate => candidate.assetId === assetId);
     if (!resource) throw characterError('CHARACTER_RESOURCE_NOT_FOUND');
-
-    const resourceFile = join(directory, resource.fileName);
-    const bytes = new Uint8Array(await this.readStableRuntimeFile(
-      resourceFile,
-      directory,
-      directoryIdentity,
-      'runtime:resource-after-open'
-    ));
-    if (
-      bytes.byteLength !== resource.byteLength
-      || sha256(bytes) !== resource.sha256
-    ) {
-      throw characterError('CHARACTER_RESOURCE_INTEGRITY_FAILED');
-    }
-    return bytes;
+    return migrated.assets[resource.fileName]!;
   }
 
   /**
@@ -1740,12 +1960,25 @@ export class CharacterStore {
       thumbnailAssetId: entry.thumbnailAssetId,
       active: index.activeCharacterId === entry.id
     });
+    try {
+      this.transactionRecovery.assertRuntimeAllowed(entry.id);
+    } catch {
+      return {
+        ...base(),
+        completeness: 'broken',
+        missingRequirements: [],
+        migrationRecoveryAvailable: false,
+        activationConfirmationRequired: false
+      };
+    }
     const compiledManifest = join(this.compiledDirectory(entry.id), 'manifest.json');
     if (await exists(compiledManifest)) {
       try {
-        const manifest = await this.ensurePublishedV2(entry.id, index);
-        const missing = characterV2Completeness(manifest);
-        delete this.entry(index, entry.id).migrationErrorCode;
+        const manifest = await this.ensurePublishedV3(entry.id, index);
+        const missing = characterCompleteness(manifest);
+        if (this.transactionRecovery.resultFor(entry.id).draftErrorCode === null) {
+          delete this.entry(index, entry.id).migrationErrorCode;
+        }
         return {
           ...base(),
           completeness: missing.length === 0 ? 'complete' : 'incomplete',
@@ -1779,12 +2012,14 @@ export class CharacterStore {
     }
 
     try {
-      const draft = await this.ensureDraftV2(entry.id, index);
-      delete this.entry(index, entry.id).migrationErrorCode;
+      const draft = await this.ensureDraftV3(entry.id, index);
+      if (this.transactionRecovery.resultFor(entry.id).draftErrorCode === null) {
+        delete this.entry(index, entry.id).migrationErrorCode;
+      }
       return {
         ...base(),
         completeness: 'incomplete',
-        missingRequirements: characterV2Completeness(draft),
+        missingRequirements: characterCompleteness(draft),
         migrationRecoveryAvailable: false,
         activationConfirmationRequired: true
       };

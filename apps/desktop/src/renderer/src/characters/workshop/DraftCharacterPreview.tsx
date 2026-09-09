@@ -6,12 +6,11 @@ import {
   useState
 } from 'react';
 import type {
-  CharacterDraftV2,
-  CharacterPresentationSource,
+  CharacterDraftV3,
   DraftActionClip,
-  ResolvedCharacterPresentation
+  ResolvedCharacterPresentationV3
 } from '@myself/character-runtime';
-import { resolveCharacterPresentation } from '@myself/character-runtime';
+import { resolveCharacterPresentationV3 } from '@myself/character-runtime';
 import type { MyselfApi } from '../../../../shared/myself-api';
 import {
   createBrowserPixiCharacterScene,
@@ -26,7 +25,7 @@ import type { PreviewState } from './PreviewControls';
 
 export interface DraftCharacterPreviewProps {
   characterId: string | null;
-  draft: CharacterDraftV2 | null;
+  draft: CharacterDraftV3 | null;
   selectedSkinId: string | null;
   stateId: string | null;
   actionId: string | null;
@@ -37,9 +36,12 @@ export interface DraftCharacterPreviewProps {
   onPlayingChange?(playing: boolean): void;
 }
 
+type CharacterPresentationSource = ResolvedCharacterPresentationV3['source'];
+
 type PreviewStatus = 'loading' | 'ready' | 'empty' | 'error';
 
 type PreviewTarget = {
+  stateId: string | null;
   action: DraftActionClip | null;
   source: CharacterPresentationSource | null;
   requestedActionId: string | null;
@@ -58,9 +60,9 @@ type AppliedPreview = {
 
 const ANCHOR_NAMES = ['ground', 'focus', 'carry', 'mouth', 'seat'] as const;
 
-/** 将 V2 定义与皮肤表现组合成正式 Pixi 场景仍可复用的动作视图。 */
+/** 将 V3 定义与皮肤表现组合成正式 Pixi 场景仍可复用的动作视图。 */
 export function draftActionFromResolvedPresentation(
-  resolved: ResolvedCharacterPresentation
+  resolved: ResolvedCharacterPresentationV3
 ): DraftActionClip {
   return {
     id: resolved.action.id,
@@ -73,29 +75,34 @@ export function draftActionFromResolvedPresentation(
     ...(resolved.presentation.regions
       ? { regions: resolved.presentation.regions }
       : {}),
+    ...(resolved.presentation.playbackRate === undefined
+      ? {}
+      : { playbackRate: resolved.presentation.playbackRate }),
+    ...(resolved.presentation.mirrorX === undefined
+      ? {}
+      : { mirrorX: resolved.presentation.mirrorX }),
     frames: resolved.presentation.frames
   };
 }
 
 type ResolvedPreviewAction = {
+  stateId: string;
   action: DraftActionClip;
   source: CharacterPresentationSource;
   requestedActionId: string;
 };
 
 function playableActions(
-  draft: CharacterDraftV2 | null,
+  draft: CharacterDraftV3 | null,
   skinId: string | null
 ): ResolvedPreviewAction[] {
   if (!draft || !skinId) return [];
-  const seen = new Set<string>();
   const result: ResolvedPreviewAction[] = [];
-  for (const requestedActionId of draft.states.flatMap(state => state.actionIds)) {
-    if (seen.has(requestedActionId)) continue;
-    seen.add(requestedActionId);
-    const resolved = resolveCharacterPresentation(draft, skinId, requestedActionId);
+  for (const { stateId, requestedActionId } of draft.states.flatMap(state => state.actionIds.map(requestedActionId => ({ stateId: state.id, requestedActionId })))) {
+    const resolved = resolveCharacterPresentationV3(draft, skinId, stateId, requestedActionId);
     if (!resolved) continue;
     result.push({
+      stateId,
       action: draftActionFromResolvedPresentation(resolved),
       source: resolved.source,
       requestedActionId
@@ -123,6 +130,7 @@ function stableTarget(
 ): PreviewTarget {
   if (!props.characterId || !props.draft) {
     return {
+      stateId: props.stateId,
       action: null,
       source: null,
       requestedActionId: null,
@@ -132,6 +140,7 @@ function stableTarget(
   }
   if (!props.selectedSkinId || !props.actionId) {
     return {
+      stateId: props.stateId,
       action: null,
       source: null,
       requestedActionId: null,
@@ -142,12 +151,14 @@ function stableTarget(
   const resolved = props.preview.tourAllStates
     ? touringAction
     : (() => {
-        const selected = resolveCharacterPresentation(
+        const selected = resolveCharacterPresentationV3(
           props.draft!,
           props.selectedSkinId!,
+          props.stateId ?? '',
           props.actionId!
         );
         return selected ? {
+          stateId: selected.stateId,
           action: draftActionFromResolvedPresentation(selected),
           source: selected.source,
           requestedActionId: props.actionId!
@@ -155,6 +166,7 @@ function stableTarget(
       })();
   if (!resolved) {
     return {
+      stateId: props.stateId,
       action: null,
       source: null,
       requestedActionId: props.actionId,
@@ -165,6 +177,7 @@ function stableTarget(
   const action = resolved.action;
   if (action.frames.length === 0) {
     return {
+      stateId: props.stateId,
       action: null,
       source: null,
       requestedActionId: resolved.requestedActionId,
@@ -174,6 +187,7 @@ function stableTarget(
   }
   if (invalidFrameRectangle(action)) {
     return {
+      stateId: props.stateId,
       action: null,
       source: null,
       requestedActionId: resolved.requestedActionId,
@@ -182,6 +196,7 @@ function stableTarget(
     };
   }
   return {
+    stateId: resolved.stateId,
     action,
     source: resolved.source,
     requestedActionId: resolved.requestedActionId,
@@ -192,9 +207,7 @@ function stableTarget(
 
 const PRESENTATION_SOURCE_MESSAGE: Record<CharacterPresentationSource, string> = {
   'skin-action': '当前使用：当前皮肤精确表现',
-  'skin-semantic': '当前使用：当前皮肤语义回退',
-  'default-action': '当前使用：默认皮肤动作',
-  'default-state': '当前使用：默认状态回退'
+  'default-action': '当前使用：默认皮肤同一动作'
 };
 
 function actionDurationMs(action: DraftActionClip, speed: number): number {
@@ -335,7 +348,7 @@ export function DraftCharacterPreview(props: DraftCharacterPreviewProps) {
   );
   const tourOrderKey = useMemo(
     () => tourActions.map(item => (
-      `${item.requestedActionId}\u0000${item.action.id}\u0000${item.source}`
+      `${item.stateId}\u0000${item.requestedActionId}\u0000${item.action.id}\u0000${item.source}`
     )).join('\u0001'),
     [tourActions]
   );
@@ -344,6 +357,7 @@ export function DraftCharacterPreview(props: DraftCharacterPreviewProps) {
     : null;
   const target = useMemo(() => stableTarget(props, touringAction), [
     props.actionId,
+    props.stateId,
     props.characterId,
     props.draft,
     props.preview.tourAllStates,
@@ -364,6 +378,7 @@ export function DraftCharacterPreview(props: DraftCharacterPreviewProps) {
     props.draft?.id ?? null,
     props.selectedSkinId,
     props.stateId,
+    target.stateId,
     target.requestedActionId ?? props.actionId,
     target.action?.id ?? null,
     target.source

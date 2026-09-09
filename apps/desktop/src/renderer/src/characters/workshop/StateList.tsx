@@ -1,13 +1,13 @@
 import { Minus, Plus } from 'lucide-react';
 import type {
-  CharacterActionDefinitionV2,
-  CharacterStateDefinitionV2
+  CharacterActionDefinitionV3,
+  CharacterStateDefinitionV3
 } from '@myself/character-runtime';
 
 export interface StateListProps {
-  states: CharacterStateDefinitionV2[];
-  actions: CharacterActionDefinitionV2[];
-  defaultStateId: string;
+  states: CharacterStateDefinitionV3[];
+  actions: CharacterActionDefinitionV3[];
+  idleStateId: string;
   selectedStateId: string | null;
   selectedActionId: string | null;
   disabled: boolean;
@@ -18,7 +18,7 @@ export interface StateListProps {
   onRequestDeleteAction(actionId: string): void;
 }
 
-/** V2 状态树以状态和动作实体 ID 为唯一列表身份。 */
+/** V3 状态树以状态和动作实体 ID 为唯一列表身份。 */
 export function StateList(props: StateListProps) {
   const actionsById = new Map(props.actions.map(action => [action.id, action]));
   if (props.states.length === 0) {
@@ -43,7 +43,7 @@ export function StateList(props: StateListProps) {
                 onClick={() => props.onSelectState(state.id)}
               >
                 <span>{state.name}</span>
-                <small>{state.kind === 'primary' ? '主状态' : '修饰状态'}</small>
+                {state.id === props.idleStateId ? <small>兜底状态</small> : null}
               </button>
               <div className="state-row-commands">
                 <button
@@ -55,7 +55,7 @@ export function StateList(props: StateListProps) {
                 >
                   <Plus size={16} aria-hidden="true" />
                 </button>
-                {state.id !== props.defaultStateId ? (
+                {state.id !== props.idleStateId ? (
                   <button
                     className="danger-icon"
                     type="button"

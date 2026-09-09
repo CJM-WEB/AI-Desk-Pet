@@ -1,0 +1,6 @@
+# 固定发行许可证与来源说明的字节表示，确保 Windows checkout 后 manifest 哈希稳定
+apps/desktop/resources/local-model/THIRD-PARTY-NOTICES.txt text eol=lf
+apps/desktop/resources/local-model/licenses/*.txt text eol=lf
+
+# 固定上游来源按原字节入库和检出，避免 Windows 自动换行破坏来源哈希
+vendor/opencode/** -text

@@ -3,8 +3,10 @@ import {
   useMemo,
   useRef,
   useState,
+  type CSSProperties,
   type FormEvent,
-  type KeyboardEvent
+  type KeyboardEvent,
+  type RefObject
 } from 'react';
 import {
   Box,
@@ -19,12 +21,19 @@ import {
 } from 'lucide-react';
 import { useStore } from 'zustand';
 import {
-  resolveCharacterPresentation,
-  STANDARD_CHARACTER_SEMANTICS,
-  type CharacterActionDefinitionV2,
+  resolveCharacterPresentationV3,
   type DraftActionClip
 } from '@myself/character-runtime';
 import type { MyselfApi } from '../../../../shared/myself-api';
+import {
+  DEFAULT_WORKSHOP_LAYOUT,
+  type WorkshopLayoutSettings
+} from '../../../../shared/workshop-layout-ipc';
+import type {
+  CharacterRecoveryIssueDto,
+  CharacterRecoverySnapshotDto
+} from '../../../../shared/character-ipc';
+import { characterRecoveryPresentation } from '../../../../shared/character-recovery';
 import {
   createCharacterWorkshopStore,
   type CharacterWorkshopApi,
@@ -33,8 +42,6 @@ import {
 } from '../store/character-workshop-store';
 import { CharacterList } from './CharacterList';
 import { CharacterIdentityInspector } from './CharacterIdentityInspector';
-import { SkinList } from './SkinList';
-import { SkinInspector } from './SkinInspector';
 import { StateInspector } from './StateInspector';
 import { StateList } from './StateList';
 import { ActionInspector } from './ActionInspector';
@@ -49,6 +56,22 @@ import {
   PreviewControls,
   type PreviewState
 } from './PreviewControls';
+import { useModalDialog } from './use-modal-dialog';
+import { WorkshopSplitter } from './WorkshopSplitter';
+import {
+  clampWorkshopLayout,
+  preferredWorkshopLayoutForRenderedWidth,
+  WORKSHOP_CENTER_MIN,
+  WORKSHOP_LEFT_MIN,
+  WORKSHOP_RIGHT_MIN,
+  WORKSHOP_SIDEBAR_BOTTOM_MIN,
+  WORKSHOP_SIDEBAR_TOP_MIN,
+  WORKSHOP_SPLITTER_SIZE,
+  WORKSHOP_STAGE_HEADER_HEIGHT,
+  WORKSHOP_STAGE_MIN,
+  WORKSHOP_TIMELINE_MIN,
+  type WorkshopLayoutBounds
+} from './workshop-layout';
 import { AtlasImportPanel } from './AtlasImportPanel';
 import {
   TransientToastLayer,
@@ -65,10 +88,25 @@ function workshopToastDurationMs(toast: TransientToast): 3000 | 6000 {
   return toast.tone === 'warning' || toast.tone === 'error' ? 6000 : 3000;
 }
 
+const UNSAVED_CLOSE_TOAST: TransientToast = {
+  id: 'character-workshop-unsaved-close',
+  tone: 'warning',
+  text: '草稿尚未保存，确定要关闭工作台吗？',
+  persistent: true,
+  dismissible: false,
+  actions: [
+    { id: 'continue-editing', label: '继续编辑' },
+    { id: 'close-anyway', label: '仍然关闭', tone: 'danger' }
+  ]
+};
+
 export interface CharacterWorkshopViewProps {
   api: CharacterWorkshopApi & Pick<
     MyselfApi,
-    'onCharacterWorkshopFlushRequested'
+    | 'onCharacterWorkshopFlushRequested'
+    | 'getCharacterRecoverySnapshot'
+    | 'getWorkshopLayout'
+    | 'saveWorkshopLayout'
   >;
 }
 
@@ -76,15 +114,24 @@ export interface CharacterWorkshopWorkspaceProps {
   state: CharacterWorkshopState;
   api: Pick<MyselfApi, 'readCharacterSource'>;
   pendingDeleteCharacterId?: string | null;
+  recoveryIssues?: readonly CharacterRecoveryIssueDto[];
+  recoveryLoadFailed?: boolean;
+  layout?: WorkshopLayoutSettings;
+  layoutBounds?: WorkshopLayoutBounds;
+  columnsRef?: RefObject<HTMLDivElement | null>;
+  layoutNotice?: string | null;
+  onLayoutChange?(key: keyof WorkshopLayoutSettings, value: number): void;
+  onLayoutCommit?(key: keyof WorkshopLayoutSettings, value: number): void;
 }
 
 function currentAction(state: CharacterWorkshopState): DraftActionClip | null {
   if (!state.draft || !state.selectedSkinId || !state.selectedActionId) {
     return null;
   }
-  const resolved = resolveCharacterPresentation(
+  const resolved = resolveCharacterPresentationV3(
     state.draft,
     state.selectedSkinId,
+    state.selectedStateId ?? '',
     state.selectedActionId
   );
   if (!resolved) return null;
@@ -120,13 +167,6 @@ type PendingConfigurationDelete =
       blockingReferencePaths: string[];
     }
   | {
-      kind: 'skin';
-      id: string;
-      name: string;
-      safeReferencePaths: string[];
-      blockingReferencePaths: string[];
-    }
-  | {
       kind: 'frame';
       id: string;
       name: string;
@@ -155,7 +195,9 @@ export function previewAtActionStart(
       ...normalizePreviewState(preview, frames.length),
       playing: false,
       frameIndex: frames.length > 0 ? 0 : -1,
-      loop: action?.loop ?? preview.loop
+      loop: action?.loop ?? preview.loop,
+      speed: action?.playbackRate ?? 1,
+      direction: action?.mirrorX ? 'left' : 'right'
     },
     selectedFrameId: frames[0]?.id ?? null
   };
@@ -165,9 +207,10 @@ export function previewActionIdentity(
   characterId: string | null,
   draftId: string | null,
   stateId: string | null,
-  actionId: string | null
+  actionId: string | null,
+  skinId: string | null
 ): string {
-  return JSON.stringify([characterId, draftId, stateId, actionId]);
+  return JSON.stringify([characterId, draftId, stateId, actionId, skinId]);
 }
 
 function draftStatusLabel(state: CharacterWorkshopState): string {
@@ -202,6 +245,41 @@ export function CharacterWorkshopWorkspace(
   props: CharacterWorkshopWorkspaceProps
 ) {
   const { state } = props;
+  const layout = props.layout ?? DEFAULT_WORKSHOP_LAYOUT;
+  const layoutBounds = props.layoutBounds ?? { width: 1_120, height: 659 };
+  const onLayoutChange = props.onLayoutChange ?? (() => undefined);
+  const onLayoutCommit = props.onLayoutCommit ?? (() => undefined);
+  const leftMax = Math.max(
+    WORKSHOP_LEFT_MIN,
+    Math.floor(layoutBounds.width)
+      - (WORKSHOP_SPLITTER_SIZE * 2)
+      - WORKSHOP_CENTER_MIN
+      - layout.rightWidth
+  );
+  const rightMax = Math.max(
+    WORKSHOP_RIGHT_MIN,
+    Math.floor(layoutBounds.width)
+      - (WORKSHOP_SPLITTER_SIZE * 2)
+      - WORKSHOP_CENTER_MIN
+      - layout.leftWidth
+  );
+  const sidebarTopMax = Math.max(
+    WORKSHOP_SIDEBAR_TOP_MIN,
+    Math.floor(layoutBounds.height) - WORKSHOP_SPLITTER_SIZE - WORKSHOP_SIDEBAR_BOTTOM_MIN
+  );
+  const stageMax = Math.max(
+    WORKSHOP_STAGE_MIN,
+    Math.floor(layoutBounds.height)
+      - WORKSHOP_STAGE_HEADER_HEIGHT
+      - WORKSHOP_SPLITTER_SIZE
+      - WORKSHOP_TIMELINE_MIN
+  );
+  const layoutStyle: CSSProperties & Record<`--workshop-${string}`, string> = {
+    '--workshop-left-width': `${layout.leftWidth}px`,
+    '--workshop-right-width': `${layout.rightWidth}px`,
+    '--workshop-sidebar-top-height': `${layout.sidebarTopHeight}px`,
+    '--workshop-stage-height': `${layout.stageHeight}px`
+  };
   const [createOpen, setCreateOpen] = useState(false);
   const [characterName, setCharacterName] = useState('');
   const [internalPendingDelete, setInternalPendingDelete] = useState<string | null>(null);
@@ -216,24 +294,19 @@ export function CharacterWorkshopWorkspace(
   const [pendingConfigurationDelete, setPendingConfigurationDelete] = useState<
     PendingConfigurationDelete | null
   >(null);
-  const [newStateKind, setNewStateKind] = useState<'primary' | 'modifier'>('modifier');
-  const [newStateSemantic, setNewStateSemantic] = useState<
-    CharacterActionDefinitionV2['semantic']
-  >('idle');
   const previousActionIdentityRef = useRef<string | null>(null);
   const sceneFrameIndexRef = useRef<number | null>(null);
   const deleteDialogRef = useRef<HTMLDialogElement>(null);
   const createDialogRef = useRef<HTMLDialogElement>(null);
   const configurationDeleteDialogRef = useRef<HTMLDialogElement>(null);
+  const extensionFormRef = useRef<HTMLFormElement>(null);
+  const extensionNameInputRef = useRef<HTMLInputElement>(null);
   const pendingDelete = props.pendingDeleteCharacterId === undefined
     ? internalPendingDelete
     : props.pendingDeleteCharacterId;
   const selectedCharacter = state.characters.find(
     character => character.id === state.selectedCharacterId
   );
-  const selectedSkin = state.draft?.skins.find(
-    skin => skin.id === state.selectedSkinId
-  ) ?? null;
   const selectedState = state.draft?.states.find(
     candidate => candidate.id === state.selectedStateId
   ) ?? null;
@@ -253,25 +326,20 @@ export function CharacterWorkshopWorkspace(
     state.selectedSkinId,
     state.selectedActionId
   ]);
-  const selectedPresentationSource = useMemo(() => {
-    if (!state.draft || !state.selectedSkinId || !state.selectedActionId) return null;
-    return resolveCharacterPresentation(
-      state.draft,
-      state.selectedSkinId,
-      state.selectedActionId
-    )?.source ?? null;
-  }, [state.draft, state.selectedSkinId, state.selectedActionId]);
   const selectedPresentation = useMemo(() => {
     if (!state.draft || !state.selectedSkinId || !state.selectedActionId) return null;
-    return resolveCharacterPresentation(
+    return resolveCharacterPresentationV3(
       state.draft,
       state.selectedSkinId,
+      state.selectedStateId ?? '',
       state.selectedActionId
     )?.presentation ?? null;
   }, [state.draft, state.selectedSkinId, state.selectedActionId]);
   const activationCharacter = state.characters.find(
     character => character.id === pendingActivation
   );
+  const activationDialogRef = useModalDialog(Boolean(activationCharacter));
+  const extensionDialogRef = useModalDialog(extensionOpen);
   const busy = state.busyAction !== null;
   const activity = activityLabel(state);
   const frameCount = action?.frames.length ?? 0;
@@ -280,7 +348,8 @@ export function CharacterWorkshopWorkspace(
       state.selectedCharacterId,
       state.draft?.id ?? null,
       state.selectedStateId,
-      action.id
+      action.id,
+      state.selectedSkinId
     )
     : null;
 
@@ -371,6 +440,16 @@ export function CharacterWorkshopWorkspace(
     setCharacterName('');
   }
 
+  function closeActivationDialog(): void {
+    setPendingActivation(null);
+  }
+
+  function closeExtensionDialog(): void {
+    extensionFormRef.current?.reset();
+    setExtensionName('');
+    setExtensionOpen(false);
+  }
+
   function submitCreate(event: FormEvent): void {
     event.preventDefault();
     if (!characterName.trim()) return;
@@ -411,12 +490,6 @@ export function CharacterWorkshopWorkspace(
     const definition = state.draft?.states.find(candidate => candidate.id === stateId);
     if (!definition) return;
     openReferenceDelete('state', stateId, definition.name, state.requestRemoveState(stateId));
-  }
-
-  function requestDeleteSkin(skinId: string): void {
-    const definition = state.draft?.skins.find(candidate => candidate.id === skinId);
-    if (!definition) return;
-    openReferenceDelete('skin', skinId, definition.name, state.requestRemoveSkin(skinId));
   }
 
   /** 单帧删除先走 Store 引用审计；排序、复制等批量变更仍沿用完整帧数组更新。 */
@@ -466,8 +539,6 @@ export function CharacterWorkshopWorkspace(
       state.requestRemoveAction(pendingConfigurationDelete.id, true);
     } else if (pendingConfigurationDelete.kind === 'state') {
       state.requestRemoveState(pendingConfigurationDelete.id, true);
-    } else if (pendingConfigurationDelete.kind === 'skin') {
-      state.requestRemoveSkin(pendingConfigurationDelete.id, true);
     } else if (pendingConfigurationDelete.kind === 'frame') {
       state.requestRemoveCurrentFrame(pendingConfigurationDelete.id, true);
     } else {
@@ -547,7 +618,7 @@ export function CharacterWorkshopWorkspace(
         <button
           className="primary-command"
           type="button"
-          disabled={busy || !state.draft}
+          disabled={busy || !state.draft?.idleStateId || state.migrationReview.issues.some(issue => !state.migrationReview.resolutions.some(item => item.issueId === issue.issueId))}
           onClick={() => void state.compileAndPublish()}
         >
           <Play size={16} />编译并发布
@@ -573,17 +644,51 @@ export function CharacterWorkshopWorkspace(
       </nav>
 
       <TransientToastLayer
-        queue={state.toastQueue}
+        queue={state.closeConfirmationPending ? [UNSAVED_CLOSE_TOAST] : state.toastQueue}
         onDismiss={state.dismissToast}
+        onAction={(_toastId, actionId) => {
+          if (actionId === 'continue-editing') {
+            state.resumeAfterClosePrompt();
+            return;
+          }
+          if (actionId === 'close-anyway') {
+            void state.discardUnsavedDraft()
+              .then(() => window.close())
+              .catch(() => undefined);
+          }
+        }}
         durationMs={workshopToastDurationMs}
         ariaLabel="工作台提示"
       />
 
-      <div className="workshop-columns">
+      {props.recoveryLoadFailed ? (
+        <p className="migration-recovery" role="alert">
+          恢复状态暂时无法读取，请稍后重试。
+        </p>
+      ) : props.recoveryIssues?.map(issue => {
+        const presentation = characterRecoveryPresentation(issue.errorCode);
+        return (
+          <section
+            className="migration-recovery"
+            aria-live="polite"
+            key={issue.errorCode}
+          >
+            <p role="alert">{presentation.text}</p>
+            <p>受影响能力：{presentation.affectedCapabilities.join('、')}</p>
+            <p>{presentation.suggestion}</p>
+          </section>
+        );
+      })}
+
+      {props.layoutNotice ? (
+        <p className="workshop-layout-notice" role="status">{props.layoutNotice}</p>
+      ) : null}
+
+      <div className="workshop-columns" ref={props.columnsRef} style={layoutStyle}>
         <aside className="workshop-sidebar" aria-label="角色与状态">
           <section className="workshop-section character-section">
             <div className="section-heading">
-              <h2>角色与皮肤</h2>
+              <h2>角色</h2>
               <small>{state.characters.length}</small>
             </div>
             {state.loadStatus === 'loading' ? (
@@ -599,27 +704,15 @@ export function CharacterWorkshopWorkspace(
               />
             )}
             {state.draft ? (
-              <>
-                <button
-                  className="identity-select-command"
-                  type="button"
-                  disabled={busy}
-                  aria-pressed={state.selectedEntity.kind === 'identity'}
-                  onClick={state.selectIdentity}
-                >
-                  编辑角色人设
-                </button>
-                <SkinList
-                  skins={state.draft.skins}
-                  defaultSkinId={state.draft.defaultSkinId}
-                  selectedSkinId={state.selectedSkinId}
-                  disabled={busy}
-                  onAdd={() => state.addSkin(`新皮肤 ${state.draft!.skins.length + 1}`)}
-                  onSelect={state.selectSkin}
-                  onSetDefault={state.setDefaultSkin}
-                  onRequestDelete={requestDeleteSkin}
-                />
-              </>
+              <button
+                className="identity-select-command"
+                type="button"
+                disabled={busy}
+                aria-pressed={state.selectedEntity.kind === 'identity'}
+                onClick={state.selectIdentity}
+              >
+                编辑角色人设
+              </button>
             ) : null}
             {state.loadStatus === 'error' && !migrationRecovery ? (
               <button
@@ -632,6 +725,15 @@ export function CharacterWorkshopWorkspace(
               </button>
             ) : null}
           </section>
+          <WorkshopSplitter
+            label="调整角色区与状态区高度"
+            orientation="horizontal"
+            value={layout.sidebarTopHeight}
+            min={WORKSHOP_SIDEBAR_TOP_MIN}
+            max={sidebarTopMax}
+            onChange={value => onLayoutChange('sidebarTopHeight', value)}
+            onCommit={value => onLayoutCommit('sidebarTopHeight', value)}
+          />
           <section className="workshop-section state-section">
             <div className="section-heading">
               <h2>状态与动作</h2>
@@ -646,10 +748,28 @@ export function CharacterWorkshopWorkspace(
                 <Plus size={16} aria-hidden="true" />
               </button>
             </div>
+            {state.draft ? <section aria-label="状态迁移审阅">
+              <label>兜底状态
+                <select value={state.draft.idleStateId ?? ''} disabled={busy} onChange={event => state.setIdleState(event.currentTarget.value)}>
+                  <option value="">请选择一个现有状态</option>
+                  {state.draft.states.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}
+                </select>
+              </label>
+              {state.migrationReview.issues.map(issue => <div key={issue.issueId}>
+                <p>{issue.message}（{issue.objectId}）</p>
+                <pre>{JSON.stringify(issue.originalRule, null, 2)}</pre>
+                <label>旧规则处置
+                  <select disabled={busy} value={state.migrationReview.resolutions.find(item => item.issueId === issue.issueId)?.decision ?? ''}
+                    onChange={event => { const decision = event.currentTarget.value; if (decision === 'revised' || decision === 'discarded') state.resolveMigrationIssue(issue.issueId, decision); }}>
+                    <option value="">请逐项审阅</option><option value="revised">已按新状态规则修订</option><option value="discarded">舍弃这条旧规则</option>
+                  </select>
+                </label>
+              </div>)}
+            </section> : null}
             <StateList
               states={state.draft?.states ?? []}
               actions={state.draft?.actions ?? []}
-              defaultStateId={state.draft?.defaultStateId ?? ''}
+              idleStateId={state.draft?.idleStateId ?? ''}
               selectedStateId={state.selectedStateId}
               selectedActionId={state.selectedActionId}
               disabled={busy}
@@ -661,6 +781,16 @@ export function CharacterWorkshopWorkspace(
             />
           </section>
         </aside>
+
+        <WorkshopSplitter
+          label="调整角色侧栏宽度"
+          orientation="vertical"
+          value={layout.leftWidth}
+          min={WORKSHOP_LEFT_MIN}
+          max={leftMax}
+          onChange={value => onLayoutChange('leftWidth', value)}
+          onCommit={value => onLayoutCommit('leftWidth', value)}
+        />
 
         <section className="workshop-stage" aria-labelledby="preview-heading">
           <div className="stage-heading">
@@ -693,6 +823,17 @@ export function CharacterWorkshopWorkspace(
               disabled={busy}
               onChange={next => {
                 setPreview(next);
+                const presentationPatch = {
+                  ...(next.speed === preview.speed
+                    ? {}
+                    : { playbackRate: next.speed }),
+                  ...(next.direction === preview.direction
+                    ? {}
+                    : { mirrorX: next.direction === 'left' })
+                };
+                if (Object.keys(presentationPatch).length > 0) {
+                  state.updateCurrentAction(presentationPatch);
+                }
                 const nextFrame = action
                   ? ensureStableFrameIds(action.frames)[next.frameIndex]
                   : null;
@@ -700,6 +841,15 @@ export function CharacterWorkshopWorkspace(
               }}
             />
           </div>
+          <WorkshopSplitter
+            label="调整预览区与时间轴高度"
+            orientation="horizontal"
+            value={layout.stageHeight}
+            min={WORKSHOP_STAGE_MIN}
+            max={stageMax}
+            onChange={value => onLayoutChange('stageHeight', value)}
+            onCommit={value => onLayoutCommit('stageHeight', value)}
+          />
           {action ? (
             <ActionTimeline
               frames={action.frames}
@@ -719,6 +869,17 @@ export function CharacterWorkshopWorkspace(
           )}
         </section>
 
+        <WorkshopSplitter
+          label="调整属性侧栏宽度"
+          orientation="vertical"
+          value={layout.rightWidth}
+          min={WORKSHOP_RIGHT_MIN}
+          max={rightMax}
+          valueDirection={-1}
+          onChange={value => onLayoutChange('rightWidth', value)}
+          onCommit={value => onLayoutCommit('rightWidth', value)}
+        />
+
         <aside className="workshop-inspector" aria-labelledby="properties-heading">
           <div className="section-heading">
             <h2 id="properties-heading">
@@ -726,11 +887,11 @@ export function CharacterWorkshopWorkspace(
                 ? '迁移恢复'
                 : state.selectedEntity.kind === 'identity'
                   ? '角色人设'
-                  : state.selectedEntity.kind === 'skin'
-                    ? '皮肤属性'
-                    : state.selectedEntity.kind === 'state'
+                  : state.selectedEntity.kind === 'state'
                       ? '状态属性'
-                      : '动作属性'}
+                      : state.selectedEntity.kind === 'action'
+                        ? '动作属性'
+                        : '属性'}
             </h2>
           </div>
           {migrationRecovery && selectedCharacter ? (
@@ -760,15 +921,6 @@ export function CharacterWorkshopWorkspace(
               identity={state.draft.identity}
               disabled={busy}
               onChange={state.updateIdentity}
-            />
-          ) : state.selectedEntity.kind === 'skin' && selectedSkin ? (
-            <SkinInspector
-              skin={selectedSkin}
-              actions={state.draft?.actions ?? []}
-              selectedActionId={state.selectedActionId}
-              presentationSource={selectedPresentationSource}
-              disabled={busy}
-              onChange={patch => state.updateSkin(selectedSkin.id, patch)}
             />
           ) : state.selectedEntity.kind === 'state' && selectedState ? (
             <StateInspector
@@ -882,38 +1034,47 @@ export function CharacterWorkshopWorkspace(
         </dialog>
       ) : null}
 
-      {activationCharacter ? (
-        <dialog open aria-modal="true" aria-labelledby="incomplete-character-title">
-          <div className="workshop-dialog">
-            <h2 id="incomplete-character-title">发布要求尚未满足</h2>
-            <p>“{activationCharacter.name}”仍有以下发布要求未满足。</p>
-            <div className="missing-state-list">
-              {activationCharacter.missingRequirements.map(requirement => (
-                <span key={requirement}>
-                  {requirement === 'default-state-action-missing'
-                    ? '默认状态缺少动作'
-                    : '默认表现不可播放'}
-                </span>
-              ))}
-            </div>
-            <div className="dialog-actions">
-              <button type="button" autoFocus onClick={() => setPendingActivation(null)}>
-                返回完善
-              </button>
-              <button
-                className="primary-command"
-                type="button"
-                onClick={() => {
-                  setPendingActivation(null);
-                  void state.activateCharacter(activationCharacter.id, true);
-                }}
-              >
-                仍然使用
-              </button>
-            </div>
+      <dialog
+        ref={activationDialogRef}
+        aria-modal="true"
+        aria-labelledby="activation-requirements-title"
+        onCancel={event => {
+          event.preventDefault();
+          closeActivationDialog();
+        }}
+        onKeyDown={event => cancelOnEscape(event, closeActivationDialog)}
+      >
+        <div className="workshop-dialog">
+          <h2 id="activation-requirements-title">发布要求尚未满足</h2>
+          <p>“{activationCharacter?.name ?? ''}”仍有以下发布要求未满足。</p>
+          <div className="missing-state-list">
+            {(activationCharacter?.missingRequirements ?? []).map(requirement => (
+              <span key={requirement}>
+                {requirement === 'default-state-action-missing'
+                  ? '默认状态缺少动作'
+                  : '默认表现不可播放'}
+              </span>
+            ))}
           </div>
-        </dialog>
-      ) : null}
+          <div className="dialog-actions">
+            <button type="button" autoFocus onClick={closeActivationDialog}>
+              返回完善
+            </button>
+            <button
+              className="primary-command"
+              type="button"
+              disabled={!activationCharacter}
+              onClick={() => {
+                if (!activationCharacter) return;
+                closeActivationDialog();
+                void state.activateCharacter(activationCharacter.id, true);
+              }}
+            >
+              仍然使用
+            </button>
+          </div>
+        </div>
+      </dialog>
 
       {pendingConfigurationDelete ? (
         <dialog
@@ -937,9 +1098,7 @@ export function CharacterWorkshopWorkspace(
                   ? '动作'
                   : pendingConfigurationDelete.kind === 'state'
                     ? '状态'
-                    : pendingConfigurationDelete.kind === 'skin'
-                      ? '皮肤'
-                      : '帧'}“${pendingConfigurationDelete.name}”`}
+                    : '帧'}“${pendingConfigurationDelete.name}”`}
             </h2>
             <p>操作会清理以下安全引用；阻塞引用必须先重选，系统不会自动猜测替代项。</p>
             {pendingConfigurationDelete.safeReferencePaths.length > 0 ? (
@@ -984,70 +1143,57 @@ export function CharacterWorkshopWorkspace(
         </dialog>
       ) : null}
 
-      {extensionOpen ? (
-        <dialog open aria-modal="true" aria-labelledby="extension-state-title">
-          <form
-            className="workshop-dialog"
-            onSubmit={event => {
-              event.preventDefault();
-              state.addState({
-                name: extensionName,
-                kind: newStateKind,
-                semantic: newStateSemantic
-              });
-              setExtensionOpen(false);
-              setExtensionName('');
-            }}
-          >
-            <h2 id="extension-state-title">新建扩展状态</h2>
-            <label>
-              状态名称
-              <input
-                autoFocus
-                value={extensionName}
-                onChange={event => setExtensionName(event.currentTarget.value)}
-              />
-            </label>
-            <label>
-              状态类别
-              <select
-                value={newStateKind}
-                onChange={event => setNewStateKind(
-                  event.currentTarget.value as typeof newStateKind
-                )}
-              >
-                <option value="primary">主状态</option>
-                <option value="modifier">修饰状态</option>
-              </select>
-            </label>
-            <label>
-              标准语义
-              <select
-                value={newStateSemantic}
-                onChange={event => setNewStateSemantic(
-                  event.currentTarget.value as typeof newStateSemantic
-                )}
-              >
-                {STANDARD_CHARACTER_SEMANTICS.map(semantic => (
-                  <option key={semantic} value={semantic}>{semantic}</option>
-                ))}
-              </select>
-            </label>
-            <div className="dialog-actions">
-              <button type="button" onClick={() => setExtensionOpen(false)}>
-                取消
-              </button>
-              <button
-                className="primary-command"
-                type="submit"
-                disabled={!extensionName.trim()}
-              >
-                创建扩展状态
-              </button>
-            </div>
-          </form>
-        </dialog>
-      ) : null}
+      <dialog
+        ref={extensionDialogRef}
+        aria-modal="true"
+        aria-labelledby="extension-state-title"
+        onCancel={event => {
+          event.preventDefault();
+          closeExtensionDialog();
+        }}
+        onKeyDown={event => cancelOnEscape(event, closeExtensionDialog)}
+      >
+        <form
+          ref={extensionFormRef}
+          className="workshop-dialog"
+          onSubmit={event => {
+            event.preventDefault();
+            const formData = new FormData(event.currentTarget);
+            const name = String(formData.get('extensionName') ?? '').trim();
+            if (!name) {
+              extensionNameInputRef.current?.focus();
+              return;
+            }
+            state.addState({ name, description: String(formData.get('stateDescription') ?? '') });
+            closeExtensionDialog();
+          }}
+        >
+          <h2 id="extension-state-title">新建自定义状态</h2>
+          <label>
+            状态名称
+            <input
+              ref={extensionNameInputRef}
+              autoFocus
+              name="extensionName"
+              value={extensionName}
+              onChange={event => setExtensionName(event.currentTarget.value)}
+            />
+          </label>
+          <label>状态描述（可选）<textarea name="stateDescription" maxLength={2000} /></label>
+          <div className="dialog-actions">
+            <button type="button" onClick={closeExtensionDialog}>
+              取消
+            </button>
+            <button
+              className="primary-command"
+              type="submit"
+              disabled={!extensionName.trim()}
+            >
+              创建自定义状态
+            </button>
+          </div>
+        </form>
+      </dialog>
     </main>
   );
 }
@@ -1055,17 +1201,112 @@ export function CharacterWorkshopWorkspace(
 export function CharacterWorkshopView(props: CharacterWorkshopViewProps) {
   const [store] = useState(() => createCharacterWorkshopStore(props.api));
   const state = useStore(store);
+  const [recoverySnapshot, setRecoverySnapshot] = useState<
+    CharacterRecoverySnapshotDto | null
+  >(null);
+  const [recoveryLoadFailed, setRecoveryLoadFailed] = useState(false);
+  const [layout, setLayout] = useState<WorkshopLayoutSettings>(DEFAULT_WORKSHOP_LAYOUT);
+  const [layoutBounds, setLayoutBounds] = useState<WorkshopLayoutBounds>({
+    width: 1_120,
+    height: 659
+  });
+  const [layoutNotice, setLayoutNotice] = useState<string | null>(null);
+  const columnsRef = useRef<HTMLDivElement>(null);
+  const layoutBoundsRef = useRef(layoutBounds);
+  const preferredLayoutRef = useRef<WorkshopLayoutSettings>(DEFAULT_WORKSHOP_LAYOUT);
+  // 同一挂载生命周期复用读取，避免 React StrictMode 重放 effect 时重复 IPC。
+  const recoverySnapshotPromiseRef = useRef<Promise<CharacterRecoverySnapshotDto> | null>(null);
+  const layoutPromiseRef = useRef<Promise<WorkshopLayoutSettings> | null>(null);
 
   useEffect(() => {
+    let active = true;
     const dispose = store.getState().mount();
     const unsubscribeFlush = props.api.onCharacterWorkshopFlushRequested(
-      () => store.getState().flushDraft()
+      async reason => {
+        if (reason === 'window_close') {
+          return store.getState().prepareWindowClose();
+        }
+        await store.getState().flushDraft();
+        return true;
+      }
     );
+    const recoverySnapshotPromise = recoverySnapshotPromiseRef.current
+      ??= props.api.getCharacterRecoverySnapshot();
+    const layoutPromise = layoutPromiseRef.current ??= props.api.getWorkshopLayout();
+    void recoverySnapshotPromise.then(snapshot => {
+      if (active) setRecoverySnapshot(snapshot);
+    }).catch(() => {
+      if (active) setRecoveryLoadFailed(true);
+    });
+    void layoutPromise.then(value => {
+      if (!active) return;
+      preferredLayoutRef.current = value;
+      setLayout(clampWorkshopLayout(value, layoutBoundsRef.current));
+    }).catch(() => {
+      if (active) setLayoutNotice('工作台布局暂时无法读取，已使用默认布局。');
+    });
     return () => {
+      active = false;
       unsubscribeFlush();
       dispose();
     };
   }, [props.api, store]);
 
-  return <CharacterWorkshopWorkspace state={state} api={props.api} />;
+  useEffect(() => {
+    const columns = columnsRef.current;
+    if (!columns || typeof ResizeObserver === 'undefined') return;
+    const observer = new ResizeObserver(entries => {
+      const contentRect = entries[0]?.contentRect;
+      if (!contentRect) return;
+      const nextBounds = { width: contentRect.width, height: contentRect.height };
+      layoutBoundsRef.current = nextBounds;
+      setLayoutBounds(nextBounds);
+      setLayout(clampWorkshopLayout(preferredLayoutRef.current, nextBounds));
+    });
+    observer.observe(columns);
+    return () => observer.disconnect();
+  }, []);
+
+  const changeLayout = (key: keyof WorkshopLayoutSettings, value: number) => {
+    setLayout(current => clampWorkshopLayout({ ...current, [key]: value }, layoutBoundsRef.current));
+  };
+
+  const commitLayout = (key: keyof WorkshopLayoutSettings, value: number) => {
+    // 只规范本次交互字段；其他字段的窗口临时 clamp 不能污染持久偏好。
+    const preferred = key === 'leftWidth' || key === 'rightWidth'
+      ? preferredWorkshopLayoutForRenderedWidth(
+          preferredLayoutRef.current,
+          layoutBoundsRef.current,
+          key,
+          value
+        )
+      : {
+          ...preferredLayoutRef.current,
+          [key]: Math.min(4_096, Math.max(1, Math.round(value)))
+        };
+    preferredLayoutRef.current = preferred;
+    setLayout(clampWorkshopLayout(preferred, layoutBoundsRef.current));
+    setLayoutNotice(null);
+    void props.api.saveWorkshopLayout(preferred).catch(() => {
+      setLayoutNotice('工作台布局暂时无法保存，本次调整仍会保留到窗口关闭。');
+    });
+  };
+
+  const recoveryIssues = recoverySnapshot?.issues.filter(
+    issue => issue.characterId === state.selectedCharacterId
+  ) ?? [];
+  return (
+    <CharacterWorkshopWorkspace
+      state={state}
+      api={props.api}
+      recoveryIssues={recoveryIssues}
+      recoveryLoadFailed={recoveryLoadFailed}
+      layout={layout}
+      layoutBounds={layoutBounds}
+      columnsRef={columnsRef}
+      layoutNotice={layoutNotice}
+      onLayoutChange={changeLayout}
+      onLayoutCommit={commitLayout}
+    />
+  );
 }

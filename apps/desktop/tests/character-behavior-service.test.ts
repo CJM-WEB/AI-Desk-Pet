@@ -1,65 +1,13 @@
-import type {
-  CharacterAgentBehaviorIntent,
-  CharacterManifestV1,
-  CharacterManifestV2,
-  CharacterPlaybackFeedback
-} from '@myself/character-runtime';
-import type { TaskEvent } from '@myself/shared-types';
-import { beforeEach, describe, expect, test, vi } from 'vitest';
-import type { CharacterMotionSnapshot } from '../src/shared/character-motion-ipc';
+import { expect, test, vi } from 'vitest';
+import { characterManifestV3Schema, type CharacterManifestV3 } from '@myself/character-runtime';
+import { CharacterBehaviorService, type CharacterBehaviorPlaybackEvent } from '../src/main/characters/character-behavior-service';
+import { CharacterBehaviorDirector } from '../src/main/characters/character-behavior-director';
 
-type BehaviorPlaybackEvent =
-  | {
-      type: 'behavior-action';
-      revision: number;
-      stateId: string;
-      modifierStateIds: string[];
-      actionId: string;
-      playbackToken: string;
-    }
-  | {
-      type: 'idle-action';
-      revision: number;
-      actionId: string;
-      playbackToken: string;
-    }
-  | {
-      type: 'behavior-authority';
-      characterId: string;
-      mode: 'legacy-v1';
-    };
-
-function requireBehaviorAction(
-  event: BehaviorPlaybackEvent | undefined
-): Extract<BehaviorPlaybackEvent, { type: 'behavior-action' }> {
-  if (event?.type !== 'behavior-action') {
-    throw new Error('测试前置条件要求行为动作事件');
-  }
-  return event;
-}
-
-type BehaviorService = {
-  initialize(): Promise<void>;
-  beginTaskCarry(): { playbackToken: string; actionId: string; commitFrameId: string | null };
-  endTaskCarry(): void;
-  handleTaskEvent(event: TaskEvent): void;
-  handleAgentIntent(intent: CharacterAgentBehaviorIntent): void;
-  handleMovement(snapshot: CharacterMotionSnapshot): void;
-  handleUserInteraction(): void;
-  handleIdleDue(): void;
-  applyPlaybackFeedback(feedback: CharacterPlaybackFeedback): void;
-  handleActiveCharacterChanged(): Promise<void>;
-  subscribe(listener: (event: BehaviorPlaybackEvent) => void): () => void;
-  close(): void;
-};
-
-type BehaviorServiceConstructor = new (options: Record<string, unknown>) => BehaviorService;
-
+// 名称只用于作者目录，不是运行时状态类别或官方语义。
 const SEMANTICS = ['idle', 'listen', 'think', 'move', 'carry', 'celebrate', 'fail'] as const;
-
-function createManifest(id = 'first'): CharacterManifestV2 {
+function createManifest(id = 'first'): CharacterManifestV3 {
   return {
-    version: 2,
+    version: 3,
     id,
     name: `${id} 角色`,
     thumbnailAssetId: 'thumbnail',
@@ -77,37 +25,26 @@ function createManifest(id = 'first'): CharacterManifestV2 {
       exampleLines: []
     },
     defaultSkinId: 'default-skin',
-    defaultStateId: 'idle-state',
+    idleStateId: 'idle-state',
     states: SEMANTICS.map(semantic => ({
       id: `${semantic}-state`,
       name: `${semantic} 状态`,
-      kind: 'primary',
-      semantic,
       tags: [],
       intensity: 1,
-      coexistWithStateIds: [],
-      forbiddenStateIds: [],
       enterConditions: [],
-      exitConditions: semantic === 'carry'
-        ? [{ mode: 'all' as const, clauses: [{ kind: 'signal' as const, signal: 'carry-stop' as const }] }]
-        : [],
+      exitConditions: [],
       agentInferable: true,
       actionIds: [`${semantic}-action`]
     })),
     actions: SEMANTICS.map(semantic => ({
       id: `${semantic}-action`,
       name: `${semantic} 动作`,
-      semantic,
       tags: [],
       preference: 1,
       cooldownMs: 0,
       repeatSuppressionMs: 0,
       loopPolicy: 'never',
       interrupt: 'normal',
-      allowedPrimaryStateIds: [],
-      forbiddenPrimaryStateIds: [],
-      requiredModifierStateIds: [],
-      forbiddenModifierStateIds: [],
       direction: 'any'
     })),
     skins: [{
@@ -123,9 +60,13 @@ function createManifest(id = 'first'): CharacterManifestV2 {
           ]
           : [{ assetId: `${semantic}-asset`, x: 0, y: 0, width: 1, height: 1 }],
         anchors: { ground: { x: 0.5, y: 1 } },
+        geometry: {
+          visualBounds: { x: 0, y: 0, width: 1, height: 1 },
+          groundAnchor: { x: 0.5, y: 1 },
+          resourceRevision: 'a'.repeat(64)
+        },
         ...(semantic === 'carry' ? { commitFrameId: 'carry-commit' } : {})
       })),
-      semanticFallbacks: []
     }],
     resources: [
       { assetId: 'thumbnail', fileName: 'thumbnail.png', sha256: 'a'.repeat(64), byteLength: 1 },
@@ -139,1016 +80,346 @@ function createManifest(id = 'first'): CharacterManifestV2 {
   };
 }
 
-function createLegacyManifest(id = 'legacy'): CharacterManifestV1 {
-  return {
-    version: 1,
-    id,
-    name: '兼容角色',
-    thumbnailAssetId: 'atlas',
-    compilerVersion: 'test',
-    resources: [{
-      assetId: 'atlas',
-      fileName: 'atlas.png',
-      sha256: 'a'.repeat(64),
-      byteLength: 1
-    }],
-    states: [{
-      id: 'idle',
-      kind: 'core',
-      actions: [{
-        id: 'legacy-idle',
-        name: '兼容待机',
-        fps: 8,
-        loop: true,
-        weight: 1,
-        frames: [{ assetId: 'atlas', x: 0, y: 0, width: 1, height: 1 }],
-        anchors: { ground: { x: 0.5, y: 1 } }
-      }]
-    }]
-  };
-}
-
-function snapshot(moving = false, direction: 'left' | 'right' = 'right'): CharacterMotionSnapshot {
-  return {
-    revision: 7,
-    timestampMs: 0,
-    position: { x: 0, y: 0 },
-    target: { x: moving ? 100 : 0, y: 0 },
-    direction,
-    moving,
-    carrying: false
-  };
-}
-
-function tokenFactory(prefix = 'behavior-token'): () => string {
-  let index = 0;
-  return () => `${prefix}-${++index}`;
-}
-
-function deferred<T>() {
-  let resolve!: (value: T) => void;
-  let reject!: (error: unknown) => void;
-  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
-    resolve = resolvePromise;
-    reject = rejectPromise;
-  });
-  return { promise, resolve, reject };
-}
-
-/** 通过高强度状态把残留 thinking 信号转换为可观察的错误动作。 */
-function createResultSignalSensitiveManifest(
-  phase: 'success' | 'error'
-): CharacterManifestV2 {
-  const manifest = createManifest();
-  const semantic = phase === 'success' ? 'celebrate' : 'fail';
-  const actionId = `stale-${phase}-action`;
-  const stateId = `stale-${phase}-state`;
-  manifest.actions.push({
-    ...manifest.actions.find(action => action.semantic === semantic)!,
-    id: actionId,
-    name: `残留 ${phase} 动作`
-  });
-  manifest.states.push({
-    ...manifest.states.find(state => state.semantic === semantic)!,
-    id: stateId,
-    name: `残留 ${phase} 状态`,
-    intensity: 100,
-    actionIds: [actionId],
-    enterConditions: [{
-      mode: 'all',
-      clauses: [
-        { kind: 'signal', signal: 'thinking' },
-        { kind: 'signal', signal: phase === 'success' ? 'task-success' : 'task-failure' }
-      ]
-    }]
-  });
-  manifest.skins[0]!.presentations.push({
-    actionId,
-    fps: 20,
-    frames: [{ assetId: `${actionId}-asset`, x: 0, y: 0, width: 1, height: 1 }],
-    anchors: { ground: { x: 0.5, y: 1 } }
-  });
-  manifest.resources.push({
-    assetId: `${actionId}-asset`,
-    fileName: `${actionId}.png`,
-    sha256: 'a'.repeat(64),
-    byteLength: 1
-  });
-  return manifest;
-}
-
-/** 默认主状态同时承载 idle 与 resistant think，用于识别同状态下的动作残留。 */
-function createSharedDefaultStateManifest(): CharacterManifestV2 {
-  const manifest = createManifest();
-  manifest.states = manifest.states.filter(state => state.id !== 'think-state');
-  manifest.states.find(state => state.id === manifest.defaultStateId)!.actionIds = [
-    'idle-action',
-    'think-action'
-  ];
-  const thinkingAction = manifest.actions.find(action => action.id === 'think-action')!;
-  thinkingAction.interrupt = 'resistant';
-  thinkingAction.loopPolicy = 'until-interrupted';
-  return manifest;
-}
-
-async function loadConstructor(): Promise<BehaviorServiceConstructor> {
-  const module = await import('../src/main/characters/character-behavior-service').catch(() => null) as null | {
-    CharacterBehaviorService?: BehaviorServiceConstructor;
-  };
-  expect(module?.CharacterBehaviorService, 'Main 应实现唯一行为权威服务')
-    .toBeTypeOf('function');
-  return module!.CharacterBehaviorService!;
-}
-
-function createFixture(overrides: {
-  getV2?: () => Promise<CharacterManifestV2>;
-  getV1?: () => Promise<CharacterManifestV1>;
-  createPlaybackToken?: () => string;
-} = {}) {
+function fixture() {
   let now = 0;
-  const currentSnapshot = snapshot();
-  const store = {
-    getActiveManifestV2: vi.fn(overrides.getV2 ?? (async () => createManifest())),
-    getActive: vi.fn(overrides.getV1 ?? (async () => createLegacyManifest()))
-  };
+  let serial = 0;
+  const store = { getActiveManifestV3: vi.fn(async () => characterManifestV3Schema.parse(createManifest())) };
   const motion = {
-    getSnapshot: vi.fn(() => structuredClone(currentSnapshot)),
-    requestIntent: vi.fn(),
-    applyTaskEvent: vi.fn(),
-    pollIdle: vi.fn(() => null),
-    issueIdlePlayback: vi.fn(() => 'legacy-token-1'),
-    confirmIdlePlayback: vi.fn()
+    getSnapshot: vi.fn(() => ({ revision: 1, timestampMs: 0, position: { x: 0, y: 0 }, target: { x: 0, y: 0 }, direction: 'right' as const, moving: false, carrying: false })),
+    requestIntent: vi.fn(), applyTaskEvent: vi.fn()
   };
   const reportError = vi.fn();
-  return {
-    store,
-    motion,
-    reportError,
-    now: () => now,
-    setNow: (value: number) => { now = value; },
-    options: {
-      store,
-      motion,
-      now: () => now,
-      random: () => 0,
-      createPlaybackToken: overrides.createPlaybackToken ?? tokenFactory(),
-      idleIntervalMs: 1_000,
-      reportError
-    }
-  };
+  const service = new CharacterBehaviorService({ store, motion, now: () => now, random: () => 0, createPlaybackToken: () => `behavior-token-${++serial}`, reportError });
+  const events: CharacterBehaviorPlaybackEvent[] = [];
+  service.subscribe(event => events.push(event));
+  return { store, motion, service, events, reportError, setNow: (value: number) => { now = value; } };
 }
 
-describe('Main 角色行为权威服务', () => {
-  let Constructor: BehaviorServiceConstructor;
+function currentAction(events: CharacterBehaviorPlaybackEvent[]) {
+  const event = [...events].reverse().find(event => event.type === 'behavior-action');
+  if (!event || event.type !== 'behavior-action') throw new Error('缺少动作授权');
+  return event;
+}
 
-  beforeEach(async () => {
-    Constructor = await loadConstructor();
+test('Main 运动和搬运事实立即重判同一计划，停止后回到 idle', async () => {
+  const f = fixture(); await f.service.initialize();
+  f.service.applyDecision({ context: f.service.context()!, eventId: 'facts-plan', source: 'chat',
+    moodUpdate: { summary: '跟随运动', strength: 1 }, expressionPlan: { states: [
+      { stateId: 'move-state', score: 1, minStrength: 0, maxStrength: 1,
+        when: { moving: true, carrying: false }, lifetime: 'condition', actions: [{ actionId: 'move-action', score: 1 }] },
+      { stateId: 'carry-state', score: 1, minStrength: 0, maxStrength: 1,
+        when: { moving: true, carrying: true }, lifetime: 'condition', actions: [{ actionId: 'carry-action', score: 1 }] }
+    ] } });
+  f.service.handleMovement({ ...f.motion.getSnapshot(), moving: true });
+  expect(currentAction(f.events).actionId).toBe('move-action');
+  f.service.handleMovement({ ...f.motion.getSnapshot(), moving: true, carrying: true });
+  expect(currentAction(f.events).actionId).toBe('carry-action');
+  f.service.handleMovement({ ...f.motion.getSnapshot(), moving: false, carrying: true });
+  expect(currentAction(f.events).actionId).toBe('idle-action');
+  f.service.close();
+});
+
+test('任务占用解除即退出条件状态，角色重载与reset仍保留 Main 事实', async () => {
+  const f = fixture(); await f.service.initialize();
+  f.service.updateRuntimeFacts({ taskRunning: true, dragging: true });
+  const apply = () => f.service.applyDecision({ context: f.service.context()!, eventId: 'task-plan', source: 'chat',
+    moodUpdate: { summary: '专注', strength: 1 }, expressionPlan: { states: [
+      { stateId: 'think-state', score: 1, minStrength: 0, maxStrength: 1,
+        when: { taskRunning: true, dragging: true }, lifetime: 'condition', actions: [{ actionId: 'think-action', score: 1 }] }
+    ] } });
+  apply(); expect(currentAction(f.events).actionId).toBe('think-action');
+  f.service.cancelStateLifecycle(); apply(); expect(currentAction(f.events).actionId).toBe('think-action');
+  await f.service.handleActiveCharacterChanged(); apply(); expect(currentAction(f.events).actionId).toBe('think-action');
+  f.service.updateRuntimeFacts({ taskRunning: false });
+  expect(currentAction(f.events).actionId).toBe('idle-action');
+  f.service.close();
+});
+
+test('V3 初始化保留真实 ID，公开目录不暴露旧语义', async () => {
+  const { service, events } = fixture();
+  await service.initialize();
+  expect(currentAction(events)).toMatchObject({ stateId: 'idle-state', actionId: 'idle-action' });
+  const catalog = service.getPublicBehaviorCatalog();
+  expect(catalog.states[0]).toMatchObject({ stateId: 'idle-state', actions: [expect.objectContaining({ actionId: 'idle-action' })] });
+  expect(catalog.states[0]).not.toHaveProperty('semantic');
+  expect(service.resolveBehaviorTarget({ kind: 'action_name', name: 'think 动作' })).toEqual({ kind: 'state_action', stateId: 'think-state', actionId: 'think-action' });
+  service.close();
+});
+
+test.each(['completed', 'interrupted', 'failed'] as const)('Main先换片段后的已发布旧令牌 %s 回报仅忽略且无副作用', async status => {
+  const f = fixture(); await f.service.initialize(); const old = currentAction(f.events);
+  f.service.applyPlaybackFeedback({ playbackToken: old.playbackToken, actionId: old.actionId, status: 'started', occurredAtMs: 0 });
+  f.setNow(500); f.service.advance();
+  expect(currentAction(f.events).playbackToken).not.toBe(old.playbackToken);
+  f.setNow(500.8);
+  const before = f.service.snapshot(); const events = f.events.length; const recent = f.service.getRecentPublicActions();
+  expect(() => f.service.applyPlaybackFeedback({ playbackToken: old.playbackToken, actionId: old.actionId, status, occurredAtMs: 500.8 })).not.toThrow();
+  expect(f.service.snapshot()).toEqual(before); expect(f.events).toHaveLength(events);
+  expect(f.service.getRecentPublicActions()).toEqual(recent);
+  for (const invalid of [
+    { playbackToken: 'forged-token', actionId: old.actionId, status, occurredAtMs: 500.8 },
+    { playbackToken: old.playbackToken, actionId: 'wrong-action', status, occurredAtMs: 500.8 },
+    { playbackToken: old.playbackToken, actionId: old.actionId, status: 'started' as const, occurredAtMs: 500.8 },
+    { playbackToken: old.playbackToken, actionId: old.actionId, status, occurredAtMs: -1 },
+    { playbackToken: old.playbackToken, actionId: old.actionId, status, occurredAtMs: 501 }
+  ]) expect(() => f.service.applyPlaybackFeedback(invalid)).toThrow('CHARACTER_PLAYBACK_UNAUTHORIZED');
+  f.service.cancelStateLifecycle();
+  expect(() => f.service.applyPlaybackFeedback({ playbackToken: old.playbackToken, actionId: old.actionId, status, occurredAtMs: 500.8 })).toThrow('CHARACTER_PLAYBACK_UNAUTHORIZED');
+  f.service.close();
+});
+
+test('已结束令牌记录有界淘汰，过旧令牌不能作为当前生命周期授权', async () => {
+  const f = fixture(); await f.service.initialize(); const old = currentAction(f.events);
+  for (let index = 1; index <= 20; index++) {
+    f.setNow(index * 500);
+    f.service.requestDirectedBehavior({ kind: 'state_action', stateId: 'idle-state', actionId: 'idle-action' });
+  }
+  expect(() => f.service.applyPlaybackFeedback({ playbackToken: old.playbackToken, actionId: old.actionId,
+    status: 'completed', occurredAtMs: 10000 })).toThrow('CHARACTER_PLAYBACK_UNAUTHORIZED');
+  f.service.close();
+});
+
+test('几何绑定保留真实来源并随方向更新 generation', async () => {
+  const { service, motion } = fixture(); await service.initialize();
+  const first = service.getGeometryBinding()!;
+  service.handleMovement({ ...motion.getSnapshot(), direction: 'left' });
+  expect(service.getGeometryBinding()).toMatchObject({ direction: 'left', actionId: 'idle-action', skinId: 'default-skin' });
+  expect(service.getGeometryBinding()!.generation).toBeGreaterThan(first.generation);
+  service.close();
+});
+
+test('明确动作覆盖作者循环并在真实周期结束，不依赖终态反馈', async () => {
+  const f = fixture(); const manifest = createManifest(); manifest.actions[2]!.loopPolicy = 'until-interrupted';
+  f.store.getActiveManifestV3.mockResolvedValue(manifest); await f.service.initialize();
+  f.service.requestDirectedBehavior({ kind: 'state_action', stateId: 'think-state', actionId: 'think-action' });
+  const event = currentAction(f.events);
+  expect(event.playback).toEqual({ mode: 'once', durationMs: 50 });
+  f.service.applyPlaybackFeedback({ playbackToken: event.playbackToken, actionId: event.actionId, status: 'started', occurredAtMs: 0 });
+  f.setNow(50); f.service.advance();
+  expect(f.service.snapshot()!.schedule.current?.playbackToken).not.toBe(event.playbackToken);
+  f.service.close();
+});
+
+test('仅状态请求有界停留，动作不归属该状态时拒绝', async () => {
+  const f = fixture(); await f.service.initialize();
+  expect(f.service.requestDirectedBehavior({ kind: 'state_action', stateId: 'idle-state', actionId: 'think-action' }).kind).toBe('none');
+  f.service.requestDirectedBehavior({ kind: 'state', stateId: 'think-state' });
+  expect(currentAction(f.events).playback.durationMs).toBe(3000);
+  f.service.close();
+});
+
+test('播放反馈必须匹配精确令牌、动作和 Main 时间', async () => {
+  const f = fixture(); await f.service.initialize(); const event = currentAction(f.events);
+  expect(() => f.service.applyPlaybackFeedback({ playbackToken: event.playbackToken, actionId: 'wrong-action', status: 'started', occurredAtMs: 0 })).toThrow('CHARACTER_PLAYBACK_UNAUTHORIZED');
+  expect(() => f.service.applyPlaybackFeedback({ playbackToken: event.playbackToken, actionId: event.actionId, status: 'started', occurredAtMs: 1 })).toThrow('CHARACTER_PLAYBACK_UNAUTHORIZED');
+  expect(() => f.service.applyPlaybackFeedback({ playbackToken: event.playbackToken, actionId: event.actionId, status: 'started', occurredAtMs: 0 })).not.toThrow();
+  f.service.close();
+});
+
+test('切换角色的异步读取立即失效旧令牌，迟到完成不得恢复旧角色', async () => {
+  const f = fixture(); await f.service.initialize(); const old = currentAction(f.events);
+  let resolve!: (manifest: CharacterManifestV3) => void;
+  f.store.getActiveManifestV3.mockReturnValueOnce(new Promise(done => { resolve = done; }));
+  const changing = f.service.handleActiveCharacterChanged();
+  expect(f.service.snapshot()).toBeNull();
+  expect(() => f.service.applyPlaybackFeedback({ playbackToken: old.playbackToken, actionId: old.actionId, status: 'completed', occurredAtMs: 0 })).toThrow('CHARACTER_PLAYBACK_UNAUTHORIZED');
+  resolve(createManifest('second')); await changing;
+  expect(f.service.getGeometryBinding()!.manifest.id).toBe('second');
+  expect(currentAction(f.events).playbackToken).not.toBe(old.playbackToken);
+  f.service.close();
+});
+
+test('切换读取失败只报告稳定错误并保持无引擎', async () => {
+  const f = fixture(); await f.service.initialize();
+  f.store.getActiveManifestV3.mockRejectedValueOnce(new Error('私有路径和内部堆栈'));
+  await f.service.handleActiveCharacterChanged();
+  expect(f.service.snapshot()).toBeNull();
+  expect(f.reportError).toHaveBeenCalledWith('CHARACTER_BEHAVIOR_V3_UNAVAILABLE');
+  expect(f.service.requestDirectedBehavior({ kind: 'state', stateId: 'idle-state' })).toEqual({ kind: 'none' });
+  f.service.close();
+});
+
+test('运动与统一阶段不推断表达状态，关闭后不再发布', async () => {
+  const f = fixture(); await f.service.initialize(); const current = f.service.snapshot()!.stateId;
+  f.service.handleTaskEvent({ type: 'phase', phase: 'success' });
+  f.service.handleMovement({ ...f.motion.getSnapshot(), moving: true });
+  expect(f.service.snapshot()!.stateId).toBe(current);
+  expect(f.motion.requestIntent).not.toHaveBeenCalled();
+  f.service.close(); const count = f.events.length;
+  f.service.handleUserInteraction(); f.service.advance();
+  expect(f.events).toHaveLength(count);
+});
+
+/** 只替换窗口边界；真实 Service/Engine 裁决准备 token 与 started 的可信性。 */
+async function movementFixture(mode: 0 | 1 | 2 = 0, matched = true) {
+  const f = fixture(); let now = 0;
+  const manifest = createManifest();
+  manifest.actions.forEach(action => { action.loopPolicy = 'until-interrupted'; });
+  f.store.getActiveManifestV3.mockResolvedValue(manifest); await f.service.initialize();
+  f.service.applyDecision({ context: f.service.context()!, eventId: '能力', source: 'chat',
+    moodUpdate: { summary: '开心', strength: .8, fadeInMs: 0 }, expressionPlan: { states: [
+      { stateId: 'celebrate-state', score: 1, minStrength: 0, maxStrength: 1, lifetime: 'episode', actions: [] },
+      ...(matched ? [{ stateId: 'move-state', score: .1, minStrength: .9, maxStrength: 1,
+        when: { moving: true }, lifetime: 'condition' as const, actions: [{ actionId: 'move-action', score: 1 }] }] : [])
+    ] } });
+  const stop = vi.fn(() => f.service.handleMovement(f.motion.getSnapshot())); const notices = vi.fn();
+  const director = new CharacterBehaviorDirector({ behavior: f.service, motion: { ...f.motion, stop },
+    now: () => now, initialGeneration: 'real', initialSettings: { movementMode: mode, proactivityMode: 'assistive' },
+    saveMovementMode: async () => undefined, publishNotice: notices });
+  f.motion.requestIntent.mockImplementation(() => {
+    const snapshot = { ...f.motion.getSnapshot(), target: { x: f.motion.requestIntent.mock.calls.length * 100, y: 0 }, moving: true };
+    f.service.handleMovement(snapshot); director.handleMotionSnapshot(snapshot); return snapshot;
   });
+  const feedback = (status: 'started' | 'failed' | 'interrupted' = 'started') => {
+    const current = f.service.snapshot()!.schedule.current!;
+    director.applyPlaybackFeedback({ playbackToken: current.playbackToken, actionId: current.actionId, status, occurredAtMs: now });
+  };
+  return { ...f, director, stop, notices, feedback, time: (value: number) => { now = value; f.setNow(value); } };
+}
+
+test.each([0, 1, 2] as const)('首帧门控：模式%s有活动也必须等同token started才一次位移', async mode => {
+  const f = await movementFixture(mode);
+  if (mode === 0) await f.director.prepareUserPrompt('向右一点');
+  if (mode === 1) f.director.requestPersistentMovement();
+  if (mode === 2) f.director.requestIntermittentMovement();
+  expect(f.motion.requestIntent).not.toHaveBeenCalled();
+  expect(f.director.getChatContext().runtime).toMatchObject({ pendingMovement: true, moving: false });
+  expect(f.service.snapshot()?.schedule.current?.actionId).toBe('move-action');
+  f.feedback(); expect(f.motion.requestIntent).toHaveBeenCalledTimes(1);
+  f.feedback(); expect(f.motion.requestIntent).toHaveBeenCalledTimes(1);
+  expect(f.service.snapshot()?.mood?.summary).toBe('开心');
+  f.feedback('failed'); expect(f.stop).toHaveBeenCalled();
+  expect(f.service.snapshot()?.mood?.summary).toBe('开心');
+  await f.director.close();
+});
+
+test.each(['timeout', 'wrong', 'failed', 'reset', 'cancel'] as const)('首帧门控：%s不会产生位移', async cause => {
+  const f = await movementFixture(); await f.director.prepareUserPrompt('向右一点');
+  const current = f.service.snapshot()!.schedule.current!;
+  if (cause === 'timeout') { f.time(1500); f.director.advance(); }
+  if (cause === 'wrong') expect(() => f.director.applyPlaybackFeedback({ playbackToken: '伪造', actionId: current.actionId, status: 'started', occurredAtMs: 0 })).toThrow();
+  if (cause === 'failed') f.feedback('failed');
+  if (cause === 'reset') f.director.reset('new');
+  if (cause === 'cancel') f.director.cancelActive();
+  if (cause !== 'wrong') {
+    try { f.director.applyPlaybackFeedback({ playbackToken: current.playbackToken, actionId: current.actionId, status: 'started', occurredAtMs: cause === 'timeout' ? 1500 : 0 }); } catch { /* 旧令牌拒绝也是合法结果。 */ }
+  }
+  expect(f.motion.requestIntent).not.toHaveBeenCalled(); await f.director.close();
+});
+
+test.each([0, 1, 2] as const)('首帧门控：模式%s缺活动永久零位移且无逐tick提示', async mode => {
+  const f = await movementFixture(mode, false);
+  if (mode === 0) {
+    const prepared = await f.director.prepareUserPrompt('向右一点');
+    await f.director.completeUserPrompt({ generation: 'real', eventId: '缺失', context: f.director.captureExpressionContext(),
+      explicitDirective: prepared.explicitDirective, expressionStatus: 'no_match', requestKind: 'movement', expressionPlan: { states: [] } });
+  }
+  for (let i = 0; i < 20; i++) {
+    f.time(i * 1000); f.director.advance();
+    if (mode === 1) f.director.requestPersistentMovement();
+    if (mode === 2) f.director.requestIntermittentMovement();
+  }
+  expect(f.motion.requestIntent).not.toHaveBeenCalled(); expect(f.notices.mock.calls.length).toBeLessThanOrEqual(1);
+  await f.director.close();
+});
+
+test('明确移动只释放旧explicit，保留心情并等待新活动首帧', async () => {
+  const f = await movementFixture();
+  f.service.requestDirectedBehavior({ kind: 'state_action', stateId: 'think-state', actionId: 'think-action' });
+  await f.director.prepareUserPrompt('向右一点');
+  expect(f.service.snapshot()?.schedule.current?.actionId).toBe('move-action');
+  expect(f.service.snapshot()?.mood?.summary).toBe('开心');
+  expect(f.motion.requestIntent).not.toHaveBeenCalled(); f.feedback();
+  expect(f.motion.requestIntent).toHaveBeenCalledTimes(1); await f.director.close();
+});
+
+
+test('自动首帧超时同生命周期不重复播放或提示，明确请求仍可重试', async () => {
+  const f = await movementFixture(1); f.director.requestPersistentMovement();
+  f.time(1500); f.director.advance(); const published = f.events.filter(event => event.type === 'behavior-action' && event.actionId === 'move-action').length;
+  for (let i = 0; i < 4; i++) { f.director.requestPersistentMovement(); f.time(3000 + i * 1500); f.director.advance(); }
+  expect(f.events.filter(event => event.type === 'behavior-action' && event.actionId === 'move-action')).toHaveLength(published); expect(f.notices).toHaveBeenCalledTimes(1);
+  await f.director.prepareUserPrompt('向右一点');
+  expect(f.service.snapshot()?.schedule.current?.actionId).toBe('move-action'); await f.director.close();
+});
+
+test('真实到达先更新Service再续行，新token未started保持零新增位移', async () => {
+  const f = await movementFixture(1); f.director.requestPersistentMovement(); f.feedback();
+  const arrived = f.motion.getSnapshot();
+  f.service.handleMovement(arrived); f.director.handleMotionSnapshot(arrived);
+  expect(f.motion.requestIntent).toHaveBeenCalledTimes(1);
+  expect(f.service.snapshot()?.schedule.current?.actionId).toBe('move-action');
+  f.feedback(); expect(f.motion.requestIntent).toHaveBeenCalledTimes(2); await f.director.close();
+});
+
+test.each(['ready', 'no_match', 'failed'] as const)('无固定Gate的明确状态%s：精确播放或如实反馈', async status => {
+  const f = await movementFixture();
+  const prepared = await f.director.prepareUserPrompt('你表现得开心一点');
+  await f.director.completeUserPrompt({ generation: 'real', eventId: '状态', context: f.director.captureExpressionContext(),
+    explicitDirective: prepared.explicitDirective, requestKind: 'state', expressionStatus: status,
+    ...(status === 'ready' ? { explicitPlayback: { stateId: 'think-state' } } : {}),
+    ...(status === 'no_match' ? { expressionPlan: { states: [] } } : {}) });
+  if (status === 'ready') expect(f.service.snapshot()?.stateId).toBe('think-state');
+  else expect(f.notices).toHaveBeenCalledWith(expect.objectContaining({ code: status === 'no_match' ? 'CHARACTER_ACTION_UNAVAILABLE' : 'CHARACTER_EXPRESSION_NOT_EXECUTED' }));
+  expect(f.motion.requestIntent).not.toHaveBeenCalled(); await f.director.close();
+});
+
+test('明确移动已开始后失败表现不能留下正在移动的失败状态', async () => {
+  const f = await movementFixture(); const prepared = await f.director.prepareUserPrompt('向右一点'); f.feedback();
+  await f.director.completeUserPrompt({ generation: 'real', eventId: '失败', context: f.director.captureExpressionContext(),
+    explicitDirective: prepared.explicitDirective, expressionStatus: 'failed' });
+  expect(f.stop).toHaveBeenCalled(); await f.director.close();
+});
+
 
-  test('开始任务搬运返回当前皮肤的精确授权并只发布同一个真实动作', async () => {
-    const fixture = createFixture();
-    const service = new Constructor(fixture.options);
-    const events: BehaviorPlaybackEvent[] = [];
-    service.subscribe(event => events.push(event));
-    await service.initialize();
-    events.splice(0);
-
-    const grant = service.beginTaskCarry();
-
-    expect(grant).toEqual({
-      playbackToken: 'behavior-token-2',
-      actionId: 'carry-action',
-      commitFrameId: 'carry-commit'
-    });
-    expect(events).toEqual([{
-      type: 'behavior-action',
-      revision: 2,
-      stateId: 'carry-state',
-      modifierStateIds: [],
-      actionId: grant.actionId,
-      playbackToken: grant.playbackToken,
-      commitFrameId: 'carry-commit'
-    }]);
-  });
-
-  test('搬运表现没有提交帧时授权明确返回 null', async () => {
-    const manifest = createManifest();
-    delete manifest.skins[0]!.presentations.find(item => item.actionId === 'carry-action')!.commitFrameId;
-    const fixture = createFixture({ getV2: async () => manifest });
-    const service = new Constructor(fixture.options);
-    const events: BehaviorPlaybackEvent[] = [];
-    service.subscribe(event => events.push(event));
-    await service.initialize();
-    events.splice(0);
-
-    expect(service.beginTaskCarry().commitFrameId).toBeNull();
-    expect(events.at(-1)).not.toHaveProperty('commitFrameId');
-  });
-
-  test('搬运动作不满足当前方向硬约束时不把默认待机伪装成授权', async () => {
-    const manifest = createManifest();
-    manifest.actions.find(action => action.id === 'carry-action')!.direction = 'left';
-    const fixture = createFixture({ getV2: async () => manifest });
-    const service = new Constructor(fixture.options);
-    const events: BehaviorPlaybackEvent[] = [];
-    service.subscribe(event => events.push(event));
-    await service.initialize();
-    events.splice(0);
-
-    expect(() => service.beginTaskCarry()).toThrow('CHARACTER_BEHAVIOR_CARRY_UNAVAILABLE');
-    expect(events).toEqual([]);
-    expect(() => service.applyPlaybackFeedback({
-      playbackToken: 'behavior-token-1',
-      actionId: 'idle-action',
-      status: 'started',
-      occurredAtMs: 1
-    })).not.toThrow();
-  });
-
-  test('搬运期间普通待机、移动和低优先级 Agent 不抢占，结束后恢复默认动作', async () => {
-    const fixture = createFixture();
-    const service = new Constructor(fixture.options);
-    const events: BehaviorPlaybackEvent[] = [];
-    service.subscribe(event => events.push(event));
-    await service.initialize();
-    const grant = service.beginTaskCarry();
-    events.splice(0);
-
-    fixture.setNow(10_000);
-    service.handleIdleDue();
-    service.handleMovement(snapshot(true));
-    service.handleAgentIntent({
-      stateIntent: { semantic: 'idle' },
-      actionSemantic: 'idle',
-      urgency: 1,
-      explanation: '低优先级意图不能抢占搬运。'
-    });
-
-    expect(events).toEqual([]);
-    expect(() => service.applyPlaybackFeedback({
-      playbackToken: grant.playbackToken,
-      actionId: grant.actionId,
-      status: 'started',
-      occurredAtMs: 10_001
-    })).not.toThrow();
-
-    fixture.setNow(10_002);
-    service.endTaskCarry();
-    expect(events.at(-1)).toMatchObject({ actionId: 'idle-action' });
-  });
-
-  test('角色切换撤销旧搬运授权且新角色不继承旧提交帧', async () => {
-    let active = createManifest('first');
-    const fixture = createFixture({ getV2: async () => active });
-    const service = new Constructor(fixture.options);
-    await service.initialize();
-    const oldGrant = service.beginTaskCarry();
-    active = createManifest('second');
-    delete active.skins[0]!.presentations.find(item => item.actionId === 'carry-action')!.commitFrameId;
-
-    await service.handleActiveCharacterChanged();
-
-    expect(() => service.applyPlaybackFeedback({
-      playbackToken: oldGrant.playbackToken,
-      actionId: oldGrant.actionId,
-      status: 'started',
-      occurredAtMs: 10
-    })).toThrow('CHARACTER_PLAYBACK_UNAUTHORIZED');
-    expect(service.beginTaskCarry()).toMatchObject({
-      actionId: 'carry-action',
-      commitFrameId: null
-    });
-  });
-
-  test('搬运中切换角色只清除搬运阻塞，新角色动作结束后可恢复待机', async () => {
-    let active = createManifest('first');
-    const fixture = createFixture({ getV2: async () => active });
-    const service = new Constructor(fixture.options);
-    const events: BehaviorPlaybackEvent[] = [];
-    service.subscribe(event => events.push(event));
-    await service.initialize();
-    service.beginTaskCarry();
-    active = createManifest('second');
-
-    await service.handleActiveCharacterChanged();
-    service.endTaskCarry();
-    const switched = requireBehaviorAction(events.at(-1));
-    service.applyPlaybackFeedback({
-      playbackToken: switched.playbackToken,
-      actionId: switched.actionId,
-      status: 'started',
-      occurredAtMs: 1
-    });
-    service.applyPlaybackFeedback({
-      playbackToken: switched.playbackToken,
-      actionId: switched.actionId,
-      status: 'completed',
-      occurredAtMs: 2
-    });
-    events.splice(0);
-    fixture.setNow(1_000);
-
-    service.handleIdleDue();
-
-    expect(events).toHaveLength(1);
-    expect(events[0]).toMatchObject({ type: 'behavior-action', actionId: 'idle-action' });
-  });
-
-  test.each([
-    {
-      name: 'pending_action',
-      event: {
-        type: 'pending_action',
-        action: {
-          actionId: 'carry-pending',
-          conversationId: 'conversation-carry',
-          risk: 'write',
-          operation: 'create_file',
-          summary: '等待用户确认',
-          targetRelativePath: 'carry.txt',
-          createdAt: '2026-08-07T00:00:00.000Z',
-          expiresAt: '2026-08-07T00:10:00.000Z'
-        }
-      } as TaskEvent
-    },
-    {
-      name: 'awaiting_confirmation',
-      event: { type: 'phase', phase: 'awaiting_confirmation' } as TaskEvent
-    }
-  ])('搬运中切换角色不会清除 $name 设置的任务阻塞', async ({ event }) => {
-    let active = createManifest('first');
-    const fixture = createFixture({ getV2: async () => active });
-    const service = new Constructor(fixture.options);
-    const events: BehaviorPlaybackEvent[] = [];
-    service.subscribe(next => events.push(next));
-    await service.initialize();
-    service.handleTaskEvent(event);
-    service.beginTaskCarry();
-    active = createManifest('second');
-
-    await service.handleActiveCharacterChanged();
-    service.endTaskCarry();
-    const switched = requireBehaviorAction(events.at(-1));
-    service.applyPlaybackFeedback({
-      playbackToken: switched.playbackToken,
-      actionId: switched.actionId,
-      status: 'started',
-      occurredAtMs: 1
-    });
-    service.applyPlaybackFeedback({
-      playbackToken: switched.playbackToken,
-      actionId: switched.actionId,
-      status: 'completed',
-      occurredAtMs: 2
-    });
-    events.splice(0);
-    fixture.setNow(1_000);
-
-    service.handleIdleDue();
-    expect(events).toEqual([]);
-
-    service.handleTaskEvent({ type: 'phase', phase: 'idle' });
-    expect(events.at(-1)).toMatchObject({ type: 'behavior-action', actionId: 'idle-action' });
-  });
-
-  test('初始化读取 V2 清单并发出默认状态动作', async () => {
-    const fixture = createFixture();
-    const service = new Constructor(fixture.options);
-    const events: BehaviorPlaybackEvent[] = [];
-    service.subscribe(event => events.push(event));
-
-    await service.initialize();
-
-    expect(fixture.store.getActiveManifestV2).toHaveBeenCalledOnce();
-    expect(events).toEqual([{
-      type: 'behavior-action',
-      revision: 1,
-      stateId: 'idle-state',
-      modifierStateIds: [],
-      actionId: 'idle-action',
-      playbackToken: 'behavior-token-1'
-    }]);
-  });
-
-  test.each([
-    ['failed', 'failureFallbackActionId'],
-    ['interrupted', 'interruptedFallbackActionId']
-  ] as const)('%s 生命周期反馈由引擎重新授权回退，并只发布新的 play', async (
-    status,
-    fallbackField
-  ) => {
-    const manifest = createManifest();
-    Object.assign(
-      manifest.actions.find(action => action.id === 'idle-action')!,
-      { [fallbackField]: 'fail-action' }
-    );
-    const fixture = createFixture({ getV2: async () => manifest });
-    const service = new Constructor(fixture.options);
-    const events: BehaviorPlaybackEvent[] = [];
-    service.subscribe(event => events.push(event));
-    await service.initialize();
-
-    service.applyPlaybackFeedback({
-      playbackToken: 'behavior-token-1',
-      actionId: 'idle-action',
-      status,
-      occurredAtMs: 20
-    });
-
-    expect(events).toHaveLength(2);
-    expect(events.at(-1)).toEqual({
-      type: 'behavior-action',
-      revision: 3,
-      stateId: 'fail-state',
-      modifierStateIds: [],
-      actionId: 'fail-action',
-      playbackToken: 'behavior-token-2'
-    });
-  });
-
-  test('仅方向变化也会同步失败回退的授权上下文', async () => {
-    const manifest = createManifest();
-    Object.assign(
-      manifest.actions.find(action => action.id === 'idle-action')!,
-      { failureFallbackActionId: 'fail-action' }
-    );
-    Object.assign(
-      manifest.actions.find(action => action.id === 'fail-action')!,
-      { direction: 'left' }
-    );
-    const fixture = createFixture({ getV2: async () => manifest });
-    const service = new Constructor(fixture.options);
-    const events: BehaviorPlaybackEvent[] = [];
-    service.subscribe(event => events.push(event));
-    await service.initialize();
-
-    service.handleMovement(snapshot(false, 'left'));
-    service.applyPlaybackFeedback({
-      playbackToken: 'behavior-token-1',
-      actionId: 'idle-action',
-      status: 'failed',
-      occurredAtMs: 20
-    });
-
-    expect(events.at(-1)).toMatchObject({
-      type: 'behavior-action',
-      actionId: 'fail-action',
-      playbackToken: 'behavior-token-2'
-    });
-  });
-
-  test.each([
-    [{ type: 'phase', phase: 'listening' }, 'listen-action'],
-    [{ type: 'phase', phase: 'thinking' }, 'think-action'],
-    [{ type: 'phase', phase: 'success' }, 'celebrate-action'],
-    [{ type: 'phase', phase: 'error' }, 'fail-action']
-  ] as const)('TaskEvent %o 只由 Main 映射为 %s', async (event, actionId) => {
-    const fixture = createFixture();
-    const service = new Constructor(fixture.options);
-    const events: BehaviorPlaybackEvent[] = [];
-    service.subscribe(next => events.push(next));
-    await service.initialize();
-
-    service.handleTaskEvent(event);
-
-    expect(events.at(-1)).toMatchObject({ type: 'behavior-action', actionId });
-    expect(fixture.motion.applyTaskEvent).toHaveBeenCalledWith(event);
-  });
-
-  test.each(['idle', 'cancelled'] as const)(
-    'listening→thinking→%s 显式停用任务信号并恢复默认动作',
-    async phase => {
-      const fixture = createFixture();
-      const service = new Constructor(fixture.options);
-      const events: BehaviorPlaybackEvent[] = [];
-      service.subscribe(event => events.push(event));
-      await service.initialize();
-      events.splice(0);
-
-      service.handleTaskEvent({ type: 'phase', phase: 'listening' });
-      service.handleTaskEvent({ type: 'phase', phase: 'thinking' });
-      service.handleTaskEvent({ type: 'phase', phase });
-
-      expect(events.at(-1)).toMatchObject({
-        stateId: 'idle-state',
-        actionId: 'idle-action'
-      });
-    }
-  );
-
-  test.each(['idle', 'cancelled'] as const)(
-    '默认状态内的抗中断 thinking 动作在进入 %s 后仍恢复 idle 动作',
-    async phase => {
-      const fixture = createFixture({ getV2: async () => createSharedDefaultStateManifest() });
-      const service = new Constructor(fixture.options);
-      const events: BehaviorPlaybackEvent[] = [];
-      service.subscribe(event => events.push(event));
-      await service.initialize();
-
-      service.handleTaskEvent({ type: 'phase', phase: 'thinking' });
-      const thinking = requireBehaviorAction(events.at(-1));
-      service.applyPlaybackFeedback({
-        playbackToken: thinking.playbackToken,
-        actionId: thinking.actionId,
-        status: 'started',
-        occurredAtMs: 1
-      });
-      events.splice(0);
-
-      service.handleTaskEvent({ type: 'phase', phase });
-
-      expect(events).toHaveLength(1);
-      const resumed = requireBehaviorAction(events[0]);
-      expect(resumed).toMatchObject({
-        stateId: 'idle-state',
-        actionId: 'idle-action'
-      });
-      expect(() => service.applyPlaybackFeedback({
-        playbackToken: resumed.playbackToken,
-        actionId: resumed.actionId,
-        status: 'started',
-        occurredAtMs: 2
-      })).not.toThrow();
-    }
-  );
-
-  test.each([
-    ['success', 'celebrate-action'],
-    ['error', 'fail-action']
-  ] as const)(
-    '默认状态内的抗中断 thinking 动作在进入 %s 后切换为 %s',
-    async (phase, actionId) => {
-      const fixture = createFixture({ getV2: async () => createSharedDefaultStateManifest() });
-      const service = new Constructor(fixture.options);
-      const events: BehaviorPlaybackEvent[] = [];
-      service.subscribe(event => events.push(event));
-      await service.initialize();
-      service.handleTaskEvent({ type: 'phase', phase: 'thinking' });
-      events.splice(0);
-
-      service.handleTaskEvent({ type: 'phase', phase });
-
-      expect(events).toHaveLength(1);
-      const result = requireBehaviorAction(events[0]);
-      expect(result).toMatchObject({ actionId });
-      expect(() => service.applyPlaybackFeedback({
-        playbackToken: result.playbackToken,
-        actionId: result.actionId,
-        status: 'started',
-        occurredAtMs: 1
-      })).not.toThrow();
-    }
-  );
-
-  test.each(['awaiting_confirmation', 'acting'] as const)(
-    'thinking→%s 发布停用调度的新令牌，保持播放器与引擎一致',
-    async phase => {
-      const fixture = createFixture();
-      const service = new Constructor(fixture.options);
-      const events: BehaviorPlaybackEvent[] = [];
-      service.subscribe(event => events.push(event));
-      await service.initialize();
-      service.handleTaskEvent({ type: 'phase', phase: 'thinking' });
-      events.splice(0);
-
-      service.handleTaskEvent({ type: 'phase', phase });
-
-      expect(events).toHaveLength(1);
-      const thinking = requireBehaviorAction(events[0]);
-      expect(thinking).toMatchObject({ actionId: 'think-action' });
-      expect(() => service.applyPlaybackFeedback({
-        playbackToken: thinking.playbackToken,
-        actionId: thinking.actionId,
-        status: 'started',
-        occurredAtMs: 1
-      })).not.toThrow();
-    }
-  );
-
-  test.each([
-    ['success', 'celebrate-action'],
-    ['error', 'fail-action']
-  ] as const)(
-    'thinking→%s 先停用 thinking，不让旧信号选中高强度残留状态',
-    async (phase, actionId) => {
-      const fixture = createFixture({
-        getV2: async () => createResultSignalSensitiveManifest(phase)
-      });
-      const service = new Constructor(fixture.options);
-      const events: BehaviorPlaybackEvent[] = [];
-      service.subscribe(event => events.push(event));
-      await service.initialize();
-      events.splice(0);
-
-      service.handleTaskEvent({ type: 'phase', phase: 'thinking' });
-      service.handleTaskEvent({ type: 'phase', phase });
-
-      expect(events.at(-1)).toMatchObject({ actionId });
-    }
-  );
-
-  test('高层 Agent 意图参与引擎决策但不直接指定文件动作', async () => {
-    const fixture = createFixture();
-    const service = new Constructor(fixture.options);
-    const events: BehaviorPlaybackEvent[] = [];
-    service.subscribe(event => events.push(event));
-    await service.initialize();
-
-    service.handleAgentIntent({
-      stateIntent: { semantic: 'celebrate' },
-      actionSemantic: 'celebrate',
-      urgency: 60,
-      explanation: '任务完成后庆祝'
-    });
-
-    expect(events.at(-1)).toMatchObject({ actionId: 'celebrate-action' });
-  });
-
-  test('运动快照只在 moving 边沿改变时决策', async () => {
-    const fixture = createFixture();
-    const service = new Constructor(fixture.options);
-    const events: BehaviorPlaybackEvent[] = [];
-    service.subscribe(event => events.push(event));
-    await service.initialize();
-    events.splice(0);
-
-    service.handleMovement(snapshot(false));
-    service.handleMovement(snapshot(true, 'left'));
-    const countAfterStart = events.length;
-    service.handleMovement(snapshot(true, 'left'));
-    service.handleMovement(snapshot(false, 'left'));
-
-    expect(countAfterStart).toBe(1);
-    expect(events).toHaveLength(2);
-    expect(events[0]).toMatchObject({ actionId: 'move-action' });
-  });
-
-  test('用户交互只产生本地信号并重新计算空闲期限', async () => {
-    const fixture = createFixture();
-    const service = new Constructor(fixture.options);
-    const events: BehaviorPlaybackEvent[] = [];
-    service.subscribe(event => events.push(event));
-    await service.initialize();
-    events.splice(0);
-
-    fixture.setNow(900);
-    service.handleUserInteraction();
-    fixture.setNow(1_000);
-    service.handleIdleDue();
-
-    expect(events).toHaveLength(1);
-    fixture.setNow(1_900);
-    service.handleIdleDue();
-    expect(events).toHaveLength(2);
-  });
-
-  test('pending_action 和 acting 阻止随机待机且不产生动作', async () => {
-    const fixture = createFixture();
-    const service = new Constructor(fixture.options);
-    const events: BehaviorPlaybackEvent[] = [];
-    service.subscribe(event => events.push(event));
-    await service.initialize();
-    events.splice(0);
-
-    service.handleTaskEvent({
-      type: 'pending_action',
-      action: {
-        category: 'file',
-        actionId: 'action-1',
-        conversationId: 'conversation-1',
-        risk: 'write',
-        operation: 'create_file',
-        summary: '写入文件',
-        targetRelativePath: 'note.txt',
-        contentCharacters: 0, contentPreview: null, contentPreviewSuppressedReason: null, previewTruncated: false,
-        createdAt: '2026-08-06T00:00:00.000Z',
-        expiresAt: '2026-08-06T00:10:00.000Z'
-      }
-    });
-    fixture.setNow(10_000);
-    service.handleIdleDue();
-    service.handleTaskEvent({ type: 'phase', phase: 'acting' });
-    service.handleIdleDue();
-
-    expect(events).toEqual([]);
-    expect(fixture.motion.applyTaskEvent).toHaveBeenCalledTimes(2);
-  });
-
-  test('move 语义只在引擎真正排程后请求封闭 wander 意图', async () => {
-    const fixture = createFixture();
-    const service = new Constructor(fixture.options);
-    await service.initialize();
-
-    service.handleAgentIntent({
-      stateIntent: { semantic: 'move' },
-      actionSemantic: 'move',
-      urgency: 80,
-      explanation: '需要在桌面上漫步'
-    });
-
-    expect(fixture.motion.requestIntent).toHaveBeenCalledExactlyOnceWith('wander');
-  });
-
-  test('播放反馈由当前引擎令牌单次鉴权', async () => {
-    const fixture = createFixture();
-    const service = new Constructor(fixture.options);
-    await service.initialize();
-    const feedback: CharacterPlaybackFeedback = {
-      playbackToken: 'behavior-token-1',
-      actionId: 'idle-action',
-      status: 'started',
-      occurredAtMs: 10
-    };
-
-    expect(() => service.applyPlaybackFeedback(feedback)).not.toThrow();
-    expect(() => service.applyPlaybackFeedback(feedback))
-      .toThrow('CHARACTER_PLAYBACK_UNAUTHORIZED');
-  });
-
-  test('现有轮询在任务阻塞期间仍清除超过启动确认截止的令牌', async () => {
-    const fixture = createFixture();
-    const service = new Constructor({
-      ...fixture.options,
-      playbackStartTimeoutMs: 100
-    });
-    await service.initialize();
-    service.handleTaskEvent({
-      type: 'pending_action',
-      action: {
-        category: 'file',
-        actionId: 'action-timeout',
-        conversationId: 'conversation-timeout',
-        risk: 'write',
-        operation: 'create_file',
-        summary: '等待确认期间仍需推进播放令牌',
-        targetRelativePath: 'note.txt',
-        contentCharacters: 0, contentPreview: null, contentPreviewSuppressedReason: null, previewTruncated: false,
-        createdAt: '2026-08-06T00:00:00.000Z',
-        expiresAt: '2026-08-06T00:10:00.000Z'
-      }
-    });
-
-    fixture.setNow(100);
-    service.handleIdleDue();
-
-    expect(() => service.applyPlaybackFeedback({
-      playbackToken: 'behavior-token-1',
-      actionId: 'idle-action',
-      status: 'started',
-      occurredAtMs: 101
-    })).toThrow('CHARACTER_PLAYBACK_UNAUTHORIZED');
-  });
-
-  test('现有轮询在已开始动作缺少终态时按表现截止时间完成令牌', async () => {
-    const fixture = createFixture();
-    const service = new Constructor(fixture.options);
-    await service.initialize();
-    service.applyPlaybackFeedback({
-      playbackToken: 'behavior-token-1',
-      actionId: 'idle-action',
-      status: 'started',
-      occurredAtMs: 0
-    });
-    service.handleTaskEvent({
-      type: 'pending_action',
-      action: {
-        category: 'file',
-        actionId: 'action-terminal-timeout',
-        conversationId: 'conversation-terminal-timeout',
-        risk: 'write',
-        operation: 'create_file',
-        summary: '等待确认期间仍需推进已开始动作',
-        targetRelativePath: 'note.txt',
-        contentCharacters: 0, contentPreview: null, contentPreviewSuppressedReason: null, previewTruncated: false,
-        createdAt: '2026-08-06T00:00:00.000Z',
-        expiresAt: '2026-08-06T00:10:00.000Z'
-      }
-    });
-
-    fixture.setNow(50);
-    service.handleIdleDue();
-
-    expect(() => service.applyPlaybackFeedback({
-      playbackToken: 'behavior-token-1',
-      actionId: 'idle-action',
-      status: 'completed',
-      occurredAtMs: 51
-    })).toThrow('CHARACTER_PLAYBACK_UNAUTHORIZED');
-  });
-
-  test('活动角色切换撤销旧令牌并发出新角色默认动作', async () => {
-    let active = createManifest('first');
-    const fixture = createFixture({ getV2: async () => active });
-    const service = new Constructor(fixture.options);
-    const events: BehaviorPlaybackEvent[] = [];
-    service.subscribe(event => events.push(event));
-    await service.initialize();
-    active = createManifest('second');
-
-    await service.handleActiveCharacterChanged();
-
-    expect(events.at(-1)).toEqual({
-      type: 'behavior-action',
-      revision: 1,
-      stateId: 'idle-state',
-      modifierStateIds: [],
-      actionId: 'idle-action',
-      playbackToken: 'behavior-token-2'
-    });
-    expect(() => service.applyPlaybackFeedback({
-      playbackToken: 'behavior-token-1',
-      actionId: 'idle-action',
-      status: 'started',
-      occurredAtMs: 10
-    })).toThrow('CHARACTER_PLAYBACK_UNAUTHORIZED');
-  });
-
-  test('角色切换不继承切换前已经结束的任务结果', async () => {
-    let active = createManifest('first');
-    const fixture = createFixture({ getV2: async () => active });
-    const service = new Constructor(fixture.options);
-    const events: BehaviorPlaybackEvent[] = [];
-    service.subscribe(event => events.push(event));
-    await service.initialize();
-    service.handleTaskEvent({ type: 'phase', phase: 'error' });
-    events.splice(0);
-    active = createManifest('second');
-
-    await service.handleActiveCharacterChanged();
-
-    expect(events).toHaveLength(1);
-    expect(events[0]).toMatchObject({
-      stateId: 'idle-state',
-      actionId: 'idle-action'
-    });
-  });
-
-  test('活动角色异步读取期间立即隔离旧引擎和旧播放令牌', async () => {
-    const fixture = createFixture();
-    const service = new Constructor(fixture.options);
-    const events: BehaviorPlaybackEvent[] = [];
-    service.subscribe(event => events.push(event));
-    await service.initialize();
-    events.splice(0);
-    fixture.motion.requestIntent.mockClear();
-    const pendingManifest = deferred<CharacterManifestV2>();
-    fixture.store.getActiveManifestV2.mockReturnValueOnce(pendingManifest.promise);
-
-    const switching = service.handleActiveCharacterChanged();
-    expect(() => service.applyPlaybackFeedback({
-      playbackToken: 'behavior-token-1',
-      actionId: 'idle-action',
-      status: 'started',
-      occurredAtMs: 10
-    })).toThrow('CHARACTER_PLAYBACK_UNAUTHORIZED');
-    service.handleTaskEvent({ type: 'phase', phase: 'listening' });
-    service.handleTaskEvent({ type: 'phase', phase: 'thinking' });
-    service.handleAgentIntent({
-      stateIntent: { semantic: 'celebrate' },
-      actionSemantic: 'celebrate',
-      urgency: 60,
-      explanation: '切换期间不应由旧角色执行'
-    });
-    service.handleUserInteraction();
-    expect(events).toEqual([]);
-    expect(fixture.motion.requestIntent).not.toHaveBeenCalled();
-
-    pendingManifest.resolve(createManifest('second'));
-    await switching;
-
-    expect(events).toEqual([{
-      type: 'behavior-action',
-      revision: 1,
-      stateId: 'think-state',
-      modifierStateIds: [],
-      actionId: 'think-action',
-      playbackToken: 'behavior-token-2'
-    }]);
-  });
-
-  test('活动角色异步读取期间保存 moving 边沿，并在新引擎首个动作前重放', async () => {
-    const fixture = createFixture();
-    const service = new Constructor(fixture.options);
-    const events: BehaviorPlaybackEvent[] = [];
-    service.subscribe(event => events.push(event));
-    await service.initialize();
-    events.splice(0);
-    const pendingManifest = deferred<CharacterManifestV2>();
-    fixture.store.getActiveManifestV2.mockReturnValueOnce(pendingManifest.promise);
-
-    const switching = service.handleActiveCharacterChanged();
-    service.handleMovement(snapshot(true, 'left'));
-    expect(events).toEqual([]);
-
-    pendingManifest.resolve(createManifest('second'));
-    await switching;
-
-    expect(events).toEqual([{
-      type: 'behavior-action',
-      revision: 1,
-      stateId: 'move-state',
-      modifierStateIds: [],
-      actionId: 'move-action',
-      playbackToken: 'behavior-token-2'
-    }]);
-    expect(fixture.motion.requestIntent).toHaveBeenCalledExactlyOnceWith('wander');
-  });
-
-  test('V2 读取失败时错误脱敏且仅使用 V1 待机兼容路径', async () => {
-    const fixture = createFixture({
-      getV2: async () => { throw new Error('ENOENT: C:\\private\\manifest.json'); }
-    });
-    const service = new Constructor(fixture.options);
-    const events: BehaviorPlaybackEvent[] = [];
-    service.subscribe(event => events.push(event));
-    await service.initialize();
-
-    expect(fixture.reportError).toHaveBeenCalledWith('CHARACTER_BEHAVIOR_V2_UNAVAILABLE');
-    expect(JSON.stringify(fixture.reportError.mock.calls)).not.toContain('private');
-    expect(fixture.motion.pollIdle).not.toHaveBeenCalled();
-    expect(events).toEqual([{
-      type: 'behavior-authority',
-      characterId: 'legacy',
-      mode: 'legacy-v1'
-    }]);
-  });
-
-  test.each(['completed', 'interrupted', 'failed'] as const)(
-    'V1 兼容路径拒绝伪造令牌的 %s 反馈',
-    async status => {
-      const fixture = createFixture({
-        getV2: async () => { throw new Error('V2_UNAVAILABLE'); }
-      });
-      fixture.motion.pollIdle.mockReturnValue({
-        stateId: 'idle',
-        action: createLegacyManifest().states[0]!.actions[0]!,
-        reason: 'matched'
-      } as never);
-      const service = new Constructor(fixture.options);
-      await service.initialize();
-      fixture.setNow(1_000);
-      service.handleIdleDue();
-
-      expect(() => service.applyPlaybackFeedback({
-        playbackToken: 'forged-token',
-        actionId: 'legacy-idle',
-        status,
-        occurredAtMs: 1_001
-      })).toThrow('CHARACTER_PLAYBACK_UNAUTHORIZED');
-    }
-  );
-
-  test('切换 V2 读取失败只交接 V1 权威且不发布具体动作', async () => {
-    const fixture = createFixture();
-    const service = new Constructor(fixture.options);
-    const events: BehaviorPlaybackEvent[] = [];
-    service.subscribe(event => events.push(event));
-    await service.initialize();
-    events.splice(0);
-    fixture.store.getActiveManifestV2.mockRejectedValueOnce(
-      new Error('EACCES: C:\\private\\manifest.json')
-    );
-
-    await expect(service.handleActiveCharacterChanged()).resolves.toBeUndefined();
-
-    expect(events).toEqual([{
-      type: 'behavior-authority',
-      characterId: 'legacy',
-      mode: 'legacy-v1'
-    }]);
-    expect(fixture.reportError).toHaveBeenCalledWith('CHARACTER_BEHAVIOR_V2_UNAVAILABLE');
-  });
-
-  test('切换时 V2 与 V1 均失败后不再用旧角色引擎产生动作', async () => {
-    const fixture = createFixture();
-    const service = new Constructor(fixture.options);
-    const events: BehaviorPlaybackEvent[] = [];
-    service.subscribe(event => events.push(event));
-    await service.initialize();
-    events.splice(0);
-    fixture.store.getActiveManifestV2.mockRejectedValueOnce(new Error('V2_READ_FAILED'));
-    fixture.store.getActive.mockRejectedValueOnce(new Error('V1_READ_FAILED'));
-
-    await service.handleActiveCharacterChanged();
-    service.handleUserInteraction();
-
-    expect(events).toEqual([]);
-  });
-
-  test('关闭后不再处理信号或通知订阅者', async () => {
-    const fixture = createFixture();
-    const service = new Constructor(fixture.options);
-    const listener = vi.fn();
-    service.subscribe(listener);
-    await service.initialize();
-    listener.mockClear();
-
-    service.close();
-    service.handleUserInteraction();
-    service.handleMovement(snapshot(true));
-    service.handleIdleDue();
-
-    expect(listener).not.toHaveBeenCalled();
-    expect(fixture.motion.requestIntent).not.toHaveBeenCalled();
-  });
+test('取消已开始的移动及时停止且不会清掉心情', async () => {
+  const f = await movementFixture(); await f.director.prepareUserPrompt('向右一点'); f.feedback();
+  f.director.cancelActive(); expect(f.stop).toHaveBeenCalled();
+  expect(f.service.snapshot()?.mood?.summary).toBe('开心'); await f.director.close();
+});
+
+test('真实运动快照导致活动token失效时立即停止，不能等下一次poll滑行', async () => {
+  const f = await movementFixture(); await f.director.prepareUserPrompt('向右一点'); f.feedback();
+  f.service.requestDirectedBehavior({ kind: 'state_action', stateId: 'think-state', actionId: 'think-action' });
+  f.director.handleMotionSnapshot({ ...f.motion.getSnapshot(), moving: true });
+  expect(f.stop).toHaveBeenCalled(); await f.director.close();
+});
+
+
+test('已有普通聊天表现不阻挡更高优先级活动准备', async () => {
+  const f = await movementFixture(1); await f.director.prepareUserPrompt('你好'); f.time(3000);
+  await f.director.completeUserPrompt({ generation: 'real', eventId: '普通', context: f.director.captureExpressionContext(),
+    explicitDirective: null, expressionStatus: 'ready', requestKind: 'ambient', expressionPlan: { states: [
+      { stateId: 'think-state', score: 1, minStrength: 0, maxStrength: 1, lifetime: 'episode', actions: [] }
+    ] } });
+  expect(f.service.snapshot()?.stateId).toBe('think-state');
+  f.director.requestPersistentMovement();
+  expect(f.service.snapshot()?.stateId).toBe('move-state');
+  expect(f.motion.requestIntent).not.toHaveBeenCalled(); f.feedback();
+  expect(f.motion.requestIntent).toHaveBeenCalledTimes(1); await f.director.close();
+});
+
+test('截止时started先于poll到达也只失败一次，自动模式不能重复准备', async () => {
+  const f = await movementFixture(1); f.director.requestPersistentMovement();
+  f.time(1500); f.feedback(); f.director.requestPersistentMovement();
+  expect(f.events.filter(event => event.type === 'behavior-action' && event.actionId === 'move-action')).toHaveLength(1);
+  expect(f.motion.requestIntent).not.toHaveBeenCalled(); expect(f.notices).toHaveBeenCalledTimes(1); await f.director.close();
+});
+
+
+test.each([1, 2] as const)('模式%s首帧失败后，用户明确请求相同模式可用新token重试', async mode => {
+  const f = await movementFixture(mode);
+  const request = () => mode === 1 ? f.director.requestPersistentMovement() : f.director.requestIntermittentMovement();
+  request(); const previous = f.service.snapshot()!.schedule.current!.playbackToken;
+  f.time(1500); f.director.advance();
+  for (let index = 0; index < 3; index++) request();
+  expect(f.motion.requestIntent).not.toHaveBeenCalled();
+  expect(f.notices).toHaveBeenCalledTimes(1);
+  await f.director.prepareUserPrompt(mode === 1 ? '让他一直运动' : '让他时不时动一下');
+  request();
+  expect(f.service.snapshot()?.schedule.current?.actionId).toBe('move-action');
+  expect(f.service.snapshot()?.schedule.current?.playbackToken).not.toBe(previous);
+  expect(f.motion.requestIntent).not.toHaveBeenCalled();
+  f.feedback(); expect(f.motion.requestIntent).toHaveBeenCalledTimes(1);
+  expect(f.service.snapshot()?.mood?.summary).toBe('开心'); await f.director.close();
 });

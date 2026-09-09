@@ -1,6 +1,8 @@
+import type { CharacterMigrationReview, CharacterMigrationResolution } from '../../shared/character-ipc';
 import type { IpcMain, IpcMainInvokeEvent, WebContents } from 'electron';
 import {
   type HistoryDisclosureDecision,
+  taskPermissionIdSchema,
   modelRouteConfigSchema,
   storedProviderProfileV2Schema,
   type PublicSettings
@@ -8,6 +10,7 @@ import {
 import { privacySettingsSchema } from '../storage/settings-store';
 import { z } from 'zod';
 import { ipcChannels } from '../../shared/ipc-channels';
+import { workshopLayoutSettingsSchema } from '../../shared/workshop-layout-ipc';
 import {
   characterBytesResultSchema,
   characterActivateInputSchema,
@@ -30,21 +33,28 @@ import {
   characterSummarySchema,
   characterSourcesResultSchema,
   type CharacterPublishInput,
+  type CharacterRecoverySnapshotDto,
   type CharacterRuntimeSnapshot,
   type CharacterWorkshopSourceDto
 } from '../../shared/character-ipc';
-import type { CharacterDraftV2 } from '@myself/character-runtime';
-import { petMousePassthroughInputSchema } from '../../shared/pet-window-interaction';
+import type { CharacterDraftV3 } from '@myself/character-runtime';
+import {
+  petMousePassthroughInputSchema,
+  petInteractionProbeRecordEventSchema,
+  petInteractionProbeSchema,
+  petViewportCommitInputSchema,
+  type PetInteractionProbe,
+  type PetInteractionProbeEvent,
+  type PetViewportCommitInput
+} from '../../shared/pet-window-interaction';
 import {
   characterActionFeedbackInputSchema,
-  characterActionMilestoneInputSchema,
   characterMotionEmptyInputSchema,
-  characterActionPlayedInputSchema,
   characterMotionSnapshotResultSchema,
   type CharacterActionFeedbackInput,
-  type CharacterActionMilestoneInput,
   type CharacterMotionSnapshot
 } from '../../shared/character-motion-ipc';
+import type { IpcMainEvent } from 'electron';
 
 export type WindowIpcActions = {
   openChat(): unknown;
@@ -86,33 +96,65 @@ const clearLocalDataSchema = z.object({
 }).strict();
 
 const chatSubmitSchema = z.object({
-  text: z.string().trim().min(1).max(4_000)
+  text: z.string().trim().min(1).max(4_000),
 }).strict();
 
 const actionIdSchema = z.object({
-  actionId: z.string().min(1)
+  actionId: taskPermissionIdSchema
 }).strict();
 
 const historyDisclosureSchema = z.object({
   requestId: z.string().trim().min(1).max(128),
   decision: z.enum(['share_once', 'current_message_only'])
 }).strict();
+const capabilityAuthorizationSchema = z.object({
+  requestId: z.string().trim().min(1).max(128),
+  decision: z.enum(['confirm', 'cancel'])
+}).strict();
 const emptyArgumentsSchema = z.tuple([]);
 
 export interface AgentIpcService {
   submit(text: string): Promise<void>;
   hasReportedFailure(error: unknown): boolean;
-  cancelActive(): void;
+  cancelActive(): void | Promise<void>;
   resolveFileAction(actionId: string, decision: 'confirm' | 'cancel'): Promise<void>;
   resolveHistoryDisclosure(
     requestId: string,
     decision: HistoryDisclosureDecision
   ): Promise<void>;
+  resolveCapabilityAuthorization(
+    requestId: string,
+    decision: 'confirm' | 'cancel'
+  ): Promise<void>;
   resetConversation(): Promise<void>;
 }
 
-export function registerAgentIpc(ipcMain: IpcMain, service: AgentIpcService): void {
-  replaceHandler(ipcMain, ipcChannels.chatSubmit, async (_event, raw) => {
+function replaceListener(
+  ipcMain: IpcMain,
+  channel: string,
+  listener: (event: IpcMainEvent, ...args: unknown[]) => void
+): void {
+  ipcMain.removeAllListeners(channel);
+  ipcMain.on(channel, listener);
+}
+
+function assertCurrentChatSender(
+  event: Pick<IpcMainInvokeEvent, 'sender'>,
+  getCurrentChatWebContents: () => WebContents | null
+): void {
+  const current = getCurrentChatWebContents();
+  if (!current || current.isDestroyed() || event.sender !== current) {
+    throw new Error('AGENT_IPC_SENDER_INVALID');
+  }
+}
+
+export function registerAgentIpc(
+  ipcMain: IpcMain,
+  service: AgentIpcService,
+  getCurrentChatWebContents: () => WebContents | null
+): void {
+  replaceHandler(ipcMain, ipcChannels.chatSubmit, async (event, raw) => {
+    assertCurrentChatSender(event, getCurrentChatWebContents);
     const { text } = chatSubmitSchema.parse(raw);
     try {
       await service.submit(text);
@@ -121,20 +163,32 @@ export function registerAgentIpc(ipcMain: IpcMain, service: AgentIpcService): vo
       if (!service.hasReportedFailure(error)) throw error;
     }
   });
-  replaceHandler(ipcMain, ipcChannels.chatCancel, () => service.cancelActive());
-  replaceHandler(ipcMain, ipcChannels.actionConfirm, async (_event, raw) => {
+  replaceHandler(ipcMain, ipcChannels.chatCancel, event => {
+    assertCurrentChatSender(event, getCurrentChatWebContents);
+    return service.cancelActive();
+  });
+  replaceHandler(ipcMain, ipcChannels.actionConfirm, async (event, raw) => {
+    assertCurrentChatSender(event, getCurrentChatWebContents);
     const { actionId } = actionIdSchema.parse(raw);
     await service.resolveFileAction(actionId, 'confirm');
   });
-  replaceHandler(ipcMain, ipcChannels.actionCancel, async (_event, raw) => {
+  replaceHandler(ipcMain, ipcChannels.actionCancel, async (event, raw) => {
+    assertCurrentChatSender(event, getCurrentChatWebContents);
     const { actionId } = actionIdSchema.parse(raw);
     await service.resolveFileAction(actionId, 'cancel');
   });
-  replaceHandler(ipcMain, ipcChannels.conversationDisclosureResolve, async (_event, raw) => {
+  replaceHandler(ipcMain, ipcChannels.conversationDisclosureResolve, async (event, raw) => {
+    assertCurrentChatSender(event, getCurrentChatWebContents);
     const { requestId, decision } = historyDisclosureSchema.parse(raw);
     await service.resolveHistoryDisclosure(requestId, decision);
   });
-  replaceHandler(ipcMain, ipcChannels.conversationReset, async (_event, ...args) => {
+  replaceHandler(ipcMain, ipcChannels.capabilityAuthorizationResolve, async (event, raw) => {
+    assertCurrentChatSender(event, getCurrentChatWebContents);
+    const { requestId, decision } = capabilityAuthorizationSchema.parse(raw);
+    await service.resolveCapabilityAuthorization(requestId, decision);
+  });
+  replaceHandler(ipcMain, ipcChannels.conversationReset, async (event, ...args) => {
+    assertCurrentChatSender(event, getCurrentChatWebContents);
     emptyArgumentsSchema.parse(args);
     await service.resetConversation();
   });
@@ -224,44 +278,10 @@ const profileSaveSchema = z.object({
 }).strict();
 const profileIdSchema = z.object({ profileId: identifierSchema }).strict();
 const routeSaveSchema = z.object({ route: modelRouteConfigSchema }).strict();
-const serverIdSchema = z.object({ serverId: identifierSchema }).strict();
-const stdioTransportSchema = z.object({
-  type: z.literal('stdio'),
-  command: z.string().min(1),
-  args: z.array(z.string()).optional(),
-  cwd: z.string().min(1).optional(),
-  env: z.record(z.string().min(1), z.string()).optional(),
-  inheritEnv: z.array(z.string().min(1)).optional()
-}).strict();
-const httpTransportSchema = z.object({
-  type: z.literal('http'),
-  url: providerUrlSchema,
-  headers: z.record(z.string().min(1), z.string()).optional()
-}).strict();
-const mcpUpsertSchema = z.object({
-  id: identifierSchema,
-  enabled: z.boolean(),
-  transport: z.discriminatedUnion('type', [stdioTransportSchema, httpTransportSchema])
-}).strict();
-const mcpConfirmationSchema = z.object({
-  serverId: identifierSchema,
-  fingerprint: z.string().min(1).max(256)
-}).strict();
-const serverToggleSchema = z.object({
-  serverId: identifierSchema,
-  enabled: z.boolean()
-}).strict();
-const toolToggleSchema = z.object({
-  serverId: identifierSchema,
-  toolName: identifierSchema,
-  enabled: z.boolean()
-}).strict();
-const toolAuthorizationSchema = z.object({
-  serverId: identifierSchema,
-  toolName: identifierSchema
-}).strict();
 const incognitoSchema = z.object({ incognito: z.boolean() }).strict();
+const workshopLayoutGetSchema = z.object({}).strict();
 const petAlwaysOnTopSaveSchema = z.object({ enabled: z.boolean() }).strict();
+const localModelEnabledSetSchema = z.object({ enabled: z.boolean() }).strict();
 
 export interface AdvancedSettingsIpcService {
   getDashboard(): Promise<unknown>;
@@ -269,16 +289,11 @@ export interface AdvancedSettingsIpcService {
   deleteProviderProfile(profileId: string): Promise<unknown>;
   saveModelRoute(route: z.infer<typeof modelRouteConfigSchema>): Promise<unknown>;
   testProviderProfile(profileId: string): Promise<unknown>;
-  upsertMcpServer(input: z.infer<typeof mcpUpsertSchema>): Promise<unknown>;
-  confirmMcpLaunch(serverId: string, fingerprint: string): Promise<unknown>;
-  testMcpServer(serverId: string): Promise<unknown>;
-  setMcpServerEnabled(serverId: string, enabled: boolean): Promise<unknown>;
-  setMcpToolEnabled(serverId: string, toolName: string, enabled: boolean): Promise<unknown>;
-  authorizeMcpToolReadOnly(serverId: string, toolName: string): Promise<unknown>;
-  revokeMcpToolReadOnly(serverId: string, toolName: string): Promise<unknown>;
-  deleteMcpServer(serverId: string): Promise<unknown>;
-  savePrivacySettings(input: z.infer<typeof privacySettingsSchema>): Promise<unknown>;
+  savePrivacySettings(input: z.infer<typeof privacySettingsSchema>, onConfigurationChanged?: () => void): Promise<unknown>;
+  getWorkshopLayout(): Promise<unknown>;
+  saveWorkshopLayout(input: z.infer<typeof workshopLayoutSettingsSchema>): Promise<unknown>;
   savePetAlwaysOnTop(enabled: boolean): Promise<unknown>;
+  setLocalModelEnabled(enabled: boolean): Promise<unknown>;
   setIncognitoSession(incognito: boolean): Promise<unknown>;
   revokeAuthorizedRoot(): Promise<unknown>;
 }
@@ -293,7 +308,7 @@ function inputError(): Error & { code: string } {
   });
 }
 
-function parseInput<T>(schema: z.ZodType<T>, raw: unknown): T {
+function parseInput<TOutput, TInput>(schema: z.ZodType<TOutput, z.ZodTypeDef, TInput>, raw: unknown): TOutput {
   const parsed = schema.safeParse(raw);
   if (!parsed.success) throw inputError();
   return parsed.data;
@@ -327,45 +342,25 @@ export function registerAdvancedSettingsIpc(
     const { route } = parseInput(routeSaveSchema, raw);
     return changed(() => service.saveModelRoute(route));
   });
-  replaceHandler(ipcMain, ipcChannels.settingsMcpUpsert, async (_event, raw) => {
-    const input = parseInput(mcpUpsertSchema, raw);
-    return changed(() => service.upsertMcpServer(input));
-  });
-  replaceHandler(ipcMain, ipcChannels.settingsMcpConfirmLaunch, async (_event, raw) => {
-    const { serverId, fingerprint } = parseInput(mcpConfirmationSchema, raw);
-    return changed(() => service.confirmMcpLaunch(serverId, fingerprint));
-  });
-  replaceHandler(ipcMain, ipcChannels.settingsMcpTest, async (_event, raw) => {
-    const { serverId } = parseInput(serverIdSchema, raw);
-    return service.testMcpServer(serverId);
-  });
-  replaceHandler(ipcMain, ipcChannels.settingsMcpServerToggle, async (_event, raw) => {
-    const { serverId, enabled } = parseInput(serverToggleSchema, raw);
-    return changed(() => service.setMcpServerEnabled(serverId, enabled));
-  });
-  replaceHandler(ipcMain, ipcChannels.settingsMcpToolToggle, async (_event, raw) => {
-    const { serverId, toolName, enabled } = parseInput(toolToggleSchema, raw);
-    return changed(() => service.setMcpToolEnabled(serverId, toolName, enabled));
-  });
-  replaceHandler(ipcMain, ipcChannels.settingsMcpToolAuthorizeRead, async (_event, raw) => {
-    const { serverId, toolName } = parseInput(toolAuthorizationSchema, raw);
-    return changed(() => service.authorizeMcpToolReadOnly(serverId, toolName));
-  });
-  replaceHandler(ipcMain, ipcChannels.settingsMcpToolRevokeRead, async (_event, raw) => {
-    const { serverId, toolName } = parseInput(toolAuthorizationSchema, raw);
-    return changed(() => service.revokeMcpToolReadOnly(serverId, toolName));
-  });
-  replaceHandler(ipcMain, ipcChannels.settingsMcpDelete, async (_event, raw) => {
-    const { serverId } = parseInput(serverIdSchema, raw);
-    return changed(() => service.deleteMcpServer(serverId));
-  });
   replaceHandler(ipcMain, ipcChannels.settingsPrivacySave, async (_event, raw) => {
     const input = parseInput(privacySettingsSchema, raw);
-    return changed(() => service.savePrivacySettings(input));
+    return service.savePrivacySettings(input, () => lifecycle?.onConfigurationChanged());
+  });
+  replaceHandler(ipcMain, ipcChannels.settingsWorkshopLayoutGet, async (_event, raw) => {
+    parseInput(workshopLayoutGetSchema, raw);
+    return service.getWorkshopLayout();
+  });
+  replaceHandler(ipcMain, ipcChannels.settingsWorkshopLayoutSave, async (_event, raw) => {
+    const input = parseInput(workshopLayoutSettingsSchema, raw);
+    return service.saveWorkshopLayout(input);
   });
   replaceHandler(ipcMain, ipcChannels.settingsPetAlwaysOnTopSave, async (_event, raw) => {
     const { enabled } = parseInput(petAlwaysOnTopSaveSchema, raw);
     return service.savePetAlwaysOnTop(enabled);
+  });
+  replaceHandler(ipcMain, ipcChannels.settingsLocalModelEnabledSet, async (_event, raw) => {
+    const { enabled } = parseInput(localModelEnabledSetSchema, raw);
+    return service.setLocalModelEnabled(enabled);
   });
   replaceHandler(ipcMain, ipcChannels.settingsIncognitoSet, async (_event, raw) => {
     const { incognito } = parseInput(incognitoSchema, raw);
@@ -378,13 +373,15 @@ export function registerAdvancedSettingsIpc(
 
 export interface CharacterIpcService {
   listCharacters(): Promise<Array<z.input<typeof characterSummarySchema>>>;
-  createCharacter(input: { name: string }): Promise<CharacterDraftV2>;
-  duplicateCharacter(characterId: string): Promise<CharacterDraftV2>;
-  getCharacterDraft(characterId: string): Promise<CharacterDraftV2>;
+  createCharacter(input: { name: string }): Promise<CharacterDraftV3>;
+  duplicateCharacter(characterId: string): Promise<CharacterDraftV3>;
+  getCharacterDraft(characterId: string): Promise<CharacterDraftV3>;
+  getCharacterMigrationReview(characterId: string): Promise<CharacterMigrationReview>;
   saveCharacterDraft(
     characterId: string,
-    draft: CharacterDraftV2,
-    draftRevision: string
+    draft: CharacterDraftV3,
+    draftRevision: string,
+    migrationResolutions?: readonly CharacterMigrationResolution[]
   ): Promise<void>;
   chooseCharacterSources(
     characterId: string,
@@ -422,16 +419,6 @@ export interface CharacterIpcDialogs {
 export interface CharacterMotionIpcService {
   getSnapshot(): CharacterMotionSnapshot;
   applyPlaybackFeedback(feedback: CharacterActionFeedbackInput): void | Promise<void>;
-}
-
-export interface CharacterActionTransactionObserver {
-  onPlaybackStarted(playbackToken: string, actionId: string): boolean | void;
-  onPlaybackTerminal(
-    playbackToken: string,
-    actionId: string,
-    terminal: Exclude<CharacterActionFeedbackInput['status'], 'started'>
-  ): boolean | void;
-  onCommitFrame(playbackToken: string, actionId: string, frameId: string): boolean;
 }
 
 function characterInputError(): Error & { code: string } {
@@ -475,7 +462,7 @@ export function registerCharacterIpc(
   ipcMain: IpcMain,
   service: CharacterIpcService,
   dialogs: CharacterIpcDialogs,
-  recoveryErrorCode: () => string | null = () => null
+  recoverySnapshot: CharacterRecoverySnapshotDto
 ): void {
   replaceHandler(ipcMain, ipcChannels.characterList, async (_event, raw) => {
     parseCharacterInput(characterEmptyInputSchema, raw);
@@ -498,16 +485,17 @@ export function registerCharacterIpc(
   replaceHandler(ipcMain, ipcChannels.characterDraftGet, async (_event, raw) => {
     const { characterId } = parseCharacterInput(characterIdInputSchema, raw);
     return characterOperation(characterDraftResultSchema, async () => ({
-      draft: await service.getCharacterDraft(characterId)
+      draft: await service.getCharacterDraft(characterId),
+      migrationReview: await service.getCharacterMigrationReview(characterId)
     }));
   });
   replaceHandler(ipcMain, ipcChannels.characterDraftSave, async (_event, raw) => {
-    const { characterId, draft, draftRevision } = parseCharacterInput(
+    const { characterId, draft, draftRevision, migrationResolutions } = parseCharacterInput(
       characterDraftSaveInputSchema,
       raw
     );
     return characterOperation(characterMutationResultSchema, async () => {
-      await service.saveCharacterDraft(characterId, draft, draftRevision);
+      await service.saveCharacterDraft(characterId, draft, draftRevision, migrationResolutions);
       return { ok: true };
     });
   });
@@ -612,9 +600,10 @@ export function registerCharacterIpc(
     ipcChannels.characterRecoverySnapshotGet,
     async (_event, raw) => {
       parseCharacterInput(characterEmptyInputSchema, raw);
-      return characterOperation(characterRecoverySnapshotResultSchema, async () => ({
-        errorCode: recoveryErrorCode()
-      }));
+      return characterOperation(
+        characterRecoverySnapshotResultSchema,
+        async () => recoverySnapshot
+      );
     }
   );
   replaceHandler(
@@ -633,8 +622,7 @@ export function registerCharacterIpc(
 export function registerCharacterMotionIpc(
   ipcMain: IpcMain,
   service: CharacterMotionIpcService,
-  petWebContents: WebContents,
-  transactionObserver?: CharacterActionTransactionObserver
+  petWebContents: WebContents
 ): void {
   replaceHandler(
     ipcMain,
@@ -648,51 +636,15 @@ export function registerCharacterMotionIpc(
   );
   replaceHandler(
     ipcMain,
-    ipcChannels.characterActionPlayed,
+    ipcChannels.characterActionFeedback,
     async (event, raw) => {
       if (event.sender !== petWebContents) {
         throw new Error('CHARACTER_PLAYBACK_SENDER_INVALID');
       }
-      const report = parseCharacterInput(
-        z.union([
-          characterActionFeedbackInputSchema,
-          characterActionPlayedInputSchema
-        ]),
-        raw
-      );
+      const report = parseCharacterInput(characterActionFeedbackInputSchema, raw);
       await service.applyPlaybackFeedback({
-        ...report,
-        status: 'status' in report ? report.status : 'started'
+        ...report
       });
-      const status = 'status' in report ? report.status : 'started';
-      if (status === 'started') {
-        transactionObserver?.onPlaybackStarted(report.playbackToken, report.actionId);
-      } else {
-        transactionObserver?.onPlaybackTerminal(report.playbackToken, report.actionId, status);
-      }
-      return { ok: true };
-    }
-  );
-  replaceHandler(
-    ipcMain,
-    ipcChannels.characterActionMilestone,
-    async (event, raw) => {
-      if (event.sender !== petWebContents) {
-        throw new Error('CHARACTER_PLAYBACK_SENDER_INVALID');
-      }
-      const milestone: CharacterActionMilestoneInput = parseCharacterInput(
-        characterActionMilestoneInputSchema,
-        raw
-      );
-      if (!transactionObserver) {
-        throw new Error('CHARACTER_ACTION_MILESTONE_UNAVAILABLE');
-      }
-      const accepted = transactionObserver.onCommitFrame(
-        milestone.playbackToken,
-        milestone.actionId,
-        milestone.frameId
-      );
-      if (!accepted) throw new Error('CHARACTER_ACTION_MILESTONE_REJECTED');
       return { ok: true };
     }
   );
@@ -701,13 +653,15 @@ export function registerCharacterMotionIpc(
 type PetWindowInteractionControllerActions = {
   setPassthrough(ignore: boolean): void;
   beginDrag(): void;
-  endDrag(reason: 'released' | 'cancelled' | 'timeout' | 'disposed'): void;
+  updateDrag(): void;
+  endDrag(): void;
   dispose(): void;
-  getProbe?(): { passthrough: boolean; dragging: boolean };
+  getProbe?(): PetInteractionProbe;
+  recordProbeEvent?(event: PetInteractionProbeEvent): void;
 };
 
 function assertPetWindowSender(
-  event: IpcMainInvokeEvent,
+  event: Pick<IpcMainInvokeEvent, 'sender'>,
   petWebContents: WebContents
 ): void {
   if (event.sender !== petWebContents || petWebContents.isDestroyed()) {
@@ -726,9 +680,28 @@ export function registerPetWindowInteractionIpc(
   ipcMain: IpcMain,
   controller: PetWindowInteractionControllerActions,
   petWebContents: WebContents,
-  openContextMenu: () => unknown,
-  options: { enableE2eProbe?: boolean } = {}
+  options: {
+    enableE2eProbe?: boolean;
+    geometry?: {
+      commitViewport(input: PetViewportCommitInput): Promise<void> | void;
+    };
+  } = {}
 ): void {
+  for (const [channel, action] of [
+    [ipcChannels.petDragBegin, () => controller.beginDrag()],
+    [ipcChannels.petDragUpdate, () => controller.updateDrag()],
+    [ipcChannels.petDragEnd, () => controller.endDrag()]
+  ] as const) {
+    replaceListener(ipcMain, channel, (event, ...args) => {
+      try {
+        assertPetWindowSender(event, petWebContents);
+        assertNoPetInteractionInput(args);
+        action();
+      } catch {
+        // 单向高频拖拽 IPC 对无效发送者或参数失败关闭，不向 Renderer 暴露 Main 细节。
+      }
+    });
+  }
   replaceHandler(
     ipcMain,
     ipcChannels.petMousePassthroughSet,
@@ -744,22 +717,27 @@ export function registerPetWindowInteractionIpc(
       controller.setPassthrough(parsed.data.ignore);
     }
   );
-  replaceHandler(ipcMain, ipcChannels.petDragBegin, async (event, ...args) => {
-    assertPetWindowSender(event, petWebContents);
-    assertNoPetInteractionInput(args);
-    controller.beginDrag();
-  });
-  replaceHandler(ipcMain, ipcChannels.petDragEnd, async (event, ...args) => {
-    assertPetWindowSender(event, petWebContents);
-    assertNoPetInteractionInput(args);
-    controller.endDrag('released');
-  });
-  replaceHandler(ipcMain, ipcChannels.petContextMenuOpen, async (event, ...args) => {
-    assertPetWindowSender(event, petWebContents);
-    assertNoPetInteractionInput(args);
-    await openContextMenu();
-  });
+  if (options.geometry) {
+    replaceHandler(ipcMain, ipcChannels.petViewportCommit, async (event, ...args) => {
+      assertPetWindowSender(event, petWebContents);
+      if (args.length !== 1) throw new Error('PET_WINDOW_INTERACTION_INPUT_INVALID');
+      const parsed = petViewportCommitInputSchema.safeParse(args[0]);
+      if (!parsed.success) throw new Error('PET_WINDOW_INTERACTION_INPUT_INVALID');
+      await options.geometry!.commitViewport(parsed.data);
+    });
+  }
   if (options.enableE2eProbe) {
+    replaceHandler(
+      ipcMain,
+      ipcChannels.petInteractionProbeRecord,
+      async (event, ...args) => {
+        assertPetWindowSender(event, petWebContents);
+        if (args.length !== 1) throw new Error('PET_WINDOW_INTERACTION_INPUT_INVALID');
+        const parsed = petInteractionProbeRecordEventSchema.safeParse(args[0]);
+        if (!parsed.success) throw new Error('PET_WINDOW_INTERACTION_INPUT_INVALID');
+        controller.recordProbeEvent?.(parsed.data);
+      }
+    );
     replaceHandler(
       ipcMain,
       ipcChannels.petInteractionProbeGet,
@@ -768,10 +746,9 @@ export function registerPetWindowInteractionIpc(
         assertNoPetInteractionInput(args);
         const probe = controller.getProbe?.();
         if (!probe) throw new Error('PET_WINDOW_INTERACTION_PROBE_UNAVAILABLE');
-        return {
-          passthrough: Boolean(probe.passthrough),
-          dragging: Boolean(probe.dragging)
-        };
+        const parsed = petInteractionProbeSchema.safeParse(probe);
+        if (!parsed.success) throw new Error('PET_WINDOW_INTERACTION_PROBE_UNAVAILABLE');
+        return parsed.data;
       }
     );
   }

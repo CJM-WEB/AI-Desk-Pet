@@ -28,3 +28,6 @@ Thumbs.db
 .superpowers/
 .worktrees/
 tests/.playwright-output
+
+# 本地模型发行 payload 由固定暂存脚本生成，不进入版本库
+apps/desktop/resources/local-model/payload/

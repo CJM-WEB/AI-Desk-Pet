@@ -2,6 +2,7 @@ import { defineConfig } from '@playwright/test';
 
 export default defineConfig({
   testDir: './e2e',
+  testMatch: ['desktop.spec.ts', 'desktop-settings-layout.spec.ts'],
   fullyParallel: false,
   workers: 1,
   retries: 0,

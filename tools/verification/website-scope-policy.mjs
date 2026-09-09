@@ -1,5 +1,5 @@
 /** 阶段 0 的差异基线只能通过获批计划更新，运行时不得替换为当前提交。 */
-export const WEBSITE_SCOPE_BASELINE = '0dab17de8863a7c726a5bb5fceff35a1713daad1';
+export const WEBSITE_SCOPE_BASELINE = '1e1744015fe3ada982cc170670fa772ed715dd7a';
 
 /** 当前网站优化阶段只允许官网业务、验证基础设施及其精确获批文档。 */
 export const ALLOWED_WEBSITE_SCOPE_PATHS = Object.freeze([
@@ -54,6 +54,7 @@ export const ALLOWED_WEBSITE_SCOPE_PATHS = Object.freeze([
   'cloudbase/migrations/20260901020000_official_windows_download_click_metric.sql',
   'package.json',
   'pnpm-lock.yaml',
+  'pnpm-workspace.yaml',
   'tools/verification/**',
   'docs/adr/0001-admin-override-publication.md',
   'docs/operations/website-chain-verification.md',
@@ -63,6 +64,9 @@ export const ALLOWED_WEBSITE_SCOPE_PATHS = Object.freeze([
   'docs/operations/cloudbase-deployment.md',
   'docs/operations/website-stage-2c-shanghai-acceptance.md',
   'docs/operations/website-stage-2c-zero-cost-manual-review-acceptance.md',
+  'docs/operations/website-www-https-options-2026-09-03.md',
+  'docs/operations/website-login-upload-repair-2026-09-09.md',
+  'docs/operations/main-website-integration-2026-09-09.md',
   /** 最终视觉恢复只放行获批基线与 2026-09-02 当日证据目录。 */
   'docs/operations/evidence/website-final-visual-restoration-2026-09-02/**',
   'docs/superpowers/specs/2026-09-02-website-final-visual-restoration-design.md',
@@ -77,6 +81,10 @@ export const ALLOWED_WEBSITE_SCOPE_PATHS = Object.freeze([
   'docs/superpowers/plans/2026-09-01-website-stage-2c-shanghai-rebuild.md',
   'docs/superpowers/plans/2026-09-01-website-stage-2c-zero-cost-manual-review.md',
   'docs/superpowers/plans/2026-09-01-website-official-download-counter.md',
+  'docs/superpowers/plans/2026-09-03-website-www-entry-unification.md',
+  'docs/superpowers/specs/2026-09-09-website-login-upload-repair-design.md',
+  'docs/superpowers/plans/2026-09-09-website-login-upload-repair.md',
+  'docs/superpowers/plans/2026-09-09-main-website-integration.md',
   '.superpowers/sdd/2026-09-01-website-official-download-counter/task-2-report.md',
   '.superpowers/sdd/2026-09-01-website-official-download-counter/task-3-report.md',
   'docs/superpowers/specs/2026-08-15-website-architecture-optimization-and-production-relaunch-design.md',

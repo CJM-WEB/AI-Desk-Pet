@@ -47,6 +47,43 @@ export type HistoryDisclosureRequiredEvent = z.infer<
   typeof historyDisclosureRequiredEventSchema
 >;
 
+export const taskPermissionIdSchema = z.string().min(1).max(128);
+export const taskCommandSchema = z.string().min(1).max(16_384);
+export const taskApprovedCommandsSchema = z.array(taskCommandSchema).max(16)
+  .refine(commands => commands.reduce((sum, command) => sum + command.length, 0) <= 32_768);
+
+/** 模型补充识别的本地任务必须先经过独立授权，不能伪装成具体工具确认。 */
+export const capabilityAuthorizationRequiredEventSchema = z.object({
+  type: z.literal('capability_authorization_required'),
+  requestId: z.string().min(1).max(128),
+  capability: z.enum(['file', 'powershell']),
+  requestSummary: z.string().trim().min(1).max(240),
+  targetProviderName: z.string().min(1).max(128),
+  directory: z.string().min(1).max(1_024),
+  modelId: z.string().min(1),
+  actions: z.tuple([z.literal('read'), z.literal('create'), z.literal('edit')]),
+  approvedCommands: taskApprovedCommandsSchema,
+  expiresAt: z.string().datetime({ offset: true })
+}).strict();
+export type CapabilityAuthorizationRequiredEvent = z.infer<
+  typeof capabilityAuthorizationRequiredEventSchema
+>;
+
+const taskPermissionResourcesSchema = z.array(z.string().min(1).max(1_024)).min(1).max(16)
+  .refine(resources => resources.reduce((sum, resource) => sum + resource.length, 0) <= 4_096);
+/** 只承载用户决策所需的原许可信息，不包含工具调用或独立的过期计时器。 */
+export const taskPermissionRequiredEventSchema = z.object({
+  type: z.literal('task_permission_required'),
+  actionId: taskPermissionIdSchema,
+  summary: z.string().min(1).max(240),
+  request: z.discriminatedUnion('action', [
+    z.object({ action: z.literal('bash'), resources: taskPermissionResourcesSchema, command: taskCommandSchema, cwd: z.string().min(1).max(1_024) }).strict(),
+    z.object({ action: z.enum(['external_directory', 'delete', 'overwrite']), resources: taskPermissionResourcesSchema }).strict(),
+    z.object({ action: z.literal('doom_loop'), tool: z.enum(['read', 'glob', 'grep', 'write', 'edit', 'apply_patch', 'bash', 'todowrite']), repeatCount: z.number().int().min(3).max(Number.MAX_SAFE_INTEGER) }).strict()
+  ])
+}).strict();
+export type TaskPermissionRequiredEvent = z.infer<typeof taskPermissionRequiredEventSchema>;
+
 export const conversationResetEventSchema = z.object({
   type: z.literal('conversation_reset'),
   generation: z.string().min(1).max(128)
@@ -59,102 +96,6 @@ export const toolRequestSchema = z.object({
   arguments: z.record(z.string(), z.unknown())
 }).strict();
 export type ToolRequest = z.infer<typeof toolRequestSchema>;
-
-type PendingFileActionBase = Readonly<{
-  category: 'file';
-  actionId: string;
-  conversationId: string;
-  risk: 'write';
-  summary: string;
-  targetRelativePath: string;
-  createdAt: string;
-  expiresAt: string;
-}>;
-
-/** Renderer 仅接收经 Main 过滤后的文件写入摘要，不承载私有执行能力。 */
-export type PendingAction =
-  | Readonly<PendingFileActionBase & {
-      operation: 'create_file';
-      contentCharacters: number;
-      contentPreview: string | null;
-      contentPreviewSuppressedReason: 'sensitive' | 'too_long' | null;
-      previewTruncated: boolean;
-    }>
-  | Readonly<PendingFileActionBase & {
-      operation: 'apply_patch';
-      addedLines: number;
-      removedLines: number;
-      diffPreview: string;
-      previewTruncated: boolean;
-    }>
-  | Readonly<PendingFileActionBase & {
-      operation: 'delete_file';
-      targetType: 'file' | 'empty_directory';
-    }>
-  | Readonly<{
-      category: 'powershell';
-      actionId: string;
-      conversationId: string;
-      risk: 'shell';
-      operation: 'powershell';
-      summary: string;
-      command: string;
-      workingDirectoryLabel: string;
-      runMode: 'foreground';
-      createdAt: string;
-      expiresAt: string;
-    }>;
-
-const pendingFileActionBaseSchema = z.object({
-  category: z.literal('file'),
-  actionId: z.string().min(1),
-  conversationId: z.string().min(1),
-  risk: z.literal('write'),
-  summary: z.string().min(1),
-  targetRelativePath: z.string().min(1),
-  createdAt: z.string().datetime(),
-  expiresAt: z.string().datetime()
-});
-
-/** 确认卡只展示受控目录名称，绝不承载本机绝对、UNC 或设备路径。 */
-const workingDirectoryLabelSchema = z.string().min(1).max(128).refine(
-  value => !/^(?:[a-z]:[\\/]|[\\/]{1,2}|[\\/]{2}[?.][\\/])/iu.test(value),
-  'WORKING_DIRECTORY_LABEL_INVALID'
-);
-
-export const pendingActionSchema: z.ZodType<PendingAction> = z.union([
-  pendingFileActionBaseSchema.extend({
-    operation: z.literal('create_file'),
-    contentCharacters: z.number().int().min(0),
-    contentPreview: z.string().nullable(),
-    contentPreviewSuppressedReason: z.enum(['sensitive', 'too_long']).nullable(),
-    previewTruncated: z.boolean()
-  }).strict(),
-  pendingFileActionBaseSchema.extend({
-    operation: z.literal('apply_patch'),
-    addedLines: z.number().int().min(0),
-    removedLines: z.number().int().min(0),
-    diffPreview: z.string(),
-    previewTruncated: z.boolean()
-  }).strict(),
-  pendingFileActionBaseSchema.extend({
-    operation: z.literal('delete_file'),
-    targetType: z.enum(['file', 'empty_directory'])
-  }).strict(),
-  z.object({
-    category: z.literal('powershell'),
-    actionId: z.string().min(1),
-    conversationId: z.string().min(1),
-    risk: z.literal('shell'),
-    operation: z.literal('powershell'),
-    summary: z.string().min(1),
-    command: z.string().min(1).max(16_384),
-    workingDirectoryLabel: workingDirectoryLabelSchema,
-    runMode: z.literal('foreground'),
-    createdAt: z.string().datetime(),
-    expiresAt: z.string().datetime()
-  }).strict()
-]);
 
 export const providerProfileSchema = z.object({
   id: z.string().min(1),
@@ -241,14 +182,13 @@ export const publicSettingsSchema = z.object({
     id: z.string().min(1),
     displayName: z.string().min(1),
     pathHint: z.string().min(1)
-  }).strict().nullable(),
-  petPosition: z.object({
-    x: z.number(),
-    y: z.number()
-  }).strict().nullable(),
-  fileDisclosureAccepted: z.boolean()
+  }).strict().nullable()
 }).strict();
 export type PublicSettings = z.infer<typeof publicSettingsSchema>;
+
+/** 流式事件只承载本地角色正文；固定预算阻止 IPC 小分片绕过累计输出上限。 */
+export const ASSISTANT_STREAM_TURN_ID_MAX_CHARACTERS = 128;
+export const ASSISTANT_STREAM_TEXT_MAX_CHARACTERS = 4_000;
 
 export const taskEventSchema = z.discriminatedUnion('type', [
   z.object({
@@ -261,8 +201,18 @@ export const taskEventSchema = z.discriminatedUnion('type', [
     text: z.string()
   }).strict(),
   z.object({
-    type: z.literal('pending_action'),
-    action: pendingActionSchema
+    type: z.literal('assistant_message_start'),
+    turnId: z.string().min(1).max(ASSISTANT_STREAM_TURN_ID_MAX_CHARACTERS)
+  }).strict(),
+  z.object({
+    type: z.literal('assistant_message_delta'),
+    turnId: z.string().min(1).max(ASSISTANT_STREAM_TURN_ID_MAX_CHARACTERS),
+    delta: z.string().min(1).max(ASSISTANT_STREAM_TEXT_MAX_CHARACTERS)
+  }).strict(),
+  z.object({
+    type: z.literal('assistant_message_commit'),
+    turnId: z.string().min(1).max(ASSISTANT_STREAM_TURN_ID_MAX_CHARACTERS),
+    text: z.string().max(ASSISTANT_STREAM_TEXT_MAX_CHARACTERS)
   }).strict(),
   z.object({
     type: z.literal('error'),
@@ -279,6 +229,8 @@ export const taskEventSchema = z.discriminatedUnion('type', [
     carrying: z.boolean()
   }).strict(),
   historyDisclosureRequiredEventSchema,
+  capabilityAuthorizationRequiredEventSchema,
+  taskPermissionRequiredEventSchema,
   conversationResetEventSchema
 ]);
 export type TaskEvent = z.infer<typeof taskEventSchema>;

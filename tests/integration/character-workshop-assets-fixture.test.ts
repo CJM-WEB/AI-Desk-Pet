@@ -16,7 +16,7 @@ afterEach(async () => {
 });
 
 describe('角色工作室 E2E 素材夹具', () => {
-  test('生成的安全角色包可由严格 V2 导入链读取', async () => {
+  test('生成的安全角色包可由正式 V3 导入链直接使用', async () => {
     const baseDirectory = await mkdtemp(join(tmpdir(), 'ai-pet-workshop-fixture-'));
     temporaryDirectories.push(baseDirectory);
     const assetsDirectory = join(baseDirectory, 'assets');
@@ -41,9 +41,17 @@ describe('角色工作室 E2E 素材夹具', () => {
     const store = new CharacterStore(importedRoot);
     const draft = await store.getDraft(importedId);
 
-    expect(draft.version).toBe(2);
-    expect(draft.defaultSkinId).toBe('default');
+    expect(draft.version).toBe(3);
+    expect(draft.idleStateId).toBe('idle');
+    expect(draft.states.find(state => state.id === 'custom-wave')?.enterConditions)
+      .toEqual([{ mode: 'all', clauses: [{ kind: 'event', event: 'user-interaction' }] }]);
+    expect(draft.defaultSkinId).toBe('winter');
+    expect(draft.skins.map(skin => skin.id)).toEqual(['default', 'winter']);
     expect(draft.skins[0]?.presentations).toHaveLength(8);
+    expect(draft.skins[1]?.presentations).toHaveLength(8);
+    expect(draft.skins[1]?.presentations.find(
+      presentation => presentation.actionId === 'safe-idle-action'
+    )).toMatchObject({ playbackRate: 1.5, mirrorX: true });
     expect(draft.states.map(state => state.id)).toEqual([
       'idle',
       'listening',
@@ -72,6 +80,13 @@ describe('角色工作室 E2E 素材夹具', () => {
     }));
 
     const manifest = await store.getPublishedManifest(importedId);
+    expect(manifest.version).toBe(3);
+    expect(manifest.idleStateId).toBe('idle');
+    expect(manifest.defaultSkinId).toBe('winter');
+    expect(manifest.skins.map(skin => skin.id)).toEqual(['default', 'winter']);
+    expect(manifest.skins[1]?.presentations.find(
+      presentation => presentation.actionId === 'safe-idle-action'
+    )).toMatchObject({ playbackRate: 1.5, mirrorX: true });
     expect(manifest?.actions.find(action => action.id === 'safe-idle-action')?.loopPolicy)
       .toBe('until-interrupted');
     expect(manifest?.skins.flatMap(skin => skin.presentations)

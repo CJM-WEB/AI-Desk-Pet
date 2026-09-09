@@ -2,12 +2,15 @@ packages:
   - apps/*
   - packages/*
   - tools/*
+  - vendor/opencode/packages/*
 
 allowBuilds:
   core-js-pure: false
   electron: true
   electron-winstaller: true
   esbuild: true
+  # 使用锁文件内的预编译可选包，不额外运行本机构建脚本。
+  msgpackr-extract: false
   sharp: true
 
 # 非交互环境重建依赖时不再询问确认。

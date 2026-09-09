@@ -28,22 +28,12 @@ export const characterMotionEventSchema = z.discriminatedUnion('type', [
     type: z.literal('snapshot'),
     snapshot: characterMotionSnapshotSchema
   }).strict(),
-  z.object({
-    type: z.literal('behavior-authority'),
-    characterId: characterMotionIdentifierSchema,
-    mode: z.literal('legacy-v1')
-  }).strict(),
-  z.object({
-    type: z.literal('idle-action'),
-    revision: z.number().int().nonnegative(),
-    actionId: characterMotionIdentifierSchema,
-    playbackToken: characterPlaybackTokenSchema
-  }).strict(),
+  z.object({ type: z.literal('behavior-interrupt'), playbackToken: characterPlaybackTokenSchema }).strict(),
   z.object({
     type: z.literal('behavior-action'),
     revision: z.number().int().nonnegative(),
     stateId: characterMotionIdentifierSchema,
-    modifierStateIds: z.array(characterMotionIdentifierSchema).optional(),
+    playback: z.object({ mode: z.enum(['once', 'loop', 'static']), durationMs: z.number().finite().nonnegative().nullable() }).strict(),
     actionId: characterMotionIdentifierSchema,
     playbackToken: characterPlaybackTokenSchema,
     commitFrameId: characterMotionIdentifierSchema.optional()
@@ -51,37 +41,53 @@ export const characterMotionEventSchema = z.discriminatedUnion('type', [
 ]);
 
 export const characterMotionEmptyInputSchema = z.object({}).strict();
-export const characterActionPlayedInputSchema = z.object({
-  playbackToken: characterPlaybackTokenSchema,
-  actionId: characterMotionIdentifierSchema
-}).strict();
 export const characterActionFeedbackInputSchema = z.object({
   playbackToken: characterPlaybackTokenSchema,
   actionId: characterMotionIdentifierSchema,
   status: z.enum(['started', 'completed', 'interrupted', 'failed'])
 }).strict();
-export const characterActionMilestoneInputSchema = z.object({
-  playbackToken: characterPlaybackTokenSchema,
-  actionId: characterMotionIdentifierSchema,
-  kind: z.literal('commit-frame'),
-  frameId: characterMotionIdentifierSchema
-}).strict();
 
+const characterMotionRectangleSchema = z.object({
+  x: finiteNumberSchema,
+  y: finiteNumberSchema,
+  width: finiteNumberSchema.positive(),
+  height: finiteNumberSchema.positive()
+}).strict().refine(
+  rectangle => Number.isFinite(rectangle.x + rectangle.width)
+    && Number.isFinite(rectangle.y + rectangle.height),
+  { message: '矩形边界必须是有限数值' }
+);
+
+/** Renderer 只接收窗口局部渲染数据，Main 的身份、资源和全局放置信息不得越过 IPC。 */
+export const petGeometryRenderViewSchema = z.object({
+  revision: z.number().int().safe().nonnegative(),
+  scale: finiteNumberSchema.min(0.5).max(2),
+  visualBoundsInWindowDip: characterMotionRectangleSchema
+}).strict();
 export type CharacterMotionPoint = z.output<typeof characterMotionPointSchema>;
 export type CharacterMotionSnapshot = z.output<typeof characterMotionSnapshotSchema>;
+export type PetGeometryRenderView = z.output<typeof petGeometryRenderViewSchema>;
 export type CharacterMotionEvent = z.output<typeof characterMotionEventSchema>;
 export type CharacterActionFeedbackInput = z.output<
   typeof characterActionFeedbackInputSchema
->;
-export type CharacterActionMilestoneInput = z.output<
-  typeof characterActionMilestoneInputSchema
 >;
 
 /** E2E 只读行为探针不包含播放令牌、素材标识或本地环境信息。 */
 export type CharacterBehaviorProbe = {
   revision: number;
-  primaryStateId: string;
-  modifierStateIds: string[];
+  stateId: string;
   actionId: string | null;
   playbackStatus: 'scheduled' | 'started' | 'completed' | 'interrupted' | 'failed' | null;
 };
+
+/** E2E 只读运动探针仅公开相对首帧的差值，不公开绝对屏幕位置。 */
+export const characterMotionDeltaProbeSchema = z.object({
+  moved: z.boolean(),
+  horizontal: finiteNumberSchema,
+  vertical: finiteNumberSchema
+}).strict().refine(
+  (value) => value.moved === (value.horizontal !== 0 || value.vertical !== 0),
+  { message: '运动差值状态不一致' }
+);
+
+export type CharacterMotionDeltaProbe = z.output<typeof characterMotionDeltaProbeSchema>;

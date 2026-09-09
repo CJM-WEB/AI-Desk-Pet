@@ -1,6 +1,6 @@
 import { lstat, mkdir, mkdtemp, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { isAbsolute, join, relative } from 'node:path';
+import { isAbsolute, join, relative, win32 } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { PathPolicy } from '../src/path-policy';
 
@@ -45,6 +45,169 @@ describe('PathPolicy.create', () => {
       code: 'ENTRY_TYPE_UNSUPPORTED'
     });
   });
+
+  it.runIf(process.platform === 'win32')('拒绝 Windows 系统目录作为授权根', async () => {
+    const systemRoot = process.env.SystemRoot ?? process.env.WINDIR;
+    expect(systemRoot).toBeTruthy();
+    await expect(PathPolicy.create(systemRoot!)).rejects.toMatchObject({
+      code: 'PERMISSION_DENIED'
+    });
+  });
+});
+
+describe.runIf(process.platform === 'win32')('PathPolicy 受保护子目录', () => {
+  it('磁盘根授权也不能访问 Windows 系统目录', async () => {
+    const systemRoot = process.env.SystemRoot ?? process.env.WINDIR;
+    expect(systemRoot).toBeTruthy();
+    const driveRoot = win32.parse(systemRoot!).root;
+    const policy = await PathPolicy.create(driveRoot);
+
+    await expect(policy.resolveExisting(win32.relative(driveRoot, systemRoot!)))
+      .rejects.toMatchObject({ code: 'PERMISSION_DENIED' });
+  });
+
+  it('个人目录授权仍拒绝常见凭据和 Agent 私有路径', async () => {
+    const profile = process.env.USERPROFILE;
+    expect(profile).toBeTruthy();
+    const policy = await PathPolicy.create(profile!);
+
+    for (const relativePath of ['.codex', '.npmrc', '.git-credentials']) {
+      await expect(policy.resolveTarget(relativePath))
+        .rejects.toMatchObject({ code: 'PERMISSION_DENIED' });
+    }
+  });
+
+  it('应用数据父目录授权仍拒绝浏览器配置和桌宠私有目录', async () => {
+    const roaming = process.env.APPDATA;
+    const local = process.env.LOCALAPPDATA;
+    expect(roaming).toBeTruthy();
+    expect(local).toBeTruthy();
+
+    const roamingPolicy = await PathPolicy.create(roaming!);
+    const localPolicy = await PathPolicy.create(local!);
+    for (const relativePath of ['Mozilla', 'AI Pet', '@myself']) {
+      await expect(roamingPolicy.resolveTarget(relativePath))
+        .rejects.toMatchObject({ code: 'PERMISSION_DENIED' });
+      await expect(localPolicy.resolveTarget(relativePath))
+        .rejects.toMatchObject({ code: 'PERMISSION_DENIED' });
+    }
+  });
+
+  it.each([
+    '.ssh',
+    '.gnupg',
+    '.aws',
+    '.azure',
+    '.kube',
+    '.docker',
+    'NTUSER.DAT',
+    win32.join('AppData', 'Local', 'Microsoft', 'Credentials'),
+    win32.join('AppData', 'Local', 'Microsoft', 'Vault'),
+    win32.join('AppData', 'Roaming', 'Microsoft', 'Credentials'),
+    win32.join('AppData', 'Roaming', 'Microsoft', 'Protect'),
+    win32.join('AppData', 'Roaming', 'Microsoft', 'SystemCertificates', 'My', 'Keys'),
+    win32.join('AppData', 'Local', 'Google', 'Chrome', 'User Data'),
+    win32.join('AppData', 'Local', 'Microsoft', 'Edge', 'User Data'),
+    win32.join('AppData', 'Local', 'Mozilla'),
+    win32.join('AppData', 'Roaming', 'Mozilla'),
+    win32.join('AppData', 'Local', 'AI Pet'),
+    win32.join('AppData', 'Local', '@myself'),
+    win32.join('AppData', 'Roaming', 'AI Pet'),
+    win32.join('AppData', 'Roaming', '@myself')
+  ])('用户目录父级授权也拒绝其他用户的私有路径 %s', async privatePath => {
+    const profile = process.env.USERPROFILE;
+    expect(profile).toBeTruthy();
+    const profilesRoot = win32.dirname(profile!);
+    const otherProfile = win32.join(profilesRoot, '__ai_pet_other_user__');
+    const policy = await PathPolicy.create(profilesRoot);
+
+    await expect(policy.resolveTarget(
+      win32.relative(profilesRoot, win32.join(otherProfile, privatePath))
+    )).rejects.toMatchObject({ code: 'PERMISSION_DENIED' });
+  });
+
+  it.each([
+    '.ssh',
+    '.gnupg',
+    '.aws',
+    '.azure',
+    '.kube',
+    '.docker',
+    'NTUSER.DAT',
+    win32.join('AppData', 'Local', 'Microsoft', 'Credentials'),
+    win32.join('AppData', 'Local', 'Microsoft', 'Vault'),
+    win32.join('AppData', 'Roaming', 'Microsoft', 'Credentials'),
+    win32.join('AppData', 'Roaming', 'Microsoft', 'Protect'),
+    win32.join('AppData', 'Roaming', 'Microsoft', 'SystemCertificates', 'My', 'Keys'),
+    win32.join('AppData', 'Local', 'Google', 'Chrome', 'User Data'),
+    win32.join('AppData', 'Local', 'Microsoft', 'Edge', 'User Data'),
+    win32.join('AppData', 'Local', 'Mozilla'),
+    win32.join('AppData', 'Roaming', 'Mozilla'),
+    win32.join('AppData', 'Local', 'AI Pet'),
+    win32.join('AppData', 'Local', '@myself'),
+    win32.join('AppData', 'Roaming', 'AI Pet'),
+    win32.join('AppData', 'Roaming', '@myself')
+  ])('磁盘根授权也拒绝其他用户的私有路径 %s', async privatePath => {
+    const profile = process.env.USERPROFILE;
+    expect(profile).toBeTruthy();
+    const profilesRoot = win32.dirname(profile!);
+    const driveRoot = win32.parse(profilesRoot).root;
+    const otherProfile = win32.join(profilesRoot, '__ai_pet_other_user__');
+    const policy = await PathPolicy.create(driveRoot);
+
+    await expect(policy.resolveTarget(
+      win32.relative(driveRoot, win32.join(otherProfile, privatePath))
+    )).rejects.toMatchObject({ code: 'PERMISSION_DENIED' });
+  });
+
+  it('不误封普通项目中的同名凭据、浏览器和应用目录', async () => {
+    const root = await createTemporaryDirectory('myself-policy-same-name-');
+    const sameNamePaths = [
+      '.ssh',
+      '.gnupg',
+      '.aws',
+      '.azure',
+      '.kube',
+      '.docker',
+      'NTUSER.DAT',
+      join('AppData', 'Local', 'Microsoft', 'Credentials'),
+      join('AppData', 'Local', 'Microsoft', 'Vault'),
+      join('AppData', 'Roaming', 'Microsoft', 'Credentials'),
+      join('AppData', 'Roaming', 'Microsoft', 'Protect'),
+      join('AppData', 'Roaming', 'Microsoft', 'SystemCertificates', 'My', 'Keys'),
+      join('AppData', 'Local', 'Google', 'Chrome', 'User Data'),
+      join('AppData', 'Local', 'Microsoft', 'Edge', 'User Data'),
+      join('AppData', 'Local', 'Mozilla'),
+      join('AppData', 'Roaming', 'Mozilla'),
+      join('AppData', 'Local', 'AI Pet'),
+      join('AppData', 'Local', '@myself')
+    ];
+    for (const sameNamePath of sameNamePaths) {
+      await mkdir(join(root, 'project', sameNamePath), { recursive: true });
+    }
+    const policy = await PathPolicy.create(root);
+
+    for (const sameNamePath of sameNamePaths) {
+      await expect(policy.resolveTarget(join('project', sameNamePath, 'notes.txt')))
+        .resolves.toBe(join(await realpath(join(root, 'project', sameNamePath)), 'notes.txt'));
+    }
+  });
+
+  it('不误封普通项目的 .git 和普通隐藏目录', async () => {
+    const root = await createTemporaryDirectory('myself-policy-hidden-');
+    await mkdir(join(root, '.git'));
+    await mkdir(join(root, '.hidden'));
+    await writeFile(join(root, '.git', 'config'), 'repository config', 'utf8');
+    await writeFile(join(root, '.hidden', 'notes.txt'), 'notes', 'utf8');
+    const policy = await PathPolicy.create(root);
+
+    await expect(policy.resolveExisting('.git/config')).resolves.toBe(
+      await realpath(join(root, '.git', 'config'))
+    );
+    await expect(policy.resolveExisting('.hidden/notes.txt')).resolves.toBe(
+      await realpath(join(root, '.hidden', 'notes.txt'))
+    );
+  });
 });
 
 describe('PathPolicy.resolveExisting', () => {
@@ -70,6 +233,7 @@ describe('PathPolicy.resolveExisting', () => {
     'C:\\Windows\\system.ini',
     '\\\\server\\share\\x',
     '\\\\?\\C:\\Windows\\system.ini',
+    'docs/a.txt::$DATA',
     'docs/\0secret.txt'
   ])('拒绝不安全输入 %j', async relativePath => {
     const { policy } = await createFixture();
@@ -132,6 +296,14 @@ describe('PathPolicy.resolveTarget', () => {
     expect(target).toBe(join(await realpath(join(root, 'docs')), 'new.txt'));
     expect(isAbsolute(target)).toBe(true);
     await expect(lstat(target)).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it('拒绝用 NTFS ADS 语法创建替代数据流', async () => {
+    const { policy } = await createFixture();
+
+    await expect(policy.resolveTarget('docs/new.txt::$DATA')).rejects.toMatchObject({
+      code: 'PATH_INVALID'
+    });
   });
 
   it('要求目标父目录存在', async () => {

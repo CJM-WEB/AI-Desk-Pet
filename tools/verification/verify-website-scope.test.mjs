@@ -1,4 +1,6 @@
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
+import { readFileSync } from 'node:fs';
 import test from 'node:test';
 
 import {
@@ -6,6 +8,7 @@ import {
   assertRootManifestChange,
   classifyChangedPaths,
 } from './verify-website-scope.mjs';
+import { WEBSITE_SCOPE_BASELINE } from './website-scope-policy.mjs';
 
 const baseManifest = {
   name: 'myself',
@@ -39,6 +42,49 @@ const STAGE_2C_RETIRED_PATHS = Object.freeze([
   'packages/shared-types/src/scanner-protocol.ts',
   'packages/shared-types/tests/scanner-protocol.test.ts',
 ]);
+
+test('合并后的根 manifest 相对固定 main 基线不误报，并继续拒绝桌宠脚本改写', () => {
+  const baselineManifest = JSON.parse(execFileSync(
+    'git',
+    ['show', `${WEBSITE_SCOPE_BASELINE}:package.json`],
+    { cwd: new URL('../..', import.meta.url), encoding: 'utf8' },
+  ));
+  const mergedManifest = JSON.parse(readFileSync(new URL('../../package.json', import.meta.url), 'utf8'));
+
+  assert.doesNotThrow(() => assertRootManifestChange(baselineManifest, mergedManifest));
+
+  const changedDesktopScript = structuredClone(mergedManifest);
+  changedDesktopScript.scripts['verify:desktop'] = 'echo bypass';
+  assert.throws(
+    () => assertRootManifestChange(baselineManifest, changedDesktopScript),
+    /verify:desktop/u,
+  );
+});
+
+test('main 网站集成只放行精确配置与文档路径', () => {
+  const approvedPaths = [
+    'pnpm-workspace.yaml',
+    'docs/operations/website-www-https-options-2026-09-03.md',
+    'docs/superpowers/plans/2026-09-03-website-www-entry-unification.md',
+    'docs/operations/website-login-upload-repair-2026-09-09.md',
+    'docs/superpowers/specs/2026-09-09-website-login-upload-repair-design.md',
+    'docs/superpowers/plans/2026-09-09-website-login-upload-repair.md',
+    'docs/superpowers/plans/2026-09-09-main-website-integration.md',
+    'docs/operations/main-website-integration-2026-09-09.md',
+  ];
+  const similarPaths = [
+    'pnpm-workspace.yml',
+    'docs/operations/website-www-https-options-2026-09-03.txt',
+    'docs/superpowers/plans/2026-09-09-main-website-integration-copy.md',
+    'docs/operations/main-website-integration-2026-09-10.md',
+  ];
+
+  assert.deepEqual(classifyChangedPaths([...approvedPaths, ...similarPaths]), {
+    allowed: approvedPaths,
+    forbidden: [],
+    outside: similarPaths,
+  });
+});
 
 test('黑名单优先于白名单', () => {
   assert.deepEqual(classifyChangedPaths([

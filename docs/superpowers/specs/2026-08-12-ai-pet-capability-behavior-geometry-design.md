@@ -1,6 +1,6 @@
 # AI 桌宠可信能力、行为导演与视觉几何设计
 
-> **后续裁决：** 本文第 5 节、第 6 节、第 10 节中有关文件与 PowerShell 的设计，已由 `2026-08-12-ai-pet-lightweight-agent-reuse-design.md` 取代。角色行为、缩放、碰撞范围和拖拽设计继续有效。
+> **后续裁决：** 本文第 5 节、第 6 节、第 10 节中有关文件与 PowerShell 的设计曾由轻量 Agent 规格替代，当前以[编程助手规格](2026-09-05-ai-pet-coding-assistant-design.md)为准。2026-09-06 起，move 动画控制真实位移、运动档位关闭原地状态等分支由[自定义状态与持续心情规格](2026-09-05-ai-pet-custom-state-autonomy-design.md)替代；未冲突的缩放、几何、碰撞范围和拖拽规则继续保留。
 
 **日期：** 2026-08-12  
 **状态：** 用户已审阅并批准，进入详细实施计划阶段
@@ -194,7 +194,9 @@ type CharacterBehaviorPlan =
 
 ### 8.1 动作视觉包围盒
 
-角色编译流程为每个动作计算全部帧非透明像素的最小联合矩形，并与脚底锚点、资源修订一起保存。运行时将主动作、修饰状态和可见覆盖物合并为稳定视觉包围盒；动作播放期间不逐帧改变，切换动作或缩放时才更新。
+角色编译流程为每个动作计算全部帧非透明像素的最小联合矩形，并与脚底锚点、资源修订一起保存。当前正式播放器每次只渲染一个可见主表现；`modifierStateIds` 只参与动作筛选，不进入几何权威输入，也不是独立可见图层，当前没有 overlay 播放协议，因此本阶段不能宣称修饰表现或覆盖物已经接入。几何模块保留按共同脚底锚点联合多个可见表现的纯函数 seam；该 seam 只接收已经转换到共同脚底 DIP 坐标系的矩形，不能直接联合不同画布的归一化几何。生产输入长度固定为 1；未来只有在角色契约和播放器真实支持多层后才能扩大。
+
+动作播放期间的帧切换不重新扫描 Alpha，也不改变稳定视觉包围盒。角色、动作、方向、缩放、播放器 viewport 尺寸或真实可见表现集合变化时才建立新的几何形状版本。
 
 旧角色缺少包围盒时在导入或首次加载时生成一次并迁移，不长期保留固定 180×220 与新几何双轨。
 
@@ -214,6 +216,20 @@ type PetGeometrySnapshot = Readonly<{
 
 Main 校验有限数值、正尺寸、缩放范围、角色身份和资源修订。过期或非法数据拒绝，并回退到已验证默认几何。
 
+完整 `PetGeometrySnapshot` 只存在于 Main。Renderer 后续只允许报告经过严格 schema 校验的 window-local viewport 矩形；该矩形是已经应用缩放后的实际画布范围，Main 不得再乘一次持久 `scale`。Renderer 不得报告全局坐标、最终视觉包围盒、脚底全局坐标、角色 ID 或资源哈希。Main 从严格 `CharacterManifestV2`、已授权 action、资源 revision、方向、`BrowserWindow` bounds 和 Electron display 数据自行计算 `footAnchorDip` 与 `visualBoundsInWindowDip`。Renderer 只接收去全局坐标的渲染视图。
+
+`revision` 只表示几何形状版本。角色、动作、方向、缩放、viewport 尺寸或真实可见表现集合变化时单调自增；窗口移动、viewport 在窗口内的 offset 变化和 display placement 更新不自增。若未来需要对位置广播排序，使用独立 `placementRevision`，不得复用几何 revision。
+
+权威接口拆为低频 `updateShape` 与廉价 `updatePlacement`。`updateShape` 才能解析严格 Manifest，并验证动作、资源、方向、scale 和实际 viewport size 后创建 pending 共同脚底 DIP 形状；它不接收 `frameIndex`，也不得由逐帧通知调用。pending 不得修改已提交角色、动作 revision 绑定或快照。`updatePlacement` 只接收 `baseRevision`、同尺寸 window-local viewport、窗口 bounds 和 display，按 revision 选择 pending 或 active 缓存且不解析 Manifest；pending placement 全部验证并成功生成快照后，才原子提交 active 元数据与快照并清除 pending。pending placement 失败后旧 active revision 仍可继续 placement，显式 `discardPendingShape()` 可幂等回滚 pending 且不影响 active。缺少形状、revision 不等或 viewport 尺寸变化均稳定拒绝并保留最后有效快照。
+
+G4 在提交窗口 placement 前可按 revision 读取 Main 私有、去全局坐标的 shape layout，内容仅含角色、scale、viewport size、相对 viewport 左上角的 `footOffsetInViewportDip` 和共同脚底坐标系下的视觉矩形。G4 必须把 viewport 的窗口内 offset 与它相加，形成位置恢复唯一接收的 `footOffsetInWindowDip`；两个坐标系不得使用同名字段。该只读投影必须克隆并深冻结，不得提交 pending、改变 active 或进入 IPC；未知或已丢弃 revision 返回空。位置恢复以视觉矩形约束脚底，透明窗口留白允许越出工作区；窗口尺寸只用于旧左上角位置的显示器归属判断和 BrowserWindow 左上角反算。
+
+形状 revision 以已签发 revision 单调递增；丢弃或替换不同 pending 不能复用旧 revision。与 active 或 pending 形状键相同的候选复用原 revision，保证同 revision 只表达同一几何形状。
+
+同一角色的同一 action revision 必须绑定同一皮肤、动作和资源修订；更小 revision 或同 revision 的绑定冲突稳定拒绝。方向来自独立运动快照，不属于 action revision 的绑定字段。Main 显式切换活动角色时重置 action revision 基线，但几何形状 revision 继续单调递增。窗口必须与声明的 display 工作区存在正面积相交，负坐标显示器按同一全局 DIP 规则计算；所有派生点和矩形在提交前再次校验有限数值与正尺寸。
+
+几何 authority 只在角色、动作、方向、scale、viewport 或 placement 边界调用；逐帧通知不得调用它。输入 revision 以及 Renderer 可见的几何 revision 必须是非负安全整数。所有矩形除字段本身有限且尺寸为正外，右边界与下边界也必须保持有限。
+
 ### 8.3 滚轮缩放
 
 - 只有鼠标通过现有像素透明度命中时才接受滚轮。
@@ -221,6 +237,12 @@ Main 校验有限数值、正尺寸、缩放范围、角色身份和资源修订
 - 缩放围绕脚底锚点，窗口和画布原子更新。
 - 缩放按角色持久化，重启恢复。
 - 屏幕边界只约束可见包围盒，透明窗口留白可以越出工作区。
+
+G4 的跨进程协议固定为三条：Renderer invoke `pet-window:viewport-commit`，负载仅含严格的 `viewportInWindowDip`；Renderer invoke `pet-window:scale-step`，负载仅含 `step: -1 | 1`；Main 通过 `pet-window:geometry-render` 单向发布既有去全局坐标渲染视图。viewport invoke 同时作为 BrowserWindow resize 后的 ack，不增加第四条协议，Main 最多等待 2000ms。
+
+Main 以单 FIFO 串行窗口布局。每次事务先捕获旧窗口、几何 authority 和行为绑定 generation，再建立 pending shape、读取局部 shape layout、设置候选窗口、等待匹配 viewport ack、提交 placement，最后执行 pending legacy CAS 或 ready placement 保存；成功后才 best-effort 广播渲染视图。任一步失败都恢复旧 authority、旧窗口并等待旧 viewport ack，不广播成功。authority 已签发的 shape revision 保持单调，不因回滚复用。
+
+缩放内部只使用 5–20 的整数 tick，公开 scale 为 `tick / 10`。首次实际 viewport 与当时已提交 scale 形成 canonical base；目标 viewport 按 canonical base 计算并四舍五入，保留固定窗口 inset，窗口原点从持久的全局脚底锚点反算，单轴量化误差不超过 0.5 DIP 且不得累积。事务中滚轮只累计最新目标 tick；拖拽或运动活动时延后布局；行为绑定 generation 变化使在途事务失效并回滚。Main 通过私有行为绑定读取正式 manifest、skin、action revision、resource revision 与 direction，身份绝不来自 Renderer。
 
 自动运动、边缘钳制、位置恢复和拖拽全部使用视觉包围盒与脚底锚点，不再使用固定窗口矩形。
 
@@ -258,7 +280,7 @@ type DragSession = Readonly<{
 - Main 拖拽控制器是唯一窗口位置写入者；运动服务只接收用户移动开始/结束，不通过另一事件链重新计算坐标。
 - 释放、取消、失焦、指针捕获丢失、超时和窗口销毁按 epoch 幂等收口。
 
-位置持久化改为脚底锚点、显示器身份与缩放。旧窗口左上角首次按当前默认几何转换，成功后只写新格式。
+位置持久化改为按角色保存脚底锚点、显示器身份与缩放。设置 V3 使用 `pending-legacy | ready` 判别状态：旧窗口左上角先原样进入 pending，不以固定 180×220、窗口底部中心或 CSS 留白猜测角色脚底；G4 先只读 pending 与 Main 私有 shape layout，完成 Renderer、BrowserWindow 和几何提交后，再以原 legacy 坐标作为 compare-and-swap 条件原子提交 ready。任一前置步骤、CAS 或落盘失败都保留 pending 并回滚窗口/几何；成功后只写按角色 ready placements，并删除旧 Main/PublicSettings 位置路径。
 
 ## 10. 错误处理与隐私
 
@@ -275,7 +297,7 @@ type DragSession = Readonly<{
 - 新用户主动性默认 `autonomous`；已有设置不覆盖。
 - 现有用户停止锁默认关闭；明确停止后持久化。
 - 角色缩放默认 100%，以后按角色保存。
-- 旧位置从窗口左上角一次性迁移为脚底锚点；迁移失败时使用当前显示器安全默认位置。
+- 旧位置待真实 viewport 与脚底偏移可用后，从窗口左上角一次性迁移为脚底锚点；迁移失败保留 pending 并使用当前显示器安全默认位置，不写入猜测坐标。
 - 旧角色包围盒在可信编译/加载流程中一次性补齐；生成失败则使用经过验证的保守默认范围并提示修复角色资源。
 
 ## 12. 实施分解

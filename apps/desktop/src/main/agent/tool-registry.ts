@@ -1,17 +1,14 @@
-import { posix, win32 } from 'node:path';
 import type {
   PreparedToolRequest,
   ToolDefinition,
   ToolRisk
 } from '@myself/agent-core';
-import { toolArguments, toolJsonSchemas } from '@myself/file-tools';
 import {
   toolNameSchema,
   toolRequestSchema,
   type ToolRequest
 } from '@myself/shared-types';
 import type { z } from 'zod';
-import { z as zod } from 'zod';
 import type { PermissionPolicy } from './permission-policy';
 
 export interface ToolRegistration {
@@ -29,23 +26,6 @@ function registryError(code: string): Error & { code: string } {
 
 function cloneDefinition(definition: ToolDefinition): ToolDefinition {
   return structuredClone(definition);
-}
-
-function displayRelativePath(value: unknown): string {
-  const path = String(value);
-  if (posix.isAbsolute(path) || win32.isAbsolute(path)) return '[无效相对路径]';
-  return path;
-}
-
-function definition(
-  name: string,
-  description: string,
-  parameters: Record<string, unknown>
-): ToolDefinition {
-  return {
-    type: 'function',
-    function: { name, description, parameters }
-  };
 }
 
 export class ToolRegistry {
@@ -69,7 +49,7 @@ export class ToolRegistry {
       .map(registration => cloneDefinition(registration.definition));
   }
 
-  /** 本地能力任务签发后冻结工具表，阻止后续混入其他执行能力。 */
+  /** 注册完成后冻结工具表，阻止后续混入其他执行能力。 */
   seal(): this {
     this.sealed = true;
     return this;
@@ -106,114 +86,4 @@ export class ToolRegistry {
       auditSummary
     };
   }
-}
-
-export function createBuiltinFileToolRegistry(): ToolRegistry {
-  const registry = new ToolRegistry();
-
-  registry.register({
-    definition: definition(
-      'builtin.files.list_files',
-      '列出授权根目录内指定相对目录的文件。',
-      toolJsonSchemas.list_files
-    ),
-    argumentsSchema: toolArguments.list_files,
-    executionToolName: 'list_files',
-    risk: 'read',
-    enabled: true,
-    auditSummary: arguments_ => `列出文件 ${displayRelativePath(arguments_['relativePath'])}`
-  });
-
-  registry.register({
-    definition: definition(
-      'builtin.files.read_file',
-      '读取授权根目录内的 UTF-8 文本文件。',
-      toolJsonSchemas.read_file
-    ),
-    argumentsSchema: toolArguments.read_file,
-    executionToolName: 'read_file',
-    risk: 'read',
-    enabled: true,
-    auditSummary: arguments_ => `读取文件 ${displayRelativePath(arguments_['relativePath'])}`
-  });
-
-  registry.register({
-    definition: definition(
-      'builtin.files.create_file',
-      '创建文件，需要用户确认。',
-      toolJsonSchemas.create_file
-    ),
-    argumentsSchema: toolArguments.create_file,
-    executionToolName: 'create_file',
-    risk: 'recoverable',
-    enabled: true,
-    auditSummary: arguments_ => `创建文件 ${displayRelativePath(arguments_['relativePath'])}`
-  });
-
-  registry.register({
-    definition: definition(
-      'builtin.files.apply_patch',
-      '向单个文件应用补丁，需要用户确认。',
-      toolJsonSchemas.apply_patch
-    ),
-    argumentsSchema: toolArguments.apply_patch,
-    executionToolName: 'apply_patch',
-    risk: 'recoverable',
-    enabled: true,
-    auditSummary: arguments_ => `应用补丁 ${displayRelativePath(arguments_['relativePath'])}`
-  });
-
-  registry.register({
-    definition: definition(
-      'builtin.files.delete_file',
-      '将授权根目录内的文件或空目录移入 Windows 回收站，需要用户确认。',
-      toolJsonSchemas.delete_file
-    ),
-    argumentsSchema: toolArguments.delete_file,
-    executionToolName: 'delete_file',
-    risk: 'recoverable',
-    enabled: true,
-    auditSummary: arguments_ => (
-      `删除文件 ${displayRelativePath(arguments_['relativePath'])}`
-    )
-  });
-
-  return registry;
-}
-
-/** 当前 PowerShell 任务只公开一个前台命令能力，不能混入文件工具。 */
-export function createBuiltinPowerShellToolRegistry(): ToolRegistry {
-  const registry = new ToolRegistry();
-  const argumentsSchema = zod.object({
-    command: zod.string().min(1).max(16_384)
-  }).strict();
-  registry.register({
-    definition: definition(
-      'builtin.powershell.run',
-      '在授权工作目录以前台非交互方式运行 PowerShell 命令，需要用户确认。',
-      {
-        type: 'object',
-        additionalProperties: false,
-        required: ['command'],
-        properties: { command: { type: 'string', minLength: 1, maxLength: 16_384 } }
-      }
-    ),
-    argumentsSchema,
-    executionToolName: 'powershell',
-    risk: 'high',
-    enabled: true,
-    auditSummary: () => '运行 PowerShell 命令'
-  });
-  return registry;
-}
-
-/**
- * 按当前会话的数据授权构建工具表，避免把未授权能力暴露给模型。
- */
-export function createSessionToolRegistry(input: {
-  taskKind: 'file' | 'powershell';
-  fileDisclosureAllowed: boolean;
-}): ToolRegistry {
-  if (input.taskKind === 'powershell') return createBuiltinPowerShellToolRegistry().seal();
-  return input.fileDisclosureAllowed ? createBuiltinFileToolRegistry().seal() : new ToolRegistry().seal();
 }

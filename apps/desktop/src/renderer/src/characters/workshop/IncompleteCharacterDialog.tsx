@@ -1,5 +1,5 @@
 import type { CoreCharacterState } from '@myself/character-runtime';
-import { useEffect, useRef } from 'react';
+import { useModalDialog } from './use-modal-dialog';
 
 export interface IncompleteCharacterDialogProps {
   characterName: string;
@@ -14,11 +14,7 @@ export interface IncompleteCharacterDialogProps {
 export function IncompleteCharacterDialog(
   props: IncompleteCharacterDialogProps
 ) {
-  const dialogRef = useRef<HTMLDialogElement>(null);
-
-  useEffect(() => {
-    if (!dialogRef.current?.open) dialogRef.current?.showModal();
-  }, []);
+  const dialogRef = useModalDialog(true);
 
   return (
     <dialog

@@ -1,9 +1,15 @@
 import { createHash } from 'node:crypto';
-import { access, readFile, rename, writeFile } from 'node:fs/promises';
+import { access, mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { basename, join } from 'node:path';
-import { AgentLoop } from '@myself/agent-core';
-import { FileToolService, PathPolicy } from '@myself/file-tools';
-import { providerCatalog, type TaskEvent } from '@myself/shared-types';
+
+// Main 使用 ESM 构建，所有相邻资源继续相对实际模块目录解析。
+const __dirname = import.meta.dirname;
+import { ModelRouter } from '@myself/agent-core';
+import {
+  providerCatalog,
+  type ProviderProfileV2,
+  type TaskEvent
+} from '@myself/shared-types';
 import {
   app,
   BrowserWindow,
@@ -11,24 +17,34 @@ import {
   ipcMain,
   Menu,
   nativeImage,
+  powerMonitor,
   safeStorage,
   screen,
   shell,
   Tray,
-  type MenuItemConstructorOptions
+  type MenuItemConstructorOptions,
+  type WebContents
 } from 'electron';
-import { AgentService } from './agent/agent-service';
-import { PendingActionStore } from './agent/pending-action-store';
-import { createMainAgentSession } from './agent/main-agent-session-factory';
-import { PowerShellTool } from './agent/powershell-tool';
+
+declare const __MYSELF_BUILD_IDENTITY__: Readonly<{
+  commitShortHash: string;
+  buildRootCategory: 'primary_checkout' | 'linked_worktree' | 'source_archive';
+}>;
+import { CodingTaskService } from './agent/coding-task-service';
+import { resolveCodingTaskResources } from './agent/coding-task-resources';
+import { createCodingModelConnection } from './providers/coding-model-connection';
 import { PrivacySessionRegistry } from './agent/disclosure-policy';
 import { ConversationChatAdapter } from './conversation/conversation-chat-adapter';
 import { CapabilityTaskAdapter } from './conversation/capability-task-adapter';
+import { ConversationEventProjection } from
+  './conversation/conversation-event-projection';
 import { createMainConversationComposition } from
   './conversation/main-conversation-composition';
 import {
+  createCoalescedAsyncPublisher,
   createMainE2eExplorerBridge,
   createMainE2eExplorerLayer,
+  loadMainE2eLocalModelRuntimeOptions,
   resolveMainE2eBoundary
 } from './e2e-boundary';
 import {
@@ -43,6 +59,12 @@ import {
 import { CharacterActions } from './characters/character-actions';
 import { CharacterAssetService } from './characters/character-asset-service';
 import { CharacterBehaviorService } from './characters/character-behavior-service';
+import {
+  CharacterBehaviorDirector,
+  type CharacterBehaviorNotice
+} from './characters/character-behavior-director';
+import { createCharacterProactivityRuntime, createCharacterRuntimeClock } from
+  './characters/character-proactivity-runtime';
 import { CharacterPackageService } from './characters/character-package-service';
 import { CharacterStore } from './characters/character-store';
 import { ExplorerSpaceClient, buildExplorerBridgeSpawnSpec } from
@@ -67,27 +89,33 @@ import {
 import { prepareCharacterStartup } from './characters/character-startup';
 import { createE2eCharacterDialogAdapter } from './characters/e2e-character-dialogs';
 import { ensureOfficialDefaultCharacter } from './characters/official-default-character';
+import { decodeNativeImageAlpha } from './characters/native-image-alpha-decoder';
+import {
+  createConservativePetGeometrySnapshot,
+  PetVisualGeometryAuthority
+} from './characters/pet-visual-geometry';
 import {
   bindCharacterMotionWindow,
   CharacterMotionService,
   startCharacterMotionTimers
 } from './characters/character-motion-service';
-import { McpManager } from './mcp/mcp-manager';
-import { McpServerStore } from './mcp/mcp-server-store';
 import { OpenAICompatibleProvider } from './providers/openai-provider';
+import { LocalModelProvider } from './providers/local-model-provider';
 import { ProviderRegistry } from './providers/provider-registry';
+import { LocalModelRuntime } from './local-model/local-model-runtime';
+import { LocalModelService } from './local-model/local-model-service';
+import { BUILTIN_LOCAL_PROVIDER_CATALOG_ENTRY, isBuiltinLocalProviderProfile } from './local-model/local-model-route';
 import { ipcChannels } from '../shared/ipc-channels';
+import {
+  localModelPublicStatusSchema,
+  type LocalModelPublicStatus
+} from '../shared/local-model-ipc';
 import { SecretStore } from './storage/secret-store';
 import { SettingsStore } from './storage/settings-store';
 import { createSettingsActions } from './settings/settings-actions';
-import {
-  createTrustedMcpRiskResolver,
-  DesktopSettingsService,
-} from './settings/desktop-settings-service';
-import {
-  createPetPositionController,
-  restorePetPosition
-} from './windows/pet-position';
+import { DesktopSettingsService } from './settings/desktop-settings-service';
+import { assertProviderReady } from './settings/session-preflight';
+import { PetGeometryCoordinator } from './windows/pet-geometry-coordinator';
 import {
   bindPetWindowInteractionLifecycle,
   createCharacterWorkshopWindow,
@@ -114,7 +142,6 @@ let tray: Tray | null = null;
 let isQuitting = false;
 let activeCapabilityTaskAdapter: CapabilityTaskAdapter | null = null;
 let primaryPetWindow: BrowserWindow | null = null;
-let e2eRecycleAttempt = 0;
 
 const e2eBoundary = resolveMainE2eBoundary({
   appIsPackaged: app.isPackaged,
@@ -163,6 +190,8 @@ async function verifyExplorerSpaceResourceIntegrity(resourceRoot: string): Promi
     throw new Error('EXPLORER_SPACE_RESOURCE_INTEGRITY_FAILED');
   }
 }
+
+let e2eRecycleAttempt = 0;
 
 /** E2E 只把目标搬入受校验的临时目录，并用空标记记录调用次数，绝不触碰系统回收站。 */
 async function moveToE2eRecycleBin(absolutePath: string): Promise<void> {
@@ -251,6 +280,10 @@ async function createApplicationWindows(
   });
   let chat = createChatWindow(BrowserWindow, preload);
   let settings = createSettingsWindow(BrowserWindow, preload);
+  const getCurrentChatWebContents = (): WebContents | null => {
+    if (chat.isDestroyed() || chat.webContents.isDestroyed()) return null;
+    return chat.webContents;
+  };
 
   // Explorer 桥接只提供窗口事实，桌宠可见性始终由普通窗口流程管理。
   const storageDirectory = app.getPath('userData');
@@ -263,26 +296,34 @@ async function createApplicationWindows(
   let e2eStateRevision = 0;
   let processedExplorerEventRevision = 0;
   let processedExplorerEvent: string | null = null;
-  let e2eStateWrite = Promise.resolve();
-  const publishMainE2eState = (): Promise<void> => {
-    if (!e2eBoundary || !e2eExplorer) return Promise.resolve();
+  let inspectPetGeometryForE2e = async (): Promise<object | null> => null;
+  let inspectPetNativeDraggingForE2e = (): boolean => false;
+  const e2eStatePublisher = createCoalescedAsyncPublisher(async () => {
+    if (!e2eBoundary || !e2eExplorer) return;
     e2eStateRevision += 1;
+    const revision = e2eStateRevision;
+    const staged = `${e2eBoundary.mainStateFile}.tmp`;
     const state = {
-      revision: e2eStateRevision,
+      revision,
+      // 构建身份由 Vite 在编译期注入，禁止从运行目录反推或公开绝对路径。
+      buildIdentity: __MYSELF_BUILD_IDENTITY__,
       petWindowVisible: pet.isVisible(),
       petWindowAlwaysOnTop: pet.isAlwaysOnTop(),
+      // 仅向隔离 E2E 状态文件公开数值边界，用于区分 Main 尺寸事实与 Chromium DPI 取整。
+      petWindowBoundsDip: pet.getBounds(),
+      petNativeDragging: inspectPetNativeDraggingForE2e(),
       processedExplorerEventRevision,
       processedExplorerEvent,
       bridge: e2eExplorer.inspection(),
-      layer: e2eExplorerLayer!.inspection()
+      layer: e2eExplorerLayer!.inspection(),
+      geometry: await inspectPetGeometryForE2e().catch(() => null)
     };
-    const staged = `${e2eBoundary.mainStateFile}.tmp`;
-    const write = e2eStateWrite.then(async () => {
-      await writeFile(staged, `${JSON.stringify(state)}\n`, 'utf8');
-      await rename(staged, e2eBoundary.mainStateFile);
-    });
-    e2eStateWrite = write.catch(() => undefined);
-    return write;
+    await writeFile(staged, `${JSON.stringify(state)}\n`, 'utf8');
+    await rename(staged, e2eBoundary.mainStateFile);
+  });
+  const publishMainE2eState = (): Promise<void> => {
+    if (!e2eBoundary || !e2eExplorer) return Promise.resolve();
+    return e2eStatePublisher.publish();
   };
   const completeMainE2eObservation = (observation: object): void => {
     const completed = e2eExplorer?.completeObservation(observation);
@@ -297,7 +338,7 @@ async function createApplicationWindows(
   e2eStateTimer?.unref?.();
   startupCleanup.add(async () => {
     if (e2eStateTimer !== undefined) clearInterval(e2eStateTimer);
-    await e2eStateWrite;
+    await e2eStatePublisher.close();
   });
   const explorerResourceRoot = app.isPackaged
     ? process.resourcesPath
@@ -356,11 +397,18 @@ async function createApplicationWindows(
     );
   });
   const charactersDirectory = join(storageDirectory, 'characters');
-  const characterStore = new CharacterStore(charactersDirectory);
+  const geometryMigration = {
+    decodeAlpha: decodeNativeImageAlpha,
+    reportDiagnostic: (code: 'CHARACTER_RESOURCE_GEOMETRY_FALLBACK') => {
+      console.warn(`角色视觉几何使用保守范围：${code}`);
+    }
+  };
+  const characterStore = new CharacterStore(charactersDirectory, { geometryMigration });
   const characterAssetService = new CharacterAssetService(charactersDirectory);
   const characterPackageService = new CharacterPackageService(charactersDirectory, {
     store: characterStore,
-    assetService: characterAssetService
+    assetService: characterAssetService,
+    geometryMigration
   });
   const characterActions = new CharacterActions({
     store: characterStore,
@@ -372,29 +420,43 @@ async function createApplicationWindows(
   for (const warning of recoveredCorruptCharacterIndex.warnings) {
     console.warn(`角色索引恢复警告：${warning}`);
   }
-  await characterPackageService.initialize();
-  let startupRecoveryErrorCode: string | null = null;
+  const packageRecoveryReport = await characterPackageService.initialize();
+  const defaultResources = app.isPackaged
+    ? join(app.getAppPath(), 'resources/characters/default')
+    : join(__dirname, '../../resources/characters/default');
   const characterStartup = await prepareCharacterStartup({
-    loadIndex: () => characterStore.list(),
+    indexRecovered: recoveredCorruptCharacterIndex.recovered,
+    packageRecoveryReport
+  }, {
     validateActiveRuntime: async () => {
+      const summaries = await characterActions.listCharacters();
+      if (!summaries.some(character => character.active)) {
+        return { kind: 'missing' } as const;
+      }
       const snapshot = await characterActions.getCharacterRuntimeSnapshot();
       return snapshot
-        ? { activeCharacterId: snapshot.activeCharacterId }
-        : null;
-    }
+        ? { kind: 'ready', activeCharacterId: snapshot.activeCharacterId } as const
+        : { kind: 'unavailable' } as const;
+    },
+    ensureOfficialDefaultCharacter: async () => {
+      try {
+        await ensureOfficialDefaultCharacter(
+          characterStore,
+          defaultResources,
+          geometryMigration
+        );
+        return { activeCharacterId: 'builtin-default' };
+      } catch {
+        console.error('准备官方默认角色失败。', 'CHARACTER_DEFAULT_PREPARATION_FAILED');
+        throw new Error('CHARACTER_DEFAULT_PREPARATION_FAILED');
+      }
+    },
+    loadFinalIndex: () => characterStore.list(),
+    getTransactionRecoveryReport: () => characterStore.getTransactionRecoveryReport()
   });
-  if (characterStartup.kind === 'fallback') {
-    const defaultResources = app.isPackaged
-      ? join(app.getAppPath(), 'resources/characters/default')
-      : join(__dirname, '../../resources/characters/default');
-    await ensureOfficialDefaultCharacter(characterStore, defaultResources);
-    const recoveryErrorCode = recoveredCorruptCharacterIndex.recovered
-      ? 'CHARACTER_INDEX_UNAVAILABLE'
-      : characterStartup.errorCode;
-    startupRecoveryErrorCode = recoveryErrorCode;
-    if (recoveryErrorCode) {
-      console.error(`角色启动恢复：${recoveryErrorCode}`);
-    }
+  const characterRecoverySnapshot = characterStartup.recoverySnapshot;
+  if (characterRecoverySnapshot.fallbackErrorCode) {
+    console.error(`角色启动恢复：${characterRecoverySnapshot.fallbackErrorCode}`);
   }
   const secrets = new SecretStore(join(storageDirectory, 'provider-secret.bin'), {
     isEncryptionAvailable: () => safeStorage.isEncryptionAvailable(),
@@ -405,115 +467,310 @@ async function createApplicationWindows(
     join(storageDirectory, 'settings.json'),
     profileId => secrets.hasStoredSecret(profileId)
   );
+  const localModelRuntimeOptions = e2eBoundary?.localModelFixture
+    ? await loadMainE2eLocalModelRuntimeOptions(e2eBoundary.localModelFixture)
+    : {
+        root: app.isPackaged
+          ? join(process.resourcesPath, 'local-model')
+          : join(__dirname, '../../resources/local-model'),
+        applicationVersion: app.getVersion(),
+        cachePath: join(storageDirectory, 'local-model-validation-cache.json'),
+        tokenRoot: join(app.getPath('temp'), 'ai-pet-local-model')
+      };
+  const localModelRuntime = new LocalModelRuntime(localModelRuntimeOptions);
+  let resetLocalModelConversation: (() => Promise<void>) | null = null;
+  let localModelStatus: LocalModelPublicStatus = localModelRuntime.getStatus();
+  // 状态投影在 Main 完成严格校验；Renderer 永远不接触端口、令牌、路径、PID 或原始 stderr。
+  const publishLocalModelStatus = (status: LocalModelPublicStatus): void => {
+    localModelStatus = localModelPublicStatusSchema.parse(status);
+    for (const window of [chat, settings]) {
+      if (!window.isDestroyed() && !window.webContents.isDestroyed()) {
+        window.webContents.send(ipcChannels.localModelStatus, localModelStatus);
+      }
+    }
+  };
+  const localModelSettings = await settingsStore.getLocalModelSettings();
+  const localModelService = new LocalModelService({
+    // 既有 E2E 继续使用云 Provider；只有专用本地夹具显式开启内存路由。
+    initialEnabled: e2eBoundary
+      ? e2eBoundary.localModelFixture !== undefined
+      : localModelSettings.enabled,
+    runtime: localModelRuntime,
+    readCloudProviderSettings: () => settingsStore.getProviderSettings(),
+    saveEnabled: enabled => settingsStore.saveLocalModelEnabled(enabled),
+    resetForConfigurationChange: () => {
+      if (!resetLocalModelConversation) throw new Error('LOCAL_MODEL_CONVERSATION_NOT_READY');
+      return resetLocalModelConversation();
+    },
+    publishStatus: publishLocalModelStatus
+  });
+  startupCleanup.add(() => localModelService.close());
+  const characterBehaviorSettings = await settingsStore.getCharacterBehaviorSettings();
   await restorePetLayerPreference({
     read: () => settingsStore.getPetAlwaysOnTop(),
     apply: enabled => explorerCoordinator.setPetAlwaysOnTop(enabled),
     reportError: code => console.error('恢复桌宠图层偏好失败。', code)
   });
-  const providerRegistry = new ProviderRegistry(providerCatalog);
-  const mcpStore = new McpServerStore();
-  const mcpManager = new McpManager({
-    store: mcpStore,
-    riskResolver: createTrustedMcpRiskResolver((serverId, toolName) => (
-      mcpStore.get(serverId)?.capabilities.tools[toolName]?.trustedReadFingerprint
-    ))
-  });
+  const mainProviderCatalog = [...providerCatalog, BUILTIN_LOCAL_PROVIDER_CATALOG_ENTRY];
+  const providerRegistry = new ProviderRegistry(
+    mainProviderCatalog,
+    () => new LocalModelProvider(localModelRuntime),
+    {
+      // 私有诊断对象已在 Provider 边界收敛为四个非敏感字段。
+      sink: diagnostic => console.warn('模型响应格式故障。', diagnostic)
+    }
+  );
+  const createChatProvider = (profile: ProviderProfileV2) => providerRegistry.create(
+    profile,
+    () => secrets.readForProviderCall(profile.id)
+  );
   const privacySessions = new PrivacySessionRegistry();
   const desktopSettingsService = new DesktopSettingsService({
     settings: settingsStore,
     secrets,
     providers: providerRegistry,
-    mcpStore,
-    mcpManager,
     privacySessions,
     sessionId: 'desktop-session',
-    applyPetAlwaysOnTop: enabled => explorerCoordinator.setPetAlwaysOnTop(enabled)
+    localModel: {
+      getStatus: () => localModelStatus,
+      setEnabled: enabled => localModelService.setEnabled(enabled)
+    },
+    applyPetAlwaysOnTop: enabled => explorerCoordinator.setPetAlwaysOnTop(enabled),
+    applyCharacterBehaviorSettings: snapshot => characterBehaviorDirector.applyBehaviorSettings(snapshot),
+    applyAutonomousMoodEnabled: enabled => {
+      characterProactivityRuntime.noteUserInteraction();
+      characterProactivityRuntime.setAutonomousMoodEnabled(enabled);
+    }
   });
-  await desktopSettingsService.initialize();
   startupCleanup.add(() => desktopSettingsService.close());
-  const primaryDisplay = screen.getPrimaryDisplay();
-  const workAreas = [
-    primaryDisplay.workArea,
-    ...screen.getAllDisplays()
-      .filter(display => display.id !== primaryDisplay.id)
-      .map(display => display.workArea)
-  ];
-  const petBounds = pet.getBounds();
-  // 桌宠只持久化普通桌面坐标，Explorer 图层调整不改变位置模型。
-  const petPosition = restorePetPosition(
-    (await settingsStore.getPublic()).petPosition,
-    { width: petBounds.width, height: petBounds.height },
-    workAreas
-  );
-  pet.setPosition(petPosition.x, petPosition.y);
-  const reportPetPositionError = (error: unknown): void => {
-    console.error('保存桌宠位置失败。', error);
+  const activeGeometryManifest = await characterStore.getActiveManifestV3();
+  const startupPlacement = await settingsStore.getPetPlacementState(activeGeometryManifest.id);
+  if (startupPlacement.kind === 'pending-legacy') {
+    // pending 只在 Main 私下恢复旧窗口左上角；首次真实 viewport 成功后才 CAS 清除。
+    pet.setPosition(startupPlacement.windowPosition.x, startupPlacement.windowPosition.y);
+  }
+  const petGeometryAuthority = new PetVisualGeometryAuthority(activeGeometryManifest.id);
+  const getPetGeometrySnapshot = () => {
+    const committed = petGeometryAuthority.getSnapshot();
+    if (committed) return committed;
+    try {
+      const bounds = pet.getBounds();
+      const display = screen.getDisplayNearestPoint({
+        x: bounds.x + bounds.width / 2,
+        y: bounds.y + bounds.height
+      });
+      return createConservativePetGeometrySnapshot({
+        characterId: activeGeometryManifest.id,
+        windowBoundsDip: bounds,
+        displayId: String(display.id)
+      });
+    } catch {
+      return null;
+    }
   };
-  const petPositionController = createPetPositionController({
-    window: pet,
-    savePosition: position => settingsStore.savePetPosition(position),
-    onError: reportPetPositionError
-  });
   const characterMotion = new CharacterMotionService({
     window: pet,
-    getWorkAreas: () => screen.getAllDisplays().map(display => display.workArea)
+    getDisplays: () => screen.getAllDisplays().map(display => ({
+      id: String(display.id),
+      workAreaDip: display.workArea
+    })),
+    getGeometrySnapshot: getPetGeometrySnapshot
   });
+  inspectPetNativeDraggingForE2e = () => characterMotion.isUserMoving();
   const reportCharacterBehaviorError = (
-    code: 'CHARACTER_BEHAVIOR_V2_UNAVAILABLE'
+    code: 'CHARACTER_BEHAVIOR_V3_UNAVAILABLE'
   ): void => {
     console.error('更新角色行为失败。', code);
   };
+  const reportCharacterMotionTimerError = (
+    code: 'CHARACTER_MOTION_TIMER_FAILED'
+  ): void => {
+    console.error('角色运动定时器异常，已停止。', code);
+  };
+  const characterRuntimeClock = createCharacterRuntimeClock();
   const characterBehavior = new CharacterBehaviorService({
     store: characterStore,
     motion: characterMotion,
+    now: characterRuntimeClock.now,
     reportError: reportCharacterBehaviorError
   });
+  const petGeometry = new PetGeometryCoordinator({
+    window: pet,
+    authority: petGeometryAuthority,
+    settings: settingsStore,
+    getGeometryBinding: () => characterBehavior.getGeometryBinding(),
+    displays: () => screen.getAllDisplays().map(display => ({
+      id: String(display.id),
+      workAreaDip: display.workArea
+    })),
+    primaryDisplayId: () => String(screen.getPrimaryDisplay().id),
+    publishRenderView: view => {
+      if (!pet.isDestroyed() && !pet.webContents.isDestroyed()) {
+        pet.webContents.send(ipcChannels.petGeometryRender, view);
+      }
+    },
+    expectProgrammaticPosition: point => characterMotion.expectProgrammaticPosition(point),
+    isLayoutBlocked: () => (
+      characterMotion.getSnapshot().moving || characterMotion.isUserMoving()
+    ),
+    isUserMoving: () => characterMotion.isUserMoving()
+  });
+  if (e2eBoundary) {
+    inspectPetGeometryForE2e = async () => {
+      if (petGeometry.isLayoutInFlight()) return null;
+      const relative = petGeometry.inspectRelativeGeometry();
+      const snapshot = petGeometryAuthority.getSnapshot();
+      if (
+        !relative
+        || !relative.settled
+        || !snapshot
+        || relative.revision !== snapshot.revision
+        || pet.isDestroyed()
+      ) {
+        return null;
+      }
+      const actualBounds = pet.getBounds();
+      const currentSnapshot = petGeometryAuthority.getSnapshot();
+      const currentRelative = petGeometry.inspectRelativeGeometry();
+      if (
+        petGeometry.isLayoutInFlight()
+        || !currentSnapshot
+        || !currentRelative
+        || !currentRelative.settled
+        || currentSnapshot.characterId !== snapshot.characterId
+        || currentSnapshot.revision !== snapshot.revision
+        || currentRelative.revision !== relative.revision
+        || currentRelative.revision !== currentSnapshot.revision
+        || actualBounds.width !== currentSnapshot.windowBoundsDip.width
+        || actualBounds.height !== currentSnapshot.windowBoundsDip.height
+      ) return null;
+      if (actualBounds.width <= 0 || actualBounds.height <= 0) return null;
+      const visual = currentSnapshot.visualBoundsInWindowDip;
+      const globalVisual = {
+        x: actualBounds.x + visual.x,
+        y: actualBounds.y + visual.y,
+        width: visual.width,
+        height: visual.height
+      };
+      const boundsEpsilonDip = 1e-6;
+      const outOfBounds = !screen.getAllDisplays().some(display => (
+        globalVisual.x >= display.workArea.x - boundsEpsilonDip
+        && globalVisual.y >= display.workArea.y - boundsEpsilonDip
+        && globalVisual.x + globalVisual.width <= display.workArea.x + display.workArea.width + boundsEpsilonDip
+        && globalVisual.y + globalVisual.height <= display.workArea.y + display.workArea.height + boundsEpsilonDip
+      ));
+      const ratio = (value: number, size: number): number => (
+        Number((value / size).toFixed(6))
+      );
+      return {
+        revision: currentRelative.revision,
+        scaleTick: currentRelative.scaleTick,
+        visualBoundsInWindowRatio: {
+          x: ratio(visual.x, actualBounds.width),
+          y: ratio(visual.y, actualBounds.height),
+          width: ratio(visual.width, actualBounds.width),
+          height: ratio(visual.height, actualBounds.height)
+        },
+        outOfBounds
+      };
+    };
+  }
+  const persistMovedPetGeometry = (): void => {
+    petGeometry.handleWindowMoved();
+    // moved 的其他监听器会在本轮结束拖动；微任务随后收敛视口与持久位置。
+    queueMicrotask(() => { void petGeometry.resumePendingLayout().catch(() => undefined); });
+  };
+  pet.on('move', persistMovedPetGeometry);
+  pet.on('moved', persistMovedPetGeometry);
+  startupCleanup.add(() => {
+    pet.removeListener('move', persistMovedPetGeometry);
+    pet.removeListener('moved', persistMovedPetGeometry);
+  });
+  let publishCharacterBehaviorNotice = (_notice: CharacterBehaviorNotice): void => undefined;
+  const characterBehaviorDirector = new CharacterBehaviorDirector({
+    now: characterRuntimeClock.now,
+    behavior: characterBehavior,
+    motion: characterMotion,
+    initialGeneration: 'startup',
+    initialSettings: characterBehaviorSettings,
+    saveMovementMode: (mode, isCurrent) => desktopSettingsService.saveMovementMode(mode, isCurrent),
+    publishNotice: notice => publishCharacterBehaviorNotice(notice)
+  });
+  const characterProactivityRuntime = createCharacterProactivityRuntime({
+    director: characterBehaviorDirector,
+    advanceBehavior: () => characterBehaviorDirector.advance(),
+    now: characterRuntimeClock.now,
+    autonomousMoodEnabled: (await settingsStore.getPrivacySettings()).autonomousMoodEnabled,
+    requestAutonomousDecision: input => conversationComposition.requestAutonomousDecision(input)
+  });
+  // 休眠边沿只推进同一宿主时钟一次；恢复时不补发动画或模型调用队列。
+  const suspendCharacterRuntime = () => { characterRuntimeClock.suspend(); characterProactivityRuntime.suspend(); };
+  const resumeCharacterRuntime = () => { characterRuntimeClock.resume(); characterProactivityRuntime.resume(); };
+  powerMonitor.on('suspend', suspendCharacterRuntime);
+  powerMonitor.on('resume', resumeCharacterRuntime);
+  const releaseCharacterClockEvents = () => {
+    powerMonitor.removeListener('suspend', suspendCharacterRuntime);
+    powerMonitor.removeListener('resume', resumeCharacterRuntime);
+  };
+  startupCleanup.add(releaseCharacterClockEvents);
+  // 组合创建后立即进入启动清理栈；Service 初始化前 Scheduler 尚未 start。
+  startupCleanup.add(() => characterProactivityRuntime.close());
   const characterSwitching = createCharacterActivationCoordinator({
     activateInStore: activateCharacterInStore,
-    reloadBehavior: () => characterBehavior.handleActiveCharacterChanged()
+    reloadBehavior: () => characterBehaviorDirector.handleActiveCharacterChanged()
   });
-  characterActions.activateCharacter = (characterId, confirmIncomplete) => (
-    characterSwitching.activate(characterId, confirmIncomplete)
-  );
+  characterActions.activateCharacter = (characterId, confirmIncomplete) => {
+    characterProactivityRuntime.noteUserInteraction();
+    return characterSwitching.activate(characterId, confirmIncomplete);
+  };
   let refreshTray = async (): Promise<void> => undefined;
+  // 命中角色的按下即沿 petDragBegin 到达此处，未移动的真实点击也算互动；两种拖拽来源按边沿去重。
+  const notePetInteraction = () => {
+    if (characterBehaviorDirector.getActivityBlockers().dragging) return;
+    characterProactivityRuntime.noteUserInteraction();
+    characterBehavior.handleUserInteraction();
+    characterBehaviorDirector.setDragging(true);
+  };
   const petWindowInteraction = new PetWindowInteractionController({
     window: pet,
-    screen,
-    motion: {
-      beginUserMove: () => {
-        activeCapabilityTaskAdapter?.invalidateFileTaskPlaybackGrant();
-        characterBehavior.handleUserInteraction();
-        characterMotion.beginUserMove();
-      },
-      endUserMove: () => characterMotion.endUserMove()
+    getCursorScreenPoint: () => screen.getCursorScreenPoint(),
+    onDragStarted: () => {
+      characterMotion.beginUserMove(undefined, 'controller');
+      notePetInteraction();
+    },
+    onDragEnded: () => {
+      characterMotion.endUserMove('controller');
+      characterBehaviorDirector.setDragging(false);
+      void petGeometry.resumePendingLayout().catch(() => undefined);
     }
   });
   const releasePetWindowInteraction = bindPetWindowInteractionLifecycle(
     pet,
     petWindowInteraction
   );
-  const releaseMotionWindowEvents = bindCharacterMotionWindow(pet, characterMotion);
+  const releaseMotionWindowEvents = bindCharacterMotionWindow(pet, characterMotion, {
+    onUserMoveStarted: () => {
+      notePetInteraction();
+    },
+    onUserMoveEnded: () => {
+      characterBehaviorDirector.setDragging(false);
+      void petGeometry.resumePendingLayout().catch(() => undefined);
+    }
+  });
   registerCharacterMotionIpc(ipcMain, {
     getSnapshot: () => characterMotion.getSnapshot(),
     applyPlaybackFeedback: feedback => {
-      characterBehavior.applyPlaybackFeedback({
+      characterBehaviorDirector.applyPlaybackFeedback({
         ...feedback,
-        occurredAtMs: performance.now()
+        occurredAtMs: characterRuntimeClock.now()
       });
     }
-  }, pet.webContents, {
-    onPlaybackStarted: (playbackToken, actionId) => (
-      activeCapabilityTaskAdapter?.onPlaybackStarted(playbackToken, actionId) ?? false
-    ),
-    onPlaybackTerminal: (playbackToken, actionId, terminal) => (
-      activeCapabilityTaskAdapter?.onPlaybackTerminal(playbackToken, actionId, terminal) ?? false
-    ),
-    onCommitFrame: (playbackToken, actionId, frameId) => (
-      activeCapabilityTaskAdapter?.onCommitFrame(playbackToken, actionId, frameId) ?? false
-    )
-  });
+  }, pet.webContents);
   const releaseMotionEvents = characterMotion.subscribe(snapshot => {
     characterBehavior.handleMovement(snapshot);
+    // 方向可能在 moving 布尔不变时改变；几何 binding 仍须进入 Main FIFO。
+    void petGeometry.refreshBinding().catch(() => undefined);
+    characterBehaviorDirector.handleMotionSnapshot(snapshot);
     if (!pet.isDestroyed() && !pet.webContents.isDestroyed()) {
       pet.webContents.send(ipcChannels.characterMotionEvent, {
         type: 'snapshot',
@@ -522,19 +779,24 @@ async function createApplicationWindows(
     }
   });
   const releaseBehaviorEvents = characterBehavior.subscribe(event => {
+    void petGeometry.refreshBinding().catch(() => undefined);
     if (!pet.isDestroyed() && !pet.webContents.isDestroyed()) {
       pet.webContents.send(ipcChannels.characterMotionEvent, event);
     }
   });
   const motionRuntime = startCharacterMotionTimers({
-    tick: () => characterMotion.tick(),
-    poll: () => {
-      characterBehavior.handleIdleDue();
-      activeCapabilityTaskAdapter?.advanceFileTaskTransaction();
+    tick: () => {
+      if (petGeometry.isLayoutInFlight()) return;
+      const snapshot = characterMotion.tick();
+      if (!snapshot.moving) {
+        void petGeometry.resumePendingLayout().catch(() => undefined);
+      }
     },
+    poll: () => characterProactivityRuntime.poll(),
     isDestroyed: () => pet.isDestroyed(),
     tickIntervalMs: 50,
-    idleIntervalMs: 500
+    idleIntervalMs: 500,
+    reportError: reportCharacterMotionTimerError
   });
   const conversationClose = createDetachedCloseController({
     onError: () => console.error(
@@ -543,7 +805,7 @@ async function createApplicationWindows(
     )
   });
   let characterRuntimeReleased = false;
-  const releaseCharacterRuntime = (): void => {
+  const releaseCharacterRuntime = async (): Promise<void> => {
     if (characterRuntimeReleased) return;
     characterRuntimeReleased = true;
     conversationClose.close();
@@ -552,11 +814,13 @@ async function createApplicationWindows(
     motionRuntime.destroy();
     releaseMotionEvents();
     releaseBehaviorEvents();
-    characterBehavior.close();
+    releaseCharacterClockEvents();
+    await characterProactivityRuntime.close();
+    await characterBehaviorDirector.close();
     releaseMotionWindowEvents();
   };
   startupCleanup.add(releaseCharacterRuntime);
-  pet.once('closed', releaseCharacterRuntime);
+  pet.once('closed', () => { void releaseCharacterRuntime(); });
   const hideOnClose = (window: BrowserWindow): void => {
     window.on('close', event => {
       if (isQuitting) return;
@@ -658,18 +922,25 @@ async function createApplicationWindows(
   });
   refreshTray = () => trayRefreshController.refresh();
   tray.on('double-click', () => void windowCommands.showChat());
-  const openPetContextMenu = () => tray?.popUpContextMenu(contextMenu);
+  const openPetContextMenu = (): void => {
+    tray?.popUpContextMenu(contextMenu);
+  };
+  pet.webContents.on('context-menu', openPetContextMenu);
+  startupCleanup.add(() => {
+    pet.webContents.removeListener('context-menu', openPetContextMenu);
+  });
   registerPetWindowInteractionIpc(
     ipcMain,
     petWindowInteraction,
     pet.webContents,
-    openPetContextMenu,
-    { enableE2eProbe: Boolean(e2eBoundary) }
+    {
+      enableE2eProbe: Boolean(e2eBoundary),
+      geometry: {
+        commitViewport: input => petGeometry.commitViewport(input)
+      }
+    }
   );
   characterActions.subscribeCharacterEvents(event => {
-    if (event.type === 'active-character-changed') {
-      activeCapabilityTaskAdapter?.invalidateFileTaskPlaybackGrant();
-    }
     broadcastCharacterEvent(
       [pet, chat, settings, characterWorkshopWindows.getCurrent()],
       ipcChannels.characterEvent,
@@ -725,88 +996,87 @@ async function createApplicationWindows(
         }]
       });
     }
-  }, () => startupRecoveryErrorCode);
+  }, characterRecoverySnapshot);
 
   const sessionId = 'desktop-session';
   privacySessions.register(sessionId, { incognito: false });
   let reportedSubmitErrorCode: string | null = null;
+  const conversationEventProjection = new ConversationEventProjection({
+    getChatTarget: getCurrentChatWebContents,
+    getPetTarget: () => (
+      pet.isDestroyed() || pet.webContents.isDestroyed() ? null : pet.webContents
+    ),
+    behavior: characterBehaviorDirector,
+    reportDeliveryFailure: target => console.error(
+      '投递会话公开事件失败。',
+      target === 'chat'
+        ? 'CHAT_TASK_EVENT_DELIVERY_FAILED'
+        : 'PET_TASK_EVENT_DELIVERY_FAILED'
+    )
+  });
   const emitConversationEvent = (event: TaskEvent): void => {
-    if (event.type === 'error') reportedSubmitErrorCode = event.code;
-    characterBehavior.handleTaskEvent(event);
-    for (const window of [pet, chat, settings, characterWorkshopWindows.getCurrent()]) {
-      if (window && !window.isDestroyed()) {
-        window.webContents.send(ipcChannels.taskEvent, event);
-      }
-    }
+    const validated = conversationEventProjection.publish(event);
+    if (validated.type === 'error') reportedSubmitErrorCode = validated.code;
   };
+  publishCharacterBehaviorNotice = notice => emitConversationEvent({
+    type: 'error',
+    code: notice.code,
+    message: notice.message
+  });
   const conversationComposition = createMainConversationComposition({
-    catalog: providerCatalog,
+    autonomy: characterBehaviorDirector,
+    catalog: mainProviderCatalog,
     privacySessions,
     sessionId,
-    readProviderSettings: () => settingsStore.getProviderSettings(),
+    readProviderSettings: () => localModelService.providerSettingsSnapshot(),
+    assertProviderReady: profile => assertProviderReady(profile, localModelStatus),
     readAuthorizedRootPath: () => settingsStore.getAuthorizedRootPath(),
     readPrivacySettings: () => settingsStore.getPrivacySettings(),
-    readEnabledReadTools: () => desktopSettingsService.enabledReadToolRegistrations(),
-    createChatAdapter: profile => new ConversationChatAdapter(providerRegistry.create(
-      profile,
-      () => secrets.readForProviderCall(profile.id)
-    )),
-    createAgentService: ({
-      snapshot,
-      generation,
-      primaryProfile,
-      fallbackProfiles,
-      emit
-    }) => {
-      const loop = new AgentLoop();
-      const pendingActions = new PendingActionStore({
-        onDiscard: execution => loop.discard(execution.continuationToken)
-      });
-      return new AgentService({
-        loop,
-        pending: pendingActions,
-        createSession: () => createMainAgentSession({
-          taskKind: snapshot.taskKind,
-          authorizedRootPath: snapshot.authorizedRootPath,
-          generation,
-          fileDisclosureAllowed: snapshot.privacySettings.dataCategories.file,
-          provider: providerRegistry.create(
-            primaryProfile,
-            () => secrets.readForProviderCall(primaryProfile.id)
-          ),
-          fallbackProviders: fallbackProfiles
-            .filter(fallback => fallback.hasStoredSecret)
-            .map(fallback => providerRegistry.create(
-              fallback,
-              () => secrets.readForProviderCall(fallback.id)
-            )),
-          createFileTools: async () => {
-            const policy = await PathPolicy.create(snapshot.authorizedRootPath);
-            return new FileToolService(policy, {
-              moveToRecycleBin: e2eBoundary
-                ? absolutePath => moveToE2eRecycleBin(absolutePath)
-                : absolutePath => shell.trashItem(absolutePath)
-            });
-          },
-          createPowerShellTool: () => new PowerShellTool()
-        }),
-        emit,
-        emitBehaviorIntent: intent => characterBehavior.handleAgentIntent(intent),
-        taskCarry: {
-          beginTaskCarry: () => characterBehavior.beginTaskCarry(),
-          endTaskCarry: () => characterBehavior.endTaskCarry()
-        }
-      });
-    },
+    behavior: characterBehaviorDirector,
+    createChatAdapter: profile => new ConversationChatAdapter(
+      createChatProvider(profile),
+      (error, correlationId) => providerRegistry.reportResponseError(
+        profile,
+        error,
+        correlationId
+      ),
+      { inputByteBudget: isBuiltinLocalProviderProfile(profile) ? 19_200 : 64 * 1024 }
+    ),
+    createCodingTaskService: ({ snapshot, primaryProfile, emit, emitTrustedToolResult }) => new CodingTaskService({
+      sessionOptions: async () => {
+        const dataDirectory = join(app.getPath('userData'), 'coding-tasks');
+        await mkdir(dataDirectory, { recursive: true });
+        return {
+          directory: snapshot.authorizedRootPath, dataDirectory,
+          approvedCommands: snapshot.approvedCommands,
+          model: createCodingModelConnection(primaryProfile, {
+            catalog: mainProviderCatalog,
+            readSecret: () => secrets.readForProviderCall(primaryProfile.id),
+            localModel: localModelRuntime
+          }),
+          ...await resolveCodingTaskResources({ appPath: app.isPackaged ? app.getAppPath() : join(__dirname, '../..'), isPackaged: app.isPackaged, resourcesPath: process.resourcesPath }),
+          trashFile: absolutePath => e2eBoundary
+            ? moveToE2eRecycleBin(absolutePath)
+            : shell.trashItem(absolutePath)
+        };
+      },
+      emit, emitTrustedToolResult
+    }),
     emit: emitConversationEvent
   });
   const conversationCoordinator = conversationComposition.coordinator;
   activeCapabilityTaskAdapter = conversationComposition.capabilityTasks;
   conversationClose.activate(() => conversationComposition.close());
   startupCleanup.add(() => conversationComposition.close());
+  resetLocalModelConversation = async () => {
+    characterProactivityRuntime.invalidate();
+    characterProactivityRuntime.setAutonomousMoodEnabled((await settingsStore.getPrivacySettings()).autonomousMoodEnabled);
+    await conversationComposition.resetForConfigurationChange();
+  };
   const conversationIpcService = {
     submit: async (text: string): Promise<void> => {
       reportedSubmitErrorCode = null;
+      characterProactivityRuntime.noteUserInteraction();
       await conversationCoordinator.submit(text);
     },
     hasReportedFailure: (error: unknown): boolean => (
@@ -815,17 +1085,32 @@ async function createApplicationWindows(
       && typeof error.code === 'string'
       && error.code === reportedSubmitErrorCode
     ),
-    cancelActive: () => conversationCoordinator.cancelActive(),
-    resolveFileAction: (actionId: string, decision: 'confirm' | 'cancel') => (
-      conversationCoordinator.resolveFileAction(actionId, decision)
-    ),
+    cancelActive: () => { characterProactivityRuntime.noteUserInteraction(); return conversationCoordinator.cancelActive(); },
+    resolveFileAction: (actionId: string, decision: 'confirm' | 'cancel') => {
+      characterProactivityRuntime.noteUserInteraction();
+      return conversationCoordinator.resolveFileAction(actionId, decision);
+    },
     resolveHistoryDisclosure: (
       requestId: string,
       decision: 'share_once' | 'current_message_only'
-    ) => conversationCoordinator.resolveHistoryDisclosure(requestId, decision),
-    resetConversation: () => conversationCoordinator.resetConversation()
+    ) => {
+      characterProactivityRuntime.noteUserInteraction();
+      return conversationCoordinator.resolveHistoryDisclosure(requestId, decision);
+    },
+    resolveCapabilityAuthorization: (
+      requestId: string,
+      decision: 'confirm' | 'cancel'
+    ) => {
+      characterProactivityRuntime.noteUserInteraction();
+      return conversationCoordinator.resolveCapabilityAuthorization(requestId, decision);
+    },
+    resetConversation: () => {
+      characterProactivityRuntime.noteUserInteraction();
+      characterProactivityRuntime.invalidate();
+      return conversationCoordinator.resetConversation();
+    }
   };
-  registerAgentIpc(ipcMain, conversationIpcService);
+  registerAgentIpc(ipcMain, conversationIpcService, getCurrentChatWebContents);
 
   const shutdownApplication = createMainShutdownTransaction({
     beforeExplorerClose: async () => {
@@ -847,10 +1132,11 @@ async function createApplicationWindows(
     },
     coordinator: explorerCoordinator,
     bridge: explorerPort,
-    position: petPositionController,
+    position: petGeometry,
     services: [
-      () => workshopCloseHandshake.flush(characterWorkshopWindows.getCurrent()),
+      async () => { await workshopCloseHandshake.flush(characterWorkshopWindows.getCurrent()); },
       () => desktopSettingsService.close(),
+      () => localModelService.close(),
       releaseCharacterRuntime
     ]
   });
@@ -871,7 +1157,7 @@ async function createApplicationWindows(
     }
   });
   const resetForConfigurationChange = (): void => {
-    void conversationComposition.resetForConfigurationChange().catch(error => {
+    void resetLocalModelConversation?.().catch(error => {
       const code = error instanceof Error && 'code' in error ? error.code : 'UNKNOWN';
       console.error('配置变更后的会话清理失败。', code);
     });
@@ -890,7 +1176,15 @@ async function createApplicationWindows(
     loadRenderer(settings, 'settings'),
     ensureCharacterWorkshopWindow()
   ]);
+  void localModelService.start().catch(error => {
+    const code = error instanceof Error && 'code' in error && typeof error.code === 'string'
+      ? error.code
+      : 'LOCAL_MODEL_START_FAILED';
+    console.error('内置本地模型后台启动失败。', code);
+  });
   await characterBehavior.initialize();
+  await petGeometry.initialize();
+  characterProactivityRuntime.start();
   await explorerComposition.start();
   if (!applicationQuit.activateNormal(shutdownApplication)) return;
   startupCleanup.dismiss();

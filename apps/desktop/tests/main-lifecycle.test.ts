@@ -25,8 +25,6 @@ describe('Main 通用生命周期', () => {
     const beforeQuit = source.slice(source.indexOf("app.on('before-quit'"));
 
     expect(source).toContain('createMainConversationComposition({');
-    expect(source).toContain('registerAgentIpc(ipcMain, conversationIpcService)');
-    expect(source).not.toContain('registerAgentIpc(ipcMain, agentService)');
     expect(source).not.toContain('activeAgentService');
     expect(source).toMatch(
       /beforeExplorerClose:\s*async \(\) => \{[\s\S]*await conversationComposition\.close\(\);[\s\S]*freezeAndFlushPetAlwaysOnTop/u
@@ -34,8 +32,98 @@ describe('Main 通用生命周期', () => {
     expect(beforeQuit).not.toContain('cancelActive()');
     expect(source).toContain('conversationClose.close();');
     expect(source).toMatch(
-      /const releaseCharacterRuntime = \(\): void => \{[\s\S]*conversationClose\.close\(\);[\s\S]*activeCapabilityTaskAdapter = null;/u
+      /const releaseCharacterRuntime = async \(\): Promise<void> => \{[\s\S]*conversationClose\.close\(\);[\s\S]*activeCapabilityTaskAdapter = null;/u
     );
+  });
+
+  test('生产组合根只构造一组行为 Service、Motion 与 Director 且所有入口先经过 Director', async () => {
+    const source = await readFile(new URL('../src/main/index.ts', import.meta.url), 'utf8');
+
+    expect(source.match(/new CharacterMotionService\(/gu)).toHaveLength(1);
+    expect(source.match(/new CharacterBehaviorService\(/gu)).toHaveLength(1);
+    expect(source.match(/new CharacterBehaviorDirector\(/gu)).toHaveLength(1);
+    expect(source).toContain('behavior: characterBehaviorDirector');
+    expect(source).toContain('characterBehaviorDirector.applyPlaybackFeedback({');
+    expect(source).toContain('advanceBehavior: () => characterBehaviorDirector.advance()');
+    expect(source).toContain('characterBehaviorDirector.setDragging(true)');
+    expect(source).toContain('characterBehaviorDirector.setDragging(false)');
+    expect(source).not.toContain('applyCharacterBehavior: event => characterBehavior.handleTaskEvent(event)');
+  });
+
+  test('生产组合在窗口加载后后台启动本地 Runtime，并把 factory、路由和退出清理接入 Main', async () => {
+    const source = await readFile(new URL('../src/main/index.ts', import.meta.url), 'utf8');
+    const normalizedSource = source.replaceAll('\r\n', '\n');
+    const windowsReady = normalizedSource.indexOf('await Promise.all([\n    loadRenderer(pet');
+    const backgroundStart = source.indexOf('void localModelService.start()');
+    const startupCleanup = source.indexOf('startupCleanup.add(() => localModelService.close())');
+
+    expect(source.match(/new LocalModelRuntime\(/gu)).toHaveLength(1);
+    expect(source).toContain('new LocalModelRuntime(localModelRuntimeOptions)');
+    expect(source).not.toContain('class MainE2eLocalModelRuntime');
+    expect(source).not.toContain('new MainE2eLocalModelRuntime');
+    expect(source).toContain('new LocalModelProvider(localModelRuntime)');
+    expect(source).toMatch(
+      /initialEnabled:\s*e2eBoundary\s*\?\s*e2eBoundary\.localModelFixture !== undefined\s*:\s*localModelSettings\.enabled/u
+    );
+    expect(source).toContain('readProviderSettings: () => localModelService.providerSettingsSnapshot()');
+    expect(source).toContain('assertProviderReady: profile => assertProviderReady(');
+    expect(windowsReady).toBeGreaterThan(-1);
+    expect(backgroundStart).toBeGreaterThan(windowsReady);
+    expect(startupCleanup).toBeGreaterThan(-1);
+    expect(startupCleanup).toBeLessThan(backgroundStart);
+    expect(source).toMatch(/services:\s*\[[\s\S]*\(\) => localModelService\.close\(\)/u);
+  });
+
+  test('生产组合只构造一个主动调度器且不再创建 Provider 反思链', async () => {
+    const source = await readFile(new URL('../src/main/index.ts', import.meta.url), 'utf8');
+
+    expect(source.match(/createCharacterProactivityRuntime\(/gu)).toHaveLength(1);
+    expect(source).toContain('characterProactivityRuntime.start();');
+    expect(source).toContain('startupCleanup.add(() => characterProactivityRuntime.close());');
+    expect(source).not.toContain('BEHAVIOR_REFLECTION');
+  });
+
+  test('生产启动先读取完整行为快照初始化唯一 Director 并接通设置 sink', async () => {
+    const source = await readFile(new URL('../src/main/index.ts', import.meta.url), 'utf8');
+    const readIndex = source.indexOf('await settingsStore.getCharacterBehaviorSettings()');
+    const directorIndex = source.indexOf('new CharacterBehaviorDirector({');
+
+    expect(readIndex).toBeGreaterThan(-1);
+    expect(readIndex).toBeLessThan(directorIndex);
+    expect(source).toContain('initialSettings: characterBehaviorSettings');
+    expect(source).toContain(
+      'saveMovementMode: (mode, isCurrent) => desktopSettingsService.saveMovementMode(mode, isCurrent)',
+    );
+    expect(source).toContain('applyCharacterBehaviorSettings: snapshot => characterBehaviorDirector.applyBehaviorSettings(snapshot)');
+  });
+
+  test('正式生命周期不构造、初始化或关闭 MCP 运行实例', async () => {
+    const source = await readFile(new URL('../src/main/index.ts', import.meta.url), 'utf8');
+
+    expect(source).not.toContain('new McpServerStore(');
+    expect(source).not.toContain('new McpManager(');
+    expect(source).not.toContain('desktopSettingsService.initialize()');
+    expect(source).not.toContain('mcpManager.close()');
+  });
+
+  test('视觉几何只接入一套 Main 权威并删除 PublicSettings 旧位置运行路径', async () => {
+    const source = await readFile(new URL('../src/main/index.ts', import.meta.url), 'utf8');
+
+    expect(source.match(/new PetVisualGeometryAuthority\(/gu)).toHaveLength(1);
+    expect(source.match(/new PetGeometryCoordinator\(/gu)).toHaveLength(1);
+    expect(source).toContain('const getPetGeometrySnapshot = () =>');
+    expect(source.match(/getGeometrySnapshot: getPetGeometrySnapshot/gu)).toHaveLength(1);
+    expect(source).toContain('commitViewport: input => petGeometry.commitViewport');
+    expect(source).not.toContain('stepScale: input => petGeometry.stepScale');
+    expect(source).toContain('await petGeometry.initialize();');
+    expect(source).toContain("pet.on('move', persistMovedPetGeometry);");
+    expect(source).toContain("pet.on('moved', persistMovedPetGeometry);");
+    expect(source).toContain("pet.removeListener('move', persistMovedPetGeometry);");
+    expect(source).toContain("pet.removeListener('moved', persistMovedPetGeometry);");
+    expect(source).not.toContain('restorePetPosition(');
+    expect(source).not.toContain('createPetPositionController(');
+    expect(source).not.toContain('getPublic()).petPosition');
+    expect(source).not.toContain('settingsStore.savePetPosition');
   });
 
   test('窗口关闭同步触发会话封口且异步失败只稳定报告一次', async () => {

@@ -234,9 +234,11 @@
   min-height: 0;
   display: grid;
   grid-template-columns:
-    minmax(250px, 300px)
+    minmax(250px, var(--workshop-left-width, 300px))
+    8px
     minmax(380px, 1fr)
-    minmax(250px, 300px);
+    8px
+    minmax(250px, var(--workshop-right-width, 300px));
   overflow: hidden;
 }
 
@@ -249,7 +251,10 @@
 
 .workshop-sidebar {
   display: grid;
-  grid-template-rows: minmax(220px, 44%) minmax(0, 1fr);
+  grid-template-rows:
+    minmax(220px, var(--workshop-sidebar-top-height, 290px))
+    8px
+    minmax(220px, 1fr);
   overflow: hidden;
   border-right: 1px solid var(--workshop-border);
   background: var(--workshop-panel);
@@ -475,7 +480,11 @@
 
 .workshop-stage {
   display: grid;
-  grid-template-rows: 50px minmax(280px, 1fr) 150px;
+  grid-template-rows:
+    50px
+    minmax(280px, var(--workshop-stage-height, 460px))
+    8px
+    minmax(150px, 1fr);
   overflow: hidden;
   background: #eef1f1;
 }
@@ -570,6 +579,65 @@
 .draft-character-preview--dark .draft-preview-status {
   color: #e8efed;
   background: rgba(20, 27, 25, 0.84);
+}
+
+/* 8px 命中轨道内只绘制一条细线，键盘焦点不会改变布局尺寸。 */
+.workshop-splitter {
+  position: relative;
+  z-index: 2;
+  min-width: 0;
+  min-height: 0;
+  background: #e1e7e6;
+  touch-action: none;
+  user-select: none;
+}
+
+.workshop-splitter::after {
+  position: absolute;
+  content: '';
+  background: #91a19e;
+}
+
+.workshop-splitter--vertical {
+  cursor: col-resize;
+}
+
+.workshop-splitter--vertical::after {
+  top: 0;
+  bottom: 0;
+  left: 3px;
+  width: 1px;
+}
+
+.workshop-splitter--horizontal {
+  cursor: row-resize;
+}
+
+.workshop-splitter--horizontal::after {
+  right: 0;
+  bottom: 3px;
+  left: 0;
+  height: 1px;
+}
+
+.workshop-splitter:focus-visible {
+  outline: 3px solid rgba(8, 127, 118, 0.5);
+  outline-offset: -3px;
+}
+
+.workshop-layout-notice {
+  position: fixed;
+  z-index: 40;
+  right: 16px;
+  bottom: 16px;
+  max-width: min(420px, calc(100vw - 32px));
+  margin: 0;
+  padding: 10px 12px;
+  border: 1px solid #d89b76;
+  border-radius: 6px;
+  color: #6f2c0c;
+  background: #fff4ec;
+  box-shadow: 0 10px 28px rgba(50, 32, 23, 0.16);
 }
 
 .draft-preview-source {
@@ -1022,6 +1090,8 @@
 
 .character-workshop-shell dialog {
   width: min(430px, calc(100vw - 32px));
+  max-height: calc(100vh - 32px);
+  overflow: auto;
   padding: 0;
   border: 1px solid #9caaa8;
   border-radius: 7px;
@@ -1091,13 +1161,19 @@
     overflow-y: auto;
   }
 
+  .workshop-splitter {
+    display: none;
+  }
+
   .workshop-sidebar {
     min-height: 500px;
     height: 100%;
+    grid-template-rows: minmax(220px, 44%) minmax(220px, 1fr);
   }
 
   .workshop-stage {
     min-height: 500px;
+    grid-template-rows: 50px minmax(280px, 1fr) 150px;
   }
 
   .workshop-inspector {
@@ -1138,6 +1214,7 @@
 
   .workshop-sidebar {
     height: 560px;
+    grid-template-rows: minmax(220px, 44%) minmax(220px, 1fr);
     border-right: 0;
   }
 
@@ -1221,7 +1298,7 @@
   min-width: 0;
 }
 
-/* V2 左栏延续现有列表层级，并为破坏性命令保留清晰的操作间距。 */
+/* 角色人设入口延续左栏既有的可聚焦按钮形态。 */
 .identity-select-command {
   min-height: 44px;
   margin: 8px 12px;
@@ -1233,64 +1310,6 @@
   font-weight: 700;
 }
 
-.skin-list-section {
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
-  border-top: 1px solid var(--workshop-border);
-}
-
-.skin-list-heading {
-  min-height: 36px;
-}
-
-.skin-list {
-  min-height: 0;
-  margin: 0;
-  padding: 0;
-  overflow-y: auto;
-  list-style: none;
-}
-
-.skin-list > li {
-  display: flex;
-  align-items: center;
-  border-bottom: 1px solid #edf0f0;
-}
-
-.skin-select {
-  min-width: 0;
-  min-height: 44px;
-  flex: 1;
-  display: grid;
-  gap: 2px;
-  padding: 5px 12px;
-  border: 0;
-  color: inherit;
-  background: transparent;
-  font: inherit;
-  text-align: left;
-}
-
-.skin-select[aria-pressed="true"] {
-  color: #075f59;
-  background: var(--workshop-teal-soft);
-  font-weight: 700;
-}
-
-.skin-select small {
-  color: var(--workshop-muted);
-  font-size: 11px;
-}
-
-.skin-row-commands {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding-right: 8px;
-}
-
-.skin-row-commands button,
 .inspector-form button,
 .recovery-actions button {
   min-height: 44px;
@@ -1303,13 +1322,7 @@
   cursor: pointer;
 }
 
-.skin-row-commands .danger-icon {
-  min-width: 44px;
-  padding: 0;
-  color: var(--workshop-danger);
-}
-
-/* 四类 Inspector 共享同一表单节奏，不为 V2 另起视觉系统。 */
+/* 三类 Inspector 共享同一表单节奏，不为 V2 另起视觉系统。 */
 .inspector-form {
   display: grid;
   gap: 16px;
@@ -1319,8 +1332,7 @@
 .inspector-form label,
 .string-list-editor,
 .condition-catalog,
-.tag-editor,
-.semantic-fallback-editor {
+.tag-editor {
   display: grid;
   gap: 6px;
   color: #4a5b58;
@@ -1357,8 +1369,7 @@
 
 .string-list-editor,
 .condition-catalog,
-.tag-editor,
-.semantic-fallback-editor {
+.tag-editor {
   margin: 0;
   padding: 12px;
   border: 1px solid #dce3e2;
@@ -1392,11 +1403,6 @@
   grid-template-columns: minmax(0, 1fr) auto;
   align-items: end;
   gap: 8px;
-}
-
-.semantic-fallback-editor {
-  display: grid;
-  gap: 10px;
 }
 
 /* 状态引用保持紧凑分组，同时为复选框整行提供足够的点击区域。 */

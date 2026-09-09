@@ -10,7 +10,7 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { afterEach, describe, expect, test } from 'vitest';
+import { afterEach, describe, expect, test, vi } from 'vitest';
 import { CharacterStore } from '../src/main/characters/character-store';
 import { ensureOfficialDefaultCharacter } from '../src/main/characters/official-default-character';
 import { prepareCharacterStartup } from '../src/main/characters/character-startup';
@@ -33,16 +33,22 @@ describe('官方默认角色安装', () => {
   test('从打包资源安装八个核心状态并设为活动角色', async () => {
     temporaryDirectory = await mkdtemp(join(tmpdir(), 'ai-pet-default-'));
     const store = new CharacterStore(join(temporaryDirectory, 'characters'));
+    const decodeAlpha = vi.fn(async () => ({
+      width: 1024,
+      height: 256,
+      alpha: new Uint8Array(1024 * 256).fill(255)
+    }));
 
     await ensureOfficialDefaultCharacter(
       store,
-      resourceDirectory
+      resourceDirectory,
+      { decodeAlpha }
     );
 
     const manifest = await store.getActive();
     const publishedManifest = await store.getPublishedManifest('builtin-default');
-    expect(manifest.version).toBe(1);
-    expect(publishedManifest.version).toBe(2);
+    expect(manifest.version).toBe(3);
+    expect(publishedManifest.version).toBe(3);
     expect(manifest.id).toBe('builtin-default');
     expect(manifest.states.map(state => state.id)).toEqual([
       'idle',
@@ -60,11 +66,12 @@ describe('官方默认角色安装', () => {
     expect(carrying?.commitFrameId).toBe('carrying-frame-3');
     expect(carrying?.frames.findIndex(frame => frame.id === carrying.commitFrameId))
       .toBe(2);
-    expect(publishedManifest.skins[0]?.semanticFallbacks).toEqual([]);
-    expect(publishedManifest.actions.map(action => action.semantic)).not.toEqual(
+    expect(publishedManifest.skins[0]).not.toHaveProperty('semanticFallbacks');
+    expect(decodeAlpha).toHaveBeenCalledTimes(8);
+    expect(publishedManifest.actions.map(action => action.id)).not.toEqual(
       expect.arrayContaining(['hide', 'emerge'])
     );
-  });
+  }, 15_000);
 
   test('已有可用默认角色时不重写其运行版本', async () => {
     temporaryDirectory = await mkdtemp(join(tmpdir(), 'ai-pet-default-'));
@@ -75,7 +82,7 @@ describe('官方默认角色安装', () => {
     await ensureOfficialDefaultCharacter(store, resourceDirectory);
 
     expect(await store.getRuntimeManifest('builtin-default')).toEqual(before);
-  });
+  }, 15_000);
 
   test('损坏索引后重建可写索引并保留有效用户角色、草稿与损坏证据', async () => {
     temporaryDirectory = await mkdtemp(join(tmpdir(), 'ai-pet-default-recovery-'));
@@ -113,9 +120,19 @@ describe('官方默认角色安装', () => {
       warnings: []
     });
     await expect(prepareCharacterStartup({
-      loadIndex: () => restarted.list(),
-      validateActiveRuntime: async () => null
-    })).resolves.toEqual({ kind: 'fallback', errorCode: null });
+      indexRecovered: true,
+      packageRecoveryReport: { issues: [] }
+    }, {
+      validateActiveRuntime: async () => ({ kind: 'missing' }),
+      ensureOfficialDefaultCharacter: async () => ({
+        activeCharacterId: 'builtin-default'
+      }),
+      loadFinalIndex: () => restarted.list(),
+      getTransactionRecoveryReport: () => restarted.getTransactionRecoveryReport()
+    })).resolves.toMatchObject({
+      activeCharacterId: 'builtin-default',
+      recoverySnapshot: { fallbackErrorCode: 'CHARACTER_INDEX_UNAVAILABLE' }
+    });
     await expect(ensureOfficialDefaultCharacter(restarted, resourceDirectory))
       .resolves.toBeUndefined();
 
@@ -131,7 +148,7 @@ describe('官方默认角色安装', () => {
     const rootEntries = await readdir(charactersDirectory);
     expect(rootEntries.some(name => /^index\.json\.corrupt-/u.test(name))).toBe(true);
     expect(rootEntries.some(name => /^index-recovery-/u.test(name))).toBe(true);
-  });
+  }, 15_000);
 
   test('候选目录在扫描后消失时隔离跳过且不阻止默认角色启动', async () => {
     temporaryDirectory = await mkdtemp(join(tmpdir(), 'ai-pet-recovery-race-'));

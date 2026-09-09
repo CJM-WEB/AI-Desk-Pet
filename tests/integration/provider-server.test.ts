@@ -32,6 +32,146 @@ function requestStatusBeforeBodyEnds(
 }
 
 describe('脚本化 Provider 生命周期', () => {
+  test('Core SSE 保留参数分片、多调用标识与工具结果关联', async () => {
+    const frames = [
+      { choices: [{ index: 0, delta: { tool_calls: [{ index: 0, id: 'read-a', type: 'function', function: { name: 'read', arguments: '{"path":' } }, { index: 1, id: 'read-b', type: 'function', function: { name: 'read', arguments: '{"path":' } }] }, finish_reason: null }] },
+      { choices: [{ index: 0, delta: { tool_calls: [{ index: 0, function: { arguments: '"a.txt"}' } }, { index: 1, function: { arguments: '"b.txt"}' } }] }, finish_reason: null }] },
+      { choices: [{ index: 0, delta: {}, finish_reason: 'tool_calls' }] }
+    ];
+    let history: unknown;
+    const provider = await startProviderServer([
+      { response: { type: 'sse', chunks: frames } },
+      { response: { type: 'sse', chunks: [] }, inspectRaw: request => { history = request.messages; } }
+    ]);
+    const post = (messages: unknown[]) => fetch(`${provider.baseUrl}/chat/completions`, {
+      method: 'POST', headers: { authorization: `Bearer ${provider.apiKey}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ model: 'core', stream: true, messages, tools: [] })
+    });
+    try {
+      const first = await post([{ role: 'user', content: '读取两个文件' }]);
+      expect(first.headers.get('content-type')).toBe('text/event-stream');
+      expect(await first.text()).toBe(frames.map(frame => `data: ${JSON.stringify(frame)}\n\n`).join('') + 'data: [DONE]\n\n');
+      const messages = [
+        { role: 'assistant', content: null, tool_calls: ['a', 'b'].map(name => ({ id: `read-${name}`, type: 'function', function: { name: 'read', arguments: JSON.stringify({ path: `${name}.txt` }) } })) },
+        { role: 'tool', tool_call_id: 'read-b', content: '乙文件真实结果' },
+        { role: 'tool', tool_call_id: 'read-a', content: '甲文件真实结果' }
+      ];
+      expect((await post(messages)).status).toBe(200);
+      expect(history).toEqual(messages);
+      expect(provider.inspectionErrors).toEqual([]);
+      provider.assertComplete();
+    } finally { await provider.close(); }
+  });
+
+  test('客户端中止释放未放行的 SSE gate，关闭不遗留请求', async () => {
+    const gate = createProviderResponseGate();
+    const provider = await startProviderServer([{ response: { type: 'sse', chunks: [] }, gate }]);
+    const controller = new AbortController();
+    const pending = fetch(`${provider.baseUrl}/chat/completions`, {
+      method: 'POST', headers: { authorization: `Bearer ${provider.apiKey}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ messages: [], tools: [], stream: true }), signal: controller.signal
+    }).catch(() => undefined);
+    try {
+      await vi.waitFor(() => expect(gate.isWaiting()).toBe(true));
+      controller.abort();
+      await pending;
+      await vi.waitFor(() => expect(gate.isWaiting()).toBe(false));
+      provider.assertComplete();
+    } finally { gate.release(); await provider.close(); }
+  });
+
+  test('inspect 可读取 tool_choice 且请求摘要不持久该字段', async () => {
+    let inspectedToolChoice: unknown;
+    let inspectedToolChoiceWasExplicit = false;
+    let inspectedResponseFormat = false;
+    const provider = await startProviderServer([{
+      response: { type: 'text', text: '已收到' },
+      inspect: request => {
+        inspectedToolChoice = request.toolChoice;
+        inspectedToolChoiceWasExplicit = request.toolChoiceWasExplicit;
+        inspectedResponseFormat = request.responseFormatWasJsonObject;
+      }
+    }]);
+
+    try {
+      const response = await fetch(`${provider.baseUrl}/chat/completions`, {
+        method: 'POST',
+        headers: {
+          authorization: `Bearer ${provider.apiKey}`,
+          'content-type': 'application/json'
+        },
+        body: JSON.stringify({
+          model: 'reflection-model',
+          messages: [{ role: 'user', content: '反思私密正文' }],
+          tools: [],
+          tool_choice: 'none',
+          response_format: { type: 'json_object' }
+        })
+      });
+
+      expect(response.status).toBe(200);
+      expect(inspectedToolChoice).toBe('none');
+      expect(inspectedToolChoiceWasExplicit).toBe(true);
+      expect(inspectedResponseFormat).toBe(true);
+      expect(provider.requests).toEqual([{
+        method: 'POST',
+        model: 'reflection-model',
+        messageRoleCounts: { system: 0, user: 1, assistant: 0, tool: 0 },
+        toolCount: 0
+      }]);
+      expect(JSON.stringify(provider.requests)).not.toMatch(/tool_choice|response_format|私密/iu);
+    } finally {
+      await provider.close();
+    }
+  });
+
+  test('结构化响应按真实 JSON Output 线格式返回且请求仍为零工具', async () => {
+    const provider = await startProviderServer([{
+      response: {
+        type: 'text',
+        text: '向左移动',
+        structured_output: {
+          text: '向左移动',
+          moodUpdate: null,
+          expressionPlan: null,
+          movementControl: { kind: 'move_once', target: 'left', distance: 'near' }
+        }
+      },
+      inspect: request => {
+        expect(request.tools).toEqual([]);
+      }
+    }]);
+
+    try {
+      const response = await fetch(`${provider.baseUrl}/chat/completions`, {
+        method: 'POST',
+        headers: {
+          authorization: `Bearer ${provider.apiKey}`,
+          'content-type': 'application/json'
+        },
+        body: JSON.stringify({
+          model: 'structured-model',
+          messages: [{ role: 'user', content: '向左一点' }],
+          tools: []
+        })
+      });
+      const payload = await response.json() as {
+        choices: Array<{ message: { content: string; metadata?: unknown } }>;
+      };
+      expect(JSON.parse(payload.choices[0]!.message.content)).toEqual({
+        text: '向左移动',
+        moodUpdate: null,
+        expressionPlan: null,
+        movementControl: { kind: 'move_once', target: 'left', distance: 'near' }
+      });
+      expect(payload.choices[0]!.message).not.toHaveProperty('metadata');
+      provider.assertComplete();
+      expect(provider.inspectionErrors).toEqual([]);
+    } finally {
+      await provider.close();
+    }
+  });
+
   test('请求摘要只保留方法、模型、角色计数与工具计数', async () => {
     const provider = await startProviderServer([
       { response: { type: 'text', text: '已收到' } }

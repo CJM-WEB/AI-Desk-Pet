@@ -3,11 +3,13 @@ import {
   lstatSync,
   readdirSync,
   realpathSync,
-  rmSync
+  rmSync,
+  type Dirent
 } from 'node:fs';
 import {
   chmod,
   copyFile,
+  link,
   lstat,
   mkdir,
   mkdtemp,
@@ -15,6 +17,7 @@ import {
   readFile,
   readdir,
   realpath,
+  rename,
   rm,
   writeFile,
   type FileHandle
@@ -41,27 +44,65 @@ import {
   type PackageEntryDescriptor
 } from '@myself/character-assets';
 import {
-  type CharacterDraftV2,
-  type CharacterManifestV2
+  type CharacterDraftV3,
+  type CharacterMigrationIssueV3,
+  characterManifestV3Schema,
+  type CharacterMigrationManifestV3
 } from '@myself/character-runtime';
 import * as yauzl from 'yauzl';
 import { ZipFile } from 'yazl';
+import { z } from 'zod';
 import { CharacterAssetService } from './character-asset-service';
 import {
+  finalizeCharacterManifestMigration,
   migrateCharacterDocument,
-  migrateCharacterManifest
+  prepareCharacterManifestMigration,
+  type CharacterGeometryMigrationDependencies
 } from './character-migrations';
 import { CharacterStore } from './character-store';
+import { atomicWriteFileExclusive } from '../storage/atomic-file-coordinator';
 
 const SAFE_CHARACTER_ID = /^[a-z0-9][a-z0-9_-]{0,119}$/u;
 const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
-const SHA_256_PATTERN = /^[a-f0-9]{64}$/u;
 const MAX_CREATE_ATTEMPTS = 32;
+const MAX_IMPORT_RECOVERY_ENTRIES = 256;
+const IMPORT_RECOVERY_BUDGET_MS = 2_000;
+const MAX_IMPORT_MARKER_BYTES = 4_096;
 const IMPORT_STAGING_PREFIX = 'ai-pet-character-package-';
 const ROLLBACK_MARKER_PATTERN =
   /^\.package-import-rollback-([a-z0-9][a-z0-9_-]{0,119})\.json$/u;
+const DETACHED_MARKER_EVIDENCE = new Error('DETACHED_MARKER_EVIDENCE');
 const packageImportQueues = new Map<string, Promise<void>>();
+
+const characterPackageImportMarkerV3Schema = z.object({
+  version: z.literal(3),
+  characterId: z.string().regex(SAFE_CHARACTER_ID),
+  importTransactionId: z.string().regex(UUID_PATTERN)
+}).strict();
+
+type CharacterPackageImportMarkerV3 = Readonly<{
+  version: 3;
+  characterId: string;
+  importTransactionId: string;
+}>;
+
+type ImportMarkerIdentity = Readonly<{
+  dev: number;
+  ino: number;
+  size: number;
+}>;
+
+export type CharacterPackageRecoveryIssue = Readonly<{
+  characterId: string;
+  errorCode:
+    | 'CHARACTER_IMPORT_RECOVERY_BLOCKED'
+    | 'CHARACTER_IMPORT_RECOVERY_DEFERRED';
+}>;
+
+export type CharacterPackageRecoveryReport = Readonly<{
+  issues: readonly CharacterPackageRecoveryIssue[];
+}>;
 
 export type CharacterPackageCheckpoint =
   | 'extract:before-file-open'
@@ -86,6 +127,8 @@ export type CharacterPackageServiceDependencies = {
   packageLimits?: Partial<CharacterPackageLimits>;
   store?: CharacterStore;
   assetService?: CharacterAssetService;
+  recoveryNow?: () => number;
+  geometryMigration?: CharacterGeometryMigrationDependencies;
 };
 
 type ScannedEntry = {
@@ -103,11 +146,14 @@ type ExtractedFiles = ReadonlyMap<string, ExtractedFileDescriptor>;
 
 type PreparedPackage = {
   originalId: string;
-  draft: CharacterDraftV2;
-  manifest: CharacterManifestV2;
+  draft: CharacterDraftV3;
+  manifest: CharacterMigrationManifestV3;
   runtimeAssets: Readonly<Record<string, Uint8Array>>;
   sourceCatalog: CharacterSourceCatalogV1;
-  sourceVersion: 1 | 2;
+  sourceVersion: 1 | 2 | 3;
+  issues: CharacterMigrationIssueV3[];
+  draftText: string;
+  manifestText: string;
 };
 
 type DirectoryIdentity = {
@@ -115,14 +161,6 @@ type DirectoryIdentity = {
   physicalPath: string;
   dev: number;
   ino: number;
-};
-
-type CharacterOwnership = {
-  characterId: string;
-  physicalPath: string;
-  dev: number;
-  ino: number;
-  draftSha256: string;
 };
 
 type ExportedDiskFile = {
@@ -165,8 +203,43 @@ function packageError(code: string): Error {
   return new Error(code);
 }
 
-function isMissing(error: unknown): boolean {
-  return error instanceof Error && 'code' in error && error.code === 'ENOENT';
+function sameImportMarkerIdentity(
+  expected: ImportMarkerIdentity,
+  current: ImportMarkerIdentity
+): boolean {
+  return expected.dev === current.dev
+    && expected.ino === current.ino
+    && expected.size === current.size;
+}
+
+function immutableRecoveryReport(
+  issues: readonly CharacterPackageRecoveryIssue[]
+): CharacterPackageRecoveryReport {
+  const byCharacter = new Map<string, CharacterPackageRecoveryIssue>();
+  for (const issue of issues) {
+    const current = byCharacter.get(issue.characterId);
+    if (
+      !current
+      || issue.errorCode === 'CHARACTER_IMPORT_RECOVERY_BLOCKED'
+    ) {
+      byCharacter.set(issue.characterId, issue);
+    }
+  }
+  const frozenIssues = Object.freeze(
+    [...byCharacter.values()]
+      .sort((left, right) => left.characterId.localeCompare(right.characterId, 'en-US'))
+      .map(issue => Object.freeze({ ...issue }))
+  );
+  return Object.freeze({ issues: frozenIssues });
+}
+
+function appendRecoveryIssue(
+  issues: CharacterPackageRecoveryIssue[],
+  characterId: string | undefined,
+  errorCode: CharacterPackageRecoveryIssue['errorCode']
+): void {
+  if (characterId) issues.push({ characterId, errorCode });
+  else console.error('CHARACTER_IMPORT_RECOVERY_UNATTRIBUTED');
 }
 
 function sha256(bytes: Uint8Array): string {
@@ -1020,73 +1093,6 @@ function destroyArchiveOutput(archive: ZipFile, error: Error): void {
   (archive.outputStream as unknown as Readable).destroy(error);
 }
 
-async function captureCharacterOwnership(
-  charactersDirectory: string,
-  characterId: string
-): Promise<CharacterOwnership> {
-  if (!SAFE_CHARACTER_ID.test(characterId)) {
-    throw packageError('CHARACTER_PACKAGE_ROLLBACK_FAILED');
-  }
-  const root = await captureDirectoryIdentity(charactersDirectory);
-  const characterPath = resolve(charactersDirectory, characterId);
-  if (!isContained(root.logicalPath, characterPath)) {
-    throw packageError('CHARACTER_PACKAGE_ROLLBACK_FAILED');
-  }
-  const character = await captureDirectoryIdentity(characterPath, root);
-  const draftPath = resolve(characterPath, 'draft', 'draft.json');
-  let before;
-  let draftPhysicalPath: string;
-  try {
-    before = await lstat(draftPath);
-    draftPhysicalPath = await realpath(draftPath);
-  } catch {
-    throw packageError('CHARACTER_PACKAGE_ROLLBACK_FAILED');
-  }
-  if (
-    before.isSymbolicLink()
-    || !before.isFile()
-    || !isContained(character.physicalPath, draftPhysicalPath)
-  ) {
-    throw packageError('CHARACTER_PACKAGE_ROLLBACK_FAILED');
-  }
-  const draft = await readFile(draftPath);
-  let after;
-  let completedPhysicalPath: string;
-  try {
-    after = await lstat(draftPath);
-    completedPhysicalPath = await realpath(draftPath);
-  } catch {
-    throw packageError('CHARACTER_PACKAGE_ROLLBACK_FAILED');
-  }
-  if (
-    !after.isFile()
-    || !sameIdentity(before, after)
-    || completedPhysicalPath !== draftPhysicalPath
-  ) {
-    throw packageError('CHARACTER_PACKAGE_ROLLBACK_FAILED');
-  }
-  return {
-    characterId,
-    physicalPath: character.physicalPath,
-    dev: character.dev,
-    ino: character.ino,
-    draftSha256: sha256(draft)
-  };
-}
-
-function sameCharacterOwnership(
-  expected: CharacterOwnership,
-  current: CharacterOwnership
-): boolean {
-  return (
-    expected.characterId === current.characterId
-    && expected.physicalPath === current.physicalPath
-    && expected.dev === current.dev
-    && expected.ino === current.ino
-    && expected.draftSha256 === current.draftSha256
-  );
-}
-
 function addPackageBytes(
   current: number,
   additional: number,
@@ -1115,15 +1121,16 @@ function extractedPath(
 
 async function preparePackage(
   entries: readonly ScannedEntry[],
-  files: ExtractedFiles
+  files: ExtractedFiles,
+  geometryMigration: CharacterGeometryMigrationDependencies
 ): Promise<PreparedPackage> {
   let draftResult: ReturnType<typeof migrateCharacterDocument>;
-  let manifestResult: ReturnType<typeof migrateCharacterManifest>;
+  let manifestResult: ReturnType<typeof prepareCharacterManifestMigration>;
   try {
     draftResult = migrateCharacterDocument(
       await readJson(extractedPath(files, 'draft/draft.json'))
     );
-    manifestResult = migrateCharacterManifest(
+    manifestResult = prepareCharacterManifestMigration(
       await readJson(extractedPath(files, 'compiled/manifest.json'))
     );
   } catch {
@@ -1139,7 +1146,6 @@ async function preparePackage(
     throw packageError('CHARACTER_PACKAGE_INVALID');
   }
   const draft = draftResult.document;
-  const manifest = manifestResult.document;
   const sourceCatalog = sourceResult.data;
   const packageFiles = new Map<string, CharacterPackageFileMetadata>(
     entries
@@ -1159,11 +1165,19 @@ async function preparePackage(
   );
 
   const runtimeAssets: Record<string, Uint8Array> = {};
-  for (const resource of manifest.resources) {
+  for (const resource of manifestResult.document.resources) {
     const path = `compiled/${resource.fileName}`;
     const bytes = await readRegularFile(
       extractedPath(files, path)
     );
+    const actualSha256 = sha256(bytes);
+    // Alpha 解码只接收已经由清单长度与摘要共同验证的可信资源。
+    if (
+      bytes.byteLength !== resource.byteLength
+      || actualSha256 !== resource.sha256
+    ) {
+      throw packageError('CHARACTER_PACKAGE_RESOURCE_INVALID');
+    }
     const lowerName = resource.fileName.toLocaleLowerCase('en-US');
     packageFiles.set(path, {
       path,
@@ -1174,11 +1188,21 @@ async function preparePackage(
             mime: lowerName.endsWith('.png')
               ? 'image/png' as const
               : 'image/webp' as const
-          }),
+      }),
       byteLength: bytes.byteLength,
-      sha256: sha256(bytes)
+      sha256: actualSha256
     });
     runtimeAssets[resource.fileName] = bytes;
+  }
+  let manifest: CharacterMigrationManifestV3;
+  try {
+    manifest = (await finalizeCharacterManifestMigration(
+      manifestResult,
+      runtimeAssets,
+      geometryMigration
+    )).document;
+  } catch {
+    throw packageError('CHARACTER_PACKAGE_INVALID');
   }
 
   for (const source of sourceCatalog.sources) {
@@ -1208,7 +1232,10 @@ async function preparePackage(
     manifest,
     runtimeAssets,
     sourceCatalog,
-    sourceVersion: draftResult.sourceVersion
+    sourceVersion: draftResult.sourceVersion,
+    issues: [...draftResult.issues, ...manifestResult.issues],
+    draftText: await readFile(extractedPath(files, 'draft/draft.json'), 'utf8'),
+    manifestText: await readFile(extractedPath(files, 'compiled/manifest.json'), 'utf8')
   };
 }
 
@@ -1274,6 +1301,8 @@ export class CharacterPackageService {
   private readonly createId: () => string;
   private readonly archiveFactory: () => ZipFile;
   private readonly packageLimits: CharacterPackageLimits;
+  private readonly recoveryNow: () => number;
+  private readonly geometryMigration: CharacterGeometryMigrationDependencies;
 
   constructor(
     private readonly charactersDirectory: string,
@@ -1285,6 +1314,12 @@ export class CharacterPackageService {
     this.temporaryDirectory = dependencies.temporaryDirectory ?? tmpdir();
     this.createId = dependencies.createId ?? randomUUID;
     this.archiveFactory = dependencies.archiveFactory ?? (() => new ZipFile());
+    this.recoveryNow = dependencies.recoveryNow ?? Date.now;
+    this.geometryMigration = dependencies.geometryMigration ?? {
+      decodeAlpha: async () => {
+        throw packageError('CHARACTER_PACKAGE_RESOURCE_INVALID');
+      }
+    };
     this.packageLimits = {
       ...CHARACTER_PACKAGE_LIMITS,
       ...dependencies.packageLimits
@@ -1298,7 +1333,7 @@ export class CharacterPackageService {
     );
   }
 
-  initialize(): Promise<void> {
+  initialize(): Promise<CharacterPackageRecoveryReport> {
     return this.enqueueImport(() => this.recoverPendingRollbacks());
   }
 
@@ -1322,139 +1357,247 @@ export class CharacterPackageService {
   private async writePendingImport(
     characterId: string,
     importTransactionId: string
-  ): Promise<void> {
-    await writeFile(
-      this.rollbackMarker(characterId),
-      jsonBytes({
-        version: 3,
-        characterId,
-        importTransactionId
-      }),
-      { flag: 'wx', mode: 0o600 }
-    );
-  }
-
-  private async recoverPendingRollbacks(): Promise<void> {
-    let entries;
-    try {
-      entries = await readdir(this.charactersDirectory, {
-        withFileTypes: true
-      });
-    } catch (error) {
-      if (isMissing(error)) return;
-      throw packageError('CHARACTER_PACKAGE_ROLLBACK_FAILED');
-    }
-    try {
-      const existing = new Set(
-        (await this.store.list()).map(character => character.id)
-      );
-      for (const entry of entries) {
-        if (!entry.isFile()) continue;
-        const match = ROLLBACK_MARKER_PATTERN.exec(entry.name);
-        if (!match) continue;
-        const characterId = match[1]!;
-        const marker = this.rollbackMarker(characterId);
-        const document = JSON.parse(await readFile(marker, 'utf8')) as unknown;
-        if (
-          typeof document === 'object'
-          && document !== null
-          && 'version' in document
-          && document.version === 3
-          && 'characterId' in document
-          && document.characterId === characterId
-          && 'importTransactionId' in document
-          && typeof document.importTransactionId === 'string'
-          && UUID_PATTERN.test(document.importTransactionId)
-        ) {
-          await this.store.rollbackImportedCharacter(
-            characterId,
-            document.importTransactionId
-          );
-          await rm(marker, { force: true });
-          continue;
-        }
-        if (
-          typeof document === 'object'
-          && document !== null
-          && 'version' in document
-          && document.version === 1
-          && 'characterId' in document
-          && document.characterId === characterId
-        ) {
-          await rm(marker, { force: true });
-          continue;
-        }
-        if (
-          typeof document !== 'object'
-          || document === null
-          || !('version' in document)
-          || document.version !== 2
-          || !('ownership' in document)
-          || typeof document.ownership !== 'object'
-          || document.ownership === null
-        ) {
-          throw packageError('CHARACTER_PACKAGE_ROLLBACK_FAILED');
-        }
-        const ownership = document.ownership as Partial<CharacterOwnership>;
-        if (
-          ownership.characterId !== characterId
-          || typeof ownership.physicalPath !== 'string'
-          || typeof ownership.dev !== 'number'
-          || !Number.isFinite(ownership.dev)
-          || !Number.isInteger(ownership.dev)
-          || ownership.dev < 0
-          || typeof ownership.ino !== 'number'
-          || !Number.isFinite(ownership.ino)
-          || !Number.isInteger(ownership.ino)
-          || ownership.ino < 0
-          || typeof ownership.draftSha256 !== 'string'
-          || !SHA_256_PATTERN.test(ownership.draftSha256)
-        ) {
-          throw packageError('CHARACTER_PACKAGE_ROLLBACK_FAILED');
-        }
-        if (existing.has(characterId)) {
-          const current = await captureCharacterOwnership(
-            this.charactersDirectory,
-            characterId
-          );
-          if (sameCharacterOwnership(
-            ownership as CharacterOwnership,
-            current
-          )) {
-            await this.store.delete(characterId);
-            existing.delete(characterId);
-          }
-        }
-        await rm(marker, { force: true });
-      }
-    } catch (error) {
-      if (
-        error instanceof Error
-        && error.message === 'CHARACTER_PACKAGE_ROLLBACK_FAILED'
-      ) {
-        throw error;
-      }
-      throw packageError('CHARACTER_PACKAGE_ROLLBACK_FAILED');
-    }
-  }
-
-  private async preserveRollback(
-    ownership: CharacterOwnership
-  ): Promise<never> {
-    const characterId = ownership.characterId;
+  ): Promise<ImportMarkerIdentity> {
     const marker = this.rollbackMarker(characterId);
+    const bytes = jsonBytes({
+      version: 3,
+      characterId,
+      importTransactionId
+    });
+    await atomicWriteFileExclusive(
+      marker,
+      bytes
+    );
+    const snapshot = await this.readOwnedMarker(marker);
+    if (!snapshot.bytes.equals(bytes)) {
+      throw packageError('CHARACTER_PACKAGE_ROLLBACK_FAILED');
+    }
+    return snapshot.identity;
+  }
+
+  /** marker 字节和物理身份必须来自同一只普通文件句柄。 */
+  private async readOwnedMarker(
+    marker: string
+  ): Promise<{ bytes: Buffer; identity: ImportMarkerIdentity }> {
+    let handle: FileHandle | undefined;
     try {
-      await writeFile(
-        marker,
-        jsonBytes({ version: 2, ownership }),
-        { flag: 'wx', mode: 0o600 }
-      );
-    } catch (error) {
-      if (!(error instanceof Error && 'code' in error && error.code === 'EEXIST')) {
+      const pathStats = await lstat(marker);
+      if (pathStats.isSymbolicLink() || !pathStats.isFile()) {
         throw packageError('CHARACTER_PACKAGE_ROLLBACK_FAILED');
       }
+      handle = await open(marker, 'r');
+      const before = await handle.stat();
+      if (
+        !before.isFile()
+        || !sameIdentity(pathStats, before)
+        || before.size > MAX_IMPORT_MARKER_BYTES
+      ) {
+        throw packageError('CHARACTER_PACKAGE_ROLLBACK_FAILED');
+      }
+      const identity = {
+        dev: before.dev,
+        ino: before.ino,
+        size: before.size
+      };
+      const bytes = Buffer.alloc(MAX_IMPORT_MARKER_BYTES + 1);
+      let offset = 0;
+      while (offset < bytes.byteLength) {
+        const result = await handle.read(
+          bytes,
+          offset,
+          bytes.byteLength - offset,
+          offset
+        );
+        if (result.bytesRead === 0) break;
+        offset += result.bytesRead;
+      }
+      const after = await handle.stat();
+      if (
+        !after.isFile()
+        || !sameImportMarkerIdentity(identity, {
+          dev: after.dev,
+          ino: after.ino,
+          size: after.size
+        })
+        || offset !== identity.size
+      ) {
+        throw packageError('CHARACTER_PACKAGE_ROLLBACK_FAILED');
+      }
+      return { bytes: bytes.subarray(0, offset), identity };
+    } finally {
+      await handle?.close().catch(() => undefined);
     }
-    throw packageError('CHARACTER_PACKAGE_ROLLBACK_FAILED');
+  }
+
+  private async requireOwnedMarker(
+    marker: string,
+    expected: ImportMarkerIdentity
+  ): Promise<void> {
+    const current = (await this.readOwnedMarker(marker)).identity;
+    if (!sameImportMarkerIdentity(expected, current)) {
+      throw packageError('CHARACTER_PACKAGE_ROLLBACK_FAILED');
+    }
+  }
+
+  private async completeOwnedMarker(
+    marker: string,
+    expected: ImportMarkerIdentity
+  ): Promise<void> {
+    const relocated = await this.relocateOwnedMarker(marker, expected);
+    try {
+      await rm(relocated);
+    } catch (error) {
+      await this.restoreRelocatedMarker(relocated, marker, error);
+    }
+  }
+
+  /** 正式名只能通过排他 hard link 恢复；双故障留下不可执行证据。 */
+  private async restoreRelocatedMarker(
+    relocated: string,
+    marker: string,
+    cause: unknown
+  ): Promise<never> {
+    try {
+      await link(relocated, marker);
+    } catch {
+      console.error('CHARACTER_IMPORT_RECOVERY_DETACHED_EVIDENCE');
+      throw DETACHED_MARKER_EVIDENCE;
+    }
+    throw cause;
+  }
+
+  /** 先移走路径再复核，避免复核后的原路径替代文件被误删。 */
+  private async relocateOwnedMarker(
+    marker: string,
+    expected: ImportMarkerIdentity
+  ): Promise<string> {
+    const relocated = `${marker}.complete-${randomUUID()}.tmp`;
+    await rename(marker, relocated);
+    try {
+      await this.requireOwnedMarker(relocated, expected);
+    } catch (error) {
+      await this.restoreRelocatedMarker(relocated, marker, error);
+    }
+    return relocated;
+  }
+
+  private async preserveMarkerEvidence(
+    marker: string,
+    bytes: Uint8Array,
+    expected: ImportMarkerIdentity
+  ): Promise<void> {
+    await this.requireOwnedMarker(marker, expected);
+    const evidence = `${marker}.corrupt-${randomUUID()}`;
+    await atomicWriteFileExclusive(evidence, bytes);
+    await this.completeOwnedMarker(marker, expected);
+  }
+
+  private async recoverPendingRollbacks(): Promise<CharacterPackageRecoveryReport> {
+    let entries: Dirent<string>[];
+    try {
+      entries = await readdir(this.charactersDirectory, { withFileTypes: true });
+    } catch {
+      console.error('CHARACTER_IMPORT_RECOVERY_SCAN_FAILED');
+      return immutableRecoveryReport([]);
+    }
+
+    let activeCharacterId: string | undefined;
+    try {
+      activeCharacterId = (await this.store.list())
+        .find(character => character.active)?.id;
+    } catch {
+      console.error('CHARACTER_IMPORT_RECOVERY_SCAN_FAILED');
+    }
+    const candidates = entries
+      .filter(entry => (
+        entry.isFile()
+        && entry.name.startsWith('.package-import-rollback-')
+        && entry.name.endsWith('.json')
+        && !['.tmp', '.corrupt-', '.complete-'].some(part => entry.name.includes(part))
+      ))
+      .map(entry => ({
+        marker: join(this.charactersDirectory, entry.name),
+        name: entry.name,
+        characterId: ROLLBACK_MARKER_PATTERN.exec(entry.name)?.[1]
+      }))
+      .sort((left, right) => {
+        const leftActive = activeCharacterId !== undefined && left.characterId === activeCharacterId;
+        const rightActive = activeCharacterId !== undefined && right.characterId === activeCharacterId;
+        if (leftActive !== rightActive) return leftActive ? -1 : 1;
+        return left.name.localeCompare(right.name, 'en-US');
+      });
+    if (candidates.length > MAX_IMPORT_RECOVERY_ENTRIES) {
+      console.error('CHARACTER_IMPORT_RECOVERY_LIMIT_REACHED');
+    }
+    const inventory = candidates.slice(0, MAX_IMPORT_RECOVERY_ENTRIES);
+    const startedAt = this.recoveryNow();
+    const issues: CharacterPackageRecoveryIssue[] = [];
+
+    for (const [index, item] of inventory.entries()) {
+      if (
+        index > 0
+        && this.recoveryNow() - startedAt >= IMPORT_RECOVERY_BUDGET_MS
+      ) {
+        appendRecoveryIssue(issues, item.characterId, 'CHARACTER_IMPORT_RECOVERY_DEFERRED');
+        continue;
+      }
+
+      try {
+        const snapshot = await this.readOwnedMarker(item.marker);
+        let document: CharacterPackageImportMarkerV3 | undefined;
+        try {
+          const decoded = JSON.parse(snapshot.bytes.toString('utf8')) as unknown;
+          const parsed = characterPackageImportMarkerV3Schema.safeParse(decoded);
+          if (
+            parsed.success
+            && parsed.data.characterId === item.characterId
+          ) {
+            document = parsed.data;
+          }
+        } catch {
+          document = undefined;
+        }
+
+        if (!document) {
+          await this.preserveMarkerEvidence(
+            item.marker,
+            snapshot.bytes,
+            snapshot.identity
+          );
+          appendRecoveryIssue(issues, item.characterId, 'CHARACTER_IMPORT_RECOVERY_BLOCKED');
+          continue;
+        }
+
+        await this.requireOwnedMarker(item.marker, snapshot.identity);
+        const result = await this.store.rollbackImportedCharacter(
+          document.characterId,
+          document.importTransactionId
+        );
+        switch (result.kind) {
+          case 'rolled-back':
+          case 'absent':
+            await this.completeOwnedMarker(item.marker, snapshot.identity);
+            break;
+          case 'ownership-mismatch':
+          case 'active-character':
+            await this.preserveMarkerEvidence(
+              item.marker,
+              snapshot.bytes,
+              snapshot.identity
+            );
+            issues.push({
+              characterId: document.characterId,
+              errorCode: 'CHARACTER_IMPORT_RECOVERY_BLOCKED'
+            });
+            break;
+        }
+      } catch (error) {
+        if (error === DETACHED_MARKER_EVIDENCE) continue;
+        if (item.characterId) console.error('CHARACTER_IMPORT_RECOVERY_ITEM_FAILED');
+        appendRecoveryIssue(issues, item.characterId, 'CHARACTER_IMPORT_RECOVERY_BLOCKED');
+      }
+    }
+    return immutableRecoveryReport(issues);
   }
 
   /** 以临时与目标 FileHandle 为信任根流式写入，拒绝信任路径替换。 */
@@ -1850,7 +1993,12 @@ export class CharacterPackageService {
   }
 
   private async importCharacterUnlocked(packagePath: string): Promise<string> {
-    await this.recoverPendingRollbacks();
+    const recoveryReport = await this.recoverPendingRollbacks();
+    const blockedCharacters = new Set(
+      recoveryReport.issues
+        .filter(issue => issue.errorCode === 'CHARACTER_IMPORT_RECOVERY_BLOCKED')
+        .map(issue => issue.characterId)
+    );
     await mkdir(this.temporaryDirectory, { recursive: true });
     const temporaryRootIdentity = await captureDirectoryIdentity(
       this.temporaryDirectory
@@ -1873,7 +2021,7 @@ export class CharacterPackageService {
     let createdId: string | undefined;
     let importTransactionId: string | undefined;
     let ownsCreatedRole = false;
-    let ownership: CharacterOwnership | undefined;
+    let markerIdentity: ImportMarkerIdentity | undefined;
     try {
       // 第一遍只做元数据策略校验，验证通过后第二遍才允许写入隔离目录。
       const entries = await scanArchive(packagePath);
@@ -1884,7 +2032,11 @@ export class CharacterPackageService {
         entries,
         this.dependencies.onCheckpoint
       );
-      const prepared = await preparePackage(entries, extractedFiles);
+      const prepared = await preparePackage(
+        entries,
+        extractedFiles,
+        this.geometryMigration
+      );
       await validateSourcesInIsolation(
         stagingDirectory,
         prepared,
@@ -1896,14 +2048,16 @@ export class CharacterPackageService {
       for (let attempt = 0; attempt < MAX_CREATE_ATTEMPTS; attempt += 1) {
         createdId = importedId(prepared.originalId, existing, this.createId);
         importTransactionId = randomUUID();
+        if (blockedCharacters.has(createdId)) {
+          throw packageError('CHARACTER_PACKAGE_ROLLBACK_FAILED');
+        }
         try {
-          await this.writePendingImport(createdId, importTransactionId);
+          markerIdentity = await this.writePendingImport(
+            createdId,
+            importTransactionId
+          );
         } catch (error) {
-          if (error instanceof Error && 'code' in error && error.code === 'EEXIST') {
-            existing.add(createdId);
-            continue;
-          }
-          throw error;
+          throw packageError('CHARACTER_PACKAGE_ROLLBACK_FAILED');
         }
         try {
           await this.store.create(
@@ -1911,14 +2065,14 @@ export class CharacterPackageService {
             { importTransactionId }
           );
           ownsCreatedRole = true;
-          ownership = await captureCharacterOwnership(
-            this.charactersDirectory,
-            createdId
-          );
           break;
         } catch (error) {
-          await rm(this.rollbackMarker(createdId), { force: true });
           if (!isCharacterAlreadyExists(error)) throw error;
+          await this.completeOwnedMarker(
+            this.rollbackMarker(createdId),
+            markerIdentity
+          );
+          markerIdentity = undefined;
           existing.add(createdId);
         }
       }
@@ -1926,6 +2080,7 @@ export class CharacterPackageService {
         !ownsCreatedRole
         || createdId === undefined
         || importTransactionId === undefined
+        || markerIdentity === undefined
       ) {
         throw packageError('CHARACTER_PACKAGE_ID_GENERATION_FAILED');
       }
@@ -1960,13 +2115,13 @@ export class CharacterPackageService {
         ...prepared.draft,
         id: createdId
       });
-      ownership = await captureCharacterOwnership(
-        this.charactersDirectory,
-        createdId
-      );
-      await this.store.publishCompiled(
+      if (prepared.sourceVersion < 3) await this.store.retainImportedMigration(createdId, {
+        draftText: prepared.draftText, manifestText: prepared.manifestText,
+        issues: prepared.issues, assets: prepared.runtimeAssets
+      });
+      if (!prepared.issues.length) await this.store.publishCompiled(
         createdId,
-        { ...prepared.manifest, id: createdId },
+        characterManifestV3Schema.parse({ ...prepared.manifest, id: createdId }),
         prepared.runtimeAssets
       );
       if (!await this.store.completeImportedCharacter(
@@ -1975,20 +2130,31 @@ export class CharacterPackageService {
       )) {
         throw packageError('CHARACTER_PACKAGE_ROLLBACK_FAILED');
       }
-      await rm(this.rollbackMarker(createdId), { force: true });
+      await this.completeOwnedMarker(
+        this.rollbackMarker(createdId),
+        markerIdentity
+      );
       return createdId;
     } catch (error) {
-      if (ownsCreatedRole && createdId !== undefined) {
+      if (
+        createdId !== undefined
+        && importTransactionId !== undefined
+        && markerIdentity !== undefined
+      ) {
         try {
-          await this.store.delete(createdId);
-          await rm(this.rollbackMarker(createdId), { force: true });
+          const result = await this.store.rollbackImportedCharacter(
+            createdId,
+            importTransactionId
+          );
+          if (result.kind !== 'rolled-back' && result.kind !== 'absent') {
+            throw packageError('CHARACTER_PACKAGE_ROLLBACK_FAILED');
+          }
+          await this.completeOwnedMarker(
+            this.rollbackMarker(createdId),
+            markerIdentity
+          );
         } catch {
-          const rollbackOwnership = ownership
-            ?? await captureCharacterOwnership(
-              this.charactersDirectory,
-              createdId
-            );
-          await this.preserveRollback(rollbackOwnership);
+          throw packageError('CHARACTER_PACKAGE_ROLLBACK_FAILED');
         }
       }
       throw error;

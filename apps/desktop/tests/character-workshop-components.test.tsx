@@ -1,12 +1,16 @@
+// @vitest-environment jsdom
+
 import { readFile } from 'node:fs/promises';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { describe, expect, test, vi } from 'vitest';
-import type { CharacterDraftV2 } from '@myself/character-runtime';
+import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
+import type { CharacterDraftV3 } from '@myself/character-runtime';
 import type { CharacterSummaryDto } from '../src/shared/character-ipc';
+import type { MyselfApi } from '../src/shared/myself-api';
 import { CharacterWorkshopView } from '../src/renderer/src/characters/workshop/CharacterWorkshopView';
 import { CharacterIdentityInspector } from '../src/renderer/src/characters/workshop/CharacterIdentityInspector';
-import { SkinList } from '../src/renderer/src/characters/workshop/SkinList';
-import { SkinInspector } from '../src/renderer/src/characters/workshop/SkinInspector';
 import { StateInspector } from '../src/renderer/src/characters/workshop/StateInspector';
 import { ActionInspector } from '../src/renderer/src/characters/workshop/ActionInspector';
 import {
@@ -17,8 +21,26 @@ import type {
   CharacterWorkshopState
 } from '../src/renderer/src/characters/store/character-workshop-store';
 
-const currentDraft: CharacterDraftV2 = {
-  version: 2,
+type CharacterWorkshopViewApi = CharacterWorkshopApi & Pick<
+  MyselfApi,
+  | 'onCharacterWorkshopFlushRequested'
+  | 'getCharacterRecoverySnapshot'
+  | 'getWorkshopLayout'
+  | 'saveWorkshopLayout'
+>;
+
+const showModal = vi.fn(function (this: HTMLDialogElement): void {
+  this.open = true;
+  const focusTarget = this.querySelector<HTMLElement>('[autofocus], input, button, select, textarea');
+  focusTarget?.focus();
+});
+
+const closeDialog = vi.fn(function (this: HTMLDialogElement): void {
+  this.open = false;
+});
+
+const currentDraft: CharacterDraftV3 = {
+  version: 3,
   id: 'nova',
   name: 'Nova',
   identity: {
@@ -28,7 +50,7 @@ const currentDraft: CharacterDraftV2 = {
     exampleLines: ['你好。']
   },
   defaultSkinId: 'default',
-  defaultStateId: 'idle',
+  idleStateId: 'idle',
   skins: [{
     id: 'default',
     name: '默认皮肤',
@@ -36,24 +58,19 @@ const currentDraft: CharacterDraftV2 = {
       actionId: 'idle-main', fps: 12, frames: [],
       anchors: { ground: { x: 0.5, y: 1 } }
     }],
-    semanticFallbacks: []
   }],
   states: [{
     id: 'idle',
-    name: '待机', kind: 'primary', semantic: 'idle', tags: [], intensity: 20,
-    coexistWithStateIds: [], forbiddenStateIds: [], enterConditions: [],
+    name: '待机', tags: [], intensity: 20, enterConditions: [],
     exitConditions: [], agentInferable: true, actionIds: ['idle-main']
   }, {
     id: 'thinking',
-    name: '思考', kind: 'primary', semantic: 'think', tags: [], intensity: 50,
-    coexistWithStateIds: [], forbiddenStateIds: [], enterConditions: [],
+    name: '思考', tags: [], intensity: 50, enterConditions: [],
     exitConditions: [], agentInferable: true, actionIds: []
   }],
   actions: [{
-    id: 'idle-main', name: '轻呼吸', semantic: 'idle', tags: [], preference: 1,
-    cooldownMs: 0, repeatSuppressionMs: 0, loopPolicy: 'presentation', interrupt: 'normal',
-    allowedPrimaryStateIds: [], forbiddenPrimaryStateIds: [], requiredModifierStateIds: [],
-    forbiddenModifierStateIds: [], direction: 'any'
+    id: 'idle-main', name: '轻呼吸', tags: [], preference: 1,
+    cooldownMs: 0, repeatSuppressionMs: 0, loopPolicy: 'presentation', interrupt: 'normal', direction: 'any'
   }]
 };
 
@@ -75,12 +92,14 @@ const characters: CharacterSummaryDto[] = [{
   migrationRecoveryAvailable: false
 }];
 
-function apiDouble(): CharacterWorkshopApi {
+function apiDouble(): CharacterWorkshopViewApi {
   return {
     listCharacters: vi.fn(async () => []),
     createCharacter: vi.fn(),
     duplicateCharacter: vi.fn(),
+    getCharacterMigrationReview: vi.fn(async () => ({ issues: [], resolutions: [] })),
     getCharacterDraft: vi.fn(),
+    listCharacterSources: vi.fn(async () => []),
     saveCharacterDraft: vi.fn(),
     chooseCharacterSources: vi.fn(),
     readCharacterSource: vi.fn(),
@@ -90,9 +109,32 @@ function apiDouble(): CharacterWorkshopApi {
     importCharacterPackage: vi.fn(),
     exportCharacterPackage: vi.fn(),
     subscribeCharacterEvents: vi.fn(() => vi.fn()),
-    onCharacterWorkshopFlushRequested: vi.fn(() => vi.fn())
+    onCharacterWorkshopFlushRequested: vi.fn(() => vi.fn()),
+    getCharacterRecoverySnapshot: vi.fn(async () => ({
+      fallbackErrorCode: null,
+      issues: []
+    })),
+    getWorkshopLayout: vi.fn(async () => ({
+      leftWidth: 300, rightWidth: 300, sidebarTopHeight: 290, stageHeight: 460
+    })),
+    saveWorkshopLayout: vi.fn(async value => value)
   };
 }
+
+beforeEach(() => {
+  Object.defineProperties(HTMLDialogElement.prototype, {
+    showModal: { configurable: true, value: showModal },
+    close: { configurable: true, value: closeDialog }
+  });
+});
+
+afterEach(() => {
+  cleanup();
+  showModal.mockClear();
+  closeDialog.mockClear();
+  Reflect.deleteProperty(HTMLDialogElement.prototype, 'showModal');
+  Reflect.deleteProperty(HTMLDialogElement.prototype, 'close');
+});
 
 function CharacterWorkshopWorkspace(props: {
   state: CharacterWorkshopState;
@@ -106,11 +148,23 @@ function CharacterWorkshopWorkspace(props: {
   );
 }
 
+function renderWorkspace(state: CharacterWorkshopState): ReturnType<typeof render> {
+  return render(
+    <CharacterWorkshopWorkspaceComponent
+      state={state}
+      api={apiDouble()}
+    />
+  );
+}
+
 function state(
   overrides: Partial<CharacterWorkshopState> = {}
 ): CharacterWorkshopState {
   return {
     characters,
+    migrationReview: { issues: [], resolutions: [] },
+    resolveMigrationIssue: vi.fn(),
+    setIdleState: vi.fn(),
     selectedCharacterId: 'nova',
     draft: currentDraft,
     selectedEntity: { kind: 'action', actionId: 'idle-main' },
@@ -118,6 +172,7 @@ function state(
     selectedStateId: 'idle',
     selectedActionId: 'idle-main',
     draftStatus: 'saved',
+    closeConfirmationPending: false,
     compileStatus: 'idle',
     loadStatus: 'ready',
     busyAction: null,
@@ -148,14 +203,16 @@ function state(
     requestRemoveState: vi.fn(() => ({ safeReferencePaths: [], blockingReferencePaths: [] })),
     addAction: vi.fn(),
     updateAction: vi.fn(),
+    setCurrentActionCommitFrame: vi.fn(),
+    requestRemoveCurrentFrame: vi.fn(() => ({ safeReferencePaths: [], blockingReferencePaths: [] })),
     requestRemoveAction: vi.fn(() => ({ safeReferencePaths: [], blockingReferencePaths: [] })),
-    removeAction: vi.fn(),
-    addExtensionState: vi.fn(),
-    removeExtensionState: vi.fn(),
     applySpriteSheet: vi.fn(),
     compileAndPublish: vi.fn(),
     publishCharacter: vi.fn(),
     updateCurrentAction: vi.fn(),
+    prepareWindowClose: vi.fn(async () => true),
+    resumeAfterClosePrompt: vi.fn(),
+    discardUnsavedDraft: vi.fn(async () => undefined),
     flushDraft: vi.fn(),
     dismissToast: vi.fn(),
     dispose: vi.fn(),
@@ -164,16 +221,16 @@ function state(
 }
 
 async function workshopCss(): Promise<string> {
-  return readFile(new URL(
-    '../src/renderer/src/characters/workshop/character-workshop.css',
-    import.meta.url
+  return readFile(resolve(
+    dirname(fileURLToPath(import.meta.url)),
+    '../src/renderer/src/characters/workshop/character-workshop.css'
   ), 'utf8');
 }
 
 async function rendererStyles(): Promise<string> {
-  return readFile(new URL(
-    '../src/renderer/src/styles.css',
-    import.meta.url
+  return readFile(resolve(
+    dirname(fileURLToPath(import.meta.url)),
+    '../src/renderer/src/styles.css'
   ), 'utf8');
 }
 
@@ -274,13 +331,13 @@ describe('角色工作室 SSR 外壳', () => {
   });
 
   test('默认状态没有减号而非默认主状态和修饰状态均可删除', () => {
-    const extensionDraft: CharacterDraftV2 = {
+    const extensionDraft: CharacterDraftV3 = {
       ...currentDraft,
       states: [
         ...currentDraft.states,
         {
-          id: 'wave', name: '挥手', kind: 'modifier', semantic: 'speak', tags: [],
-          intensity: 70, coexistWithStateIds: [], forbiddenStateIds: [],
+          id: 'wave', name: '挥手', tags: [],
+          intensity: 70,
           enterConditions: [], exitConditions: [], agentInferable: true, actionIds: []
         }
       ]
@@ -328,7 +385,10 @@ describe('角色工作室 SSR 外壳', () => {
       <CharacterWorkshopWorkspace
         state={state({
           characters: [],
-          selectedCharacterId: null,
+          migrationReview: { issues: [], resolutions: [] },
+    resolveMigrationIssue: vi.fn(),
+    setIdleState: vi.fn(),
+    selectedCharacterId: null,
           draft: null,
           selectedStateId: null,
           selectedActionId: null,
@@ -345,7 +405,10 @@ describe('角色工作室 SSR 外壳', () => {
       <CharacterWorkshopWorkspace
         state={state({
           characters: [],
-          selectedCharacterId: null,
+          migrationReview: { issues: [], resolutions: [] },
+    resolveMigrationIssue: vi.fn(),
+    setIdleState: vi.fn(),
+    selectedCharacterId: null,
           draft: null,
           selectedStateId: null,
           selectedActionId: null
@@ -441,6 +504,9 @@ describe('角色工作室 SSR 外壳', () => {
     expect(css).toMatch(
       /\.workshop-columns\s*\{[^}]*grid-row:\s*3;/su
     );
+    expect(css).toMatch(
+      /\.workshop-columns\s*\{[^}]*grid-template-columns:[^}]*var\(--workshop-left-width[^}]*8px[^}]*minmax\(380px,\s*1fr\)[^}]*8px[^}]*var\(--workshop-right-width/su
+    );
     expect(globalCss).toMatch(
       /\.transient-toast-layer\s*\{[^}]*position:\s*fixed;[^}]*z-index:\s*50;[^}]*top:\s*68px;[^}]*right:\s*16px;[^}]*pointer-events:\s*none;/su
     );
@@ -455,6 +521,9 @@ describe('角色工作室 SSR 外壳', () => {
     );
     expect(css).toMatch(
       /@media \(max-width:\s*920px\)[\s\S]*?\.workshop-columns\s*\{[^}]*overflow-y:\s*auto;/su
+    );
+    expect(css).toMatch(
+      /@media \(max-width:\s*920px\)[\s\S]*?\.workshop-splitter\s*\{[^}]*display:\s*none;/su
     );
   });
 
@@ -540,36 +609,31 @@ describe('角色工作室 SSR 外壳', () => {
 });
 
 describe('V2 结构化 Inspector', () => {
-  test('角色与皮肤区域只保留一个二级标题', () => {
-    const markup = renderToStaticMarkup(<CharacterWorkshopWorkspace state={state()} />);
-    expect(markup.match(/<h2[^>]*>角色与皮肤<\/h2>/gu)).toHaveLength(1);
+  test('双皮肤草稿与旧皮肤选择都不再暴露皮肤编辑界面', () => {
+    const draftWithTwoSkins = structuredClone(currentDraft);
+    draftWithTwoSkins.skins.push({
+      id: 'winter',
+      name: '冬装',
+      description: '适合冬日桌面的保暖外观',
+      presentations: [],
+    });
+    renderWorkspace(state({
+      draft: draftWithTwoSkins,
+      selectedSkinId: 'winter',
+      selectedEntity: { kind: 'skin', skinId: 'winter' }
+    }));
+
+    expect(screen.queryByRole('heading', { name: /^角色$/u })).not.toBeNull();
+    expect(screen.queryByText('角色与皮肤')).toBeNull();
+    expect(screen.queryByRole('list', { name: '皮肤列表' })).toBeNull();
+    expect(screen.queryByRole('button', { name: '新增皮肤' })).toBeNull();
+    expect(screen.queryByRole('button', { name: /设为默认|删除皮肤/u })).toBeNull();
+    expect(screen.queryByLabelText('皮肤名称')).toBeNull();
+    expect(screen.queryByLabelText('皮肤说明')).toBeNull();
   });
 
-  test('皮肤列表区分默认皮肤并只允许删除非默认皮肤', () => {
-    const markup = renderToStaticMarkup(
-      <SkinList
-        skins={[
-          { id: 'default', name: '默认皮肤', presentations: [], semanticFallbacks: [] },
-          { id: 'winter', name: '冬装', presentations: [], semanticFallbacks: [] }
-        ]}
-        defaultSkinId="default"
-        selectedSkinId="winter"
-        disabled={false}
-        onAdd={vi.fn()}
-        onSelect={vi.fn()}
-        onSetDefault={vi.fn()}
-        onRequestDelete={vi.fn()}
-      />
-    );
 
-    expect(markup).toContain('aria-label="皮肤"');
-    expect(markup).not.toContain('<h2');
-    expect(markup).toContain('aria-label="新增皮肤"');
-    expect(markup).not.toContain('删除皮肤“默认皮肤”');
-    expect(markup).toContain('aria-label="删除皮肤“冬装”"');
-  });
-
-  test('人设只提供 V2 结构化字段且复杂字段具有持续帮助文字', () => {
+  test('人设只提供 V3 结构化字段且复杂字段具有持续帮助文字', () => {
     const markup = renderToStaticMarkup(
       <CharacterIdentityInspector
         identity={{
@@ -595,69 +659,15 @@ describe('V2 结构化 Inspector', () => {
     expect(markup).not.toMatch(/系统 Prompt|JSON|脚本/u);
   });
 
-  test('皮肤属性说明当前表现覆盖状态且字段受协议长度限制', () => {
-    const markup = renderToStaticMarkup(
-      <SkinInspector
-        skin={{
-          id: 'winter',
-          name: '冬装',
-          description: '适合冬季',
-          presentations: [{
-            actionId: 'idle-main',
-            fps: 12,
-            frames: [],
-            anchors: { ground: { x: 0.5, y: 1 } }
-          }],
-          semanticFallbacks: []
-        }}
-        actions={currentDraft.actions}
-        selectedActionId="idle-main"
-        presentationSource="skin-action"
-        disabled={false}
-        onChange={vi.fn()}
-      />
-    );
-
-    expect(markup).toContain('皮肤名称');
-    expect(markup).toContain('当前皮肤精确表现');
-    expect(markup).toContain('idle 语义回退');
-    expect(markup).toContain('maxLength="120"');
-    expect(markup).not.toMatch(/系统 Prompt|JSON|脚本|自由执行/u);
-  });
-
-  test.each([
-    ['skin-action', '当前皮肤精确表现'],
-    ['skin-semantic', '当前皮肤语义回退'],
-    ['default-action', '默认皮肤动作'],
-    ['default-state', '默认状态回退'],
-    [null, '无可播放表现']
-  ] as const)('皮肤检查器说明当前动作表现来源：%s', (presentationSource, expected) => {
-    const markup = renderToStaticMarkup(
-      <SkinInspector
-        skin={{ id: 'winter', name: '冬装', presentations: [], semanticFallbacks: [] }}
-        actions={currentDraft.actions}
-        selectedActionId="idle-main"
-        presentationSource={presentationSource}
-        disabled={false}
-        onChange={vi.fn()}
-      />
-    );
-
-    expect(markup).toContain(expected);
-  });
-
-  test('状态属性只暴露可信 signal、标准语义和当前状态引用', () => {
+  test('状态属性仅编辑可信事件并保留描述', () => {
     const markup = renderToStaticMarkup(
       <StateInspector
         state={{
           id: 'calm',
           name: '平静',
-          kind: 'modifier',
-          semantic: 'idle',
+          description: '在用户工作时保持安静陪伴。',
           tags: [],
           intensity: 50,
-          coexistWithStateIds: [],
-          forbiddenStateIds: [],
           enterConditions: [],
           exitConditions: [],
           agentInferable: false,
@@ -665,8 +675,8 @@ describe('V2 结构化 Inspector', () => {
         }}
         allStates={[
           {
-            id: 'idle', name: '待机', kind: 'primary', semantic: 'idle', tags: [],
-            intensity: 20, coexistWithStateIds: [], forbiddenStateIds: [],
+            id: 'idle', name: '待机', tags: [],
+            intensity: 20,
             enterConditions: [], exitConditions: [], agentInferable: false, actionIds: []
           }
         ]}
@@ -675,23 +685,24 @@ describe('V2 结构化 Inspector', () => {
       />
     );
 
-    expect(markup).toContain('进入条件类型');
-    expect(markup).toContain('user-interaction');
-    expect(markup).toContain('标准语义');
-    expect(markup).toContain('当前状态引用');
+    expect(markup).toContain('添加进入条件');
+    expect(markup).not.toContain('标准语义');
+    expect(markup).not.toContain('当前状态引用');
     expect(markup).toContain('状态标签');
+    expect(markup).toContain('状态详细描述');
+    expect(markup).toContain('在用户工作时保持安静陪伴。');
+    expect(markup).toContain('maxLength="2000"');
     expect(markup).not.toMatch(/关键词|情绪文本/u);
     expect(markup).not.toMatch(/系统 Prompt|JSON|脚本|自由执行/u);
   });
 
   test('动作属性从合法动作生成回退选项且不再编辑表现帧率', () => {
     const action = {
-      id: 'wave', name: '挥手', semantic: 'speak' as const, tags: [], preference: 1,
+      id: 'wave', name: '挥手', description: '抬手向用户打招呼。', tags: [], preference: 1,
       cooldownMs: 0, repeatSuppressionMs: 0, loopPolicy: 'presentation' as const,
-      interrupt: 'normal' as const, allowedPrimaryStateIds: [], forbiddenPrimaryStateIds: [],
-      requiredModifierStateIds: [], forbiddenModifierStateIds: [], direction: 'any' as const
+      interrupt: 'normal' as const, direction: 'any' as const
     };
-    const fallback = { ...action, id: 'idle-main', name: '待机', semantic: 'idle' as const };
+    const fallback = { ...action, id: 'idle-main', name: '待机', };
     const markup = renderToStaticMarkup(
       <ActionInspector
         action={action}
@@ -705,17 +716,75 @@ describe('V2 结构化 Inspector', () => {
     expect(markup).toContain('动作失败回退');
     expect(markup).toContain('value="idle-main"');
     expect(markup).toContain('动作标签');
+    expect(markup).toContain('动作详细描述');
+    expect(markup).toContain('抬手向用户打招呼。');
+    expect(markup).toContain('maxLength="2000"');
     expect(markup).toContain('动作建议持续时间');
     expect(markup).not.toMatch(/帧率|表现帧/u);
     expect(markup).not.toMatch(/系统 Prompt|JSON|脚本|自由执行/u);
   });
 
-  test('V2 列表与表单保持 44px 目标和至少 8px 操作间距', async () => {
+  test('V2 表单保持 44px 目标和至少 8px 操作间距', async () => {
     const css = await workshopCss();
 
-    expect(css).toMatch(/\.skin-select\s*\{[^}]*min-height:\s*44px;/su);
     expect(css).toMatch(/\.inspector-form\s+(?:input|select|textarea)[^\{]*\{[^}]*min-height:\s*44px;/su);
-    expect(css).toMatch(/\.skin-row-commands\s*\{[^}]*gap:\s*8px;/su);
     expect(css).toMatch(/\.recovery-actions\s*\{[^}]*gap:\s*8px;/su);
+  });
+
+  test('扩展状态对话框使用原生 showModal/close，保留焦点进入与返回语义', async () => {
+    const rendered = renderWorkspace(state());
+    const openButton = screen.getByRole('button', { name: '添加扩展状态' });
+    openButton.focus();
+
+    fireEvent.click(openButton);
+
+    const dialog = await screen.findByRole('dialog', { name: '新建自定义状态' });
+    await waitFor(() => expect(showModal).toHaveBeenCalledOnce());
+    expect(showModal.mock.instances[0]).toBe(dialog);
+    const extensionNameInput = screen.getByLabelText('状态名称');
+    const createButton = screen.getByRole('button', { name: '创建自定义状态' });
+    await waitFor(() => expect(document.activeElement).toBe(extensionNameInput));
+    expect((createButton as HTMLButtonElement).disabled).toBe(true);
+
+    fireEvent.input(extensionNameInput, { target: { value: '搬运状态' } });
+
+    await waitFor(() => expect((createButton as HTMLButtonElement).disabled).toBe(false));
+
+    fireEvent.click(screen.getByRole('button', { name: '取消' }));
+
+    await waitFor(() => expect(closeDialog).toHaveBeenCalledOnce());
+    await waitFor(() => expect(document.activeElement).toBe(openButton));
+
+    rendered.unmount();
+  });
+
+  test('发布要求对话框使用原生 showModal/close，并在卸载时清理打开状态', async () => {
+    const activateCharacter = vi.fn(async () => undefined);
+    const rendered = renderWorkspace(state({ activateCharacter }));
+    const activateButton = screen.getByRole('button', { name: '启用角色' });
+    activateButton.focus();
+
+    fireEvent.click(activateButton);
+
+    const dialog = await screen.findByRole('dialog', { name: '发布要求尚未满足' });
+    await waitFor(() => expect(showModal).toHaveBeenCalledOnce());
+    expect(showModal.mock.instances[0]).toBe(dialog);
+    await waitFor(() => expect(document.activeElement).toBe(
+      screen.getByRole('button', { name: '返回完善' })
+    ));
+    expect(activateCharacter).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole('button', { name: '返回完善' }));
+
+    await waitFor(() => expect(closeDialog).toHaveBeenCalledOnce());
+    await waitFor(() => expect(document.activeElement).toBe(activateButton));
+
+    fireEvent.click(activateButton);
+    await screen.findByRole('dialog', { name: '发布要求尚未满足' });
+    await waitFor(() => expect(showModal).toHaveBeenCalledTimes(2));
+
+    rendered.unmount();
+
+    await waitFor(() => expect(closeDialog).toHaveBeenCalledTimes(2));
   });
 });

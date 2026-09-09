@@ -13,8 +13,9 @@ export default defineConfig({
   outputDir: '.playwright-output/website',
   use: {
     ...devices['Desktop Chrome'],
+    // 当前锁定版本仅通过浏览器上下文选项向新页面注入减少动态效果偏好。
+    contextOptions: { reducedMotion: 'reduce' },
     locale: 'zh-CN',
-    reducedMotion: 'reduce',
     viewport: { width: 1280, height: 720 },
     trace: 'retain-on-failure'
   }

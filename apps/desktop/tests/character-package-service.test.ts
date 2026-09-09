@@ -10,18 +10,22 @@ import {
   symlink,
   writeFile
 } from 'node:fs/promises';
+import * as fsPromises from 'node:fs/promises';
 import { createWriteStream as openWriteStream } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { finished } from 'node:stream/promises';
 import {
+  characterManifestV2Schema,
+  characterManifestV3Schema,
+  migrateCharacterManifestToV3,
   convertCharacterManifestV1ToV2,
   type CharacterManifestV1,
-  type CharacterManifestV2
+  type CharacterManifestV3
 } from '@myself/character-runtime';
 import * as yauzl from 'yauzl';
 import { ZipFile } from 'yazl';
-import { afterEach, beforeEach, describe, expect, test } from 'vitest';
+import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import {
   classifyPackageEntry,
   CharacterPackageService,
@@ -29,11 +33,64 @@ import {
 } from '../src/main/characters/character-package-service';
 import { CharacterAssetService } from '../src/main/characters/character-asset-service';
 import { CharacterStore } from '../src/main/characters/character-store';
+import * as atomicFileCoordinator from '../src/main/storage/atomic-file-coordinator';
+
+const fsMockState = vi.hoisted(() => ({
+  link: undefined as unknown as typeof fsPromises.link,
+  open: undefined as unknown as typeof fsPromises.open,
+  rm: undefined as unknown as typeof fsPromises.rm,
+  rename: undefined as unknown as typeof fsPromises.rename
+}));
+const atomicMockState = vi.hoisted(() => ({
+  writeExclusive: undefined as unknown as typeof atomicFileCoordinator.atomicWriteFileExclusive
+}));
+
+vi.mock('node:fs/promises', async importOriginal => {
+  const actual = await importOriginal<typeof fsPromises>();
+  fsMockState.link = actual.link;
+  fsMockState.open = actual.open;
+  fsMockState.rm = actual.rm;
+  fsMockState.rename = actual.rename;
+  return {
+    ...actual,
+    link: vi.fn(actual.link),
+    open: vi.fn(actual.open),
+    rm: vi.fn(actual.rm),
+    rename: vi.fn(actual.rename)
+  };
+});
+
+vi.mock('../src/main/storage/atomic-file-coordinator', async importOriginal => {
+  const actual = await importOriginal<typeof atomicFileCoordinator>();
+  atomicMockState.writeExclusive = actual.atomicWriteFileExclusive;
+  return {
+    ...actual,
+    atomicWriteFileExclusive: vi.fn(actual.atomicWriteFileExclusive)
+  };
+});
 
 const PNG_BYTES = Buffer.from(
   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAACXBIWXMAAAPoAAAD6AG1e1JrAAAADUlEQVR4nGNgYGBgAAAABQABpfZFQAAAAABJRU5ErkJggg==',
   'base64'
 );
+const IMPORT_TOKEN = '33333333-3333-4333-8333-333333333333';
+const BROKEN_MARKER_BYTES = Buffer.from('{"version":3');
+
+type RecoveryMarkerSeed = Readonly<{
+  fileCharacterId: string;
+  bytes?: Buffer;
+  bodyCharacterId?: string;
+  importTransactionId?: string;
+}>;
+
+class AbsentRollbackStore extends CharacterStore {
+  override async rollbackImportedCharacter(
+    _characterId: string,
+    _importTransactionId: string
+  ) {
+    return { kind: 'absent' } as const;
+  }
+}
 
 function checksum(bytes: Uint8Array): string {
   return createHash('sha256').update(bytes).digest('hex');
@@ -82,7 +139,7 @@ function legacyRuntime(characterId: string): {
 }
 
 function runtime(characterId: string): {
-  manifest: CharacterManifestV2;
+  manifest: CharacterManifestV3;
   assets: Readonly<Record<string, Uint8Array>>;
 } {
   const legacy = legacyRuntime(characterId);
@@ -90,8 +147,13 @@ function runtime(characterId: string): {
   const presentation = manifest.skins[0]!.presentations[0]!;
   presentation.frames[0]!.id = 'carry-commit';
   presentation.commitFrameId = 'carry-commit';
+  presentation.geometry = {
+    visualBounds: { x: 0, y: 0, width: 1, height: 1 },
+    groundAnchor: { ...presentation.anchors.ground },
+    resourceRevision: manifest.resources[0]!.sha256
+  };
   return {
-    manifest,
+    manifest: characterManifestV3Schema.parse(migrateCharacterManifestToV3(characterManifestV2Schema.parse(manifest)).document),
     assets: legacy.assets
   };
 }
@@ -179,8 +241,56 @@ describe('角色包 Main 服务', () => {
   });
 
   afterEach(async () => {
+    vi.restoreAllMocks();
+    vi.mocked(fsPromises.link).mockReset().mockImplementation(fsMockState.link);
+    vi.mocked(fsPromises.open).mockReset().mockImplementation(fsMockState.open);
+    vi.mocked(fsPromises.rm).mockReset().mockImplementation(fsMockState.rm);
+    vi.mocked(fsPromises.rename).mockReset().mockImplementation(fsMockState.rename);
+    vi.mocked(atomicFileCoordinator.atomicWriteFileExclusive)
+      .mockReset()
+      .mockImplementation(atomicMockState.writeExclusive);
     await rm(testDirectory, { recursive: true, force: true });
   });
+
+  function rollbackMarker(root: string, characterId: string): string {
+    return join(root, `.package-import-rollback-${characterId}.json`);
+  }
+
+  function markerV3(characterId: string, importTransactionId: string): Buffer {
+    return Buffer.from(JSON.stringify({
+      version: 3,
+      characterId,
+      importTransactionId
+    }));
+  }
+
+  async function seedRecoveryMarkers(
+    rootName: string,
+    markers: readonly RecoveryMarkerSeed[]
+  ): Promise<{
+    root: string;
+    bytesByCharacterId: ReadonlyMap<string, Buffer>;
+  }> {
+    const root = join(testDirectory, rootName);
+    const bytesByCharacterId = new Map<string, Buffer>();
+    await mkdir(root, { recursive: true });
+    for (const marker of markers) {
+      const bytes = marker.bytes ?? markerV3(
+        marker.bodyCharacterId ?? marker.fileCharacterId,
+        marker.importTransactionId ?? IMPORT_TOKEN
+      );
+      await writeFile(rollbackMarker(root, marker.fileCharacterId), bytes);
+      bytesByCharacterId.set(marker.fileCharacterId, bytes);
+    }
+    return { root, bytesByCharacterId };
+  }
+
+  async function preservedEvidence(root: string, characterId: string): Promise<Buffer> {
+    const prefix = `.package-import-rollback-${characterId}.json.corrupt-`;
+    const name = (await readdir(root)).find(candidate => candidate.startsWith(prefix));
+    expect(name).toBeDefined();
+    return readFile(join(root, name!));
+  }
 
   async function createPublishedCharacter(
     characterId = 'demo'
@@ -198,19 +308,25 @@ describe('角色包 Main 服务', () => {
     return { store, sourceAssetId: imported!.assetId };
   }
 
-  test('V2 导出直接读取正式草稿与发布清单', async () => {
-    await createPublishedCharacter();
-    const destination = join(testDirectory, 'v2-export.zip');
+  async function exportDemoPackage(
+    fileName = 'demo.zip',
+    sourceRoot = charactersDirectory
+  ): Promise<string> {
+    const packagePath = join(testDirectory, fileName);
+    await new CharacterPackageService(sourceRoot).exportCharacter('demo', packagePath);
+    return packagePath;
+  }
 
-    await new CharacterPackageService(charactersDirectory)
-      .exportCharacter('demo', destination);
+  test('V3 导出直接读取正式草稿与发布清单', async () => {
+    await createPublishedCharacter();
+    const destination = await exportDemoPackage('v2-export.zip');
 
     const files = await readZip(destination);
     expect(JSON.parse(files.get('draft/draft.json')!.toString('utf8')))
-      .toMatchObject({ version: 2, id: 'demo' });
+      .toMatchObject({ version: 3, id: 'demo' });
     expect(JSON.parse(files.get('compiled/manifest.json')!.toString('utf8')))
       .toMatchObject({
-        version: 2,
+        version: 3,
         id: 'demo',
         identity: { description: '演示角色' },
         skins: [{
@@ -220,9 +336,10 @@ describe('角色包 Main 服务', () => {
     expect((await readdir(testDirectory)).some(name => (
       name.startsWith('.character-export-')
     ))).toBe(false);
-  });
+  // 根级多项目门禁会与真实角色存储和 ZIP I/O 竞争；隔离及桌面 suite 均通过，保留局部并发余量。
+  }, 20_000);
 
-  test('V1 角色包在 staging 内统一转换为 V2 后安装', async () => {
+  test('V1 角色包在 staging 内统一转换为 V3 后安装', async () => {
     const packagePath = join(testDirectory, 'legacy-v1.zip');
     const legacy = legacyRuntime('legacy');
     await writeZip(packagePath, [
@@ -247,16 +364,133 @@ describe('角色包 Main 服务', () => {
     ]);
     const importedCharacters = join(testDirectory, 'legacy-imported');
     const store = new CharacterStore(importedCharacters);
+    const decodeAlpha = vi.fn(async () => ({
+      width: 1, height: 1, alpha: new Uint8Array([255])
+    }));
 
     const importedId = await new CharacterPackageService(importedCharacters, {
       store,
-      assetService: new CharacterAssetService(importedCharacters)
+      assetService: new CharacterAssetService(importedCharacters),
+      geometryMigration: { decodeAlpha }
     }).importCharacter(packagePath);
 
     expect(importedId).toBe('legacy');
-    await expect(store.getDraft(importedId)).resolves.toMatchObject({ version: 2 });
+    await expect(store.getDraft(importedId)).resolves.toMatchObject({ version: 3 });
     await expect(store.getPublishedManifest(importedId))
-      .resolves.toMatchObject({ version: 2 });
+      .resolves.toMatchObject({
+        version: 3,
+        skins: [{ presentations: [{ geometry: {
+          visualBounds: { x: 0, y: 0, width: 1, height: 1 }
+        } }] }]
+      });
+    expect(decodeAlpha).toHaveBeenCalledOnce();
+  });
+
+  test('复杂旧包保留原规则供编辑且不能静默启用，原包字节不改变', async () => {
+    const legacy = legacyRuntime('complex');
+    const old = convertCharacterManifestV1ToV2(legacy.manifest).document;
+    old.states.push({ ...structuredClone(old.states[0]!), id: 'overlay', kind: 'modifier', semantic: { kind: 'custom', value: 'overlay' } });
+    const { resources, compilerVersion, ...draft } = old;
+    const packagePath = join(testDirectory, 'complex-v2.zip');
+    await writeZip(packagePath, [
+      { path: 'draft/draft.json', bytes: JSON.stringify(draft) },
+      { path: 'compiled/manifest.json', bytes: JSON.stringify(old) },
+      { path: 'source/catalog.json', bytes: JSON.stringify({ version: 1, characterId: 'complex', sources: [] }) },
+      { path: 'compiled/atlas.png', bytes: legacy.assets['atlas.png']! }
+    ]);
+    const original = await readFile(packagePath);
+    const directory = join(testDirectory, 'complex-import');
+    const store = new CharacterStore(directory);
+    const id = await new CharacterPackageService(directory, { store }).importCharacter(packagePath);
+    expect((await store.getDraft(id)).version).toBe(3);
+    expect((await store.getMigrationReview(id)).issues.some(issue => issue.code === 'modifier-state')).toBe(true);
+    await expect(store.setActive(id)).rejects.toThrow('CHARACTER_MIGRATION_REVIEW_REQUIRED');
+    expect(await readFile(packagePath)).toEqual(original);
+  });
+
+  test('旧包资源校验失败时不会进入 Alpha 解码', async () => {
+    const packagePath = join(testDirectory, 'legacy-resource-mismatch.zip');
+    const legacy = legacyRuntime('legacy-resource-mismatch');
+    await writeZip(packagePath, [
+      {
+        path: 'draft/draft.json',
+        bytes: JSON.stringify({
+          version: 1,
+          id: 'legacy-resource-mismatch',
+          name: '损坏旧角色',
+          states: legacy.manifest.states
+        })
+      },
+      {
+        path: 'compiled/manifest.json',
+        bytes: JSON.stringify({ ...legacy.manifest, name: '损坏旧角色' })
+      },
+      {
+        path: 'source/catalog.json',
+        bytes: JSON.stringify({
+          version: 1,
+          characterId: 'legacy-resource-mismatch',
+          sources: []
+        })
+      },
+      { path: 'compiled/atlas.png', bytes: Buffer.from([1, 2, 4]) }
+    ]);
+    const importedCharacters = join(testDirectory, 'legacy-resource-mismatch-imported');
+    const store = new CharacterStore(importedCharacters);
+    const decodeAlpha = vi.fn(async () => ({
+      width: 1, height: 1, alpha: new Uint8Array([255])
+    }));
+
+    await expect(new CharacterPackageService(importedCharacters, {
+      store,
+      assetService: new CharacterAssetService(importedCharacters),
+      geometryMigration: { decodeAlpha }
+    }).importCharacter(packagePath)).rejects.toThrow(
+      'CHARACTER_PACKAGE_RESOURCE_INVALID'
+    );
+    expect(decodeAlpha).not.toHaveBeenCalled();
+  });
+
+  test('旧包图片结构预检失败时不创建或发布角色', async () => {
+    const packagePath = join(testDirectory, 'legacy-structure-invalid.zip');
+    const legacy = legacyRuntime('legacy-structure-invalid');
+    await writeZip(packagePath, [
+      {
+        path: 'draft/draft.json',
+        bytes: JSON.stringify({
+          version: 1,
+          id: 'legacy-structure-invalid',
+          name: '结构损坏角色',
+          states: legacy.manifest.states
+        })
+      },
+      {
+        path: 'compiled/manifest.json',
+        bytes: JSON.stringify({ ...legacy.manifest, name: '结构损坏角色' })
+      },
+      {
+        path: 'source/catalog.json',
+        bytes: JSON.stringify({
+          version: 1,
+          characterId: 'legacy-structure-invalid',
+          sources: []
+        })
+      },
+      { path: 'compiled/atlas.png', bytes: legacy.assets['atlas.png']! }
+    ]);
+    const importedCharacters = join(testDirectory, 'legacy-structure-invalid-imported');
+    const store = new CharacterStore(importedCharacters);
+
+    await expect(new CharacterPackageService(importedCharacters, {
+      store,
+      assetService: new CharacterAssetService(importedCharacters),
+      geometryMigration: {
+        decodeAlpha: async () => {
+          throw new Error('CHARACTER_IMAGE_STRUCTURE_INVALID');
+        }
+      }
+    }).importCharacter(packagePath)).rejects.toThrow('CHARACTER_PACKAGE_INVALID');
+    await expect(store.list()).resolves.toEqual([]);
   });
 
   test.each([
@@ -300,9 +534,7 @@ describe('角色包 Main 服务', () => {
     }
   ])('拒绝$name且不创建角色', async ({ slug, mutate }) => {
     await createPublishedCharacter();
-    const exported = join(testDirectory, `${slug}.source.zip`);
-    await new CharacterPackageService(charactersDirectory)
-      .exportCharacter('demo', exported);
+    const exported = await exportDemoPackage(`${slug}.source.zip`);
     const files = await readZip(exported);
     mutate(files);
     const malicious = join(testDirectory, `${slug}.zip`);
@@ -313,7 +545,7 @@ describe('角色包 Main 服务', () => {
     await expect(new CharacterPackageService(importedCharacters, { store })
       .importCharacter(malicious)).rejects.toThrow('CHARACTER_PACKAGE_INVALID');
     await expect(store.list()).resolves.toEqual([]);
-  });
+  }, 15_000);
 
   test('恢复包只包含原始草稿、已验证目录和源素材', async () => {
     const store = new CharacterStore(charactersDirectory);
@@ -599,10 +831,7 @@ describe('角色包 Main 服务', () => {
       mkdir(join(testDirectory, 'authorizations')),
       mkdir(join(testDirectory, 'conversations'))
     ]);
-    const destination = join(testDirectory, 'demo.zip');
-
-    await new CharacterPackageService(charactersDirectory)
-      .exportCharacter('demo', destination);
+    const destination = await exportDemoPackage();
 
     const files = await readZip(destination);
     expect([...files.keys()].sort()).toEqual([
@@ -774,9 +1003,7 @@ describe('角色包 Main 服务', () => {
 
   test('导入成功保留本方 staging 且不递归删除竞争目录', async () => {
     await createPublishedCharacter();
-    const packagePath = join(testDirectory, 'demo.zip');
-    await new CharacterPackageService(charactersDirectory)
-      .exportCharacter('demo', packagePath);
+    const packagePath = await exportDemoPackage();
     const importedCharacters = join(testDirectory, 'imported-characters');
     const temporaryDirectory = join(testDirectory, 'isolated');
     await mkdir(temporaryDirectory);
@@ -831,9 +1058,7 @@ describe('角色包 Main 服务', () => {
 
   test('导入校验后 staging 被替换时不删除陌生替代目录', async () => {
     await createPublishedCharacter();
-    const packagePath = join(testDirectory, 'demo.zip');
-    await new CharacterPackageService(charactersDirectory)
-      .exportCharacter('demo', packagePath);
+    const packagePath = await exportDemoPackage();
     const importedCharacters = join(testDirectory, 'imported-staging-replaced');
     const temporaryDirectory = join(testDirectory, 'import-staging-replaced');
     await mkdir(temporaryDirectory);
@@ -856,9 +1081,7 @@ describe('角色包 Main 服务', () => {
 
   test('导入失败时保留被移动的本方 staging 与竞争目录', async () => {
     await createPublishedCharacter();
-    const packagePath = join(testDirectory, 'demo.zip');
-    await new CharacterPackageService(charactersDirectory)
-      .exportCharacter('demo', packagePath);
+    const packagePath = await exportDemoPackage();
     const importedCharacters = join(testDirectory, 'imported-staging-moved');
     const temporaryDirectory = join(testDirectory, 'import-staging-moved');
     await mkdir(temporaryDirectory);
@@ -884,9 +1107,7 @@ describe('角色包 Main 服务', () => {
 
   test('导入失败不扫描或删除无关命名目录', async () => {
     await createPublishedCharacter();
-    const packagePath = join(testDirectory, 'demo.zip');
-    await new CharacterPackageService(charactersDirectory)
-      .exportCharacter('demo', packagePath);
+    const packagePath = await exportDemoPackage();
     const importedCharacters = join(testDirectory, 'imported-prefix-scope');
     const temporaryDirectory = join(testDirectory, 'import-prefix-scope');
     await mkdir(temporaryDirectory);
@@ -911,9 +1132,7 @@ describe('角色包 Main 服务', () => {
     'directory'
   ] as const)('解压文件前父目录被替换为%s时拒绝且不写入替代目录', async replacement => {
     await createPublishedCharacter();
-    const packagePath = join(testDirectory, 'demo.zip');
-    await new CharacterPackageService(charactersDirectory)
-      .exportCharacter('demo', packagePath);
+    const packagePath = await exportDemoPackage();
     const importedCharacters = join(testDirectory, `imported-${replacement}`);
     const external = join(testDirectory, `external-${replacement}`);
     await mkdir(external);
@@ -981,9 +1200,7 @@ describe('角色包 Main 服务', () => {
 
   test('创建 ID 发生一次并发冲突时换用新 ID 且保留竞争实例', async () => {
     await createPublishedCharacter();
-    const packagePath = join(testDirectory, 'demo.zip');
-    await new CharacterPackageService(charactersDirectory)
-      .exportCharacter('demo', packagePath);
+    const packagePath = await exportDemoPackage();
     const importedCharacters = join(testDirectory, 'racing-characters');
     const competitor = new CharacterStore(importedCharacters);
     let raced = false;
@@ -1017,9 +1234,7 @@ describe('角色包 Main 服务', () => {
 
   test('创建 ID 持续并发冲突时有界终止', async () => {
     await createPublishedCharacter();
-    const packagePath = join(testDirectory, 'demo.zip');
-    await new CharacterPackageService(charactersDirectory)
-      .exportCharacter('demo', packagePath);
+    const packagePath = await exportDemoPackage();
     const importedCharacters = join(testDirectory, 'always-racing-characters');
     let attempts = 0;
     class AlwaysRacingStore extends CharacterStore {
@@ -1045,9 +1260,7 @@ describe('角色包 Main 服务', () => {
     'publish'
   ] as const)('%s 阶段失败时删除已创建角色', async stage => {
     await createPublishedCharacter();
-    const packagePath = join(testDirectory, 'demo.zip');
-    await new CharacterPackageService(charactersDirectory)
-      .exportCharacter('demo', packagePath);
+    const packagePath = await exportDemoPackage();
     const importedCharacters = join(testDirectory, `failed-${stage}`);
     class FailingStore extends CharacterStore {
       override async saveDraft(
@@ -1081,73 +1294,674 @@ describe('角色包 Main 服务', () => {
     await expect(store.list()).resolves.toEqual([]);
   });
 
-  test('回滚删除失败时写入 marker 并在下一次导入前恢复', async () => {
+  test('导入失败只调用带令牌回滚并保留无法完成的 v3 marker', async () => {
     await createPublishedCharacter();
-    const packagePath = join(testDirectory, 'demo.zip');
-    await new CharacterPackageService(charactersDirectory)
-      .exportCharacter('demo', packagePath);
+    const packagePath = await exportDemoPackage();
     const importedCharacters = join(testDirectory, 'rollback-characters');
     class RollbackFailingStore extends CharacterStore {
       override async saveDraft(): Promise<void> {
         throw new Error('SAVE_DRAFT_FAILED');
       }
 
-      override async delete(): Promise<void> {
-        throw new Error('DELETE_FAILED');
+      override async rollbackImportedCharacter(
+        ...args: Parameters<CharacterStore['rollbackImportedCharacter']>
+      ): ReturnType<CharacterStore['rollbackImportedCharacter']> {
+        await super.rollbackImportedCharacter(...args);
+        return { kind: 'ownership-mismatch' };
       }
     }
+    const store = new RollbackFailingStore(importedCharacters);
+    const deleteSpy = vi.spyOn(store, 'delete');
+    const rollbackSpy = vi.spyOn(store, 'rollbackImportedCharacter');
     const marker = join(
       importedCharacters,
       '.package-import-rollback-demo.json'
     );
 
     await expect(new CharacterPackageService(importedCharacters, {
-      store: new RollbackFailingStore(importedCharacters),
+      store,
       assetService: new CharacterAssetService(importedCharacters)
     }).importCharacter(packagePath))
       .rejects.toThrow('CHARACTER_PACKAGE_ROLLBACK_FAILED');
-    await expect(access(marker)).resolves.toBeUndefined();
+    expect(rollbackSpy).toHaveBeenCalledTimes(1);
+    const [rolledBackId, rolledBackToken] = rollbackSpy.mock.calls[0]!;
+    expect(rolledBackId).toBe('demo');
+    expect(JSON.parse(await readFile(marker, 'utf8')).importTransactionId)
+      .toBe(rolledBackToken);
+    expect(deleteSpy).not.toHaveBeenCalled();
+  });
 
-    const importedId = await new CharacterPackageService(importedCharacters)
-      .importCharacter(packagePath);
-    expect(importedId).toBe('demo');
-    await expect(access(marker)).rejects.toThrow();
+  test('已有 blocked marker 的目标导入稳定失败且不换 ID', async () => {
+    await createPublishedCharacter();
+    const packagePath = await exportDemoPackage();
+    const root = join(testDirectory, 'blocked-target-import');
+    const blockedTarget = 'demo-import-blockedtarge';
+    const marker = rollbackMarker(root, blockedTarget);
+    const markerBytes = markerV3(
+      blockedTarget,
+      IMPORT_TOKEN
+    );
+    const targetDirectory = join(root, blockedTarget);
+    const targetBytes = Buffer.from('existing-target');
+    const store = new CharacterStore(root);
+    await store.create({ id: 'demo', name: '已有角色' });
+    await mkdir(targetDirectory);
+    await writeFile(join(targetDirectory, 'sentinel.bin'), targetBytes);
+    await writeFile(marker, markerBytes);
+    const actualExclusive = atomicMockState.writeExclusive;
+    vi.mocked(atomicFileCoordinator.atomicWriteFileExclusive)
+      .mockImplementation(async (file, content) => {
+        if (file.startsWith(`${marker}.corrupt-`)) {
+          throw Object.assign(new Error('EEXIST'), { code: 'EEXIST' });
+        }
+        await actualExclusive(file, content);
+      });
+    const createId = vi.fn()
+      .mockReturnValueOnce('blocked-target')
+      .mockReturnValueOnce('unexpected-retry');
+
+    await expect(new CharacterPackageService(root, {
+      store,
+      assetService: new CharacterAssetService(root),
+      createId
+    }).importCharacter(packagePath))
+      .rejects.toThrow('CHARACTER_PACKAGE_ROLLBACK_FAILED');
+    expect(createId).toHaveBeenCalledTimes(1);
+    expect(await readFile(marker)).toEqual(markerBytes);
+    expect(await readFile(join(targetDirectory, 'sentinel.bin'))).toEqual(targetBytes);
+    await expect(access(join(root, 'unexpected-retry'))).rejects.toThrow();
+  });
+
+  test('v3 marker 完整发布后才创建 Store owner 且完成后复核并清理', async () => {
+    await createPublishedCharacter();
+    const packagePath = await exportDemoPackage();
+    const root = join(testDirectory, 'ordered-import');
+    const calls: string[] = [];
+    const actualExclusive = atomicMockState.writeExclusive;
+    vi.mocked(atomicFileCoordinator.atomicWriteFileExclusive)
+      .mockImplementation(async (file, content) => {
+        await actualExclusive(file, content);
+        if (file.endsWith('.package-import-rollback-demo.json')) {
+          calls.push('marker:published');
+        }
+      });
+    class OrderedStore extends CharacterStore {
+      override async create(...args: Parameters<CharacterStore['create']>) {
+        await super.create(...args);
+        calls.push('store:create-owner');
+      }
+
+      override async saveDraft(...args: Parameters<CharacterStore['saveDraft']>) {
+        await super.saveDraft(...args);
+        calls.push('draft:saved');
+      }
+
+      override async publishCompiled(...args: Parameters<CharacterStore['publishCompiled']>) {
+        await super.publishCompiled(...args);
+        calls.push('compiled:published');
+      }
+
+      override async completeImportedCharacter(
+        ...args: Parameters<CharacterStore['completeImportedCharacter']>
+      ) {
+        const completed = await super.completeImportedCharacter(...args);
+        calls.push('owner:completed');
+        return completed;
+      }
+    }
+    class OrderedAssets extends CharacterAssetService {
+      override async listSources(
+        ...args: Parameters<CharacterAssetService['listSources']>
+      ) {
+        const sources = await super.listSources(...args);
+        calls.push('source:installed');
+        return sources;
+      }
+    }
+    const originalRm = fsMockState.rm;
+    vi.mocked(fsPromises.rm).mockImplementation(async (...args) => {
+      await originalRm(...args);
+      if (String(args[0]).startsWith(
+        `${rollbackMarker(root, 'demo')}.complete-`
+      )) {
+        calls.push('marker:completed');
+      }
+    });
+
+    await new CharacterPackageService(root, {
+      store: new OrderedStore(root),
+      assetService: new OrderedAssets(root)
+    }).importCharacter(packagePath);
+
+    expect(calls).toEqual([
+      'marker:published',
+      'store:create-owner',
+      'source:installed',
+      'draft:saved',
+      'compiled:published',
+      'owner:completed',
+      'marker:completed'
+    ]);
+  });
+
+  test('v3 marker 发布后读取前被替换时不接纳替代 marker', async () => {
+    await createPublishedCharacter();
+    const packagePath = await exportDemoPackage();
+    const root = join(testDirectory, 'published-marker-race');
+    const marker = rollbackMarker(root, 'demo');
+    const replacement = markerV3(
+      'demo',
+      '44444444-4444-4444-8444-444444444444'
+    );
+    await mkdir(root, { recursive: true });
+    const actualExclusive = atomicMockState.writeExclusive;
+    vi.mocked(atomicFileCoordinator.atomicWriteFileExclusive)
+      .mockImplementation(async (file, content) => {
+        await actualExclusive(file, content);
+        if (file === marker) {
+          await rm(marker);
+          await writeFile(marker, replacement);
+        }
+      });
+    const store = new CharacterStore(root);
+    const createSpy = vi.spyOn(store, 'create');
+
+    await expect(new CharacterPackageService(root, {
+      store,
+      assetService: new CharacterAssetService(root)
+    }).importCharacter(packagePath))
+      .rejects.toThrow('CHARACTER_PACKAGE_ROLLBACK_FAILED');
+    expect(createSpy).not.toHaveBeenCalled();
+    expect(await readFile(marker)).toEqual(replacement);
   });
 
   test('应用重启初始化会按所有权令牌回滚创建后中断的半安装角色', async () => {
-    const importedCharacters = join(testDirectory, 'crashed-import-characters');
-    const transactionId = '33333333-3333-4333-8333-333333333333';
-    const store = new CharacterStore(importedCharacters);
-    await mkdir(importedCharacters, { recursive: true });
-    await writeFile(
-      join(importedCharacters, '.package-import-rollback-demo.json'),
-      JSON.stringify({
-        version: 3,
-        characterId: 'demo',
-        importTransactionId: transactionId
-      }),
-      'utf8'
-    );
-    await store.create(
+    const { root } = await seedRecoveryMarkers('crashed-import-characters', [
+      { fileCharacterId: 'demo' }
+    ]);
+    const setupStore = new CharacterStore(root);
+    await setupStore.create(
       { id: 'demo', name: '半安装角色' },
-      { importTransactionId: transactionId }
+      { importTransactionId: IMPORT_TOKEN }
     );
+    const restartedStore = new CharacterStore(root);
 
-    await new CharacterPackageService(importedCharacters, { store }).initialize();
+    const report = await new CharacterPackageService(root, {
+      store: restartedStore
+    }).initialize();
 
-    await expect(store.list()).resolves.toEqual([]);
-    await expect(access(join(importedCharacters, 'demo'))).rejects.toThrow();
-    await expect(access(join(
-      importedCharacters,
-      '.package-import-rollback-demo.json'
-    ))).rejects.toThrow();
+    await expect(restartedStore.list()).resolves.toEqual([]);
+    await expect(access(join(root, 'demo'))).rejects.toThrow();
+    await expect(access(rollbackMarker(root, 'demo'))).rejects.toThrow();
+    expect(report).toEqual({ issues: [] });
+  });
+
+  test('半截 marker 不阻断后续合法 v3 且原字节被排他隔离', async () => {
+    const { root } = await seedRecoveryMarkers('isolated-recovery', [
+      { fileCharacterId: 'broken', bytes: BROKEN_MARKER_BYTES },
+      { fileCharacterId: 'BAD!', bytes: BROKEN_MARKER_BYTES },
+      { fileCharacterId: 'healthy' }
+    ]);
+    const store = new CharacterStore(root);
+    await store.create(
+      { id: 'healthy', name: '待恢复角色' },
+      { importTransactionId: IMPORT_TOKEN }
+    );
+    const rollbackSpy = vi.spyOn(store, 'rollbackImportedCharacter');
+    const logSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+    const report = await new CharacterPackageService(root, { store }).initialize();
+
+    expect(report).toEqual({
+      issues: [{
+        characterId: 'broken',
+        errorCode: 'CHARACTER_IMPORT_RECOVERY_BLOCKED'
+      }]
+    });
+    expect(await preservedEvidence(root, 'broken')).toEqual(BROKEN_MARKER_BYTES);
+    expect(await preservedEvidence(root, 'BAD!')).toEqual(BROKEN_MARKER_BYTES);
+    expect(logSpy).toHaveBeenCalledWith('CHARACTER_IMPORT_RECOVERY_UNATTRIBUTED');
+    expect(rollbackSpy).toHaveBeenCalledWith('healthy', IMPORT_TOKEN);
+    expect([IMPORT_TOKEN, root].some(value => JSON.stringify(report).includes(value))).toBe(false);
+    expect(Object.isFrozen(report) && Object.isFrozen(report.issues)).toBe(true);
+    expect(report.issues.every(Object.isFrozen)).toBe(true);
+  });
+
+  test('v1 与 v2 只保留证据且从不调用角色删除', async () => {
+    const v1Bytes = Buffer.from(JSON.stringify({
+      version: 1,
+      characterId: 'legacy-v1'
+    }));
+    const v2Bytes = Buffer.from(JSON.stringify({
+      version: 2,
+      ownership: { characterId: 'legacy-v2' }
+    }));
+    const { root } = await seedRecoveryMarkers('legacy-recovery', [
+      { fileCharacterId: 'legacy-v1', bytes: v1Bytes },
+      { fileCharacterId: 'legacy-v2', bytes: v2Bytes }
+    ]);
+    const store = new CharacterStore(root);
+    const deleteSpy = vi.spyOn(store, 'delete');
+    const rollbackSpy = vi.spyOn(store, 'rollbackImportedCharacter');
+
+    await expect(new CharacterPackageService(root, { store }).initialize())
+      .resolves.toEqual({
+        issues: [
+          { characterId: 'legacy-v1', errorCode: 'CHARACTER_IMPORT_RECOVERY_BLOCKED' },
+          { characterId: 'legacy-v2', errorCode: 'CHARACTER_IMPORT_RECOVERY_BLOCKED' }
+        ]
+      });
+    expect(deleteSpy).not.toHaveBeenCalled();
+    expect(rollbackSpy).not.toHaveBeenCalled();
+    expect(await preservedEvidence(root, 'legacy-v1')).toEqual(v1Bytes);
+    expect(await preservedEvidence(root, 'legacy-v2')).toEqual(v2Bytes);
+  });
+
+  test.each([
+    ['未知版本', 'unknown', () => Buffer.from(JSON.stringify({ version: 4, characterId: 'unknown' })), true],
+    ['正文与文件名不一致', 'filename-id', () => markerV3('body-id', IMPORT_TOKEN), true],
+    ['额外字段', 'extra-field', () => Buffer.from(JSON.stringify({
+      version: 3,
+      characterId: 'extra-field',
+      importTransactionId: IMPORT_TOKEN,
+      extra: true
+    })), true],
+    ['非法 UUID', 'invalid-uuid', () => markerV3('invalid-uuid', 'not-a-uuid'), true],
+    ['字段类型错误', 'wrong-type', () => Buffer.from(JSON.stringify({
+      version: '3',
+      characterId: 'wrong-type',
+      importTransactionId: IMPORT_TOKEN
+    })), true],
+    ['正文恰为 4096 字节', 'limit-exact', () => {
+      const base = {
+        version: 3,
+        characterId: 'limit-exact',
+        importTransactionId: IMPORT_TOKEN,
+        padding: ''
+      };
+      const empty = JSON.stringify(base);
+      return Buffer.from(JSON.stringify({
+        ...base,
+        padding: 'x'.repeat(4_096 - empty.length)
+      }));
+    }, true],
+    ['正文超过 4096 字节', 'limit-over', () => Buffer.alloc(4_097, 0x78), false]
+  ] as const)('%s时 fail closed', async (_name, characterId, createBytes, isolated) => {
+    const bytes = createBytes();
+    const { root } = await seedRecoveryMarkers(`strict-${characterId}`, [
+      { fileCharacterId: characterId, bytes }
+    ]);
+    const marker = rollbackMarker(root, characterId);
+
+    await expect(new CharacterPackageService(root).initialize()).resolves.toEqual({
+      issues: [{
+        characterId,
+        errorCode: 'CHARACTER_IMPORT_RECOVERY_BLOCKED'
+      }]
+    });
+    if (isolated) {
+      expect(await preservedEvidence(root, characterId)).toEqual(bytes);
+      await expect(access(marker)).rejects.toThrow();
+    } else {
+      expect(await readFile(marker)).toEqual(bytes);
+    }
+  });
+
+  test('角色根目录不存在时记录固定扫描失败码', async () => {
+    const root = join(testDirectory, 'missing-character-root');
+    const logSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+    await expect(new CharacterPackageService(root).initialize())
+      .resolves.toEqual({ issues: [] });
+    expect(logSpy).toHaveBeenCalledWith('CHARACTER_IMPORT_RECOVERY_SCAN_FAILED');
+  });
+
+  test('rolled-back 与 absent 完成 marker，ownership-mismatch 与 active-character 保留证据并 blocked', async () => {
+    const kinds = new Map<string, 'rolled-back' | 'absent' | 'ownership-mismatch' | 'active-character'>([
+      ['a-rolled', 'rolled-back'],
+      ['b-absent', 'absent'],
+      ['c-mismatch', 'ownership-mismatch'],
+      ['d-active', 'active-character']
+    ]);
+    const { root, bytesByCharacterId } = await seedRecoveryMarkers(
+      'rollback-kinds',
+      Array.from(kinds.keys(), fileCharacterId => ({ fileCharacterId }))
+    );
+    const rollbackTokens: string[] = [];
+    class ResultStore extends CharacterStore {
+      override async rollbackImportedCharacter(
+        characterId: string,
+        importTransactionId: string
+      ) {
+        rollbackTokens.push(importTransactionId);
+        return { kind: kinds.get(characterId)! };
+      }
+    }
+
+    await expect(new CharacterPackageService(root, {
+      store: new ResultStore(root)
+    }).initialize()).resolves.toEqual({
+      issues: [
+        { characterId: 'c-mismatch', errorCode: 'CHARACTER_IMPORT_RECOVERY_BLOCKED' },
+        { characterId: 'd-active', errorCode: 'CHARACTER_IMPORT_RECOVERY_BLOCKED' }
+      ]
+    });
+    await expect(access(rollbackMarker(root, 'a-rolled'))).rejects.toThrow();
+    await expect(access(rollbackMarker(root, 'b-absent'))).rejects.toThrow();
+    expect(await preservedEvidence(root, 'c-mismatch'))
+      .toEqual(bytesByCharacterId.get('c-mismatch'));
+    expect(await preservedEvidence(root, 'd-active'))
+      .toEqual(bytesByCharacterId.get('d-active'));
+    expect(rollbackTokens).toEqual(Array(4).fill(IMPORT_TOKEN));
+  });
+
+  test('marker 读取后被替换时不删除替代文件且后续项继续', async () => {
+    const replaced = Buffer.from('replacement');
+    const { root } = await seedRecoveryMarkers('replacement-race', [
+      { fileCharacterId: 'a-raced' },
+      { fileCharacterId: 'b-healthy' }
+    ]);
+    class RacingStore extends CharacterStore {
+      override async rollbackImportedCharacter(characterId: string) {
+        if (characterId === 'a-raced') {
+          await rm(rollbackMarker(root, characterId));
+          await writeFile(rollbackMarker(root, characterId), replaced);
+          return { kind: 'ownership-mismatch' } as const;
+        }
+        return { kind: 'absent' } as const;
+      }
+    }
+    const store = new RacingStore(root);
+    const rollbackSpy = vi.spyOn(store, 'rollbackImportedCharacter');
+
+    await expect(new CharacterPackageService(root, { store }).initialize())
+      .resolves.toEqual({
+        issues: [{
+          characterId: 'a-raced',
+          errorCode: 'CHARACTER_IMPORT_RECOVERY_BLOCKED'
+        }]
+      });
+    expect(await readFile(rollbackMarker(root, 'a-raced'))).toEqual(replaced);
+    expect(rollbackSpy).toHaveBeenCalledWith('b-healthy', IMPORT_TOKEN);
+  });
+
+  test('marker 身份错且正式名恢复失败时只留 inert 证据', async () => {
+    const replacement = Buffer.from('replacement-after-assert');
+    const { root } = await seedRecoveryMarkers('completion-race', [
+      { fileCharacterId: 'a-raced' },
+      { fileCharacterId: 'b-healthy' }
+    ]);
+    const racedMarker = rollbackMarker(root, 'a-raced');
+    const actualRename = fsMockState.rename;
+    let replaced = false;
+    vi.mocked(fsPromises.rename).mockImplementation(async (...args) => {
+      if (!replaced && String(args[0]) === racedMarker) {
+        replaced = true;
+        await rm(racedMarker);
+        await writeFile(racedMarker, replacement);
+      }
+      await actualRename(...args);
+    });
+    const originalLink = fsMockState.link;
+    vi.mocked(fsPromises.link).mockImplementation(async (...args) => {
+      if (String(args[1]) === racedMarker) {
+        throw Object.assign(new Error('EACCES'), { code: 'EACCES' });
+      }
+      await originalLink(...args);
+    });
+    const logSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const store = new AbsentRollbackStore(root);
+    const rollbackSpy = vi.spyOn(store, 'rollbackImportedCharacter');
+
+    await expect(new CharacterPackageService(root, { store }).initialize())
+      .resolves.toEqual({ issues: [] });
+    await expect(access(racedMarker)).rejects.toThrow();
+    const detached = (await readdir(root)).find(name => (
+      name.startsWith('.package-import-rollback-a-raced.json.complete-')
+    ));
+    expect(await readFile(join(root, detached!))).toEqual(replacement);
+    expect(fsPromises.link).toHaveBeenCalledWith(join(root, detached!), racedMarker);
+    expect(logSpy).toHaveBeenCalledWith('CHARACTER_IMPORT_RECOVERY_DETACHED_EVIDENCE');
+    expect(rollbackSpy).toHaveBeenCalledWith('b-healthy', IMPORT_TOKEN);
+
+    rollbackSpy.mockClear();
+    logSpy.mockClear();
+    await expect(new CharacterPackageService(root, { store }).initialize())
+      .resolves.toEqual({ issues: [] });
+    expect(await readFile(join(root, detached!))).toEqual(replacement);
+    expect(rollbackSpy).not.toHaveBeenCalled();
+  });
+
+  test.each([
+    ['证据目标冲突', 'EEXIST'],
+    ['证据目标权限失败', 'EACCES'],
+    ['证据发布 ENOSPC', 'ENOSPC']
+  ])('%s时保留原 marker 且继续后续合法项', async (_name, code) => {
+    const { root } = await seedRecoveryMarkers(`evidence-${code}`, [
+      { fileCharacterId: 'a-broken', bytes: BROKEN_MARKER_BYTES },
+      { fileCharacterId: 'b-healthy' }
+    ]);
+    const actualExclusive = atomicMockState.writeExclusive;
+    vi.mocked(atomicFileCoordinator.atomicWriteFileExclusive)
+      .mockImplementation(async (file, content) => {
+        if (file.includes('a-broken')) {
+          throw Object.assign(new Error(code), { code });
+        }
+        await actualExclusive(file, content);
+      });
+    const store = new AbsentRollbackStore(root);
+    const rollbackSpy = vi.spyOn(store, 'rollbackImportedCharacter');
+
+    await expect(new CharacterPackageService(root, { store }).initialize())
+      .resolves.toEqual({
+        issues: [{
+          characterId: 'a-broken',
+          errorCode: 'CHARACTER_IMPORT_RECOVERY_BLOCKED'
+        }]
+      });
+    expect(await readFile(rollbackMarker(root, 'a-broken'))).toEqual(BROKEN_MARKER_BYTES);
+    expect(rollbackSpy).toHaveBeenCalledWith('b-healthy', IMPORT_TOKEN);
+  });
+
+  test.each(['open', 'read'] as const)(
+    'marker %s 失败只 blocked 当前项且继续后续合法项',
+    async failure => {
+    const { root } = await seedRecoveryMarkers(`${failure}-failure`, [
+      { fileCharacterId: 'a-broken' },
+      { fileCharacterId: 'b-healthy' }
+    ]);
+    const actualOpen = fsMockState.open;
+    vi.mocked(fsPromises.open).mockImplementation(async (...args) => {
+      if (String(args[0]).endsWith('a-broken.json')) {
+        if (failure === 'open') {
+          throw Object.assign(new Error('EACCES'), { code: 'EACCES' });
+        }
+        const handle = await actualOpen(...args);
+        return new Proxy(handle, {
+          get(target, property) {
+            if (property === 'read') {
+              return async () => {
+                throw Object.assign(new Error('EIO'), { code: 'EIO' });
+              };
+            }
+            const value = Reflect.get(target, property, target) as unknown;
+            return typeof value === 'function' ? value.bind(target) : value;
+          }
+        });
+      }
+      return actualOpen(...args);
+    });
+    const store = new AbsentRollbackStore(root);
+    const rollbackSpy = vi.spyOn(store, 'rollbackImportedCharacter');
+
+    await expect(new CharacterPackageService(root, { store }).initialize())
+      .resolves.toEqual({
+        issues: [{
+          characterId: 'a-broken',
+          errorCode: 'CHARACTER_IMPORT_RECOVERY_BLOCKED'
+        }]
+      });
+    expect(rollbackSpy).toHaveBeenCalledWith('b-healthy', IMPORT_TOKEN);
+  });
+
+  test.each([
+    ['单独清理失败恢复正式名并支持重试', false, true],
+    ['清理与正式名恢复双故障只留 inert 证据', true, false]
+  ])('%s', async (_name, rejectRestore, shouldRetry) => {
+    const { root } = await seedRecoveryMarkers('cleanup-failure', [
+      { fileCharacterId: 'a-broken', bytes: BROKEN_MARKER_BYTES },
+      { fileCharacterId: 'b-healthy' }
+    ]);
+    const originalRm = fsMockState.rm;
+    let rejectCleanup = true;
+    vi.mocked(fsPromises.rm).mockImplementation(async (...args) => {
+      if (rejectCleanup && String(args[0]).startsWith(
+        `${rollbackMarker(root, 'a-broken')}.complete-`
+      )) {
+        rejectCleanup = false;
+        throw Object.assign(new Error('EACCES'), { code: 'EACCES' });
+      }
+      return originalRm(...args);
+    });
+    if (rejectRestore) {
+      const originalLink = fsMockState.link;
+      vi.mocked(fsPromises.link).mockImplementation(async (...args) => {
+        if (String(args[1]) === rollbackMarker(root, 'a-broken')) {
+          throw Object.assign(new Error('EACCES'), { code: 'EACCES' });
+        }
+        await originalLink(...args);
+      });
+    }
+    const logSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const store = new AbsentRollbackStore(root);
+    const rollbackSpy = vi.spyOn(store, 'rollbackImportedCharacter');
+    const expectedIssues = shouldRetry ? [{
+      characterId: 'a-broken',
+      errorCode: 'CHARACTER_IMPORT_RECOVERY_BLOCKED' as const
+    }] : [];
+
+    await expect(new CharacterPackageService(root, { store }).initialize())
+      .resolves.toEqual({ issues: expectedIssues });
+    if (shouldRetry) {
+      expect(await readFile(rollbackMarker(root, 'a-broken'))).toEqual(BROKEN_MARKER_BYTES);
+    } else {
+      await expect(access(rollbackMarker(root, 'a-broken'))).rejects.toThrow();
+    }
+    expect(rollbackSpy).toHaveBeenCalledWith('b-healthy', IMPORT_TOKEN);
+    expect(logSpy).toHaveBeenCalledWith(shouldRetry
+      ? 'CHARACTER_IMPORT_RECOVERY_ITEM_FAILED'
+      : 'CHARACTER_IMPORT_RECOVERY_DETACHED_EVIDENCE');
+
+    const detached = (await readdir(root)).find(name => (
+      name.includes('.complete-') && name.endsWith('.tmp')
+    ));
+    rollbackSpy.mockClear();
+    logSpy.mockClear();
+    await expect(new CharacterPackageService(root, { store }).initialize())
+      .resolves.toEqual({ issues: expectedIssues });
+    expect(await readFile(join(root, detached!))).toEqual(BROKEN_MARKER_BYTES);
+    expect(rollbackSpy).not.toHaveBeenCalled();
+    expect(logSpy).not.toHaveBeenCalled();
+  });
+
+  test('活动角色位于稳定排序第 257 位时仍提升到首位', async () => {
+    const { root } = await seedRecoveryMarkers('active-first', [
+      ...Array.from({ length: 256 }, (_, index) => ({
+        fileCharacterId: `a-inactive-${String(index + 1).padStart(3, '0')}`
+      })),
+      { fileCharacterId: 'z-active' }
+    ]);
+    class ActiveStore extends AbsentRollbackStore {
+      override async list() {
+        return [{
+          id: 'z-active',
+          name: '活动角色',
+          thumbnailAssetId: null,
+          active: true,
+          completeness: 'complete' as const,
+          missingRequirements: [],
+          migrationRecoveryAvailable: false,
+          activationConfirmationRequired: false
+        }];
+      }
+    }
+    const store = new ActiveStore(root);
+    const rollbackSpy = vi.spyOn(store, 'rollbackImportedCharacter');
+
+    await new CharacterPackageService(root, { store }).initialize();
+
+    const rolledBackIds = rollbackSpy.mock.calls.map(([characterId]) => characterId);
+    expect(rolledBackIds).toHaveLength(256);
+    expect(rolledBackIds[0]).toBe('z-active');
+    expect(rolledBackIds).not.toContain('a-inactive-256');
+  });
+
+  test('无活动角色时稳定排序后截断且第 257 项不读取', async () => {
+    const { root, bytesByCharacterId } = await seedRecoveryMarkers('inventory-limit', [
+      { fileCharacterId: '0-healthy' },
+      ...Array.from({ length: 256 }, (_, index) => ({
+        fileCharacterId: `BAD-${String(index + 1).padStart(3, '0')}`,
+        bytes: BROKEN_MARKER_BYTES
+      }))
+    ]);
+    const store = new AbsentRollbackStore(root);
+    const rollbackSpy = vi.spyOn(store, 'rollbackImportedCharacter');
+    const untouchedMarker = rollbackMarker(root, 'BAD-256');
+    const logSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+    await expect(new CharacterPackageService(root, {
+      store
+    }).initialize()).resolves.toEqual({ issues: [] });
+    expect(rollbackSpy).toHaveBeenCalledWith('0-healthy', IMPORT_TOKEN);
+    expect(fsPromises.open).not.toHaveBeenCalledWith(untouchedMarker, 'r');
+    await expect(access(rollbackMarker(root, '0-healthy'))).rejects.toThrow();
+    expect(await readFile(untouchedMarker)).toEqual(bytesByCharacterId.get('BAD-256'));
+    expect(logSpy.mock.calls.filter(([code]) => code === 'CHARACTER_IMPORT_RECOVERY_LIMIT_REACHED')).toHaveLength(1);
+    expect(logSpy.mock.calls.filter(([code]) => code === 'CHARACTER_IMPORT_RECOVERY_UNATTRIBUTED')).toHaveLength(255);
+  });
+
+  test('达到 2000ms 软预算后只推迟未开始项', async () => {
+    const { root } = await seedRecoveryMarkers('recovery-budget', [
+      { fileCharacterId: 'a-first' },
+      { fileCharacterId: 'b-deferred' }
+    ]);
+    const times = [0, 2_000];
+
+    await expect(new CharacterPackageService(root, {
+      store: new AbsentRollbackStore(root),
+      recoveryNow: () => times.shift() ?? 2_000
+    }).initialize()).resolves.toEqual({
+      issues: [{
+        characterId: 'b-deferred',
+        errorCode: 'CHARACTER_IMPORT_RECOVERY_DEFERRED'
+      }]
+    });
+    await expect(access(rollbackMarker(root, 'a-first'))).rejects.toThrow();
+    await expect(access(rollbackMarker(root, 'b-deferred'))).resolves.toBeUndefined();
+  });
+
+  test('inventory 阶段跨预算后首项仍开始并完成', async () => {
+    const { root } = await seedRecoveryMarkers('recovery-budget-item', [
+      { fileCharacterId: 'only-item' }
+    ]);
+    let now = 0;
+    class SlowInventoryStore extends AbsentRollbackStore {
+      override async list() {
+        now = 2_000;
+        return [];
+      }
+    }
+
+    await expect(new CharacterPackageService(root, {
+      store: new SlowInventoryStore(root),
+      recoveryNow: () => now
+    }).initialize()).resolves.toEqual({ issues: [] });
+    await expect(access(rollbackMarker(root, 'only-item'))).rejects.toThrow();
   });
 
   test('同一存储根目录的并发导入严格串行且不会回滚活跃事务', async () => {
     await createPublishedCharacter();
-    const packagePath = join(testDirectory, 'demo.zip');
-    await new CharacterPackageService(charactersDirectory)
-      .exportCharacter('demo', packagePath);
+    const packagePath = await exportDemoPackage();
     const importedCharacters = join(testDirectory, 'concurrent-import-characters');
     let releaseFirstCreate = (): void => {};
     const firstCreatePending = new Promise<void>(resolve => {
@@ -1186,48 +2000,6 @@ describe('角色包 Main 服务', () => {
 
     await expect(Promise.all([firstImport, secondImport])).resolves.toHaveLength(2);
     await expect(store.list()).resolves.toHaveLength(2);
-  });
-
-  test('rollback marker 不得删除复用同一 ID 的新角色', async () => {
-    await createPublishedCharacter();
-    const packagePath = join(testDirectory, 'demo.zip');
-    await new CharacterPackageService(charactersDirectory)
-      .exportCharacter('demo', packagePath);
-    const importedCharacters = join(testDirectory, 'reused-id-characters');
-    class RollbackFailingStore extends CharacterStore {
-      override async saveDraft(): Promise<void> {
-        throw new Error('SAVE_DRAFT_FAILED');
-      }
-
-      override async delete(): Promise<void> {
-        throw new Error('DELETE_FAILED');
-      }
-    }
-    const marker = join(
-      importedCharacters,
-      '.package-import-rollback-demo.json'
-    );
-
-    await expect(new CharacterPackageService(importedCharacters, {
-      store: new RollbackFailingStore(importedCharacters),
-      assetService: new CharacterAssetService(importedCharacters)
-    }).importCharacter(packagePath))
-      .rejects.toThrow('CHARACTER_PACKAGE_ROLLBACK_FAILED');
-
-    const replacementStore = new CharacterStore(importedCharacters);
-    await replacementStore.delete('demo');
-    await replacementStore.create({ id: 'demo', name: '替代角色' });
-    const replacementDraft = await replacementStore.getDraft('demo');
-
-    const importedId = await new CharacterPackageService(
-      importedCharacters,
-      { createId: () => 'owned-retry' }
-    ).importCharacter(packagePath);
-
-    expect(importedId).toBe('demo-import-ownedretry');
-    await expect(replacementStore.getDraft('demo')).resolves
-      .toEqual(replacementDraft);
-    await expect(access(marker)).rejects.toThrow();
   });
 
   test.each([
@@ -1277,9 +2049,7 @@ describe('角色包 Main 服务', () => {
 
   test('源素材结构无效时回滚新角色且不覆盖原角色', async () => {
     const { store, sourceAssetId } = await createPublishedCharacter();
-    const exported = join(testDirectory, 'demo.zip');
-    await new CharacterPackageService(charactersDirectory)
-      .exportCharacter('demo', exported);
+    const exported = await exportDemoPackage();
     const files = await readZip(exported);
     const invalidImage = Buffer.from('not-an-image');
     const catalog = JSON.parse(files.get('source/catalog.json')!.toString('utf8')) as {

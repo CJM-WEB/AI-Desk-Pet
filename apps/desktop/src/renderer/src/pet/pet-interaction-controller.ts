@@ -1,17 +1,12 @@
-import {
-  PET_DRAG_TIMEOUT_MS,
-  type PetWindowInteractionApi
-} from '../../../shared/pet-window-interaction';
+import type { PetWindowInteractionApi } from '../../../shared/pet-window-interaction';
 
 export type CharacterHitTestPort = {
+  kind?: 'alpha' | 'fallback';
   hitTest(point: { x: number; y: number }): boolean;
   subscribe(listener: () => void): () => void;
 };
 
-export type PetInteractionControllerOptions = {
-  onDragStart?: (pointerId: number) => void;
-  onDragEnd?: () => void;
-};
+export type PetInteractionControllerOptions = Record<string, never>;
 
 /**
  * CSS 备用角色没有像素掩码，只允许其真实可见矩形接管鼠标。
@@ -20,6 +15,7 @@ export function createElementBoundsHitTestPort(
   element: HTMLElement
 ): CharacterHitTestPort {
   return {
+    kind: 'fallback',
     hitTest(point) {
       if (!Number.isFinite(point.x) || !Number.isFinite(point.y)) return false;
       if (!element.isConnected || element.hidden) return false;
@@ -135,24 +131,23 @@ function sameElementBounds(
 }
 
 /**
- * Renderer 只维护命中与拖拽会话状态；系统窗口操作全部委托给受限 preload API。
+ * Renderer 只维护像素命中、pointer capture 生命周期和无坐标拖拽节拍。
  */
 export class PetInteractionController {
   private disposed = false;
   private hitTestPort: CharacterHitTestPort | null = null;
   private unsubscribeHitRegion: (() => void) | null = null;
   private latestPoint: { x: number; y: number } | null = null;
-  private activePointerId: number | null = null;
-  private dragTimeout: ReturnType<typeof setTimeout> | null = null;
   private desiredPassthrough = true;
   private confirmedPassthrough: boolean | undefined;
   private passthroughInFlight = false;
   private blockedPassthrough: boolean | undefined;
   private safeRetryRemaining = 1;
+  private dragging = false;
 
   constructor(
     private readonly api: PetWindowInteractionApi,
-    private readonly options: PetInteractionControllerOptions = {}
+    _options: PetInteractionControllerOptions = {}
   ) {
     this.requestPassthrough(true);
   }
@@ -172,100 +167,70 @@ export class PetInteractionController {
     this.refreshPassthrough();
   }
 
-  handlePointerMove(point: { x: number; y: number }): void {
-    if (this.disposed) return;
+  handlePointerMove(point: { x: number; y: number }): boolean {
+    if (this.disposed) return false;
     this.latestPoint = { ...point };
-    this.refreshPassthrough();
+    if (this.dragging) {
+      this.api.updatePetDrag();
+      return true;
+    }
+    return this.refreshPassthrough();
   }
 
-  handlePointerDown(
-    event: Pick<PointerEvent, 'button' | 'pointerId'>
-  ): void {
-    if (
-      this.disposed
-      || event.button !== 0
-      || this.activePointerId !== null
-      || !this.isCurrentPointHit()
-    ) {
-      return;
+  handlePointerDown(point: { x: number; y: number }): boolean {
+    if (this.disposed || this.dragging) return false;
+    this.latestPoint = { ...point };
+    if (!this.isCurrentPointHit()) return false;
+    try {
+      this.api.beginPetDrag();
+      this.dragging = true;
+      return true;
+    } catch {
+      return false;
     }
-    this.activePointerId = event.pointerId;
-    this.options.onDragStart?.(event.pointerId);
-    this.requestPassthrough(false);
-    this.dragTimeout = setTimeout(
-      () => this.finishDrag(true),
-      PET_DRAG_TIMEOUT_MS
-    );
-    void this.api.beginPetDrag().catch(() => {
-      if (this.disposed || this.activePointerId !== event.pointerId) return;
-      this.activePointerId = null;
-      this.clearDragTimeout();
-      this.options.onDragEnd?.();
-      this.requestPassthrough(true);
-    });
   }
 
   handlePointerUp(): void {
-    this.finishDrag();
+    if (!this.dragging) return;
+    this.dragging = false;
+    try { this.api.endPetDrag(); } catch {
+      // Main 的窗口生命周期清理仍会释放拖拽 owner。
+    }
+    this.refreshPassthrough();
   }
 
-  handlePointerCancel(): void {
-    this.finishDrag();
-  }
-
-  handleContextMenu(): void {
-    if (this.disposed || !this.isCurrentPointHit()) return;
-    void this.api.openPetContextMenu().catch(() => {
-      this.requestPassthrough(true);
-    });
+  handlePointerLeave(): void {
+    if (this.disposed) return;
+    if (this.dragging) return;
+    this.latestPoint = null;
+    this.refreshPassthrough();
   }
 
   dispose(): void {
     if (this.disposed) return;
-    const hadActiveDrag = this.activePointerId !== null;
+    this.handlePointerUp();
     this.disposed = true;
-    this.activePointerId = null;
-    this.clearDragTimeout();
     this.unsubscribeHitRegion?.();
     this.unsubscribeHitRegion = null;
     this.hitTestPort = null;
-    if (hadActiveDrag) {
-      this.options.onDragEnd?.();
-      void this.api.endPetDrag().catch(() => undefined);
-    }
     this.requestPassthrough(true, true);
   }
 
-  private finishDrag(forceSafePassthrough = false): void {
-    if (this.disposed || this.activePointerId === null) return;
-    this.activePointerId = null;
-    this.clearDragTimeout();
-    this.options.onDragEnd?.();
-    void this.api.endPetDrag().catch(() => {
-      this.requestPassthrough(true);
-    });
-    if (forceSafePassthrough) {
-      this.requestPassthrough(true);
-    } else {
-      this.refreshPassthrough();
-    }
-  }
-
-  private clearDragTimeout(): void {
-    if (this.dragTimeout === null) return;
-    clearTimeout(this.dragTimeout);
-    this.dragTimeout = null;
-  }
-
-  private refreshPassthrough(): void {
-    if (this.disposed || this.activePointerId !== null) return;
-    this.requestPassthrough(!this.isCurrentPointHit());
+  private refreshPassthrough(): boolean {
+    if (this.disposed) return false;
+    const hit = this.isCurrentPointHit();
+    this.requestPassthrough(!hit);
+    return hit;
   }
 
   private isCurrentPointHit(): boolean {
-    if (!this.latestPoint || !this.hitTestPort) return false;
+    return this.latestPoint ? this.isPointHit(this.latestPoint) : false;
+  }
+
+  private isPointHit(point: { x: number; y: number }): boolean {
+    if (!this.hitTestPort) return false;
     try {
-      return this.hitTestPort.hitTest(this.latestPoint);
+      return this.hitTestPort.hitTest(point);
     } catch {
       return false;
     }

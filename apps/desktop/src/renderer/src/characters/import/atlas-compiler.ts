@@ -1,6 +1,10 @@
-import { planAtlas } from '@myself/character-assets';
 import {
-  characterManifestV1Schema,
+  computePresentationAlphaGeometry,
+  planAtlas,
+  type PresentationAlphaGeometry
+} from '@myself/character-assets';
+import {
+  actionFrameSchema,
   type ActionFrame
 } from '@myself/character-runtime';
 import type {
@@ -21,6 +25,12 @@ export type AtlasDrawContextLike = {
     destinationWidth: number,
     destinationHeight: number
   ): void;
+  getImageData(
+    sourceX: number,
+    sourceY: number,
+    sourceWidth: number,
+    sourceHeight: number
+  ): { data: Uint8ClampedArray };
 };
 
 export type AtlasCanvasLike = {
@@ -57,6 +67,7 @@ export type CompileAtlasInput = {
   atlasAssetId: string;
   mimeType: CharacterImageMimeType;
   frames: readonly AtlasSourceFrame[];
+  groundAnchor?: { x: number; y: number };
   signal?: AbortSignal;
 };
 
@@ -67,6 +78,7 @@ export type CompiledAtlas = {
   height: number;
   frames: ActionFrame[];
   sourceChecksums: Record<string, string>;
+  geometry: PresentationAlphaGeometry;
 };
 
 type DecodedFrame = {
@@ -164,39 +176,15 @@ function exportCanvas(
 
 function parseActionFrames(
   atlasAssetId: string,
-  mimeType: CharacterImageMimeType,
+  _mimeType: CharacterImageMimeType,
   frames: ActionFrame[]
 ): ActionFrame[] {
-  const parsed = characterManifestV1Schema.safeParse({
-    version: 1,
-    id: 'atlas-validation',
-    name: '图集结构验证',
-    thumbnailAssetId: atlasAssetId,
-    compilerVersion: 'character-atlas-compiler-v1',
-    resources: [{
-      assetId: atlasAssetId,
-      fileName: `${atlasAssetId}.${mimeType === 'image/png' ? 'png' : 'webp'}`,
-      sha256: '0'.repeat(64),
-      byteLength: 1
-    }],
-    states: [{
-      id: 'idle',
-      kind: 'core',
-      actions: [{
-        id: 'atlas-validation',
-        name: '图集结构验证',
-        fps: 1,
-        loop: false,
-        weight: 1,
-        anchors: { ground: { x: 0.5, y: 1 } },
-        frames
-      }]
-    }]
-  });
-  if (!parsed.success) {
+  const parsed = actionFrameSchema.array().min(1).safeParse(frames);
+  if (!parsed.success || parsed.data.some(frame => frame.assetId !== atlasAssetId)) {
     throw new Error('CHARACTER_ATLAS_FRAME_INVALID');
   }
-  return parsed.data.states[0]!.actions[0]!.frames;
+  return parsed.data;
+
 }
 
 export async function compileAtlas(
@@ -307,6 +295,24 @@ export async function compileAtlas(
       );
     }
 
+    const rgba = context.getImageData(0, 0, layout.width, layout.height).data;
+    if (rgba.length !== layout.width * layout.height * 4) {
+      throw new Error('CHARACTER_ATLAS_ALPHA_INVALID');
+    }
+    const geometry = computePresentationAlphaGeometry({
+      groundAnchor: input.groundAnchor ?? { x: 0.5, y: 1 },
+      frames: layout.placements.map(placement => {
+        const alpha = new Uint8Array(placement.rect.width * placement.rect.height);
+        for (let y = 0; y < placement.rect.height; y += 1) {
+          for (let x = 0; x < placement.rect.width; x += 1) {
+            const atlasPixel = (placement.rect.y + y) * layout.width + placement.rect.x + x;
+            alpha[y * placement.rect.width + x] = rgba[atlasPixel * 4 + 3]!;
+          }
+        }
+        return { width: placement.rect.width, height: placement.rect.height, alpha };
+      })
+    });
+
     throwIfAborted(input.signal);
     const bytes = await exportCanvas(canvas, input.mimeType);
     throwIfAborted(input.signal);
@@ -316,7 +322,8 @@ export async function compileAtlas(
       width: layout.width,
       height: layout.height,
       frames,
-      sourceChecksums
+      sourceChecksums,
+      geometry
     };
   } finally {
     // 成功、取消和异常都释放浏览器原生位图与临时画布内存。

@@ -70,7 +70,15 @@ process.on('message', async message => {
     }, (width, height) => ({
       width,
       height,
-      getContext: () => ({ drawImage() {} }),
+      getContext: () => ({
+        drawImage() {},
+        // 与 2×2 测试位图一致，提供全不透明 Alpha 供真实几何编译链扫描。
+        getImageData: (_x, _y, imageWidth, imageHeight) => {
+          const data = new Uint8ClampedArray(imageWidth * imageHeight * 4);
+          for (let index = 3; index < data.length; index += 4) data[index] = 255;
+          return { data };
+        }
+      }),
       toBlob: callback => callback(new Blob([
         Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])
       ], { type: 'image/png' }))

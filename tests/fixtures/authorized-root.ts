@@ -1,27 +1,91 @@
-import { mkdir, mkdtemp, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, realpath, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type { FileToolService, PathPolicy } from '@myself/file-tools';
-import { FileToolService as RealFileToolService, PathPolicy as RealPathPolicy } from '@myself/file-tools';
+import { fileURLToPath } from 'node:url';
+import type { ModelResponse } from '@myself/agent-core';
+import type { TaskEvent, ProviderProfileV2 } from '@myself/shared-types';
+import { PrivacySessionRegistry } from '../../apps/desktop/src/main/agent/disclosure-policy';
+import { CodingTaskService } from '../../apps/desktop/src/main/agent/coding-task-service';
+import { createMainConversationComposition } from '../../apps/desktop/src/main/conversation/main-conversation-composition';
+import { ConversationChatAdapter } from '../../apps/desktop/src/main/conversation/conversation-chat-adapter';
+import { createCodingModelConnection } from '../../apps/desktop/src/main/providers/coding-model-connection';
+import { resolveCodingTaskResources } from '../../apps/desktop/src/main/agent/coding-task-resources';
+import { startProviderServer, type ProviderScript } from './provider-server';
 
 export interface AuthorizedRootFixture {
   base: string;
   root: string;
-  policy: PathPolicy;
-  fileTools: FileToolService;
   cleanup(): Promise<void>;
 }
 
+/** 只替换模型 HTTP 和宿主回收站端口；范围、许可、runner、文件与命令均走正式组合。 */
+export async function createCodingConversation(steps: ProviderScript, options: {
+  trashFile?: (path: string) => Promise<void>;
+  chatResponses?: ModelResponse[];
+} = {}) {
+  const authorized = await createAuthorizedRoot();
+  const provider = await startProviderServer(steps);
+  const resources = await resolveCodingTaskResources({ isPackaged: false, resourcesPath: '', appPath: fileURLToPath(new URL('../../apps/desktop', import.meta.url)) });
+  const profile: ProviderProfileV2 = { id: 'coding-fixture', displayName: '正式链夹具', modelId: 'coding-fixture-model', hasStoredSecret: true, mode: 'custom', protocol: 'openai-compatible', baseUrl: provider.baseUrl, additionalParameters: {}, capabilities: ['chat', 'tools'] };
+  const privacySessions = new PrivacySessionRegistry();
+  privacySessions.register('coding-fixture', { incognito: false });
+  const events: TaskEvent[] = [];
+  let creates = 0;
+  const composition = createMainConversationComposition({
+    catalog: [], privacySessions, sessionId: 'coding-fixture',
+    readProviderSettings: async () => ({ profiles: [profile], route: { primaryProfileId: profile.id, chatProfileId: profile.id, agentProfileId: profile.id, visionProfileId: null, fallbackProfileIds: [], allowCrossProviderFallback: false } }),
+    readAuthorizedRootPath: async () => authorized.root,
+    readPrivacySettings: async () => ({ dataCategories: { memory: false } }),
+    // 主申请是无执行 handler 的脚本模型；下方 HTTP server 只计正式 Core 的请求和流式结果。
+    createChatAdapter: () => new ConversationChatAdapter({ respond: async request => {
+      if (request.responseContract) return { type: 'structured', structured_output: { moodUpdate: null, expressionPlan: null, requestKind: 'ambient', explicitPlayback: null, movementControl: { kind: 'keep' } } };
+      if (options.chatResponses?.length) return options.chatResponses.shift()!;
+      if (request.purpose !== 'conversation' || request.tools.length !== 1
+        || request.tools[0]?.function.name !== 'request_task_authorization') throw new Error('夹具未经过正式主申请');
+      return { type: 'tool_request', request: { requestId: 'scope-native', toolName: 'request_task_authorization', arguments: {} } };
+    } }),
+    createCodingTaskService: input => {
+      creates += 1;
+      return new CodingTaskService({
+        sessionOptions: async () => ({ ...resources, directory: input.snapshot.authorizedRootPath, dataDirectory: authorized.base, approvedCommands: input.snapshot.approvedCommands,
+          model: createCodingModelConnection(input.primaryProfile, { catalog: [], readSecret: async () => provider.apiKey }),
+          ...(options.trashFile ? { trashFile: options.trashFile } : {}) }),
+        emit: input.emit, emitTrustedToolResult: input.emitTrustedToolResult
+      });
+    },
+    behavior: {
+      prepareUserPrompt: async text => ({ originalText: text, capabilityText: text, explicitDirective: null }),
+      // 文件任务夹具的陪伴端口提供完整空角色上下文，不增加本地能力。
+      getChatContext: () => ({ character: { idleStateId: 'idle', identity: { name: '测试角色', description: '测试', background: '测试', traits: [], languageStyle: '简洁', formsOfAddress: [], likes: [], dislikes: [], behavioralTendencies: [], boundaries: [], exampleLines: [] }, states: [] }, runtime: { moving: false, dragging: false, carrying: false, movementMode: 2 }, proactivityMode: 'passive', recentActions: [] }),
+      captureExpressionContext: () => null,
+      completeUserPrompt: async () => undefined, handleChatResponseFinished: () => undefined,
+      handleTaskEvent: () => undefined, applyPlaybackFeedback: () => undefined, cancelActive: () => undefined, reset: () => undefined, close: async () => undefined
+    },
+    emit: event => events.push(event)
+  });
+  return { authorized, provider, profile, events, composition, creates: () => creates,
+    async authorize(text: string) {
+      await composition.coordinator.submit(text);
+      const scope = events.findLast(event => event.type === 'capability_authorization_required');
+      if (scope?.type !== 'capability_authorization_required') throw new Error('缺少范围授权');
+      await composition.coordinator.resolveCapabilityAuthorization(scope.requestId, 'confirm');
+      return scope;
+    },
+    async close() {
+      await composition.close();
+      await provider.close();
+      await authorized.cleanup();
+    }
+  };
+}
+
 export async function createAuthorizedRoot(): Promise<AuthorizedRootFixture> {
-  const base = await mkdtemp(join(tmpdir(), 'myself-task-9a-'));
+  const base = await realpath(await mkdtemp(join(tmpdir(), 'myself-task-9a-')));
   const root = join(base, 'authorized');
   await mkdir(join(root, 'docs'), { recursive: true });
-  const policy = await RealPathPolicy.create(root);
   return {
     base,
     root,
-    policy,
-    fileTools: new RealFileToolService(policy),
     async cleanup() {
       await rm(base, { recursive: true, force: true });
     }

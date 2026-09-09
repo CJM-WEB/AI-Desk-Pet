@@ -3,7 +3,6 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   chatWindowOptions,
   bindPetWindowInteractionLifecycle,
-  clampPositionToVisibleWorkArea,
   petWindowOptions,
   secureWebPreferences,
   settingsWindowOptions
@@ -29,6 +28,10 @@ describe('窗口安全配置', () => {
     expect(petWindowOptions('preload.js')).toMatchObject({
       width: 180,
       height: 220,
+      minWidth: 180,
+      maxWidth: 180,
+      minHeight: 220,
+      maxHeight: 220,
       transparent: true,
       frame: false,
       alwaysOnTop: false,
@@ -118,7 +121,7 @@ describe('桌宠交互控制器生命周期', () => {
   it.each([
     'render-process-gone',
     'will-navigate'
-  ] as const)('webContents %s 时只结束拖拽并失败开放，仍允许后续 Renderer', event => {
+  ] as const)('webContents %s 时失败开放，仍允许后续 Renderer', event => {
     const windowListeners = new Map<string, () => void>();
     const webContentsListeners = new Map<string, () => void>();
     const webContents = {
@@ -150,7 +153,6 @@ describe('桌宠交互控制器生命周期', () => {
     const release = bindPetWindowInteractionLifecycle(window, controller);
     webContentsListeners.get(event)?.();
 
-    expect(controller.endDrag).toHaveBeenCalledWith('cancelled');
     expect(controller.setPassthrough).toHaveBeenLastCalledWith(true);
     expect(controller.dispose).not.toHaveBeenCalled();
 
@@ -198,31 +200,8 @@ describe('桌宠交互控制器生命周期', () => {
     listeners.get('destroyed')?.();
     release();
 
+    expect(controller.endDrag).toHaveBeenCalledOnce();
     expect(controller.dispose).toHaveBeenCalledOnce();
-    expect(controller.endDrag).not.toHaveBeenCalled();
-  });
-});
-
-describe('桌宠位置恢复', () => {
-  const workAreas = [
-    { x: 0, y: 0, width: 1920, height: 1040 },
-    { x: 1920, y: -200, width: 1280, height: 1024 }
-  ];
-
-  it('保留仍然完全可见的位置', () => {
-    expect(clampPositionToVisibleWorkArea(
-      { x: 2000, y: 100 },
-      { width: 180, height: 220 },
-      workAreas
-    )).toEqual({ x: 2000, y: 100 });
-  });
-
-  it('把不可见位置收敛到主显示器工作区右下角', () => {
-    expect(clampPositionToVisibleWorkArea(
-      { x: 5000, y: 5000 },
-      { width: 180, height: 220 },
-      workAreas
-    )).toEqual({ x: 1724, y: 804 });
   });
 });
 
@@ -245,16 +224,30 @@ describe('preload 白名单', () => {
     expect(main).not.toContain("'../preload/index.mjs'");
   });
 
-  it('在 Main 只注册 Coordinator 聊天入口并通过固定任务事件通道推送状态', async () => {
+  it('Main 用动态当前 chat getter 注册 Coordinator 入口', async () => {
     const main = await readFile(new URL('../src/main/index.ts', import.meta.url), 'utf8');
 
-    expect(main).toContain('createMainConversationComposition({');
-    expect(main).toContain('registerAgentIpc(ipcMain, conversationIpcService)');
-    expect(main).not.toContain('registerAgentIpc(ipcMain, agentService)');
-    expect(main).toContain('webContents.send(ipcChannels.taskEvent, event)');
+    expect(main).toContain(
+      'registerAgentIpc(ipcMain, conversationIpcService, getCurrentChatWebContents)'
+    );
   });
 
-  it('在 pet 生命周期内唯一创建交互控制器并复用现有菜单弹出回调', async () => {
+  it('Main 由会话投影器独占 taskEvent 窗口投递', async () => {
+    const main = await readFile(new URL('../src/main/index.ts', import.meta.url), 'utf8');
+
+    expect(main).toContain(
+      'const conversationEventProjection = new ConversationEventProjection({'
+    );
+    expect(main).toContain('const validated = conversationEventProjection.publish(event);');
+    expect(main).toContain('behavior: characterBehaviorDirector');
+    expect(main).not.toContain('characterBehavior.handleTaskEvent(event)');
+    expect(main).not.toContain(
+      'for (const window of [pet, chat, settings, characterWorkshopWindows.getCurrent()])'
+    );
+    expect(main).not.toContain('ipcChannels.taskEvent');
+  });
+
+  it('在 pet 生命周期内唯一创建交互控制器且菜单不扩大 Renderer 命中', async () => {
     const main = await readFile(new URL('../src/main/index.ts', import.meta.url), 'utf8');
 
     expect(main.match(/new PetWindowInteractionController\(/gu)).toHaveLength(1);
@@ -262,6 +255,6 @@ describe('preload 白名单', () => {
       /bindPetWindowInteractionLifecycle\(\s*pet,\s*petWindowInteraction\s*\)/u
     );
     expect(main).toContain('registerPetWindowInteractionIpc(');
-    expect(main).toContain('const openPetContextMenu = () =>');
+    expect(main).toContain("pet.webContents.on('context-menu', openPetContextMenu)");
   });
 });

@@ -1,25 +1,178 @@
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
+import { execFile } from 'node:child_process';
 import { EventEmitter } from 'node:events';
-import { cp, lstat, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { access, cp, lstat, mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { PassThrough } from 'node:stream';
 import { pathToFileURL } from 'node:url';
+import { promisify } from 'node:util';
 import { expect, test, type Page } from '@playwright/test';
+import type { TaskEvent } from '@myself/shared-types';
+import { CharacterStore } from '../../apps/desktop/src/main/characters/character-store';
+import { SettingsStore } from '../../apps/desktop/src/main/storage/settings-store';
 import {
+  codingResponse,
   createProviderResponseGate,
   startProviderServer,
   type ProviderStep
 } from '../fixtures/provider-server';
 import { snapshotCharacterPersistence } from '../fixtures/character-storage-snapshot';
 
+const execFileAsync = promisify(execFile);
+const WINDOWS_CURSOR_INTEROP = String.raw`
+using System;
+using System.Runtime.InteropServices;
+public static class MyselfCursorInterop {
+  [StructLayout(LayoutKind.Sequential)]
+  public struct Point { public int X; public int Y; }
+  [DllImport("user32.dll")] public static extern bool GetCursorPos(out Point point);
+  [DllImport("user32.dll")] public static extern bool SetCursorPos(int x, int y);
+  [DllImport("user32.dll")] public static extern IntPtr WindowFromPoint(Point point);
+  [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(
+    IntPtr window, out uint processId);
+  [DllImport("user32.dll")] public static extern short GetAsyncKeyState(int virtualKey);
+  [StructLayout(LayoutKind.Sequential)]
+  public struct Rect { public int Left; public int Top; public int Right; public int Bottom; }
+  [DllImport("user32.dll")] public static extern bool GetWindowRect(
+    IntPtr window, out Rect rect);
+  [DllImport("user32.dll")] public static extern bool SetWindowPos(
+    IntPtr window, IntPtr insertAfter, int x, int y, int width, int height, uint flags);
+  [DllImport("user32.dll")] public static extern void mouse_event(
+    uint flags, uint dx, uint dy, uint data, UIntPtr extraInfo);
+  [DllImport("user32.dll")] public static extern uint GetDpiForSystem();
+}`;
+
+type WindowsCursorSnapshot = Readonly<{ x: number; y: number; dpi: number }>;
+type WindowsPointerTarget = Readonly<{ processId: number; leftButtonDown: boolean }>;
+type WindowsWindowRect = Readonly<{
+  left: number; top: number; right: number; bottom: number;
+}>;
+
+/** E2E 只调用固定 Win32 光标 API，并由用例 finally 恢复进入测试前的位置。 */
+async function readWindowsCursor(): Promise<WindowsCursorSnapshot> {
+  const script = String.raw`
+Add-Type -TypeDefinition @'
+${WINDOWS_CURSOR_INTEROP}
+'@
+$point = [MyselfCursorInterop+Point]::new()
+if (-not [MyselfCursorInterop]::GetCursorPos([ref]$point)) { exit 2 }
+$dpi = [MyselfCursorInterop]::GetDpiForSystem()
+[Console]::Out.Write("$($point.X),$($point.Y),$dpi")`;
+  const { stdout } = await execFileAsync('powershell.exe', [
+    '-NoProfile', '-NonInteractive', '-Command', script
+  ], { windowsHide: true, timeout: 10_000, encoding: 'utf8' });
+  const match = /^(-?\d+),(-?\d+),(\d+)$/u.exec(stdout.trim());
+  if (!match) throw new Error('WINDOWS_CURSOR_PROBE_INVALID');
+  return { x: Number(match[1]), y: Number(match[2]), dpi: Number(match[3]) };
+}
+
+async function setWindowsCursor(point: Readonly<{ x: number; y: number }>): Promise<void> {
+  const x = Math.round(point.x);
+  const y = Math.round(point.y);
+  const script = String.raw`
+Add-Type -TypeDefinition @'
+${WINDOWS_CURSOR_INTEROP}
+'@
+if (-not [MyselfCursorInterop]::SetCursorPos(${x}, ${y})) { exit 2 }`;
+  await execFileAsync('powershell.exe', [
+    '-NoProfile', '-NonInteractive', '-Command', script
+  ], { windowsHide: true, timeout: 30_000, encoding: 'utf8' });
+}
+
+async function setWindowsLeftButton(down: boolean): Promise<void> {
+  const flag = down ? '0x0002' : '0x0004';
+  const script = String.raw`
+Add-Type -TypeDefinition @'
+${WINDOWS_CURSOR_INTEROP}
+'@
+[MyselfCursorInterop]::mouse_event(${flag}, 0, 0, 0, [UIntPtr]::Zero)`;
+  await execFileAsync('powershell.exe', [
+    '-NoProfile', '-NonInteractive', '-Command', script
+  ], { windowsHide: true, timeout: 10_000, encoding: 'utf8' });
+}
+
+/** 从 Win32 命中测试读取真实输入目标，避免以内存中的穿透标志代替系统事实。 */
+async function readWindowsPointerTarget(): Promise<WindowsPointerTarget> {
+  const script = String.raw`
+Add-Type -TypeDefinition @'
+${WINDOWS_CURSOR_INTEROP}
+'@
+$point = [MyselfCursorInterop+Point]::new()
+if (-not [MyselfCursorInterop]::GetCursorPos([ref]$point)) { exit 2 }
+$window = [MyselfCursorInterop]::WindowFromPoint($point)
+[uint32]$processId = 0
+[void][MyselfCursorInterop]::GetWindowThreadProcessId($window, [ref]$processId)
+$leftButtonDown = ([MyselfCursorInterop]::GetAsyncKeyState(1) -band 0x8000) -ne 0
+[Console]::Out.Write("$processId,$leftButtonDown")`;
+  const { stdout } = await execFileAsync('powershell.exe', [
+    '-NoProfile', '-NonInteractive', '-Command', script
+  ], { windowsHide: true, timeout: 10_000, encoding: 'utf8' });
+  const match = /^(\d+),(True|False)$/u.exec(stdout.trim());
+  if (!match) throw new Error('WINDOWS_POINTER_TARGET_PROBE_INVALID');
+  return { processId: Number(match[1]), leftButtonDown: match[2] === 'True' };
+}
+
+/** 读取目标 Electron 顶层窗口的真实物理矩形，避免混用 DIP 与 Win32 坐标。 */
+async function readWindowsProcessWindowRect(processId: number): Promise<WindowsWindowRect> {
+  if (!Number.isSafeInteger(processId) || processId <= 0) {
+    throw new Error('WINDOWS_WINDOW_PROCESS_ID_INVALID');
+  }
+  const script = String.raw`
+Add-Type -TypeDefinition @'
+${WINDOWS_CURSOR_INTEROP}
+'@
+$process = Get-Process -Id ${String(processId)} -ErrorAction Stop
+$window = $process.MainWindowHandle
+if ($window -eq [IntPtr]::Zero) { exit 2 }
+$rect = [MyselfCursorInterop+Rect]::new()
+if (-not [MyselfCursorInterop]::GetWindowRect($window, [ref]$rect)) { exit 3 }
+[Console]::Out.Write("$($rect.Left),$($rect.Top),$($rect.Right),$($rect.Bottom)")`;
+  const { stdout } = await execFileAsync('powershell.exe', [
+    '-NoProfile', '-NonInteractive', '-Command', script
+  ], { windowsHide: true, timeout: 10_000, encoding: 'utf8' });
+  const match = /^(-?\d+),(-?\d+),(-?\d+),(-?\d+)$/u.exec(stdout.trim());
+  if (!match) throw new Error('WINDOWS_WINDOW_RECT_PROBE_INVALID');
+  return {
+    left: Number(match[1]), top: Number(match[2]),
+    right: Number(match[3]), bottom: Number(match[4])
+  };
+}
+
+/** 将测试目标提升到普通窗口 Z 序顶部，但不激活、不改位置或尺寸。 */
+async function raiseWindowsProcessWindow(processId: number): Promise<void> {
+  if (!Number.isSafeInteger(processId) || processId <= 0) {
+    throw new Error('WINDOWS_WINDOW_PROCESS_ID_INVALID');
+  }
+  const script = String.raw`
+Add-Type -TypeDefinition @'
+${WINDOWS_CURSOR_INTEROP}
+'@
+$process = Get-Process -Id ${String(processId)} -ErrorAction Stop
+$window = $process.MainWindowHandle
+if ($window -eq [IntPtr]::Zero) { exit 2 }
+$flags = 0x0001 -bor 0x0002 -bor 0x0010
+if (-not [MyselfCursorInterop]::SetWindowPos(
+  $window, [IntPtr](-1), 0, 0, 0, 0, $flags)) { exit 3 }
+if (-not [MyselfCursorInterop]::SetWindowPos(
+  $window, [IntPtr](-2), 0, 0, 0, 0, $flags)) { exit 4 }`;
+  await execFileAsync('powershell.exe', [
+    '-NoProfile', '-NonInteractive', '-Command', script
+  ], { windowsHide: true, timeout: 10_000, encoding: 'utf8' });
+}
+
 type CharacterBehaviorProbe = {
   revision: number;
-  primaryStateId: string;
-  modifierStateIds: string[];
+  stateId: string;
   actionId: string | null;
   playbackStatus: 'scheduled' | 'started' | 'completed' | 'interrupted' | 'failed' | null;
+};
+
+type CharacterMotionDeltaProbe = {
+  moved: boolean;
+  horizontal: number;
+  vertical: number;
 };
 
 type ConversationE2eProbe = {
@@ -72,6 +225,7 @@ type ElectronFixtureModule = {
     intervalMs?: number;
     probe?: (endpoint: string) => Promise<boolean>;
   }): Promise<void>;
+  observeElectronProcessStreamsClosed(process: EventEmitter): Promise<void>;
   createCapturedLogEvidenceTracker(input: Readonly<{
     apiKey: string;
     authorizedRootDirectory: string;
@@ -87,6 +241,14 @@ type ElectronFixtureModule = {
     resetStreams(): void;
     dispose(): void;
   };
+  createCompleteLogCanaryTracker(maxBytes: number): {
+    capture(source: 'stdout' | 'stderr', chunk: string | Buffer): void;
+    inspect(canaries: readonly string[]): readonly boolean[];
+  };
+  inspectPrivateArtifactCanaries(
+    artifacts: readonly unknown[],
+    canaries: readonly string[]
+  ): readonly boolean[];
   probeWindowsProcess(
     processId: number,
     options?: {
@@ -140,6 +302,8 @@ type ElectronFixtureModule = {
     apiKey: string;
     additionalSecrets?: readonly string[];
     logSentinels?: readonly string[];
+    enableLocalModelFixture?: boolean;
+    localModelStderrCanary?: string;
     launchTimeoutMs?: number;
     operationTimeoutMs?: number;
     prepareUserData?(directories: {
@@ -195,8 +359,14 @@ type ElectronFixtureModule = {
     ): Promise<void>;
     getMainE2eState(): Promise<{
       revision: number;
+      buildIdentity: {
+        commitShortHash: string;
+        buildRootCategory: 'primary_checkout' | 'linked_worktree' | 'source_archive';
+      };
       petWindowVisible: boolean;
       petWindowAlwaysOnTop: boolean;
+      petWindowBoundsDip: { x: number; y: number; width: number; height: number };
+      petNativeDragging: boolean;
       processedExplorerEventRevision: number;
       processedExplorerEvent: string | null;
       bridge: {
@@ -210,6 +380,12 @@ type ElectronFixtureModule = {
         activationRevision: number;
         errorRevision: number;
       };
+      geometry: {
+        revision: number;
+        scaleTick: number;
+        visualBoundsInWindowRatio: { x: number; y: number; width: number; height: number };
+        outOfBounds: boolean;
+      } | null;
     }>;
     getMainDescendantProcesses(): Promise<Array<{
       processId: number;
@@ -217,10 +393,34 @@ type ElectronFixtureModule = {
       powershell: boolean;
       explorerBridge: boolean;
     }>>;
-    getPetInteractionProbe(): Promise<{ passthrough: boolean; dragging: boolean }>;
+    getPetInteractionProbe(): Promise<{
+      passthrough: boolean;
+      dragging: boolean;
+      mouseMoveHitCount: number;
+    }>;
     getCharacterBehaviorProbe(): Promise<CharacterBehaviorProbe>;
+    getCharacterMotionDeltaProbe(): Promise<CharacterMotionDeltaProbe>;
     getConversationProbe(): Promise<ConversationE2eProbe>;
+    markLocalModelValidationReady(): Promise<void>;
+    markLocalModelReady(): Promise<void>;
+    getLocalModelFixturePrivatePaths(): readonly string[];
+    getLocalModelFixtureEvidence(): Promise<{
+      processId: number;
+      port: number;
+      token: string;
+      fixtureScriptPath: string;
+      modelPath: string;
+      requestedRuntimePath: string;
+      actualRuntimePath: string;
+      resourceRoot: string;
+      tokenFilePath: string;
+      stderrCanary: string;
+      requestedSpawnOptions: { shell: false; windowsHide: true };
+      actualSpawnOptions: { shell: false; windowsHide: true };
+    }>;
+    inspectCapturedLogCanaries(canaries: readonly string[]): readonly boolean[];
     restart(): Promise<void>;
+    closeApplicationForInspection(): Promise<void>;
     dispose(): Promise<void>;
   }>;
 };
@@ -259,33 +459,8 @@ function emitFakeExit(process: FakeElectronProcess | FakeCommandProcess, code: n
   process.emit('exit', code, null);
 }
 
-type JourneyToolName =
-  | 'list_files'
-  | 'create_file'
-  | 'apply_patch'
-  | 'delete_file'
-  | 'builtin.files.delete_file'
-  | 'builtin.powershell.run';
-
 function runtimeDiagnosticKey(): string {
   return `myself-e2e-${randomBytes(24).toString('hex')}`;
-}
-
-function toolResponse(
-  requestId: string,
-  toolName: JourneyToolName,
-  arguments_: Record<string, unknown>
-): ProviderStep['response'] {
-  return {
-    type: 'tool_request',
-    request: { requestId, toolName, arguments: arguments_ }
-  };
-}
-
-function lastToolResult(request: Parameters<NonNullable<ProviderStep['inspect']>>[0]): unknown {
-  const message = request.messages.at(-1);
-  if (!message || message.role !== 'tool') throw new Error('缺少工具结果消息');
-  return JSON.parse(message.content) as unknown;
 }
 
 async function pathExistsForAssertion(path: string): Promise<boolean> {
@@ -337,22 +512,454 @@ async function submitChatMessage(page: Page, text: string): Promise<void> {
   await send.click();
 }
 
-async function loadElectronFixtureModule(): Promise<ElectronFixtureModule | null> {
-  try {
-    const moduleUrl = pathToFileURL(
-      resolve(process.cwd(), 'tests/fixtures/electron-app.ts')
-    ).href;
-    return await import(moduleUrl) as ElectronFixtureModule;
-  } catch {
-    return null;
+/** 主正文与表现显式排成两个真实 Provider 请求，任务申请只展示原范围卡。 */
+function characterChatSteps(
+  text: string,
+  selection: Readonly<Record<string, unknown>> = {},
+  main: Omit<ProviderStep, 'response'> = {},
+  inspectExpression?: ProviderStep['inspect']
+): ProviderStep[] {
+  return [
+    { response: { type: 'text', text }, ...main },
+    { response: { type: 'structured', structured_output: {
+      moodUpdate: null, expressionPlan: null, requestKind: 'ambient', explicitPlayback: null,
+      movementControl: { kind: 'keep' }, ...selection
+    } }, inspect: request => {
+      expect(request.tools).toEqual([]);
+      expect(request.toolChoice).toBe('none');
+      expect(request.responseFormatWasJsonObject).toBe(true);
+      inspectExpression?.(request);
+    } }
+  ];
+}
+
+function taskAuthorizationStep(): ProviderStep {
+  return { response: { type: 'tool_request', request: {
+    requestId: 'request-scope', toolName: 'request_task_authorization', arguments: {}
+  } }, inspect: expectCharacterChatRequest };
+}
+
+/** 默认间断模式在任务释放后会进行一次无工具活动匹配，脚本不得误消费下一轮正文。 */
+function activityMatchStep(): ProviderStep {
+  return { response: { type: 'structured', structured_output: { moodUpdate: null, expressionPlan: null } },
+    inspect: request => {
+      expect(request.tools).toEqual([]);
+      expect(request.toolChoice).toBe('none');
+      expect(request.responseFormatWasJsonObject).toBe(true);
+    } };
+}
+
+function expectCharacterChatRequest(
+  request: Parameters<NonNullable<ProviderStep['inspect']>>[0]
+): void {
+  expect(request.tools.map(tool => tool.function.name)).toEqual(['request_task_authorization']);
+  expect(request.toolChoice).toBe('auto');
+  expect(request.responseFormatWasJsonObject).toBe(false);
+}
+
+async function loadElectronFixtureModule(): Promise<ElectronFixtureModule> {
+  const moduleUrl = pathToFileURL(
+    resolve(process.cwd(), 'tests/fixtures/electron-app.ts')
+  ).href;
+  return await import(moduleUrl) as ElectronFixtureModule;
+}
+
+type AppFixture = Awaited<ReturnType<ElectronFixtureModule['createElectronAppFixture']>>;
+
+/** 只通过正式设置 IPC 配置隔离模型与授权根，后续任务必须由可见聊天 UI 发起。 */
+async function configureCodingApp(fixture: AppFixture, provider: Awaited<ReturnType<typeof startProviderServer>>) {
+  const pet = await waitForRendererPage(fixture, 'pet');
+  const chat = await waitForRendererPage(fixture, 'chat');
+  await pet.evaluate(async input => {
+    await window.myself.saveProviderProfile({ profile: { id: 'coding-e2e', displayName: '正式任务 E2E', mode: 'custom', protocol: 'openai-compatible', baseUrl: input.baseUrl, modelId: 'coding-e2e-model', additionalParameters: {}, capabilities: ['chat', 'tools'] }, secret: input.apiKey, persistSecret: false });
+    await window.myself.saveModelRoute({ primaryProfileId: 'coding-e2e', chatProfileId: 'coding-e2e', agentProfileId: 'coding-e2e', visionProfileId: null, fallbackProfileIds: [], allowCrossProviderFallback: false });
+    await window.myself.savePrivacySettings({ dataCategories: { memory: false }, longTermMemory: false, proactivityMode: 'passive' });
+    await window.myself.chooseAuthorizedRoot();
+    await window.myself.openChat();
+  }, { baseUrl: provider.baseUrl, apiKey: provider.apiKey });
+  await expect.poll(() => chat.evaluate(() => document.visibilityState)).toBe('visible');
+  return { pet, chat };
+}
+
+async function approveCodingScope(chat: Page) {
+  const scope = chat.getByRole('article', { name: '本地任务授权' });
+  await expect(scope).toBeVisible();
+  await scope.getByRole('button', { name: '授权并开始任务' }).click();
+}
+
+async function recordCodingEvents(page: Page) {
+  await page.evaluate(() => {
+    const state = globalThis as typeof globalThis & { __task4bEvents?: TaskEvent[] };
+    state.__task4bEvents = [];
+    window.myself.onTaskEvent(event => state.__task4bEvents?.push(event));
+  });
+}
+
+async function readCodingEvents(page: Page): Promise<TaskEvent[]> {
+  return page.evaluate(() => (globalThis as typeof globalThis & { __task4bEvents?: TaskEvent[] }).__task4bEvents ?? []);
+}
+
+test.describe('正式 Core 任务 UI', () => {
+  test('单一发送读取随机正文，范围前只有申请请求且普通发送仍聊天', async () => {
+    test.setTimeout(120000);
+    const nonce = `明确入口正文-${randomBytes(16).toString('hex')}`;
+    const provider = await startProviderServer([
+      taskAuthorizationStep(),
+      { response: codingResponse([{ name: 'read', args: { path: 'note.txt' }, id: 'explicit-read' }]) },
+      { response: request => { const messages = request.messages as Array<{ tool_call_id?: string; content: string }>; expect(messages.find(message => message.tool_call_id === 'explicit-read')?.content).toContain(nonce); return codingResponse(nonce); } },
+      ...characterChatSteps('普通聊天仍然可用', {}, {inspect: expectCharacterChatRequest})
+    ]);
+    let fixture: AppFixture | undefined;
+    try {
+      fixture = await (await loadElectronFixtureModule()).createElectronAppFixture({ workspaceRoot: resolve(process.cwd()), apiKey: provider.apiKey, logSentinels: [nonce] });
+      await writeFile(join(fixture.authorizedRootDirectory, 'note.txt'), nonce);
+      const { chat } = await configureCodingApp(fixture, provider);
+      await chat.getByRole('textbox', { name: '和我说点什么' }).fill('note.txt 里面写了什么？');
+      await chat.getByRole('button', { name: '发送给 AI Pet' }).click();
+      const scope = chat.getByRole('article', { name: '本地任务授权' });
+      await expect(scope).toContainText('coding-e2e-model');
+      await expect(scope).toContainText(await realpath(fixture.authorizedRootDirectory));
+      expect(provider.requests).toHaveLength(1);
+      await approveCodingScope(chat);
+      await expect(chat.getByText(nonce, { exact: true })).toBeVisible();
+      await expect(chat.locator('.phase-pill')).toHaveClass(/phase-success/u);
+      await submitChatMessage(chat, '你好');
+      await expect(chat.getByText('普通聊天仍然可用', { exact: true })).toBeVisible();
+      await expect(scope).toHaveCount(0);
+      provider.assertComplete();
+      expect(provider.inspectionErrors).toEqual([]);
+      expect(fixture.capturedLogEvidence).toEqual({ apiKey: false, authorizedRoot: false, authorizationHeader: false, sentinels: [false] });
+    } finally { try { await fixture?.dispose(); } finally { await provider.close(); } }
+  });
+
+  test('重复操作卡仅继续一次并结束任务，随后普通拒绝仍只拒绝本次操作', async () => {
+    test.setTimeout(120000);
+    const nonce = `循环正文-${randomBytes(16).toString('hex')}`;
+    const provider = await startProviderServer([
+      taskAuthorizationStep(),
+      ...Array.from({ length: 4 }, (_, index) => ({ response: codingResponse([{ name: 'read', args: { path: 'note.txt' }, id: `ui-loop-${index}` }]) })),
+      activityMatchStep(),
+      taskAuthorizationStep(),
+      { response: codingResponse([{ name: 'write', args: { path: 'note.txt', content: '禁止覆盖' }, id: 'ui-rejected' }]) },
+      { response: codingResponse([{ name: 'read', args: { path: 'note.txt' }, id: 'ui-after-reject' }]), inspectRaw: request => { expect(JSON.stringify(request.messages)).toContain('rejected'); } },
+      { response: request => { expect(JSON.stringify(request.messages)).toContain(nonce); return codingResponse('普通拒绝后继续读取成功'); } }
+    ]);
+    let fixture: AppFixture | undefined;
+    try {
+      fixture = await (await loadElectronFixtureModule()).createElectronAppFixture({ workspaceRoot: resolve(process.cwd()), apiKey: provider.apiKey, logSentinels: [nonce] });
+      await writeFile(join(fixture.authorizedRootDirectory, 'note.txt'), nonce);
+      const { chat } = await configureCodingApp(fixture, provider);
+      await recordCodingEvents(chat);
+      await submitChatMessage(chat, '读取 note.txt 文件');
+      await expect(chat.getByRole('article', { name: '本地任务授权' })).toBeVisible();
+      expect(provider.requests).toHaveLength(1);
+      await approveCodingScope(chat);
+      const permission = chat.getByRole('region', { name: '具体操作许可' });
+      await expect(permission).toContainText('重复操作保护');
+      await expect(permission).toContainText('连续 3 次');
+      await expect(permission).toContainText('read');
+      expect(provider.requests).toHaveLength(4);
+      const third = (await readCodingEvents(chat)).find(event => event.type === 'task_permission_required');
+      if (third?.type !== 'task_permission_required') throw new Error('缺少循环许可');
+      expect(third.request).toEqual({ action: 'doom_loop', tool: 'read', repeatCount: 3 });
+      await permission.getByRole('button', { name: '仅继续这一次' }).click();
+      await expect(permission).toContainText('连续 4 次');
+      expect(provider.requests).toHaveLength(5);
+      await expect(chat.evaluate(id => window.myself.confirmAction(id), third.actionId)).rejects.toThrow();
+      await permission.getByRole('button', { name: '结束当前任务' }).click();
+      await expect(chat.locator('.phase-pill')).toHaveClass(/phase-cancelled/u);
+      await expect(permission).toHaveCount(0);
+      await expect.poll(() => provider.requests.length).toBe(6);
+      expect(await readFile(join(fixture.authorizedRootDirectory, 'note.txt'), 'utf8')).toBe(nonce);
+      await submitChatMessage(chat, '修改 note.txt 文件');
+      await approveCodingScope(chat);
+      await expect(permission.getByRole('button', { name: '确认覆盖文件' })).toBeEnabled();
+      await permission.getByRole('button', { name: '拒绝本次操作' }).click();
+      await expect(chat.getByText('普通拒绝后继续读取成功', { exact: true })).toBeVisible();
+      await expect(chat.locator('.phase-pill')).toHaveClass(/phase-success/u);
+      expect(await readFile(join(fixture.authorizedRootDirectory, 'note.txt'), 'utf8')).toBe(nonce);
+      provider.assertComplete();
+      expect(provider.inspectionErrors).toEqual([]);
+      expect(fixture.capturedLogEvidence).toEqual({ apiKey: false, authorizedRoot: false, authorizationHeader: false, sentinels: [false] });
+    } finally { try { await fixture?.dispose(); } finally { await provider.close(); } }
+  });
+  test('自然读取随机正文经真实工具回注显示在聊天并结束', async () => {
+    test.setTimeout(120000);
+    const nonce = `读取正文-${randomBytes(16).toString('hex')}`;
+    const provider = await startProviderServer([
+      taskAuthorizationStep(),
+      { response: codingResponse([{ name: 'read', args: { path: 'note.txt' }, id: 'ui-read' }]) },
+      { response: request => { const messages = request.messages as Array<{ role: string; tool_call_id?: string; content: string }>; const result = messages.find(message => message.tool_call_id === 'ui-read'); expect(result?.content).toContain(nonce); return codingResponse(nonce); } }
+    ]);
+    let fixture: AppFixture | undefined;
+    try {
+      fixture = await (await loadElectronFixtureModule()).createElectronAppFixture({ workspaceRoot: resolve(process.cwd()), apiKey: provider.apiKey, logSentinels: [nonce] });
+      await writeFile(join(fixture.authorizedRootDirectory, 'note.txt'), nonce);
+      const { chat } = await configureCodingApp(fixture, provider);
+      await submitChatMessage(chat, '请读取 note.txt 并告诉我里面的内容');
+      const scope = chat.getByRole('article', { name: '本地任务授权' });
+      await expect(scope).toContainText('coding-e2e-model');
+      await expect(scope).toContainText(await realpath(fixture.authorizedRootDirectory));
+      expect(provider.requests).toHaveLength(1);
+      expect(provider.requests[0]?.toolCount).toBe(1);
+      await approveCodingScope(chat);
+      await expect(chat.getByText(nonce, { exact: true })).toBeVisible();
+      await expect(chat.locator('.phase-pill')).toHaveClass(/phase-success/u);
+      provider.assertComplete();
+      expect(provider.inspectionErrors).toEqual([]);
+      expect(fixture.capturedLogEvidence).toEqual({ apiKey: false, authorizedRoot: false, authorizationHeader: false, sentinels: [false] });
+    } finally { try { await fixture?.dispose(); } finally { await provider.close(); } }
+  });
+
+  test('scope 后具体删除许可可点击并经真实回收站与工具回注结束', async () => {
+    test.setTimeout(120000);
+    const nonce = `回收站正文-${randomBytes(16).toString('hex')}`;
+    const finalText = `删除完成-${randomBytes(16).toString('hex')}`;
+    const provider = await startProviderServer([
+      taskAuthorizationStep(),
+      { response: codingResponse([{ name: 'apply_patch', args: { patchText: '*** Begin Patch\n*** Delete File: target.txt\n*** End Patch' }, id: 'ui-delete' }]) },
+      { response: request => { const messages = request.messages as Array<{ tool_call_id?: string; content: string }>; expect(messages.find(message => message.tool_call_id === 'ui-delete')?.content).toContain('target.txt'); return codingResponse(finalText); } }
+    ]);
+    let fixture: AppFixture | undefined;
+    try {
+      fixture = await (await loadElectronFixtureModule()).createElectronAppFixture({ workspaceRoot: resolve(process.cwd()), apiKey: provider.apiKey, logSentinels: [nonce, finalText] });
+      const target = join(fixture.authorizedRootDirectory, 'target.txt');
+      await writeFile(target, nonce);
+      const { chat, pet } = await configureCodingApp(fixture, provider);
+      const settings = await waitForRendererPage(fixture, 'settings');
+      await pet.evaluate(() => window.myself.openCharacterWorkshop());
+      const characters = await waitForRendererPage(fixture, 'characters');
+      await pet.evaluate(() => window.myself.openChat());
+      for (const page of [pet, chat, settings, characters]) await recordCodingEvents(page);
+      await submitChatMessage(chat, '删除 target.txt 文件');
+      await expect(chat.getByRole('article', { name: '本地任务授权' })).toBeVisible();
+      expect(provider.requests).toHaveLength(1);
+      expect(await pathExistsForAssertion(target)).toBe(true);
+      await approveCodingScope(chat);
+      const permission = chat.getByRole('region', { name: '具体操作许可' });
+      await expect(permission).toContainText('target.txt');
+      const confirm = permission.getByRole('button', { name: '确认移入回收站' });
+      await expect(confirm).toBeEnabled();
+      expect(await pathExistsForAssertion(target)).toBe(true);
+      const event = (await readCodingEvents(chat)).find(event => event.type === 'task_permission_required');
+      if (event?.type !== 'task_permission_required') throw new Error('未收到具体许可');
+      const id = event.actionId;
+      expect(Object.keys(event).sort()).toEqual(['actionId', 'request', 'summary', 'type']);
+      for (const page of [pet, settings, characters]) await expect(page.evaluate(id => window.myself.confirmAction(id), id)).rejects.toThrow(/AGENT_IPC_SENDER_INVALID/u);
+      await confirm.click();
+      await expect(chat.getByText(finalText, { exact: true })).toBeVisible();
+      await expect(chat.locator('.phase-pill')).toHaveClass(/phase-success/u);
+      expect(await pathExistsForAssertion(target)).toBe(false);
+      expect((await readdir(fixture.recycleBinDirectory!)).filter(name => name.startsWith('.attempt-'))).toEqual(['.attempt-1']);
+      const petEvents = await readCodingEvents(pet);
+      expect(petEvents.length).toBeGreaterThan(0);
+      for (const event of petEvents) expect(Object.keys(event).sort()).toEqual(['phase', 'type']);
+      expect(await readCodingEvents(settings)).toEqual([]);
+      expect(await readCodingEvents(characters)).toEqual([]);
+      provider.assertComplete();
+      expect(provider.inspectionErrors).toEqual([]);
+      expect(fixture.capturedLogEvidence).toEqual({ apiKey: false, authorizedRoot: false, authorizationHeader: false, sentinels: [false, false] });
+    } finally { try { await fixture?.dispose(); } finally { await provider.close(); } }
+  });
+  for (const mode of ['新对话', '配置变更'] as const) {
+    test(`具体许可等待中${mode}使旧 ID 失效且保留文件`, async () => {
+      test.setTimeout(120000);
+      const provider = await startProviderServer([
+      taskAuthorizationStep(),
+        { response: codingResponse([{ name: 'write', args: { path: 'existing.txt', content: '不应覆盖' } }]) },
+        ...characterChatSteps('新的普通聊天正常', {}, {inspect: expectCharacterChatRequest})
+      ]);
+      let fixture: AppFixture | undefined;
+      try {
+        fixture = await (await loadElectronFixtureModule()).createElectronAppFixture({ workspaceRoot: resolve(process.cwd()), apiKey: provider.apiKey });
+        await writeFile(join(fixture.authorizedRootDirectory, 'existing.txt'), '原文件正文');
+        const { chat, pet } = await configureCodingApp(fixture, provider);
+        await chat.evaluate(() => { const state = globalThis as typeof globalThis & { __permissionId?: string }; window.myself.onTaskEvent(event => { if (event.type === 'task_permission_required') state.__permissionId = event.actionId; }); });
+        await submitChatMessage(chat, '修改 existing.txt 文件');
+        await approveCodingScope(chat);
+        await expect(chat.getByRole('button', { name: '确认覆盖文件' })).toBeEnabled();
+        const id = await chat.evaluate(() => (globalThis as typeof globalThis & { __permissionId?: string }).__permissionId!);
+        if (mode === '配置变更') await pet.evaluate(() => window.myself.saveModelRoute({ primaryProfileId: 'coding-e2e', chatProfileId: 'coding-e2e', agentProfileId: 'coding-e2e', visionProfileId: null, fallbackProfileIds: [], allowCrossProviderFallback: false }));
+        else await chat.getByRole('button', { name: mode, exact: true }).click();
+        await expect(chat.getByRole('region', { name: '具体操作许可' })).toHaveCount(0);
+        await expect(chat.evaluate(id => window.myself.confirmAction(id), id)).rejects.toThrow();
+        expect(await readFile(join(fixture.authorizedRootDirectory, 'existing.txt'), 'utf8')).toBe('原文件正文');
+        await submitChatMessage(chat, '现在聊聊天');
+        await expect(chat.getByText('新的普通聊天正常', { exact: true })).toBeVisible();
+        provider.assertComplete();
+        expect(provider.inspectionErrors).toEqual([]);
+      } finally { try { await fixture?.dispose(); } finally { await provider.close(); } }
+    });
   }
+  test('停止运行中的 SSE 任务清理旧请求，迟到正文不进入新聊天', async () => {
+    test.setTimeout(120000);
+    const gate = createProviderResponseGate();
+    const provider = await startProviderServer([
+      taskAuthorizationStep(),
+      { response: codingResponse([{ name: 'read', args: { path: 'note.txt' } }]) },
+      { response: codingResponse('迟到正文不应显示'), gate },
+      activityMatchStep(),
+      ...characterChatSteps('取消后普通聊天正常', {}, {inspect: expectCharacterChatRequest})
+    ]);
+    let fixture: AppFixture | undefined;
+    try {
+      fixture = await (await loadElectronFixtureModule()).createElectronAppFixture({ workspaceRoot: resolve(process.cwd()), apiKey: provider.apiKey });
+      await writeFile(join(fixture.authorizedRootDirectory, 'note.txt'), '取消任务正文');
+      const { chat } = await configureCodingApp(fixture, provider);
+      await submitChatMessage(chat, '读取 note.txt');
+      await approveCodingScope(chat);
+      await expect.poll(() => gate.isWaiting()).toBe(true);
+      await chat.getByRole('button', { name: '停止当前任务' }).click();
+      await expect(chat.locator('.phase-pill')).toHaveClass(/phase-cancelled/u);
+      await expect.poll(() => gate.isWaiting()).toBe(false);
+      await expect.poll(() => provider.requests.length).toBe(4);
+      await submitChatMessage(chat, '现在聊聊天');
+      await expect(chat.getByText('取消后普通聊天正常', { exact: true })).toBeVisible();
+      await expect(chat.getByText('迟到正文不应显示', { exact: true })).toHaveCount(0);
+      provider.assertComplete();
+      expect(provider.inspectionErrors).toEqual([]);
+    } finally { gate.release(); try { await fixture?.dispose(); } finally { await provider.close(); } }
+  });
+});
+
+type PetPlacementForE2e = Readonly<{
+  characterId: string;
+  scale: number;
+  footAnchorDip: Readonly<{ x: number; y: number }>;
+  displayId: string;
+}>;
+
+/** 在 Renderer 内组合真实窗口、Canvas 与当前动作，只向测试进程返回脚底一致布尔值。 */
+async function renderedFootMatchesPlacement(
+  page: Page,
+  placement: PetPlacementForE2e,
+  expectedActionId?: string
+): Promise<boolean> {
+  return page.evaluate(async input => {
+    const [runtime, motion, behavior] = await Promise.all([
+      window.myself.getCharacterRuntimeSnapshot(),
+      window.myself.getCharacterMotionSnapshot(),
+      window.myself.getCharacterBehaviorProbe?.()
+    ]);
+    const actionId = input.expectedActionId ?? behavior?.actionId;
+    const action = runtime?.manifest.states
+      .flatMap(state => state.actions)
+      .find(candidate => candidate.id === actionId);
+    const canvas = document.querySelector<HTMLCanvasElement>(
+      '.character-player-host canvas'
+    );
+    if (!action || !canvas || action.frames.length === 0) return false;
+
+    const canvasBounds = canvas.getBoundingClientRect();
+    const sourceWidth = Math.max(1, ...action.frames.map(frame => frame.width));
+    const sourceHeight = Math.max(1, ...action.frames.map(frame => frame.height));
+    const fitScale = Math.min(
+      canvasBounds.width / sourceWidth,
+      canvasBounds.height / sourceHeight
+    );
+    const fittedWidth = sourceWidth * fitScale;
+    const fittedHeight = sourceHeight * fitScale;
+    const ground = motion.direction === 'left'
+      ? { x: 1 - action.anchors.ground.x, y: action.anchors.ground.y }
+      : action.anchors.ground;
+    const clamp = (value: number, minimum: number, maximum: number): number => (
+      Math.min(maximum, Math.max(minimum, value))
+    );
+    const groundInCanvas = {
+      x: clamp(
+        canvasBounds.width / 2,
+        fittedWidth * ground.x,
+        canvasBounds.width - fittedWidth * (1 - ground.x)
+      ),
+      y: clamp(
+        canvasBounds.height,
+        fittedHeight * ground.y,
+        canvasBounds.height - fittedHeight * (1 - ground.y)
+      )
+    };
+    const toleranceDip = 1.1;
+    return Math.abs(
+      window.screenX + canvasBounds.left + groundInCanvas.x - input.footAnchorDip.x
+    ) <= toleranceDip && Math.abs(
+      window.screenY + canvasBounds.top + groundInCanvas.y - input.footAnchorDip.y
+    ) <= toleranceDip;
+  }, {
+    footAnchorDip: placement.footAnchorDip,
+    expectedActionId
+  });
+}
+
+/** 统一从当前 Electron 生命周期中查找 Renderer，避免旧窗口被重启后的场景复用。 */
+function rendererPages(fixture: AppFixture): Page[] {
+  return fixture.browser.contexts().flatMap(context => context.pages());
+}
+
+function rendererPage(fixture: AppFixture, view: string): Page | undefined {
+  return rendererPages(fixture).find(page => {
+    if (page.isClosed()) return false;
+    try {
+      return new URL(page.url()).searchParams.get('view') === view;
+    } catch {
+      return false;
+    }
+  });
+}
+
+async function waitForRendererPage(
+  fixture: AppFixture,
+  view: string,
+  timeout?: number
+): Promise<Page> {
+  await expect.poll(
+    () => Boolean(rendererPage(fixture, view)),
+    timeout === undefined ? undefined : { timeout }
+  ).toBe(true);
+  const page = rendererPage(fixture, view);
+  if (!page) throw new Error(`缺少 ${view} Renderer`);
+  return page;
 }
 
 test.describe('直接启动 Electron 的 CDP 夹具边界', () => {
+  test('实际启动的 Main 回报当前提交与非路径构建根类别', async () => {
+    test.setTimeout(60_000);
+    const workspaceRoot = resolve(process.cwd());
+    const [{ stdout: commitOutput }, { stdout: gitDirectoryOutput }, {
+      stdout: commonDirectoryOutput
+    }] = await Promise.all([
+      execFileAsync('git', ['-C', workspaceRoot, 'rev-parse', '--short=12', 'HEAD'], {
+        windowsHide: true, encoding: 'utf8'
+      }),
+      execFileAsync('git', ['-C', workspaceRoot, 'rev-parse', '--path-format=absolute', '--git-dir'], {
+        windowsHide: true, encoding: 'utf8'
+      }),
+      execFileAsync('git', [
+        '-C', workspaceRoot, 'rev-parse', '--path-format=absolute', '--git-common-dir'
+      ], { windowsHide: true, encoding: 'utf8' })
+    ]);
+    const expected = {
+      commitShortHash: commitOutput.trim(),
+      buildRootCategory: gitDirectoryOutput.trim() === commonDirectoryOutput.trim()
+        ? 'primary_checkout' as const
+        : 'linked_worktree' as const
+    };
+    const fixtureModule = await loadElectronFixtureModule();
+    const fixture = await fixtureModule.createElectronAppFixture({
+      workspaceRoot,
+      apiKey: runtimeDiagnosticKey(),
+      launchTimeoutMs: 15_000
+    });
+    try {
+      await waitForRendererPage(fixture, 'pet', 15_000);
+      await expect.poll(async () => (await fixture.getMainE2eState()).buildIdentity)
+        .toEqual(expected);
+      expect(JSON.stringify(await fixture.getMainE2eState())).not.toContain(workspaceRoot);
+    } finally {
+      await fixture.dispose();
+    }
+  });
+
   test('使用项目精确 Electron 路径、构建入口、随机回环 CDP 参数和隔离环境', async () => {
     const fixture = await loadElectronFixtureModule();
-    expect(fixture, '应提供直接启动 Electron 的 CDP 夹具').not.toBeNull();
-    if (!fixture) return;
 
     const workspaceRoot = resolve(process.cwd());
     const userDataDirectory = resolve('C:\\Temp\\myself-user-data');
@@ -399,8 +1006,6 @@ test.describe('直接启动 Electron 的 CDP 夹具边界', () => {
 
   test('拒绝非回环 CDP 端点且等待使用有界超时', async () => {
     const fixture = await loadElectronFixtureModule();
-    expect(fixture, '应提供直接启动 Electron 的 CDP 夹具').not.toBeNull();
-    if (!fixture) return;
 
     await expect(fixture.waitForCdpReady({
       endpoint: 'http://0.0.0.0:9222',
@@ -418,10 +1023,24 @@ test.describe('直接启动 Electron 的 CDP 夹具边界', () => {
     expect(Date.now() - startedAt).toBeLessThan(1_000);
   });
 
+  test('应用退出检查在 exit 后继续等待 stdio close', async () => {
+    const fixture = await loadElectronFixtureModule();
+    const process = new EventEmitter();
+    let closed = false;
+    const observed = fixture.observeElectronProcessStreamsClosed(process)
+      .then(() => { closed = true; });
+
+    process.emit('exit', 0, null);
+    await Promise.resolve();
+    expect(closed).toBe(false);
+
+    process.emit('close', 0, null);
+    await observed;
+    expect(closed).toBe(true);
+  });
+
   test('捕获日志时清除 API Key、Authorization Header 和授权根绝对路径', async () => {
     const fixture = await loadElectronFixtureModule();
-    expect(fixture, '应提供直接启动 Electron 的 CDP 夹具').not.toBeNull();
-    if (!fixture) return;
 
     const apiKey = runtimeDiagnosticKey();
     const authorizedRootDirectory = 'C:\\Temp\\myself-authorized-root';
@@ -468,8 +1087,6 @@ test.describe('直接启动 Electron 的 CDP 夹具边界', () => {
 
   test('跨 chunk 拆分的动态 key、Authorization Header 与授权根在所有可观察诊断中仍脱敏', async () => {
     const fixtureModule = await loadElectronFixtureModule();
-    expect(typeof fixtureModule?.createElectronAppFixture).toBe('function');
-    if (!fixtureModule?.createElectronAppFixture) return;
 
     const workspaceRoot = resolve(process.cwd());
     const requireFromDesktop = createRequire(resolve(workspaceRoot, 'apps/desktop/package.json'));
@@ -540,8 +1157,6 @@ test.describe('直接启动 Electron 的 CDP 夹具边界', () => {
 
   test('原始日志证据仅在同一流跨块匹配，并识别普通与 JSON Authorization', async () => {
     const fixture = await loadElectronFixtureModule();
-    expect(typeof fixture?.createCapturedLogEvidenceTracker).toBe('function');
-    if (!fixture?.createCapturedLogEvidenceTracker) return;
 
     const apiKey = 'tracker-api-key';
     const authorizedRootDirectory = resolve('C:\\Temp\\tracker-authorized-root');
@@ -586,8 +1201,6 @@ test.describe('直接启动 Electron 的 CDP 夹具边界', () => {
 
   test('六个任务正文 sentinel 的模拟 console 泄漏都会使原始证据断言变红', async () => {
     const fixture = await loadElectronFixtureModule();
-    expect(typeof fixture?.createCapturedLogEvidenceTracker).toBe('function');
-    if (!fixture?.createCapturedLogEvidenceTracker) return;
 
     const sentinels = [
       'task6-user-body-sentinel',
@@ -610,8 +1223,6 @@ test.describe('直接启动 Electron 的 CDP 夹具边界', () => {
 
   test('原始日志证据在 UTF-8 多字节中间拆分 Buffer 时仍命中', async () => {
     const fixture = await loadElectronFixtureModule();
-    expect(typeof fixture?.createCapturedLogEvidenceTracker).toBe('function');
-    if (!fixture?.createCapturedLogEvidenceTracker) return;
 
     const apiKey = '密钥-api';
     const authorizedRootDirectory = 'C:\\授权根';
@@ -653,8 +1264,6 @@ test.describe('直接启动 Electron 的 CDP 夹具边界', () => {
 
   test('原始日志证据构造后不受输入对象与外部哨兵数组突变影响', async () => {
     const fixture = await loadElectronFixtureModule();
-    expect(typeof fixture?.createCapturedLogEvidenceTracker).toBe('function');
-    if (!fixture?.createCapturedLogEvidenceTracker) return;
 
     const originalApiKey = 'original-tracker-api-key';
     const originalRoot = 'C:\\original-tracker-root';
@@ -686,8 +1295,6 @@ test.describe('直接启动 Electron 的 CDP 夹具边界', () => {
 
   test('原始日志证据拒绝空哨兵，返回冻结布尔快照且 dispose 后不再变化', async () => {
     const fixture = await loadElectronFixtureModule();
-    expect(typeof fixture?.createCapturedLogEvidenceTracker).toBe('function');
-    if (!fixture?.createCapturedLogEvidenceTracker) return;
 
     expect(() => fixture.createCapturedLogEvidenceTracker({
       apiKey: 'tracker-api-key',
@@ -721,10 +1328,40 @@ test.describe('直接启动 Electron 的 CDP 夹具边界', () => {
     }).toEqual({ snapshot: true, sentinels: true, booleans: true });
   });
 
+  test('动态 canary 检查覆盖最早日志且捕获溢出时失败关闭', async () => {
+    const fixture = await loadElectronFixtureModule();
+    const canary = 'dynamic-token-discovered-after-process-start';
+    const complete = fixture.createCompleteLogCanaryTracker(128);
+    complete.capture('stderr', canary);
+    complete.capture('stdout', 'x'.repeat(80));
+    expect(complete.inspect([canary])).toEqual([true]);
+
+    complete.capture('stdout', 'y'.repeat(80));
+    expect(() => complete.inspect([canary])).toThrow('RAW_LOG_CAPTURE_LIMIT_EXCEEDED');
+  });
+
+  test('原始对象递归扫描能识别 JSON 转义 Windows 路径与 file URL 路径', async () => {
+    const fixture = await loadElectronFixtureModule();
+    const jsonPath = 'C:\\Private\\LocalModel\\json-runtime.exe';
+    const fileUrlPath = 'C:\\Private\\Local Model\\url-runtime.exe';
+    const artifacts = [{
+      main: { rawJsonLog: JSON.stringify({ path: jsonPath }) },
+      renderer: [{ status: 'file:///c:/private/local%20model/url-runtime.exe' }]
+    }];
+
+    expect(fixture.inspectPrivateArtifactCanaries(
+      artifacts,
+      [jsonPath, fileUrlPath, 'not-present-canary']
+    )).toEqual([true, true, false]);
+
+    const mainRawLogs = fixture.createCompleteLogCanaryTracker(4_096);
+    mainRawLogs.capture('stdout', JSON.stringify({ path: jsonPath }));
+    mainRawLogs.capture('stderr', 'file:///c:/private/local%20model/url-runtime.exe');
+    expect(mainRawLogs.inspect([jsonPath, fileUrlPath])).toEqual([true, true]);
+  });
+
   test('自然退出宽限期内 child 退出时不启动任何强制清理', async () => {
     const fixture = await loadElectronFixtureModule();
-    expect(typeof fixture?.terminateElectronProcess).toBe('function');
-    if (!fixture?.terminateElectronProcess) return;
 
     const executablePath = resolve('C:\\project\\electron.exe');
     const child = fakeElectronProcess(6105, executablePath);
@@ -771,8 +1408,6 @@ test.describe('直接启动 Electron 的 CDP 夹具边界', () => {
 
   test('taskkill 非零时仅回退终止原 PID，并确认原 child 退出', async () => {
     const fixture = await loadElectronFixtureModule();
-    expect(typeof fixture?.terminateElectronProcess).toBe('function');
-    if (!fixture?.terminateElectronProcess) return;
 
     const executablePath = resolve('C:\\project\\electron.exe');
     const child = fakeElectronProcess(6101, executablePath);
@@ -810,8 +1445,6 @@ test.describe('直接启动 Electron 的 CDP 夹具边界', () => {
 
   test('taskkill 异步报错后原 PID 已消失时成功收敛并清理监听器', async () => {
     const fixture = await loadElectronFixtureModule();
-    expect(typeof fixture?.terminateElectronProcess).toBe('function');
-    if (!fixture?.terminateElectronProcess) return;
 
     const executablePath = resolve('C:\\project\\electron.exe');
     const child = fakeElectronProcess(6107, executablePath);
@@ -850,8 +1483,6 @@ test.describe('直接启动 Electron 的 CDP 夹具边界', () => {
 
   test('taskkill 异步报错后原 PID 仍精确匹配时安全回退并脱敏诊断', async () => {
     const fixture = await loadElectronFixtureModule();
-    expect(typeof fixture?.terminateElectronProcess).toBe('function');
-    if (!fixture?.terminateElectronProcess) return;
 
     const apiKey = runtimeDiagnosticKey();
     const authorizedRootDirectory = resolve(
@@ -910,8 +1541,6 @@ test.describe('直接启动 Electron 的 CDP 夹具边界', () => {
 
   test('OS 进程探针：grace 后 PID 不存在时不得启动 taskkill', async () => {
     const fixture = await loadElectronFixtureModule();
-    expect(typeof fixture?.terminateElectronProcess).toBe('function');
-    if (!fixture?.terminateElectronProcess) return;
 
     const executablePath = resolve('C:\\project\\electron.exe');
     const child = fakeElectronProcess(6110, executablePath);
@@ -952,8 +1581,6 @@ test.describe('直接启动 Electron 的 CDP 夹具边界', () => {
 
   test('OS 进程探针：默认预算覆盖 PowerShell 冷启动后仍能确认 PID 不存在', async () => {
     const fixture = await loadElectronFixtureModule();
-    expect(typeof fixture?.terminateElectronProcess).toBe('function');
-    if (!fixture?.terminateElectronProcess) return;
 
     const executablePath = resolve('C:\\project\\electron.exe');
     const child = fakeElectronProcess(6114, executablePath);
@@ -986,8 +1613,6 @@ test.describe('直接启动 Electron 的 CDP 夹具边界', () => {
 
   test('OS 进程探针：精确项目进程仍存活时才 fallback，并轮询至 PID 不存在', async () => {
     const fixture = await loadElectronFixtureModule();
-    expect(typeof fixture?.terminateElectronProcess).toBe('function');
-    if (!fixture?.terminateElectronProcess) return;
 
     const executablePath = resolve('C:\\project\\electron.exe');
     const child = fakeElectronProcess(6111, executablePath);
@@ -1026,8 +1651,6 @@ test.describe('直接启动 Electron 的 CDP 夹具边界', () => {
 
   test('OS 进程探针：PID 被其他路径复用时不得 kill 新进程', async () => {
     const fixture = await loadElectronFixtureModule();
-    expect(typeof fixture?.terminateElectronProcess).toBe('function');
-    if (!fixture?.terminateElectronProcess) return;
 
     const executablePath = resolve('C:\\project\\electron.exe');
     const child = fakeElectronProcess(6112, executablePath);
@@ -1067,8 +1690,6 @@ test.describe('直接启动 Electron 的 CDP 夹具边界', () => {
 
   test('OS 进程探针：访问失败或路径不可验证时不 kill 并明确失败', async () => {
     const fixture = await loadElectronFixtureModule();
-    expect(typeof fixture?.terminateElectronProcess).toBe('function');
-    if (!fixture?.terminateElectronProcess) return;
 
     const executablePath = resolve('C:\\project\\electron.exe');
     const child = fakeElectronProcess(6113, executablePath);
@@ -1100,8 +1721,6 @@ test.describe('直接启动 Electron 的 CDP 夹具边界', () => {
 
   test('OS 进程探针：退出期间路径短暂不可用时有限重试且不误杀', async () => {
     const fixture = await loadElectronFixtureModule();
-    expect(typeof fixture?.terminateElectronProcess).toBe('function');
-    if (!fixture?.terminateElectronProcess) return;
 
     const executablePath = resolve('C:\\project\\electron.exe');
     const child = fakeElectronProcess(6118, executablePath);
@@ -1138,8 +1757,6 @@ test.describe('直接启动 Electron 的 CDP 夹具边界', () => {
 
   test('Main 后代进程探针能从人为进程树发现 bridge PowerShell 子进程', async () => {
     const fixture = await loadElectronFixtureModule();
-    expect(typeof fixture?.inspectWindowsElectronDescendants).toBe('function');
-    if (!fixture?.inspectWindowsElectronDescendants) return;
 
     const descendants = await fixture.inspectWindowsElectronDescendants(6114, {
       runCommand: async () => ({
@@ -1172,8 +1789,6 @@ test.describe('直接启动 Electron 的 CDP 夹具边界', () => {
 
   test('跨 Provider 诊断同时清除附加密钥', async () => {
     const fixtureModule = await loadElectronFixtureModule();
-    expect(typeof fixtureModule?.redactElectronLog).toBe('function');
-    if (!fixtureModule?.redactElectronLog) return;
     const primaryKey = runtimeDiagnosticKey();
     const secondaryKey = runtimeDiagnosticKey();
     const sanitized = fixtureModule.redactElectronLog(
@@ -1191,8 +1806,6 @@ test.describe('直接启动 Electron 的 CDP 夹具边界', () => {
 
   test('默认 OS 进程探针：命令失败诊断保留退出码并截断脱敏 stderr', async () => {
     const fixture = await loadElectronFixtureModule();
-    expect(typeof fixture?.probeWindowsProcess).toBe('function');
-    if (!fixture?.probeWindowsProcess) return;
 
     const apiKey = runtimeDiagnosticKey();
     const authorizedRootDirectory = resolve(
@@ -1228,8 +1841,6 @@ test.describe('直接启动 Electron 的 CDP 夹具边界', () => {
 
   test('默认 OS 进程探针：退出期间空路径映射为可重试过渡态', async () => {
     const fixture = await loadElectronFixtureModule();
-    expect(typeof fixture?.probeWindowsProcess).toBe('function');
-    if (!fixture?.probeWindowsProcess) return;
 
     await expect(fixture.probeWindowsProcess(6119, {
       runCommand: async () => ({
@@ -1242,8 +1853,6 @@ test.describe('直接启动 Electron 的 CDP 夹具边界', () => {
 
   test('默认 OS 进程探针：AbortSignal 传给 runner 并等待取消回调 settle', async () => {
     const fixture = await loadElectronFixtureModule();
-    expect(typeof fixture?.probeWindowsProcess).toBe('function');
-    if (!fixture?.probeWindowsProcess) return;
 
     const apiKey = runtimeDiagnosticKey();
     const controller = new AbortController();
@@ -1296,8 +1905,6 @@ test.describe('直接启动 Electron 的 CDP 夹具边界', () => {
 
   test('OS 进程探针：超时后 abort 并等待 respecting probe settle', async () => {
     const fixture = await loadElectronFixtureModule();
-    expect(typeof fixture?.terminateElectronProcess).toBe('function');
-    if (!fixture?.terminateElectronProcess) return;
 
     const executablePath = resolve('C:\\project\\electron.exe');
     const child = fakeElectronProcess(6116, executablePath);
@@ -1338,8 +1945,6 @@ test.describe('直接启动 Electron 的 CDP 夹具边界', () => {
 
   test('OS 进程探针：忽略 AbortSignal 时有界报告契约违规且不继续破坏操作', async () => {
     const fixture = await loadElectronFixtureModule();
-    expect(typeof fixture?.terminateElectronProcess).toBe('function');
-    if (!fixture?.terminateElectronProcess) return;
 
     const executablePath = resolve('C:\\project\\electron.exe');
     const child = fakeElectronProcess(6117, executablePath);
@@ -1368,8 +1973,6 @@ test.describe('直接启动 Electron 的 CDP 夹具边界', () => {
 
   test('taskkill 成功且原 child 在监听前按信号退出时不误报仍存活', async () => {
     const fixture = await loadElectronFixtureModule();
-    expect(typeof fixture?.terminateElectronProcess).toBe('function');
-    if (!fixture?.terminateElectronProcess) return;
 
     const executablePath = resolve('C:\\project\\electron.exe');
     const child = fakeElectronProcess(6104, executablePath);
@@ -1406,8 +2009,6 @@ test.describe('直接启动 Electron 的 CDP 夹具边界', () => {
 
   test('taskkill 超时时回退 SIGKILL，原 child 仍存活则明确失败', async () => {
     const fixture = await loadElectronFixtureModule();
-    expect(typeof fixture?.terminateElectronProcess).toBe('function');
-    if (!fixture?.terminateElectronProcess) return;
 
     const executablePath = resolve('C:\\project\\electron.exe');
     const child = fakeElectronProcess(6102, executablePath);
@@ -1440,8 +2041,6 @@ test.describe('直接启动 Electron 的 CDP 夹具边界', () => {
 
   test('taskkill helper 收到 SIGKILL 后仍不退出时停止后续探针与破坏操作', async () => {
     const fixture = await loadElectronFixtureModule();
-    expect(typeof fixture?.terminateElectronProcess).toBe('function');
-    if (!fixture?.terminateElectronProcess) return;
 
     const executablePath = resolve('C:\\project\\electron.exe');
     const child = fakeElectronProcess(6106, executablePath);
@@ -1480,8 +2079,6 @@ test.describe('直接启动 Electron 的 CDP 夹具边界', () => {
 
   test('路径不匹配时在启动 taskkill 或发送信号前拒绝，绝不误伤其他进程', async () => {
     const fixture = await loadElectronFixtureModule();
-    expect(typeof fixture?.terminateElectronProcess).toBe('function');
-    if (!fixture?.terminateElectronProcess) return;
 
     const child = fakeElectronProcess(6103, resolve('C:\\other\\electron.exe'));
     let spawnCalls = 0;
@@ -1509,8 +2106,6 @@ test.describe('直接启动 Electron 的 CDP 夹具边界', () => {
 
   test('测试夹具直接 spawn 后连接 CDP，并在释放时按精确 Electron 路径和 PID 清理', async () => {
     const fixtureModule = await loadElectronFixtureModule();
-    expect(typeof fixtureModule?.createElectronAppFixture).toBe('function');
-    if (!fixtureModule?.createElectronAppFixture) return;
 
     const workspaceRoot = resolve(process.cwd());
     const requireFromDesktop = createRequire(resolve(workspaceRoot, 'apps/desktop/package.json'));
@@ -1592,8 +2187,6 @@ test.describe('直接启动 Electron 的 CDP 夹具边界', () => {
 
   test('进程终止使用自身有界契约，不被通用 operationTimeoutMs 提前截断', async () => {
     const fixtureModule = await loadElectronFixtureModule();
-    expect(typeof fixtureModule?.createElectronAppFixture).toBe('function');
-    if (!fixtureModule?.createElectronAppFixture) return;
 
     const workspaceRoot = resolve(process.cwd());
     const requireFromDesktop = createRequire(resolve(workspaceRoot, 'apps/desktop/package.json'));
@@ -1640,8 +2233,6 @@ test.describe('直接启动 Electron 的 CDP 夹具边界', () => {
 
   test('CDP 连接失败时仍清理精确进程和临时目录且不留残余', async () => {
     const fixtureModule = await loadElectronFixtureModule();
-    expect(typeof fixtureModule?.createElectronAppFixture).toBe('function');
-    if (!fixtureModule?.createElectronAppFixture) return;
 
     const workspaceRoot = resolve(process.cwd());
     const requireFromDesktop = createRequire(resolve(workspaceRoot, 'apps/desktop/package.json'));
@@ -1680,8 +2271,6 @@ test.describe('直接启动 Electron 的 CDP 夹具边界', () => {
 
   test('清理阶段超时时报告阶段与脱敏 stderr，并继续回收进程和目录', async () => {
     const fixtureModule = await loadElectronFixtureModule();
-    expect(typeof fixtureModule?.createElectronAppFixture).toBe('function');
-    if (!fixtureModule?.createElectronAppFixture) return;
 
     const workspaceRoot = resolve(process.cwd());
     const requireFromDesktop = createRequire(resolve(workspaceRoot, 'apps/desktop/package.json'));
@@ -1750,8 +2339,6 @@ test.describe('直接启动 Electron 的 CDP 夹具边界', () => {
 
   test('首次 dispose 进程清理失败后保留资源，第二次可重试并完成目录清理', async () => {
     const fixtureModule = await loadElectronFixtureModule();
-    expect(typeof fixtureModule?.createElectronAppFixture).toBe('function');
-    if (!fixtureModule?.createElectronAppFixture) return;
 
     const workspaceRoot = resolve(process.cwd());
     const requireFromDesktop = createRequire(resolve(workspaceRoot, 'apps/desktop/package.json'));
@@ -1805,8 +2392,6 @@ test.describe('直接启动 Electron 的 CDP 夹具边界', () => {
 
   test('create 的 CDP 主错误与清理错误并发时以主错误为 cause 并保留清理诊断', async () => {
     const fixtureModule = await loadElectronFixtureModule();
-    expect(typeof fixtureModule?.createElectronAppFixture).toBe('function');
-    if (!fixtureModule?.createElectronAppFixture) return;
 
     const workspaceRoot = resolve(process.cwd());
     const requireFromDesktop = createRequire(resolve(workspaceRoot, 'apps/desktop/package.json'));
@@ -1849,8 +2434,6 @@ test.describe('直接启动 Electron 的 CDP 夹具边界', () => {
 
   test('restart 的 CDP 主错误与新进程清理错误并发时仍保留主错误', async () => {
     const fixtureModule = await loadElectronFixtureModule();
-    expect(typeof fixtureModule?.createElectronAppFixture).toBe('function');
-    if (!fixtureModule?.createElectronAppFixture) return;
 
     const workspaceRoot = resolve(process.cwd());
     const requireFromDesktop = createRequire(resolve(workspaceRoot, 'apps/desktop/package.json'));
@@ -1913,8 +2496,6 @@ test.describe('直接启动 Electron 的 CDP 夹具边界', () => {
 
   test('重启时复用隔离目录、重新分配回环端口并分别清理精确 PID', async () => {
     const fixtureModule = await loadElectronFixtureModule();
-    expect(typeof fixtureModule?.createElectronAppFixture).toBe('function');
-    if (!fixtureModule?.createElectronAppFixture) return;
 
     const workspaceRoot = resolve(process.cwd());
     const requireFromDesktop = createRequire(resolve(workspaceRoot, 'apps/desktop/package.json'));
@@ -2001,8 +2582,6 @@ test.describe('直接启动 Electron 的 CDP 夹具边界', () => {
 
   test('restart 等待钩子期间 dispose 开始后不得再启动新进程', async () => {
     const fixtureModule = await loadElectronFixtureModule();
-    expect(typeof fixtureModule?.createElectronAppFixture).toBe('function');
-    if (!fixtureModule?.createElectronAppFixture) return;
 
     const workspaceRoot = resolve(process.cwd());
     const requireFromDesktop = createRequire(resolve(workspaceRoot, 'apps/desktop/package.json'));
@@ -2068,8 +2647,6 @@ test.describe('直接启动 Electron 的 CDP 夹具边界', () => {
 
   test('restart 分配端口期间 dispose 完成后不得再 spawn', async () => {
     const fixtureModule = await loadElectronFixtureModule();
-    expect(typeof fixtureModule?.createElectronAppFixture).toBe('function');
-    if (!fixtureModule?.createElectronAppFixture) return;
 
     const workspaceRoot = resolve(process.cwd());
     const requireFromDesktop = createRequire(resolve(workspaceRoot, 'apps/desktop/package.json'));
@@ -2141,8 +2718,6 @@ test.describe('直接启动 Electron 的 CDP 夹具边界', () => {
 test.describe('真实 Electron CDP smoke', () => {
   test('直接启动构建产物并连接可见桌宠 Renderer', async () => {
     const fixtureModule = await loadElectronFixtureModule();
-    expect(typeof fixtureModule?.createElectronAppFixture).toBe('function');
-    if (!fixtureModule?.createElectronAppFixture) return;
 
     const fixture = await fixtureModule.createElectronAppFixture({
       workspaceRoot: resolve(process.cwd()),
@@ -2150,17 +2725,9 @@ test.describe('真实 Electron CDP smoke', () => {
       launchTimeoutMs: 15_000
     });
     try {
-      const rendererPages = (): Page[] => fixture.browser.contexts()
-        .flatMap(context => context.pages());
-      await expect.poll(() => rendererPages().some(page => (
-        new URL(page.url()).searchParams.get('view') === 'pet'
-      ))).toBe(true);
-      const petPage = rendererPages().find(page => (
-        new URL(page.url()).searchParams.get('view') === 'pet'
-      ));
-      expect(petPage).toBeDefined();
-      await expect(petPage!.getByRole('main', { name: 'AI Pet 桌宠' })).toBeVisible();
-      const layout = await petPage!.evaluate(() => {
+      const petPage = await waitForRendererPage(fixture, 'pet');
+      await expect(petPage.getByRole('main', { name: 'AI Pet 桌宠' })).toBeVisible();
+      const layout = await petPage.evaluate(() => {
         const measure = (selector: string): { width: number; height: number } => {
           const element = document.querySelector<HTMLElement>(selector);
           if (!element) throw new Error(`缺少布局元素：${selector}`);
@@ -2205,11 +2772,9 @@ test.describe('真实 Electron CDP smoke', () => {
 });
 
 test.describe('真实桌宠像素命中与左键拖拽', () => {
-  test('像素命中探针保持透明穿透、可见拖拽和左键无聊天副作用', async () => {
+  test('像素命中探针保持透明穿透且不建立 Renderer 拖拽会话', async () => {
     test.setTimeout(120_000);
     const fixtureModule = await loadElectronFixtureModule();
-    expect(typeof fixtureModule?.createElectronAppFixture).toBe('function');
-    if (!fixtureModule?.createElectronAppFixture) return;
 
     const fixture = await fixtureModule.createElectronAppFixture({
       workspaceRoot: resolve(process.cwd()),
@@ -2217,18 +2782,7 @@ test.describe('真实桌宠像素命中与左键拖拽', () => {
       launchTimeoutMs: 15_000
     });
     try {
-      const pages = (): Page[] => fixture.browser.contexts()
-        .flatMap(context => context.pages());
-      await expect.poll(() => pages().some(page => {
-        try {
-          return new URL(page.url()).searchParams.get('view') === 'pet';
-        } catch {
-          return false;
-        }
-      })).toBe(true);
-      const pet = pages().find(page => (
-        new URL(page.url()).searchParams.get('view') === 'pet'
-      ))!;
+      const pet = await waitForRendererPage(fixture, 'pet');
       await pet.emulateMedia({ reducedMotion: 'reduce' });
       await expect(pet.getByRole('main', { name: 'AI Pet 桌宠' })).toBeVisible();
       await expect(pet.locator('.character-player')).toHaveAttribute(
@@ -2238,48 +2792,30 @@ test.describe('真实桌宠像素命中与左键拖拽', () => {
       );
       const shell = pet.getByRole('main', { name: 'AI Pet 桌宠' });
       const dispatchPointer = async (
-        type: 'pointermove' | 'pointerdown' | 'pointerup' | 'contextmenu',
-        point: { x: number; y: number },
-        button = 0,
-        buttons = 0
+        point: { x: number; y: number }
       ): Promise<void> => {
         await shell.evaluate((element, input) => {
-          const EventConstructor = input.type === 'contextmenu'
-            ? MouseEvent
-            : PointerEvent;
-          element.dispatchEvent(new EventConstructor(input.type, {
+          element.dispatchEvent(new PointerEvent('pointermove', {
             bubbles: true,
             cancelable: true,
-            clientX: input.point.x,
-            clientY: input.point.y,
-            button: input.button,
-            buttons: input.buttons,
-            ...(input.type === 'contextmenu' ? {} : { pointerId: 41 })
+            clientX: input.x,
+            clientY: input.y,
+            pointerId: 41
           }));
-        }, { type, point, button, buttons });
+        }, point);
       };
 
       const transparent = { x: 1, y: 1 };
-      await dispatchPointer('pointermove', transparent);
-      await expect.poll(() => fixture.getPetInteractionProbe()).toEqual({
+      await dispatchPointer(transparent);
+      await expect.poll(() => fixture.getPetInteractionProbe()).toMatchObject({
         passthrough: true,
         dragging: false
       });
-      await dispatchPointer('pointerdown', transparent, 0, 1);
-      await dispatchPointer('pointerup', transparent);
-      await dispatchPointer('pointerdown', transparent, 0, 1);
-      await dispatchPointer('pointerup', transparent);
-      await dispatchPointer('contextmenu', transparent, 2);
-      await expect.poll(() => fixture.getPetInteractionProbe()).toEqual({
-        passthrough: true,
-        dragging: false
-      });
-
       let visible: { x: number; y: number } | undefined;
       for (let y = 6; y < 220 && !visible; y += 8) {
         for (let x = 6; x < 180; x += 8) {
           const candidate = { x, y };
-          await dispatchPointer('pointermove', candidate);
+          await dispatchPointer(candidate);
           const probe = await fixture.getPetInteractionProbe();
           if (!probe.passthrough) {
             visible = candidate;
@@ -2290,50 +2826,1028 @@ test.describe('真实桌宠像素命中与左键拖拽', () => {
       expect(visible, '应在官方默认角色渲染区域中命中可见像素').toBeDefined();
       if (!visible) return;
 
-      const initialState = await shell.getAttribute('data-character-state');
       await expect(pet.getByRole('button', {
         name: '打开与 AI Pet 的聊天'
       })).toHaveCount(0);
-      await dispatchPointer('pointermove', visible);
-      await dispatchPointer('pointerdown', visible, 0, 1);
-      await expect.poll(() => fixture.getPetInteractionProbe()).toEqual({
+      await dispatchPointer(visible);
+      await expect.poll(() => fixture.getPetInteractionProbe()).toMatchObject({
         passthrough: false,
-        dragging: true
-      });
-      await dispatchPointer('pointermove', transparent, 0, 1);
-      await expect.poll(() => fixture.getPetInteractionProbe()).toEqual({
-        passthrough: false,
-        dragging: true
-      });
-      await dispatchPointer('pointerup', transparent);
-      await expect.poll(() => fixture.getPetInteractionProbe()).toEqual({
-        passthrough: true,
         dragging: false
       });
-
-      await dispatchPointer('pointermove', visible);
-      await dispatchPointer('pointerdown', visible, 0, 1);
-      await dispatchPointer('pointerup', visible);
-      await dispatchPointer('pointerdown', visible, 0, 1);
-      await dispatchPointer('pointerup', visible);
-      await expect(shell).toHaveAttribute(
-        'data-character-state',
-        initialState ?? 'idle'
-      );
-      await dispatchPointer('contextmenu', visible, 2);
-      await pet.keyboard.press('Escape');
     } finally {
       await fixture.dispose();
     }
   });
 });
 
+test.describe('固定尺寸视觉几何', () => {
+  test('桌宠滚轮输入不改变 Main 档位或持久化默认尺寸', async () => {
+    const fixture = await createGeometryFixture(runtimeDiagnosticKey());
+    try {
+      const pet = await waitForReadyPet(fixture);
+      const before = await waitForGeometry(fixture);
+      const shell = pet.getByRole('main', { name: 'AI Pet 桌宠' });
+      const bounds = await shell.boundingBox();
+      if (!bounds) throw new Error('桌宠窗口不可见');
+
+      await pet.mouse.move(bounds.x + bounds.width / 2, bounds.y + bounds.height / 2);
+      await pet.mouse.wheel(0, -600);
+      await pet.waitForTimeout(300);
+
+      const after = await waitForGeometry(fixture);
+      const placement = await readPlacement(fixture.userDataDirectory, 'builtin-default');
+      expect(before.scaleTick).toBe(10);
+      expect(after.scaleTick).toBe(10);
+      expect(placement?.scale).toBe(1);
+    } finally {
+      await fixture.dispose();
+    }
+  });
+  type Placement = PetPlacementForE2e;
+  type GeometryProbe = NonNullable<Awaited<ReturnType<AppFixture['getMainE2eState']>>['geometry']>;
+  type PointRatio = Readonly<{ x: number; y: number }>;
+  type WorkAreaEdge = 'left' | 'right' | 'top' | 'bottom';
+
+  const createGeometryFixture = async (apiKey: string): Promise<AppFixture> => (
+    (await loadElectronFixtureModule()).createElectronAppFixture({
+      workspaceRoot: resolve(process.cwd()),
+      apiKey,
+      launchTimeoutMs: 15_000,
+      enableSoftwareRasterizer: true
+    })
+  );
+
+  const waitForReadyPet = async (
+    fixture: AppFixture,
+    timeout = 20_000
+  ): Promise<Page> => {
+    const pet = await waitForRendererPage(fixture, 'pet', timeout);
+    await expect(pet.locator('.character-player')).toHaveAttribute('data-status', 'ready', {
+      timeout
+    });
+    return pet;
+  };
+
+  const configureGeometryProvider = async (
+    pet: Page,
+    input: Readonly<{ baseUrl: string; apiKey: string; openChat: boolean }>
+  ): Promise<void> => {
+    await pet.evaluate(async ({ baseUrl, apiKey, openChat }) => {
+      await window.myself.saveProviderProfile({
+        profile: {
+          id: 'visual-geometry-e2e', displayName: '视觉几何 E2E', mode: 'custom',
+          protocol: 'openai-compatible', baseUrl, modelId: 'visual-geometry-model',
+          additionalParameters: {}, capabilities: ['chat', 'tools']
+        },
+        secret: apiKey,
+        persistSecret: true
+      });
+      await window.myself.saveModelRoute({
+        primaryProfileId: 'visual-geometry-e2e',
+        chatProfileId: 'visual-geometry-e2e',
+        agentProfileId: 'visual-geometry-e2e',
+        visionProfileId: null,
+        fallbackProfileIds: [],
+        allowCrossProviderFallback: false
+      });
+      await window.myself.savePrivacySettings({
+        dataCategories: { memory: false },
+        longTermMemory: false,
+        proactivityMode: 'passive'
+      });
+      if (openChat) await window.myself.openChat();
+    }, input);
+  };
+
+  const readPlacement = async (
+    userDataDirectory: string,
+    characterId: string
+  ): Promise<Placement | null> => {
+    try {
+      const settings = JSON.parse(
+        await readFile(join(userDataDirectory, 'settings.json'), 'utf8')
+      ) as {
+        petPlacementState?: {
+          kind?: string;
+          placements?: Placement[];
+        };
+      };
+      if (settings.petPlacementState?.kind !== 'ready') return null;
+      return settings.petPlacementState.placements?.find(
+        placement => placement.characterId === characterId
+      ) ?? null;
+    } catch {
+      return null;
+    }
+  };
+
+  const sameFoot = (left: Placement | null, right: Placement | null): boolean => Boolean(
+    left && right
+    && left.footAnchorDip.x === right.footAnchorDip.x
+    && left.footAnchorDip.y === right.footAnchorDip.y
+  );
+
+  const waitForGeometry = async (fixture: AppFixture): Promise<GeometryProbe> => {
+    await expect.poll(async () => {
+      const state = await fixture.getMainE2eState();
+      return {
+        geometryReady: state.geometry !== null,
+        nativeDragging: state.petNativeDragging,
+        bounds: state.petWindowBoundsDip
+      };
+    }).toMatchObject({ geometryReady: true, nativeDragging: false });
+    const geometry = (await fixture.getMainE2eState()).geometry;
+    if (!geometry) throw new Error('缺少视觉几何 E2E 探针');
+    return geometry;
+  };
+
+  const movePetToWorkAreaCenter = async (
+    fixture: AppFixture,
+    pet: Page,
+    characterId: string
+  ): Promise<Placement> => {
+    const before = await readPlacement(fixture.userDataDirectory, characterId);
+    await pet.evaluate(() => {
+      const currentScreen = window.screen as Screen & { availLeft?: number; availTop?: number };
+      const availableLeft = currentScreen.availLeft ?? 0;
+      const availableTop = currentScreen.availTop ?? 0;
+      window.moveTo(
+        Math.round(availableLeft + (currentScreen.availWidth - window.outerWidth) / 2),
+        Math.round(availableTop + (currentScreen.availHeight - window.outerHeight) / 2)
+      );
+    });
+    await expect.poll(async () => {
+      const current = await readPlacement(fixture.userDataDirectory, characterId);
+      return Boolean(current && (!before || !sameFoot(current, before)));
+    }).toBe(true);
+    await expect.poll(async () => (
+      await fixture.getMainE2eState()
+    ).geometry?.outOfBounds).toBe(false);
+    const centered = await readPlacement(fixture.userDataDirectory, characterId);
+    if (!centered) throw new Error('桌宠移动到工作区中心后没有持久脚底');
+    return centered;
+  };
+
+  /** 复用正式 alpha hit，不从 Canvas 或几何摘要猜测可见像素。 */
+  const findVisiblePointRatio = async (
+    fixture: AppFixture,
+    pet: Page
+  ): Promise<PointRatio> => {
+    const shell = pet.getByRole('main', { name: 'AI Pet 桌宠' });
+    await pet.mouse.move(1, 1);
+    await expect.poll(() => fixture.getPetInteractionProbe()).toMatchObject({
+      passthrough: true
+    });
+    const viewport = await shell.evaluate(element => {
+      const rect = element.getBoundingClientRect();
+      return { width: rect.width, height: rect.height };
+    });
+    const candidates: Array<{ x: number; y: number }> = [];
+    for (let y = 6; y < viewport.height; y += 8) {
+      for (let x = 6; x < viewport.width; x += 8) candidates.push({ x, y });
+    }
+    candidates.sort((left, right) => (
+      Math.hypot(left.x - viewport.width / 2, left.y - viewport.height / 2)
+      - Math.hypot(right.x - viewport.width / 2, right.y - viewport.height / 2)
+    ));
+    for (const { x, y } of candidates) {
+      await pet.mouse.move(x, y);
+      // 穿透 IPC 跨 Renderer/Main 串行确认，不能把上一候选的迟到状态归给当前像素。
+      await pet.waitForTimeout(50);
+      if (!(await fixture.getPetInteractionProbe()).passthrough) {
+        return { x: x / viewport.width, y: y / viewport.height };
+      }
+    }
+    throw new Error('官方默认角色没有可供滚轮验收的 alpha 命中像素');
+  };
+
+  const hoverVisiblePoint = async (
+    fixture: AppFixture,
+    pet: Page,
+    ratio: PointRatio
+  ): Promise<void> => {
+    const shell = pet.getByRole('main', { name: 'AI Pet 桌宠' });
+    const point = await shell.evaluate((element, normalized) => {
+      const rect = element.getBoundingClientRect();
+      return {
+        x: Math.max(1, Math.min(rect.width - 1, rect.width * normalized.x)),
+        y: Math.max(1, Math.min(rect.height - 1, rect.height * normalized.y))
+      };
+    }, ratio);
+    await pet.mouse.move(point.x, point.y);
+    await expect.poll(() => fixture.getPetInteractionProbe()).toMatchObject({
+      passthrough: false
+    });
+  };
+
+
+  /** 只把全局窗口事实留在 Renderer 内组合，测试进程仅接收贴边布尔。 */
+  const touchesWorkAreaEdge = async (
+    pet: Page,
+    geometry: GeometryProbe,
+    edge: WorkAreaEdge
+  ): Promise<boolean> => pet.evaluate(({ visual, targetEdge }) => {
+    const currentScreen = window.screen as Screen & { availLeft?: number; availTop?: number };
+    const availableLeft = currentScreen.availLeft ?? 0;
+    const availableTop = currentScreen.availTop ?? 0;
+    const availableRight = availableLeft + currentScreen.availWidth;
+    const availableBottom = availableTop + currentScreen.availHeight;
+    const visualLeft = window.screenX + visual.x * window.outerWidth;
+    const visualTop = window.screenY + visual.y * window.outerHeight;
+    const visualRight = visualLeft + visual.width * window.outerWidth;
+    const visualBottom = visualTop + visual.height * window.outerHeight;
+    const toleranceDip = 1.1;
+    if (targetEdge === 'left') return Math.abs(visualLeft - availableLeft) <= toleranceDip;
+    if (targetEdge === 'right') return Math.abs(visualRight - availableRight) <= toleranceDip;
+    if (targetEdge === 'top') return Math.abs(visualTop - availableTop) <= toleranceDip;
+    return Math.abs(visualBottom - availableBottom) <= toleranceDip;
+  }, {
+    visual: geometry.visualBoundsInWindowRatio,
+    targetEdge: edge
+  });
+
+
+
+
+});
+
+test.describe('角色工作台布局分隔器', () => {
+  const workspaceRoot = resolve(process.cwd());
+  let fixtureModule: ElectronFixtureModule;
+
+  test.beforeAll(async () => {
+    fixtureModule = await loadElectronFixtureModule();
+  });
+
+  const openWorkshop = async (fixture: AppFixture): Promise<Page> => {
+    const pet = await waitForRendererPage(fixture, 'pet', 15_000);
+    await pet.evaluate(() => window.myself.openCharacterWorkshop());
+    const workshop = await waitForRendererPage(fixture, 'characters', 15_000);
+    await expect(workshop.getByRole('separator')).toHaveCount(4);
+    return workshop;
+  };
+
+  const dragSplitter = async (
+    page: Page,
+    name: string,
+    delta: Readonly<{ x: number; y: number }>
+  ): Promise<void> => {
+    const splitter = page.getByRole('separator', { name });
+    const box = await splitter.boundingBox();
+    if (!box) throw new Error(`分隔器不可见：${name}`);
+    const start = { x: box.x + box.width / 2, y: box.y + box.height / 2 };
+    await page.mouse.move(start.x, start.y);
+    await page.mouse.down();
+    await page.mouse.move(start.x + delta.x, start.y + delta.y, { steps: 4 });
+    await page.mouse.up();
+  };
+
+  test('四条分隔器真实拖动、重开恢复且窄屏回退无空轨道', async () => {
+    test.setTimeout(90_000);
+    const fixture = await fixtureModule.createElectronAppFixture({
+      workspaceRoot,
+      apiKey: runtimeDiagnosticKey(),
+      launchTimeoutMs: 15_000,
+      enableSoftwareRasterizer: true,
+      prepareUserData: async directories => {
+        const settings = new SettingsStore(
+          join(directories.userDataDirectory, 'settings.json'),
+          async () => false
+        );
+        await settings.saveWorkshopLayout({
+          leftWidth: 900,
+          rightWidth: 600,
+          sidebarTopHeight: 300,
+          stageHeight: 470
+        });
+      }
+    });
+
+    try {
+      const workshop = await openWorkshop(fixture);
+      const before = await workshop.evaluate(() => {
+        const rect = (selector: string) => document.querySelector(selector)!.getBoundingClientRect();
+        return {
+          left: rect('.workshop-sidebar').width,
+          right: rect('.workshop-inspector').width,
+          character: rect('.character-section').height,
+          preview: rect('.preview-workspace').height
+        };
+      });
+
+      const rightKeyboardSplitter = workshop.getByRole('separator', {
+        name: '调整属性侧栏宽度'
+      });
+      const keyboardStartBox = await rightKeyboardSplitter.boundingBox();
+      if (!keyboardStartBox) throw new Error('右侧分隔器不可见');
+      await rightKeyboardSplitter.press('ArrowRight');
+      await expect.poll(() => workshop.locator('.workshop-inspector').evaluate(element => (
+        element.getBoundingClientRect().width
+      ))).toBeLessThanOrEqual(before.right - 7);
+      const keyboardRightWidth = await workshop.locator('.workshop-inspector').evaluate(element => (
+        element.getBoundingClientRect().width
+      ));
+      expect(keyboardRightWidth).toBeGreaterThanOrEqual(before.right - 9);
+      const keyboardRightBox = await rightKeyboardSplitter.boundingBox();
+      expect(keyboardRightBox?.x).toBeGreaterThanOrEqual(keyboardStartBox.x + 7);
+      await rightKeyboardSplitter.press('Shift+ArrowRight');
+      await expect.poll(() => workshop.locator('.workshop-inspector').evaluate(element => (
+        element.getBoundingClientRect().width
+      ))).toBeLessThanOrEqual(before.right - 39);
+      const keyboardShiftWidth = await workshop.locator('.workshop-inspector').evaluate(element => (
+        element.getBoundingClientRect().width
+      ));
+      expect(keyboardShiftWidth).toBeGreaterThanOrEqual(before.right - 41);
+
+      const leftBeforeDrag = await workshop.locator('.workshop-sidebar').evaluate(element => (
+        element.getBoundingClientRect().width
+      ));
+      await dragSplitter(workshop, '调整角色侧栏宽度', { x: -8, y: 0 });
+      await expect.poll(() => workshop.locator('.workshop-sidebar').evaluate(element => (
+        element.getBoundingClientRect().width
+      ))).toBeLessThanOrEqual(leftBeforeDrag - 7);
+      const leftAfterDrag = await workshop.locator('.workshop-sidebar').evaluate(element => (
+        element.getBoundingClientRect().width
+      ));
+      expect(leftAfterDrag).toBeGreaterThanOrEqual(leftBeforeDrag - 9);
+      const rightBeforeDrag = await workshop.locator('.workshop-inspector').evaluate(element => (
+        element.getBoundingClientRect().width
+      ));
+      await dragSplitter(workshop, '调整属性侧栏宽度', { x: 8, y: 0 });
+      await expect.poll(() => workshop.locator('.workshop-inspector').evaluate(element => (
+        element.getBoundingClientRect().width
+      ))).toBeLessThanOrEqual(rightBeforeDrag - 7);
+      const rightAfterDrag = await workshop.locator('.workshop-inspector').evaluate(element => (
+        element.getBoundingClientRect().width
+      ));
+      expect(rightAfterDrag).toBeGreaterThanOrEqual(rightBeforeDrag - 9);
+      await dragSplitter(workshop, '调整角色区与状态区高度', { x: 0, y: 24 });
+      await dragSplitter(workshop, '调整预览区与时间轴高度', { x: 0, y: -24 });
+
+      const after = await workshop.evaluate(() => {
+        const columns = document.querySelector<HTMLElement>('.workshop-columns')!;
+        const rect = (selector: string) => document.querySelector(selector)!.getBoundingClientRect();
+        return {
+          left: rect('.workshop-sidebar').width,
+          right: rect('.workshop-inspector').width,
+          character: rect('.character-section').height,
+          preview: rect('.preview-workspace').height,
+          values: [
+            '--workshop-left-width',
+            '--workshop-right-width',
+            '--workshop-sidebar-top-height',
+            '--workshop-stage-height'
+          ].map(name => columns.style.getPropertyValue(name))
+        };
+      });
+      expect(rightAfterDrag).toBeLessThan(rightBeforeDrag);
+      expect(after.character).toBeGreaterThan(before.character + 8);
+      expect(after.preview).toBeLessThan(before.preview - 8);
+
+      const workshopClosed = workshop.waitForEvent('close');
+      await workshop.evaluate(() => window.close());
+      await workshopClosed;
+      const reopened = await openWorkshop(fixture);
+      await expect.poll(() => reopened.evaluate(() => {
+        const columns = document.querySelector<HTMLElement>('.workshop-columns')!;
+        return [
+          '--workshop-left-width',
+          '--workshop-right-width',
+          '--workshop-sidebar-top-height',
+          '--workshop-stage-height'
+        ].map(name => columns.style.getPropertyValue(name));
+      })).toEqual(after.values);
+
+      await reopened.evaluate(() => window.resizeTo(900, 620));
+      await expect(reopened.getByRole('separator')).toHaveCount(0);
+      await expect(reopened.locator('.workshop-inspector')).toBeVisible();
+      const narrowTracks = await reopened.locator('.workshop-columns').evaluate(element => (
+        getComputedStyle(element).gridTemplateColumns
+      ));
+      expect(narrowTracks.split(' ').filter(Boolean)).toHaveLength(2);
+      const narrowPanels = await reopened.evaluate(() => {
+        const rect = (selector: string) => document.querySelector(selector)!.getBoundingClientRect();
+        return {
+          leftWidth: rect('.workshop-sidebar').width,
+          centerWidth: rect('.workshop-stage').width,
+          rightWidth: rect('.workshop-inspector').width,
+          characterHeight: rect('.character-section').height,
+          stateHeight: rect('.state-section').height,
+          previewHeight: rect('.preview-workspace').height,
+          timelineHeight: rect('.action-timeline, .timeline-empty').height
+        };
+      });
+      expect(narrowPanels.leftWidth).toBeGreaterThanOrEqual(220);
+      expect(narrowPanels.centerWidth).toBeGreaterThanOrEqual(360);
+      expect(narrowPanels.rightWidth).toBeGreaterThanOrEqual(360);
+      expect(narrowPanels.characterHeight).toBeGreaterThanOrEqual(220);
+      expect(narrowPanels.stateHeight).toBeGreaterThanOrEqual(220);
+      expect(narrowPanels.previewHeight).toBeGreaterThanOrEqual(280);
+      expect(narrowPanels.timelineHeight).toBeGreaterThanOrEqual(150);
+
+      await reopened.evaluate(() => window.resizeTo(1_120, 760));
+      await expect(reopened.getByRole('separator')).toHaveCount(4);
+      await expect.poll(() => reopened.locator('.workshop-columns').evaluate(element => (
+        (element as HTMLElement).style.getPropertyValue('--workshop-left-width')
+      ))).toBe(after.values[0]);
+    } finally {
+      await fixture.dispose();
+    }
+  });
+});
+
+test.describe('角色工作台双皮肤包兼容', () => {
+  const workspaceRoot = resolve(process.cwd());
+  const characterId = 'e2e-safe-character';
+  let fixtureModule: ElectronFixtureModule;
+
+  test.beforeAll(async () => {
+    fixtureModule = await loadElectronFixtureModule();
+  });
+
+  const openWorkshop = async (fixture: AppFixture): Promise<Page> => {
+    const pet = await waitForRendererPage(fixture, 'pet', 15_000);
+    await pet.evaluate(() => window.myself.openCharacterWorkshop());
+    return waitForRendererPage(fixture, 'characters', 15_000);
+  };
+
+  const importFixtureCharacter = async (workshop: Page): Promise<void> => {
+    await workshop.getByRole('button', { name: '导入角色包' }).click({
+      timeout: 15_000
+    });
+    const character = workshop.locator(`[data-character-id="${characterId}"]`);
+    await expect(character).toBeVisible({ timeout: 15_000 });
+    await character.getByRole('button', { name: /^E2E 安全角色/u }).click({
+      timeout: 10_000
+    });
+  };
+
+  const selectIdleAction = async (workshop: Page): Promise<void> => {
+    const idleState = workshop.getByRole('list', { name: '状态与动作列表' })
+      .locator(':scope > li')
+      .filter({ has: workshop.getByRole('button', { name: /^待机/u }) })
+      .first();
+    await idleState.getByRole('button', { name: /^待机/u }).first().click({
+      timeout: 10_000
+    });
+    await idleState.getByRole('list', { name: '待机动作' })
+      .getByRole('button', { name: /^待机/u })
+      .click({ timeout: 10_000 });
+  };
+
+  const readV2PackageState = async (fixture: AppFixture) => {
+    const root = join(fixture.userDataDirectory, 'characters', characterId);
+    const [draft, manifest] = await Promise.all([
+      readFile(join(root, 'draft', 'draft.json'), 'utf8'),
+      readFile(join(root, 'compiled', 'manifest.json'), 'utf8')
+    ]);
+    return {
+      draft: JSON.parse(draft) as {
+        defaultSkinId: string;
+        skins: Array<{ id: string }>;
+      },
+      manifest: JSON.parse(manifest) as {
+        defaultSkinId: string;
+        skins: Array<{
+          id: string;
+          presentations: Array<{
+            actionId: string;
+            playbackRate?: number;
+            mirrorX?: boolean;
+          }>;
+        }>;
+      }
+    };
+  };
+
+  const expectWinterPackageState = async (fixture: AppFixture): Promise<void> => {
+    const { draft, manifest } = await readV2PackageState(fixture);
+    expect(draft.defaultSkinId).toBe('winter');
+    expect(draft.skins.map(skin => skin.id)).toEqual(['default', 'winter']);
+    expect(manifest.defaultSkinId).toBe('winter');
+    expect(manifest.skins.map(skin => skin.id)).toEqual(['default', 'winter']);
+    expect(manifest.skins[1]?.presentations.find(
+      presentation => presentation.actionId === 'safe-idle-action'
+    )).toMatchObject({ playbackRate: 1.5, mirrorX: true });
+  };
+
+  const expectWinterRuntime = async (fixture: AppFixture): Promise<void> => {
+    const pet = await waitForRendererPage(fixture, 'pet', 15_000);
+    await expect.poll(async () => pet.evaluate(async () => {
+      const snapshot = await window.myself.getCharacterRuntimeSnapshot();
+      const idleAction = snapshot?.manifest.states
+        .find(state => state.id === 'idle')?.actions[0];
+      return {
+        activeCharacterId: snapshot?.activeCharacterId ?? null,
+        playbackRate: idleAction?.playbackRate ?? null,
+        mirrorX: idleAction?.mirrorX ?? null
+      };
+    }), { timeout: 15_000 }).toEqual({
+      activeCharacterId: characterId,
+      playbackRate: 1.5,
+      mirrorX: true
+    });
+  };
+
+  test('真实导入、编译、导出与回导保留双皮肤默认运行表现', async () => {
+    test.setTimeout(180_000);
+    const first = await fixtureModule.createElectronAppFixture({
+      workspaceRoot,
+      apiKey: runtimeDiagnosticKey(),
+      launchTimeoutMs: 15_000,
+      enableSoftwareRasterizer: true
+    });
+    try {
+      const workshop = await openWorkshop(first);
+      await importFixtureCharacter(workshop);
+      await expect(workshop.getByRole('heading', { name: '角色', exact: true }))
+        .toBeVisible();
+      await expect(workshop.getByRole('list', { name: '皮肤列表' })).toHaveCount(0);
+      await expect(workshop.getByRole('button', { name: '新增皮肤' })).toHaveCount(0);
+      await selectIdleAction(workshop);
+      const preview = workshop.locator('[data-preview-status]');
+      await expect(preview).toHaveAttribute('data-preview-status', 'ready');
+      await expect(preview).toHaveAttribute('data-preview-speed', '1.5');
+      await expect(preview).toHaveAttribute('data-preview-direction', 'left');
+
+      await workshop.getByRole('button', { name: '编译并发布' }).click();
+      await expect(workshop.getByText('运行版本已编译并发布。'))
+        .toBeVisible({ timeout: 15_000 });
+      await workshop.getByRole('button', {
+        name: '关闭工作台提示：运行版本已编译并发布。'
+      }).click();
+      await expectWinterPackageState(first);
+      await workshop.getByRole('button', { name: '启用角色' }).click();
+      await expect(workshop.getByText('角色已启用。')).toBeVisible({ timeout: 15_000 });
+      await workshop.getByRole('button', {
+        name: '关闭工作台提示：角色已启用。'
+      }).click();
+      await expectWinterRuntime(first);
+
+      await workshop.getByRole('button', { name: '导出角色包' }).click();
+      await expect(workshop.getByText('角色包已导出。')).toBeVisible({ timeout: 15_000 });
+      await workshop.getByRole('button', {
+        name: '关闭工作台提示：角色包已导出。'
+      }).click();
+      const exportedBytes = await readFile(first.characterExportDestination!);
+      expect(exportedBytes.byteLength).toBeGreaterThan(0);
+
+      // 同一 Electron 生命周期内删除已导入角色，再以刚导出的包回导，避免无关的二次启动成本。
+      // 该闭环需要连续两次选择安全包；默认 E2E 队列仍保留 safe→malicious 供安全用例使用。
+      await Promise.all([
+        writeFile(first.safeCharacterPackage!, exportedBytes),
+        writeFile(first.maliciousCharacterPackage!, exportedBytes)
+      ]);
+      await expect(Promise.all([
+        readFile(first.safeCharacterPackage!),
+        readFile(first.maliciousCharacterPackage!)
+      ])).resolves.toEqual([exportedBytes, exportedBytes]);
+      await workshop.locator('[data-character-id="builtin-default"] button')
+        .first()
+        .click({ timeout: 10_000 });
+      await workshop.getByRole('button', { name: '启用角色' }).click({
+        timeout: 10_000
+      });
+      await expect(workshop.getByText('角色已启用。')).toBeVisible({
+        timeout: 15_000
+      });
+      await workshop.getByRole('button', {
+        name: '关闭工作台提示：角色已启用。'
+      }).click();
+      await workshop.getByRole('button', { name: '删除 E2E 安全角色' }).click();
+      const deleteDialog = workshop.getByRole('dialog', {
+        name: '删除角色“E2E 安全角色”'
+      });
+      await deleteDialog.getByRole('button', { name: '确认删除' }).click();
+      await expect(workshop.locator(`[data-character-id="${characterId}"]`))
+        .toHaveCount(0);
+      await importFixtureCharacter(workshop);
+      await expectWinterPackageState(first);
+      await expect(workshop.getByRole('list', { name: '皮肤列表' })).toHaveCount(0);
+      await workshop.getByRole('button', { name: '启用角色' }).click();
+      await expect(workshop.getByText('角色已启用。')).toBeVisible({ timeout: 15_000 });
+      await expectWinterRuntime(first);
+    } finally {
+      await first.dispose();
+    }
+  });
+});
+
+test.describe('角色恢复', () => {
+  const workspaceRoot = resolve(process.cwd());
+  const targetId = 'e2e-safe-character';
+  let fixtureModule: ElectronFixtureModule;
+
+  test.beforeAll(async () => {
+    fixtureModule = await loadElectronFixtureModule();
+  });
+
+  const openWorkshop = async (fixture: AppFixture): Promise<Page> => {
+    const pet = await waitForRendererPage(fixture, 'pet', 15_000);
+    await pet.evaluate(() => window.myself.openCharacterWorkshop());
+    return waitForRendererPage(fixture, 'characters', 15_000);
+  };
+
+  const importSafeCharacter = async (workshop: Page): Promise<void> => {
+    await workshop.getByRole('button', { name: '导入角色包' }).click();
+    await expect(workshop.locator('[data-character-id="e2e-safe-character"]'))
+      .toBeVisible({ timeout: 15_000 });
+  };
+
+  test('非活动角色恢复问题不降级桌宠并只在选中角色时显示', async () => {
+    test.setTimeout(120_000);
+    const brokenDraftBytes = Buffer.from('{"version":1,"phase":"prepared"');
+    const brokenPackageBytes = Buffer.from('{"version":3,"private":"marker-sentinel"');
+    const recoverableId = 'recoverable-import';
+    const recoverableTransactionId = '11111111-1111-4111-8111-111111111111';
+    const fixture = await fixtureModule.createElectronAppFixture({
+      workspaceRoot,
+      apiKey: runtimeDiagnosticKey(),
+      launchTimeoutMs: 15_000,
+      enableSoftwareRasterizer: true,
+      beforeRestart: async directories => {
+        const charactersDirectory = join(directories.userDataDirectory, 'characters');
+        const store = new CharacterStore(charactersDirectory);
+        await store.create(
+          { id: recoverableId, name: '待恢复半安装角色' },
+          { importTransactionId: recoverableTransactionId }
+        );
+        await writeFile(
+          join(charactersDirectory, `.package-import-rollback-${recoverableId}.json`),
+          JSON.stringify({
+            version: 3, characterId: recoverableId,
+            importTransactionId: recoverableTransactionId
+          }),
+          { flag: 'wx' }
+        );
+        await writeFile(
+          join(charactersDirectory, targetId, 'draft', 'draft-transaction.json'),
+          brokenDraftBytes,
+          { flag: 'wx' }
+        );
+        await writeFile(
+          join(charactersDirectory, `.package-import-rollback-${targetId}.json`),
+          brokenPackageBytes,
+          { flag: 'wx' }
+        );
+      }
+    });
+
+    try {
+      const initialWorkshop = await openWorkshop(fixture);
+      await importSafeCharacter(initialWorkshop);
+      await expect(initialWorkshop.locator(`[data-character-id="${targetId}"]`))
+        .toHaveAttribute('data-character-active', 'false');
+      await fixture.restart();
+
+      const pet = await waitForRendererPage(fixture, 'pet', 15_000);
+      await expect(pet.locator('.character-player')).toHaveAttribute(
+        'data-status', 'ready', { timeout: 20_000 }
+      );
+      expect(await pet.evaluate(async () => (
+        (await window.myself.getCharacterRuntimeSnapshot())?.activeCharacterId
+      ))).toBe('builtin-default');
+      const workshop = await openWorkshop(fixture);
+      const snapshot = await workshop.evaluate(async () => (
+        window.myself.getCharacterRecoverySnapshot()
+      ));
+      expect(snapshot.fallbackErrorCode).toBeNull();
+      expect(snapshot.issues).toHaveLength(2);
+      await workshop.locator(`[data-character-id="${targetId}"] button`).first().click();
+      await expect(workshop.getByText(/角色草稿恢复受阻/)).toBeVisible();
+      await expect(workshop.getByText(/角色导入恢复受阻/)).toBeVisible();
+      await workshop.locator('[data-character-id="builtin-default"] button').first().click();
+      await expect(workshop.getByText(/角色草稿恢复受阻/)).toHaveCount(0);
+      await expect(workshop.getByText(/角色导入恢复受阻/)).toHaveCount(0);
+      await expect(pet.getByRole('alert')).toHaveCount(0);
+
+      const serialized = JSON.stringify(snapshot);
+      expect(serialized).not.toContain(fixture.userDataDirectory);
+      expect(serialized).not.toContain('marker-sentinel');
+      expect(serialized).not.toMatch(/hash|token|owner|11111111/iu);
+      const charactersDirectory = join(fixture.userDataDirectory, 'characters');
+      await expect(readFile(join(
+        charactersDirectory, targetId, 'draft', 'draft-transaction.json'
+      ))).resolves.toEqual(brokenDraftBytes);
+      await expect(access(join(charactersDirectory, recoverableId))).rejects.toThrow();
+      const packageEvidence = (await readdir(charactersDirectory))
+        .filter(name => name.startsWith(`.package-import-rollback-${targetId}.json.corrupt-`));
+      expect(packageEvidence).toHaveLength(1);
+      await expect(readFile(join(charactersDirectory, packageEvidence[0]!)))
+        .resolves.toEqual(brokenPackageBytes);
+      await pet.evaluate(() => window.myself.openChat());
+      const chat = await waitForRendererPage(fixture, 'chat', 15_000);
+      await submitChatMessage(chat, '非活动角色恢复后继续聊天');
+      await expect(chat.getByText('请先完成模型服务设置。')).toBeVisible();
+    } finally {
+      await fixture.dispose();
+    }
+  });
+
+  test('活动角色发布恢复受阻后切换官方默认角色并保留证据', async () => {
+    test.setTimeout(120_000);
+    const brokenPublishBytes = Buffer.from([0xff, 0x00, 0x7b, 0x7d]);
+    const fixture = await fixtureModule.createElectronAppFixture({
+      workspaceRoot,
+      apiKey: runtimeDiagnosticKey(),
+      launchTimeoutMs: 15_000,
+      enableSoftwareRasterizer: true,
+      beforeRestart: async directories => {
+        await writeFile(
+          join(directories.userDataDirectory, 'characters', targetId, 'publish-transaction.json'),
+          brokenPublishBytes,
+          { flag: 'wx' }
+        );
+      }
+    });
+
+    try {
+      const initialWorkshop = await openWorkshop(fixture);
+      await importSafeCharacter(initialWorkshop);
+      await initialWorkshop.locator(`[data-character-id="${targetId}"] button`).first().click();
+      await initialWorkshop.getByRole('button', { name: '启用角色' }).click();
+      await expect(initialWorkshop.getByText('角色已启用。')).toBeVisible();
+      await fixture.restart();
+
+      const pet = await waitForRendererPage(fixture, 'pet', 15_000);
+      // 完整行为门禁下恢复扫描可能超过默认 10 秒；等待预算与同组恢复用例保持一致。
+      await expect(pet.locator('.character-player')).toHaveAttribute(
+        'data-status', 'ready', { timeout: 20_000 }
+      );
+      await expect(pet.getByRole('alert')).toContainText('已切换到官方默认角色');
+      await expect(pet.getByRole('button', { name: '打开角色工作室' })).toBeVisible();
+      expect(await pet.evaluate(async () => (
+        (await window.myself.getCharacterRuntimeSnapshot())?.activeCharacterId
+      ))).toBe('builtin-default');
+      await pet.getByRole('button', { name: '打开角色工作室' }).click();
+      const workshop = await waitForRendererPage(fixture, 'characters', 15_000);
+      await expect(workshop.locator('[data-character-id="builtin-default"]')).toBeVisible();
+      await expect(workshop.locator(`[data-character-id="${targetId}"]`)).toBeVisible();
+      await expect(readFile(join(
+        fixture.userDataDirectory, 'characters', targetId, 'publish-transaction.json'
+      ))).resolves.toEqual(brokenPublishBytes);
+
+      await pet.evaluate(() => window.myself.openChat());
+      const chat = await waitForRendererPage(fixture, 'chat', 15_000);
+      await submitChatMessage(chat, '活动角色降级后继续聊天');
+      await expect(chat.getByText('请先完成模型服务设置。')).toBeVisible();
+    } finally {
+      await fixture.dispose();
+    }
+  });
+
+});
+
+test.describe('真实桌宠像素命中与左键拖拽', () => {
+  test('Win32 系统光标连续拖拽三轮时 Main 全程持有 owner 且尺寸恒定', async () => {
+    test.skip(process.platform !== 'win32', '该验收只验证 Windows 原生系统光标链。');
+    test.setTimeout(180_000);
+    const fixtureModule = await loadElectronFixtureModule();
+    const originalCursor = await readWindowsCursor();
+    await setWindowsLeftButton(false);
+    const fixture = await fixtureModule.createElectronAppFixture({
+      workspaceRoot: resolve(process.cwd()),
+      apiKey: runtimeDiagnosticKey(),
+      launchTimeoutMs: 15_000,
+      // 拖拽验收只允许系统光标改变窗口位置，排除间歇自主移动跨 DPI 屏幕的干扰。
+      prepareUserData: async directories => {
+        const settings = new SettingsStore(
+          join(directories.userDataDirectory, 'settings.json'),
+          async () => false
+        );
+        await settings.saveMovementMode(0);
+      }
+    });
+    try {
+      const pet = await waitForRendererPage(fixture, 'pet');
+      await pet.emulateMedia({ reducedMotion: 'reduce' });
+      const shell = pet.getByRole('main', { name: 'AI Pet 桌宠' });
+      await expect(pet.locator('.character-player')).toHaveAttribute(
+        'data-status', 'ready', { timeout: 20_000 }
+      );
+      await expect.poll(async () => {
+        const state = await fixture.getMainE2eState();
+        return {
+          nativeDragging: state.petNativeDragging,
+          bounds: state.petWindowBoundsDip
+        };
+      }, { timeout: 20_000 }).toMatchObject({
+        nativeDragging: false,
+        bounds: { width: expect.any(Number), height: expect.any(Number) }
+      });
+      const idleBounds = (await fixture.getMainE2eState()).petWindowBoundsDip;
+      await new Promise(resolve => setTimeout(resolve, 1_000));
+      expect((await fixture.getMainE2eState()).petWindowBoundsDip).toMatchObject({
+        width: idleBounds.width,
+        height: idleBounds.height
+      });
+      const dispatchPointerMove = async (point: { x: number; y: number }): Promise<void> => {
+        await shell.evaluate((element, value) => {
+          element.dispatchEvent(new PointerEvent('pointermove', {
+            bubbles: true,
+            cancelable: true,
+            clientX: value.x,
+            clientY: value.y,
+            pointerId: 73
+          }));
+        }, point);
+      };
+      let visible: { x: number; y: number } | undefined;
+      for (let y = 6; y < 220 && !visible; y += 8) {
+        for (let x = 6; x < 180; x += 8) {
+          if (x >= 140 && y >= 178) continue;
+          const candidate = { x, y };
+          await dispatchPointerMove(candidate);
+          if (!(await fixture.getPetInteractionProbe()).passthrough) {
+            visible = candidate;
+            break;
+          }
+        }
+      }
+      expect(visible, '应找到可由真实左键按住的可见像素').toBeDefined();
+      if (!visible) return;
+
+      const measureRenderer = () => pet.evaluate(() => {
+        const canvas = document.querySelector<HTMLCanvasElement>(
+          '.character-player-host canvas'
+        );
+        const rect = canvas?.getBoundingClientRect();
+        return {
+          width: window.outerWidth,
+          height: window.outerHeight,
+          canvas: rect ? { width: rect.width, height: rect.height } : null
+        };
+      });
+
+      const mainSizeBaseline = (await fixture.getMainE2eState()).petWindowBoundsDip;
+      const rendererSizeBaseline = await measureRenderer();
+      const mainSizeSamples: Array<{ width: number; height: number }> = [];
+      const recordMainSize = (bounds: { width: number; height: number }): void => {
+        mainSizeSamples.push({ width: bounds.width, height: bounds.height });
+        // Windows 物理像素换算为 DIP 时可能随窗口位置产生 ±1 的非累积取整差。
+        const evidence = JSON.stringify({ mainSizeBaseline, bounds });
+        expect(Math.abs(bounds.width - mainSizeBaseline.width), evidence).toBeLessThanOrEqual(1);
+        expect(Math.abs(bounds.height - mainSizeBaseline.height), evidence).toBeLessThanOrEqual(1);
+      };
+      recordMainSize(mainSizeBaseline);
+      const rendererCanvasSamples = new Set<string>([[
+        rendererSizeBaseline.canvas?.width ?? 'null',
+        rendererSizeBaseline.canvas?.height ?? 'null'
+      ].join('x')]);
+      const recordRendererSize = (size: typeof rendererSizeBaseline): void => {
+        expect(Math.abs(size.width - rendererSizeBaseline.width)).toBeLessThanOrEqual(1);
+        expect(Math.abs(size.height - rendererSizeBaseline.height)).toBeLessThanOrEqual(1);
+        expect(size.canvas).toEqual(rendererSizeBaseline.canvas);
+        rendererCanvasSamples.add([
+          size.canvas?.width ?? 'null', size.canvas?.height ?? 'null'
+        ].join('x'));
+      };
+      for (let round = 0; round < 3; round += 1) {
+        let roundVisible = visible;
+        for (let y = 6; y < 220; y += 8) {
+          for (let x = 6; x < 180; x += 8) {
+            if (x >= 140 && y >= 178) continue;
+            const candidate = { x, y };
+            await dispatchPointerMove(candidate);
+            if (!(await fixture.getPetInteractionProbe()).passthrough) {
+              roundVisible = candidate;
+              break;
+            }
+          }
+          if (!(await fixture.getPetInteractionProbe()).passthrough) break;
+        }
+        const mainBeforeHover = (await fixture.getMainE2eState()).petWindowBoundsDip;
+        recordMainSize(mainBeforeHover);
+        await raiseWindowsProcessWindow(fixture.processId);
+        await expect.poll(async () => (
+          await fixture.getMainE2eState()
+        ).petWindowAlwaysOnTop).toBe(false);
+        recordMainSize((await fixture.getMainE2eState()).petWindowBoundsDip);
+        const nativeBeforeHover = await readWindowsProcessWindowRect(fixture.processId);
+        const physicalPerDipX = (
+          nativeBeforeHover.right - nativeBeforeHover.left
+        ) / mainBeforeHover.width;
+        const physicalPerDipY = (
+          nativeBeforeHover.bottom - nativeBeforeHover.top
+        ) / mainBeforeHover.height;
+        const nativeTargetPoint = {
+          x: nativeBeforeHover.left + Math.round(roundVisible.x * physicalPerDipX),
+          y: nativeBeforeHover.top + Math.round(roundVisible.y * physicalPerDipY)
+        };
+        await setWindowsCursor(nativeTargetPoint);
+        await expect.poll(() => fixture.getPetInteractionProbe()).toMatchObject({
+          passthrough: false,
+          dragging: false
+        });
+        await expect.poll(async () => (
+          await readWindowsPointerTarget()
+        ).processId, {
+          message: JSON.stringify({
+            fixtureProcessId: fixture.processId,
+            mainBeforeHover,
+            nativeBeforeHover,
+            nativeTargetPoint,
+            roundVisible,
+            physicalPerDipX,
+            physicalPerDipY
+          })
+        }).toBe(fixture.processId);
+        const cursorAtStart = await readWindowsCursor();
+        const mainAtStart = (await fixture.getMainE2eState()).petWindowBoundsDip;
+        recordMainSize(mainAtStart);
+        const rendererAtStart = await measureRenderer();
+        recordRendererSize(rendererAtStart);
+        const available = await pet.evaluate(() => ({
+          left: (window.screen as Screen & { availLeft?: number }).availLeft ?? 0,
+          width: window.screen.availWidth
+        }));
+        const direction = mainAtStart.x < available.left + available.width / 2 ? 1 : -1;
+        await setWindowsLeftButton(true);
+        await expect.poll(async () => (
+          await readWindowsPointerTarget()
+        ).leftButtonDown).toBe(true);
+
+        // 先以第一次 Main 权威位置变化为锚点，避免把物理像素与 DIP
+        // 的初始取整差误判成桌宠跟随延迟；真实 Win32 注入也可能在首次移动时才投递按下事件。
+        let nativeDragStarted = false;
+        for (let primeStep = 1; primeStep <= 20; primeStep += 1) {
+          const primePhysicalDelta = Math.round(primeStep * physicalPerDipX);
+          await setWindowsCursor({
+            x: cursorAtStart.x + direction * primePhysicalDelta,
+            y: cursorAtStart.y
+          });
+          nativeDragStarted = (
+            await fixture.getMainE2eState()
+          ).petWindowBoundsDip.x !== mainAtStart.x;
+          if (nativeDragStarted) break;
+        }
+        expect(nativeDragStarted, '连续系统光标事件应启动 Main 权威拖拽').toBe(true);
+        await expect.poll(() => fixture.getPetInteractionProbe()).toMatchObject({ dragging: true });
+        await expect.poll(async () => (
+          await fixture.getMainE2eState()
+        ).petNativeDragging).toBe(true);
+        const cursorAtDragAnchor = await readWindowsCursor();
+        const mainAtDragAnchor = (await fixture.getMainE2eState()).petWindowBoundsDip;
+        recordMainSize(mainAtDragAnchor);
+
+        // 长按停顿期间 owner 和几何 blocker 必须保持，不允许自主运动或布局事务插入。
+        await new Promise(resolve => setTimeout(resolve, 5_500));
+        const heldState = await fixture.getMainE2eState();
+        expect(heldState.petNativeDragging).toBe(true);
+        expect(await fixture.getPetInteractionProbe()).toMatchObject({ dragging: true });
+        recordMainSize(heldState.petWindowBoundsDip);
+
+        for (let step = 1; step <= 20; step += 1) {
+          const physicalDelta = Math.round(step * physicalPerDipX);
+          const expectedDipDelta = Math.round(physicalDelta / physicalPerDipX);
+          await setWindowsCursor({
+            x: cursorAtDragAnchor.x + direction * physicalDelta,
+            y: cursorAtDragAnchor.y
+          });
+          await expect.poll(async () => Math.abs(
+            (await fixture.getMainE2eState()).petWindowBoundsDip.x
+            - (mainAtDragAnchor.x + direction * expectedDipDelta)
+          // 锚点之后只允许 Windows 物理像素与 DIP 换算产生非累积取整差。
+          ), { timeout: 3_000 }).toBeLessThanOrEqual(2);
+          const mainState = await fixture.getMainE2eState();
+          expect(mainState.petNativeDragging).toBe(true);
+          expect(await fixture.getPetInteractionProbe()).toMatchObject({ dragging: true });
+          const mainCurrent = mainState.petWindowBoundsDip;
+          recordMainSize(mainCurrent);
+          expect(mainCurrent.y).toBe(mainAtDragAnchor.y);
+          const rendererCurrent = await measureRenderer();
+          recordRendererSize(rendererCurrent);
+        }
+        await setWindowsLeftButton(false);
+        await expect.poll(async () => (
+          await readWindowsPointerTarget()
+        ).leftButtonDown).toBe(false);
+        await expect.poll(async () => (
+          await fixture.getMainE2eState()
+        ).petNativeDragging).toBe(false);
+        await expect.poll(async () => (
+          await fixture.getMainE2eState()
+        ).geometry, { timeout: 10_000 }).not.toBeNull();
+        await expect.poll(() => fixture.getPetInteractionProbe()).toMatchObject({
+          dragging: false
+        });
+        const mainAfterRelease = (await fixture.getMainE2eState()).petWindowBoundsDip;
+        recordMainSize(mainAfterRelease);
+      }
+      expect(mainSizeSamples.length, '三轮真实拖拽必须逐步采集 Main 尺寸').toBeGreaterThan(60);
+      expect(rendererCanvasSamples.size, '三轮真实拖拽期间角色 Canvas 尺寸集合必须唯一').toBe(1);
+    } finally {
+      await setWindowsLeftButton(false).catch(() => undefined);
+      await setWindowsCursor(originalCursor).catch(() => undefined);
+      await fixture.dispose();
+    }
+  });
+});
+
 test.describe('真实角色工作室闭环', () => {
-  test('V2 人设、皮肤和精确表现重启后保留且导出回导等价', async () => {
+  test('V3 人设、自定义状态动作与有限播放在发布重启回导中保持一致', async () => {
     test.setTimeout(300_000);
     const fixtureModule = await loadElectronFixtureModule();
-    expect(typeof fixtureModule?.createElectronAppFixture).toBe('function');
-    if (!fixtureModule?.createElectronAppFixture) return;
 
     const workspaceRoot = resolve(process.cwd());
     const apiKey = runtimeDiagnosticKey();
@@ -2351,11 +3865,14 @@ test.describe('真实角色工作室闭环', () => {
     let exportedPackage = '';
     let exportedBytes: Uint8Array | null = null;
     let recoverySnapshot = '';
+    let characterProvider: Awaited<ReturnType<typeof startProviderServer>> | null = null;
+    let publishedCustomState: { id: string; actionIds: string[] } | null = null;
     const sanitizeDiagnostic = (text: string): string => sanitizeCapturedDiagnostic(
       text,
       apiKey,
       recoverySnapshot,
       exportedPackage,
+      ...(characterProvider ? [characterProvider.apiKey] : []),
       ...sensitiveFixtures.flatMap(candidate => [
         candidate.authorizedRootDirectory,
         candidate.userDataDirectory,
@@ -2456,6 +3973,28 @@ test.describe('真实角色工作室闭环', () => {
       await expect(page.getByLabel('ground X')).toHaveValue('0.45');
       await expect(page.getByLabel('ground Y')).toHaveValue('0.95');
     };
+    const selectIdleAction = async (
+      page: Page,
+      actionName: RegExp,
+      step: string
+    ): Promise<void> => {
+      const stateList = page.getByRole('list', { name: '状态与动作列表' });
+      const idleState = stateList.locator(':scope > li').filter({
+        has: page.getByRole('button', { name: /^待机/u })
+      }).first();
+      const idleStateButton = idleState.getByRole('button', { name: /^待机/u }).first();
+      await idleStateButton.click();
+      await expect(idleStateButton, `E2E 步骤“${step}”未选中待机状态`)
+        .toHaveAttribute('aria-pressed', 'true');
+
+      const actionButton = idleState.getByRole('list', { name: '待机动作' })
+        .getByRole('button', { name: actionName });
+      await expect(actionButton, `E2E 步骤“${step}”的待机动作不可见`)
+        .toBeVisible();
+      await expect(actionButton, `E2E 步骤“${step}”的待机动作不可操作`)
+        .toBeEnabled();
+      await actionButton.click();
+    };
     const openWorkshop = async (
       appFixture: AppFixture,
       phase: string
@@ -2498,7 +4037,7 @@ test.describe('真实角色工作室闭环', () => {
       await expect(workshop.getByRole('button', { name: /^E2E 工作室角色/ }))
         .toBeVisible();
 
-      // 人设与皮肤均通过正式受控表单写入，后续由同一闭环验证持久化与包等价。
+      // 人设与动作表现通过正式受控表单写入，后续由同一闭环验证持久化与包等价。
       await workshop.getByRole('button', { name: '编辑角色人设' }).click();
       await workshop.getByLabel('角色描述').fill('喜欢整理桌面的伙伴');
       await workshop.getByLabel('角色背景').fill('从冬日窗边来到桌面的伙伴');
@@ -2507,15 +4046,6 @@ test.describe('真实角色工作室闭环', () => {
       await workshop.getByRole('group', { name: '性格标签' })
         .getByRole('textbox')
         .fill('细心');
-      await workshop.getByRole('button', { name: '新增皮肤' }).click();
-      await workshop.getByLabel('皮肤名称').fill('冬装');
-      await workshop.getByLabel('皮肤说明').fill('适合冬日桌面的保暖外观');
-      const winterSkinItem = workshop.getByRole('list', { name: '皮肤列表' })
-        .getByRole('listitem')
-        .filter({ hasText: '冬装' });
-      await winterSkinItem.getByRole('button', { name: '设为默认' }).click();
-      await expect(winterSkinItem).toContainText('默认皮肤');
-
       await workshop.getByRole('button', {
         name: '向“待机”添加动作'
       }).click();
@@ -2548,7 +4078,7 @@ test.describe('真实角色工作室闭环', () => {
       const configuredActionDeleteDialog = workshop.getByRole('dialog', {
         name: '删除动作“动作 1”'
       });
-      await expect(configuredActionDeleteDialog).toContainText('skins.1.presentations');
+      await expect(configuredActionDeleteDialog).toContainText('skins.0.presentations');
       await configuredActionDeleteDialog.getByRole('button', { name: '取消' }).click();
       await expect(configuredActionDeleteDialog).toHaveCount(0);
       await expect(idleActionDelete).toBeVisible();
@@ -2563,23 +4093,35 @@ test.describe('真实角色工作室闭环', () => {
       await workshop.getByLabel('ground Y').fill('0.95');
       await expectExactIdlePresentation(workshop);
 
-      // 保留旧闭环的非 idle 投影价值：通过正式 V2 UI 建立搬运状态及可播放动作。
+      // 作者定义一个状态和两个动作，名称、描述与有限播放均沿正式编辑表单保存。
       await workshop.getByRole('button', { name: '添加扩展状态' }).click();
-      await workshop.getByLabel('状态名称').fill('搬运状态');
-      await workshop.getByLabel('状态类别').selectOption('modifier');
-      await workshop.getByLabel('标准语义').selectOption('carry');
-      await workshop.getByLabel('状态名称').press('Enter');
-      const carryingState = workshop.getByRole('list', { name: '状态与动作列表' })
+      const stateNameInput = workshop.getByLabel('状态名称');
+      await expect(stateNameInput).toBeFocused();
+      const createStateButton = workshop.getByRole('button', { name: '创建自定义状态' });
+      await expect(createStateButton).toBeDisabled();
+      await stateNameInput.fill('星光时刻');
+      await workshop.getByLabel('状态描述（可选）').fill('收到好消息后轻快而安心地陪伴伙伴。');
+      await createStateButton.click();
+      await workshop.getByLabel('允许智能体推断').check();
+      const customState = workshop.getByRole('list', { name: '状态与动作列表' })
         .getByRole('listitem')
-        .filter({ has: workshop.getByRole('button', { name: /^搬运状态/ }) });
-      await carryingState.getByRole('button', { name: '向“搬运状态”添加动作' }).click();
-      await workshop.getByLabel('动作名称').fill('搬运行走');
-      await workshop.getByLabel('已导入素材').selectOption({ label: 'idle.png' });
-      await workshop.getByRole('button', { name: '应用到当前动作' }).click();
-      await expect(workshop.getByText('精灵图网格已应用到当前动作。')).toBeVisible();
-      await closeWorkshopToast(workshop, '精灵图网格已应用到当前动作。');
-      await workshop.getByRole('button', { name: /^待机/ }).click();
-      await workshop.getByRole('button', { name: /^动作 1/ }).click();
+        .filter({ has: workshop.getByRole('button', { name: /^星光时刻/u }) });
+      for (const [name, description] of [
+        ['轻轻摇摆', '喜悦持续时轻轻摇摆。'],
+        ['向你挥手', '短暂抬手，向伙伴打个招呼。']
+      ]) {
+        await customState.getByRole('button', { name: '向“星光时刻”添加动作' }).click();
+        await workshop.getByLabel('动作名称').fill(name);
+        await workshop.getByLabel('动作详细描述').fill(description);
+        await workshop.getByLabel('循环策略').selectOption('until-interrupted');
+        await workshop.getByLabel('已导入素材').selectOption({ label: 'idle.png' });
+        await workshop.getByRole('button', { name: '应用到当前动作' }).click();
+        await expect(workshop.getByText('精灵图网格已应用到当前动作。')).toBeVisible();
+        await closeWorkshopToast(workshop, '精灵图网格已应用到当前动作。');
+        // 首帧作者时长让一次明确动作稳定可观察；无限循环素材仍须在一次播放后返回。
+        await workshop.getByLabel('当前帧时长').fill('1200');
+      }
+      await selectIdleAction(workshop, /^动作 1/u, '初始启动：恢复待机精确表现');
       await expectExactIdlePresentation(workshop);
       await workshop.getByRole('button', { name: '编译并发布' }).click();
       await expect(workshop.getByText('运行版本已编译并发布。')).toBeVisible();
@@ -2602,25 +4144,123 @@ test.describe('真实角色工作室闭环', () => {
           `${String(error)}\n角色播放器诊断：${petDiagnostics.join(' | ')}`
         ));
       }
-      const legacyRuntime = await pet.evaluate(async () => {
-        const snapshot = await window.myself.getCharacterRuntimeSnapshot();
-        return snapshot ? {
-          version: snapshot.manifest.version,
-          idleActionCount: snapshot.manifest.states
-            .find(state => state.id === 'idle')?.actions.length ?? 0,
-          carryingActionCount: snapshot.manifest.states
-            .find(state => state.id === 'carrying')?.actions.length ?? 0
-        } : null;
+      const runtime = await pet.evaluate(async () => (
+        (await window.myself.getCharacterRuntimeSnapshot())?.manifest ?? null
+      ));
+      expect(runtime?.version).toBe(3);
+      const authoredState = runtime?.states.find(state => state.name === '星光时刻');
+      expect(authoredState?.actionIds).toHaveLength(2);
+      if (!runtime || !authoredState) throw new Error('E2E_V3_AUTHORED_STATE_MISSING');
+      publishedCustomState = { id: authoredState.id, actionIds: [...authoredState.actionIds] };
+      const moodActionId = authoredState.actionIds[0]!;
+      const explicitActionId = authoredState.actionIds[1]!;
+      expect(runtime.states.find(state => state.id === runtime.idleStateId)?.actionIds).toHaveLength(1);
+      for (const actionId of authoredState.actionIds) {
+        expect(runtime.presentations.find(item => item.actionId === actionId))
+          .toMatchObject({ skinId: runtime.skinId, source: 'skin-action' });
+      }
+
+      characterProvider = await startProviderServer([
+        ...characterChatSteps('我会原地陪伴你。', {}, {inspect: expectCharacterChatRequest}),
+        ...characterChatSteps('听到你的好消息，我也很开心。', {
+            moodUpdate: { summary: '轻快而安心', strength: 0.8 },
+            expressionPlan: { states: [{ stateId: authoredState.id, score: 1,
+              activity: null, actions: [{ actionId: moodActionId, score: 1 }] }] }
+          }, { inspect: expectCharacterChatRequest }, request => {
+            const system = request.messages.filter(message => message.role === 'system')
+              .map(message => message.content).join('\n');
+            for (const text of [
+              '喜欢整理桌面的伙伴', '从冬日窗边来到桌面的伙伴', '温和而简洁', '细心',
+              '收到好消息后轻快而安心地陪伴伙伴。', '喜悦持续时轻轻摇摆。',
+              '短暂抬手，向伙伴打个招呼。', authoredState.id, moodActionId, explicitActionId
+            ]) expect(system).toContain(text);
+          }),
+        ...characterChatSteps('向你挥手后，继续陪你开心。', {}, {inspect: expectCharacterChatRequest})
+      ]);
+      await pet.evaluate(async ({ baseUrl, apiKey }) => {
+        await window.myself.saveProviderProfile({
+          profile: { id: 'workshop-v3', displayName: 'V3 工作室闭环', mode: 'custom',
+            protocol: 'openai-compatible', baseUrl, modelId: 'workshop-v3',
+            additionalParameters: {}, capabilities: ['chat', 'tools'] },
+          secret: apiKey, persistSecret: false
+        });
+        await window.myself.saveModelRoute({
+          primaryProfileId: 'workshop-v3', chatProfileId: 'workshop-v3',
+          agentProfileId: 'workshop-v3', visionProfileId: null,
+          fallbackProfileIds: [], allowCrossProviderFallback: false
+        });
+        await window.myself.savePrivacySettings({
+          dataCategories: { memory: false }, longTermMemory: false,
+          proactivityMode: 'passive', autonomousMoodEnabled: false
+        });
+        await window.myself.openChat();
+      }, { baseUrl: characterProvider.baseUrl, apiKey: characterProvider.apiKey });
+      const chat = await waitForPage(fixture, 'chat', '初始启动：验证自定义表现');
+      await waitForVisibleView(chat, '初始启动：聊天就绪');
+      await submitChatMessage(chat, '停下');
+      await expect(chat.getByText('我会原地陪伴你。')).toBeVisible();
+      await pet.evaluate(() => {
+        const scope = globalThis as typeof globalThis & {
+          __workshopPlays?: Array<{ stateId: string; actionId: string; mode: string }>;
+        };
+        scope.__workshopPlays = [];
+        window.myself.subscribeCharacterMotion(event => {
+          if (event.type === 'behavior-action') scope.__workshopPlays?.push({
+            stateId: event.stateId, actionId: event.actionId, mode: event.playback.mode
+          });
+        });
       });
-      expect(legacyRuntime).toEqual({
-        version: 1,
-        idleActionCount: 1,
-        carryingActionCount: 1
+      await submitChatMessage(chat, '今天我的小目标完成了，你也开心吗？');
+      await expect(chat.getByText('听到你的好消息，我也很开心。')).toBeVisible();
+      await expect.poll(() => fixture.getCharacterBehaviorProbe()).toMatchObject({
+        stateId: authoredState.id, actionId: moodActionId, playbackStatus: 'started'
       });
-      await pet.evaluate(() => window.myself.openChat());
-      const chat = await waitForPage(fixture, 'chat', '初始启动：验证聊天降级');
-      await submitChatMessage(chat, 'thinking 降级期间继续验证 Agent');
-      await expect(chat.getByText('请先完成模型服务设置。')).toBeVisible();
+      await submitChatMessage(chat, '播放向你挥手动作');
+      try {
+        await expect.poll(() => fixture.getCharacterBehaviorProbe(), { intervals: [50, 100, 200] })
+          .toMatchObject({ stateId: authoredState.id, actionId: explicitActionId, playbackStatus: 'started' });
+      } catch (error) {
+        // 失败时只投影合成角色的动作与时序字段，不输出完整草稿、资源或设置。
+        const explicitPlaybackDiagnostic = {
+          plays: await pet.evaluate(() => (
+            (globalThis as typeof globalThis & {
+              __workshopPlays?: Array<{ stateId: string; actionId: string; mode: string }>;
+            }).__workshopPlays ?? []
+          )),
+          state: { id: authoredState.id, name: authoredState.name },
+          actions: await workshop.evaluate(async ({ characterId, actionIds }) => {
+            const draft = await window.myself.getCharacterDraft(characterId);
+            return actionIds.map(id => ({ id, name: draft.actions.find(action => action.id === id)?.name ?? null }));
+          }, { characterId: runtime.id, actionIds: [...authoredState.actionIds] }),
+          presentations: authoredState.actionIds.map(actionId => {
+            const presentation = runtime.presentations.find(item => item.actionId === actionId)?.presentation;
+            return { actionId, durationMs: presentation?.frames.map(frame => frame.durationMs ?? null) ?? null,
+              fps: presentation?.fps ?? null, playbackRate: presentation?.playbackRate ?? null };
+          }),
+          userInChatDom: await chat.getByText('播放向你挥手动作', { exact: true }).count() > 0,
+          assistantInChatDom: await chat.getByText('向你挥手后，继续陪你开心。', { exact: true }).count() > 0
+        };
+        throw sanitizedCapturedError(error, message => sanitizeDiagnostic(
+          `${message}\n明确动作诊断：${JSON.stringify(explicitPlaybackDiagnostic)}`
+        ));
+      }
+      await expect(chat.getByText('向你挥手后，继续陪你开心。')).toBeVisible();
+      // 不发送下一条消息，真实 Renderer 完成一次动作后恢复仍有效的心情动作。
+      await expect.poll(() => fixture.getCharacterBehaviorProbe(), { timeout: 15_000 })
+        .toMatchObject({ stateId: authoredState.id, actionId: moodActionId, playbackStatus: 'started' });
+      const plays = await pet.evaluate(() => (
+        (globalThis as typeof globalThis & {
+          __workshopPlays?: Array<{ stateId: string; actionId: string; mode: string }>;
+        }).__workshopPlays ?? []
+      ));
+      expect(plays).toEqual([
+        { stateId: authoredState.id, actionId: moodActionId, mode: 'loop' },
+        { stateId: authoredState.id, actionId: explicitActionId, mode: 'once' },
+        { stateId: authoredState.id, actionId: moodActionId, mode: 'loop' }
+      ]);
+      expect((await pet.evaluate(() => window.myself.getCharacterMotionSnapshot())).moving).toBe(false);
+      characterProvider.assertComplete();
+      expect(characterProvider.inspectionErrors).toEqual([]);
 
       await workshop.getByRole('button', { name: '导出角色包' }).click();
       await expect(workshop.getByText('角色包已导出。')).toBeVisible();
@@ -2642,7 +4282,7 @@ test.describe('真实角色工作室闭环', () => {
         { recursive: true }
       );
     } finally {
-      await fixture.dispose();
+      try { await fixture.dispose(); } finally { await characterProvider?.close(); }
     }
 
     const recovered = await fixtureModule.createElectronAppFixture({
@@ -2679,15 +4319,7 @@ test.describe('真实角色工作室闭环', () => {
       await expect(workshop.getByLabel('语言风格')).toHaveValue('温和而简洁');
       await expect(workshop.getByRole('group', { name: '性格标签' })
         .getByRole('textbox')).toHaveValue('细心');
-      const recoveredWinterSkin = workshop.getByRole('list', { name: '皮肤列表' })
-        .getByRole('listitem')
-        .filter({ hasText: '冬装' });
-      await expect(recoveredWinterSkin).toContainText('默认皮肤');
-      await recoveredWinterSkin.getByRole('button', { name: /冬装/ }).click();
-      await expect(workshop.getByLabel('皮肤说明'))
-        .toHaveValue('适合冬日桌面的保暖外观');
-      await workshop.getByRole('button', { name: /^待机/ }).click();
-      await workshop.getByRole('button', { name: /^冬日待机/ }).click();
+      await selectIdleAction(workshop, /^冬日待机/u, '重启恢复：选择待机动作');
       await expect(workshop.getByLabel('已导入素材')).toContainText('idle.png');
       await expect(workshop.getByLabel('动作名称'))
         .toHaveValue('冬日待机', { timeout: 15_000 });
@@ -2711,6 +4343,10 @@ test.describe('真实角色工作室闭环', () => {
         (await window.myself.getCharacterRuntimeSnapshot())?.activeCharacterId
       ));
       expect(active).not.toBe('builtin-default');
+      expect(await pet.evaluate(async () => (
+        (await window.myself.getCharacterRuntimeSnapshot())?.manifest.states
+          .find(state => state.name === '星光时刻')
+      ))).toMatchObject(publishedCustomState!);
     } finally {
       await recovered.dispose();
     }
@@ -2749,15 +4385,7 @@ test.describe('真实角色工作室闭环', () => {
       await expect(workshop.getByLabel('语言风格')).toHaveValue('温和而简洁');
       await expect(workshop.getByRole('group', { name: '性格标签' })
         .getByRole('textbox')).toHaveValue('细心');
-      const importedWinterSkin = workshop.getByRole('list', { name: '皮肤列表' })
-        .getByRole('listitem')
-        .filter({ hasText: '冬装' });
-      await expect(importedWinterSkin).toContainText('默认皮肤');
-      await importedWinterSkin.getByRole('button', { name: /冬装/ }).click();
-      await expect(workshop.getByLabel('皮肤说明'))
-        .toHaveValue('适合冬日桌面的保暖外观');
-      await workshop.getByRole('button', { name: /^待机/ }).click();
-      await workshop.getByRole('button', { name: /^动作 1/ }).click();
+      await selectIdleAction(workshop, /^动作 1/u, '隔离导入：选择待机动作');
       await expect(workshop.getByText('当前使用：当前皮肤精确表现')).toBeVisible();
       await expectExactIdlePresentation(workshop);
       const characterList = workshop.getByRole('list', { name: '角色列表' });
@@ -2841,8 +4469,6 @@ test.describe('真实角色工作室闭环', () => {
 
   test('fake bridge 脚本只向隔离目录写入固定无参数事件令牌', async () => {
     const fixture = await loadElectronFixtureModule();
-    expect(typeof fixture?.writeMainE2eExplorerEvent).toBe('function');
-    if (!fixture?.writeMainE2eExplorerEvent) return;
     const temporaryDirectory = await mkdtemp(join(tmpdir(), 'myself-e2e-explorer-events-'));
     try {
       await fixture.writeMainE2eExplorerEvent(temporaryDirectory, 'ambiguous');
@@ -2902,11 +4528,486 @@ test.describe('真实角色工作室闭环', () => {
 });
 
 test.describe('自主行为最小闭环', () => {
+  /** 重启后只恢复 E2E Provider，不触碰被测的主动行为停止状态。 */
+  const restoreB7ProviderAfterRestart = async (
+    pet: Page,
+    input: { profileId: string; displayName: string; modelId: string; baseUrl: string; apiKey: string }
+  ): Promise<void> => {
+    await pet.evaluate(async ({ profileId, displayName, modelId, baseUrl, apiKey }) => {
+      await window.myself.saveProviderProfile({
+        profile: {
+          id: profileId,
+          displayName,
+          mode: 'custom',
+          protocol: 'openai-compatible',
+          baseUrl,
+          modelId,
+          additionalParameters: {},
+          capabilities: ['chat', 'tools']
+        },
+        secret: apiKey,
+        persistSecret: true
+      });
+      await window.myself.saveModelRoute({
+        primaryProfileId: profileId,
+        chatProfileId: profileId,
+        agentProfileId: profileId,
+        visionProfileId: null,
+        fallbackProfileIds: [],
+        allowCrossProviderFallback: false
+      });
+    }, input);
+  };
+
+  const b7MovementCases = [
+    {
+      prompt: '向左一点', reply: '已向左移动', axis: 'horizontal', sign: -1,
+      movementControl: { kind: 'move_once', target: 'left', distance: 'near' }
+    },
+    {
+      prompt: '向上远一点', reply: '已向上移动', axis: 'vertical', sign: -1,
+      movementControl: { kind: 'move_once', target: 'top', distance: 'far' }
+    },
+    {
+      prompt: '向右一点', reply: '已向右移动', axis: 'horizontal', sign: 1,
+      movementControl: { kind: 'move_once', target: 'right', distance: 'near' },
+      precondition: {
+        prompt: '向左一点', reply: '右移前置已向左移动',
+        movementControl: { kind: 'move_once', target: 'left', distance: 'near' }
+      }
+    },
+    {
+      prompt: '向下一点', reply: '已向下移动', axis: 'vertical', sign: 1,
+      movementControl: { kind: 'move_once', target: 'bottom', distance: 'near' },
+      precondition: {
+        prompt: '向上远一点', reply: '下移前置已向上移动',
+        movementControl: { kind: 'move_once', target: 'top', distance: 'far' }
+      }
+    },
+    {
+      prompt: '去左上角', reply: '已移动到左上区域', axis: 'region', sign: -1,
+      movementControl: { kind: 'move_once', target: 'top_left', distance: 'far' }
+    }
+  ] as const;
+
+  for (const movement of b7MovementCases) {
+    test(`B7 快速移动：JSON Output“${movement.prompt}”只通过累计 delta 证明真实方向`, async () => {
+      test.setTimeout(60_000);
+      const fixtureModule = await loadElectronFixtureModule();
+      const provider = await startProviderServer([
+        ...('precondition' in movement ? [...characterChatSteps(movement.precondition.reply, {
+            movementControl: movement.precondition.movementControl
+          }, {inspect: expectCharacterChatRequest})] : []),
+        ...characterChatSteps(movement.reply, {
+            movementControl: movement.movementControl
+          }, {inspect: expectCharacterChatRequest})
+      ]);
+      const fixture = await fixtureModule.createElectronAppFixture({
+        workspaceRoot: resolve(process.cwd()),
+        apiKey: provider.apiKey,
+        launchTimeoutMs: 15_000,
+        enableSoftwareRasterizer: true
+      });
+
+      try {
+        const pet = await waitForRendererPage(fixture, 'pet');
+        let chat = await waitForRendererPage(fixture, 'chat');
+        const imported = await pet.evaluate(async () => window.myself.importCharacterPackage());
+        expect(imported.kind).toBe('imported');
+        if (imported.kind !== 'imported') return;
+        await pet.evaluate(async ({ characterId, baseUrl, apiKey }) => {
+          await window.myself.activateCharacter(characterId);
+          await window.myself.saveProviderProfile({
+            profile: {
+              id: 'behavior-b7-movement',
+              displayName: '行为导演 B7 移动 E2E',
+              mode: 'custom',
+              protocol: 'openai-compatible',
+              baseUrl,
+              modelId: 'behavior-b7-movement-model',
+              additionalParameters: {},
+              capabilities: ['chat', 'tools']
+            },
+            secret: apiKey,
+            persistSecret: true
+          });
+          await window.myself.saveModelRoute({
+            primaryProfileId: 'behavior-b7-movement',
+            chatProfileId: 'behavior-b7-movement',
+            agentProfileId: 'behavior-b7-movement',
+            visionProfileId: null,
+            fallbackProfileIds: [],
+            allowCrossProviderFallback: false
+          });
+          await window.myself.savePrivacySettings({
+            dataCategories: { memory: false },
+            longTermMemory: false,
+            proactivityMode: 'passive'
+          });
+          await window.myself.openChat();
+        }, {
+          characterId: imported.characterId,
+          baseUrl: provider.baseUrl,
+          apiKey: provider.apiKey
+        });
+        await expect.poll(() => chat.evaluate(() => document.visibilityState)).toBe('visible');
+        if ('precondition' in movement) {
+          await submitChatMessage(chat, movement.precondition.prompt);
+          await expect(chat.getByText(movement.precondition.reply)).toBeVisible();
+          await expect.poll(() => pet.evaluate(async () => (
+            await window.myself.getCharacterMotionSnapshot()
+          ).moving)).toBe(false);
+          await fixture.restart();
+          const restartedPet = await waitForRendererPage(fixture, 'pet', 15_000);
+          await expect.poll(() => fixture.getCharacterBehaviorProbe(), { timeout: 15_000 })
+            .toMatchObject({
+              actionId: 'safe-idle-action',
+              playbackStatus: expect.stringMatching(/^(started|completed)$/u)
+            });
+          await restoreB7ProviderAfterRestart(restartedPet, {
+            profileId: 'behavior-b7-movement',
+            displayName: '行为导演 B7 移动 E2E',
+            modelId: 'behavior-b7-movement-model',
+            baseUrl: provider.baseUrl,
+            apiKey: provider.apiKey
+          });
+          const restartedChat = await waitForRendererPage(fixture, 'chat', 15_000);
+          await restartedChat.evaluate(() => window.myself.openChat());
+          await expect.poll(() => restartedChat.evaluate(() => document.visibilityState))
+            .toBe('visible');
+          chat = restartedChat;
+        }
+        const before = await fixture.getCharacterMotionDeltaProbe();
+
+        await submitChatMessage(chat, movement.prompt);
+        await expect(chat.getByText(movement.reply)).toBeVisible();
+        await expect.poll(async () => {
+          const after = await fixture.getCharacterMotionDeltaProbe();
+          const horizontal = Math.sign(after.horizontal - before.horizontal);
+          const vertical = Math.sign(after.vertical - before.vertical);
+          return movement.axis === 'horizontal'
+            ? horizontal
+            : movement.axis === 'vertical'
+              ? vertical
+              : horizontal === movement.sign && vertical === movement.sign;
+        }).toBe(movement.axis === 'region' ? true : movement.sign);
+        provider.assertComplete();
+        expect(provider.inspectionErrors).toEqual([]);
+      } finally {
+        await fixture.dispose();
+        await provider.close();
+      }
+    });
+  }
+
+  test('B7 快速状态：缺动作不伪装 idle，停止跨重启且显式移动会解除停止', async () => {
+    test.setTimeout(120_000);
+    const fixtureModule = await loadElectronFixtureModule();
+    const provider = await startProviderServer([
+      ...characterChatSteps('缺失动作请求已安全处理', {}, {}),
+      ...characterChatSteps('停止状态已保存', {
+          movementControl: { kind: 'set_mode', mode: 0 }
+        }, {}),
+      ...characterChatSteps('停止期间仍可挥手回应', {}, {}),
+      ...characterChatSteps('停止期间移动请求已处理', {
+          movementControl: { kind: 'move_once', target: 'left', distance: 'near' }
+        }, {})
+    ]);
+    const fixture = await fixtureModule.createElectronAppFixture({
+      workspaceRoot: resolve(process.cwd()),
+      apiKey: provider.apiKey,
+      launchTimeoutMs: 15_000,
+      enableSoftwareRasterizer: true
+    });
+
+    /** 每次重启后重新注册只保留公开 actionId 的测试观察器。 */
+    const observeBehaviorActions = async (pet: Page): Promise<void> => {
+      await pet.evaluate(() => {
+        const scope = globalThis as typeof globalThis & { __b7BehaviorActions?: string[] };
+        scope.__b7BehaviorActions = [];
+        window.myself.subscribeCharacterMotion(event => {
+          if (event.type === 'behavior-action') scope.__b7BehaviorActions?.push(event.actionId);
+        });
+      });
+    };
+    const behaviorActions = (pet: Page): Promise<string[]> => pet.evaluate(() => (
+      (globalThis as typeof globalThis & { __b7BehaviorActions?: string[] })
+        .__b7BehaviorActions?.slice() ?? []
+    ));
+    try {
+      let pet = await waitForRendererPage(fixture, 'pet');
+      let chat = await waitForRendererPage(fixture, 'chat');
+      await observeBehaviorActions(pet);
+      const imported = await pet.evaluate(async () => window.myself.importCharacterPackage());
+      expect(imported.kind).toBe('imported');
+      if (imported.kind !== 'imported') return;
+      await pet.evaluate(async ({ characterId, baseUrl, apiKey }) => {
+        await window.myself.activateCharacter(characterId);
+        await window.myself.saveProviderProfile({
+          profile: {
+            id: 'behavior-b7-fast',
+            displayName: '行为导演 B7 快速 E2E',
+            mode: 'custom',
+            protocol: 'openai-compatible',
+            baseUrl,
+            modelId: 'behavior-b7-fast-model',
+            additionalParameters: {},
+            capabilities: ['chat', 'tools']
+          },
+          secret: apiKey,
+          persistSecret: true
+        });
+        await window.myself.saveModelRoute({
+          primaryProfileId: 'behavior-b7-fast',
+          chatProfileId: 'behavior-b7-fast',
+          agentProfileId: 'behavior-b7-fast',
+          visionProfileId: null,
+          fallbackProfileIds: [],
+          allowCrossProviderFallback: false
+        });
+        await window.myself.savePrivacySettings({
+          dataCategories: { memory: false },
+          longTermMemory: false,
+          proactivityMode: 'passive'
+        });
+        await window.myself.openChat();
+      }, {
+        characterId: imported.characterId,
+        baseUrl: provider.baseUrl,
+        apiKey: provider.apiKey
+      });
+      await expect.poll(() => chat.evaluate(() => document.visibilityState)).toBe('visible');
+      const missingActionOffset = (await behaviorActions(pet)).length;
+      await submitChatMessage(chat, '播放不存在动作');
+      await expect(chat.getByText('当前角色没有可播放的对应动作。')).toBeVisible();
+      await expect(chat.getByText('缺失动作请求已安全处理')).toBeVisible();
+      // 留出完整 IPC 与动画调度观察窗，防止迟到的 idle 回退被下一步重启掩盖。
+      await pet.waitForTimeout(2_000);
+      expect((await behaviorActions(pet)).slice(missingActionOffset))
+        .not.toContain('safe-idle-action');
+
+      await submitChatMessage(chat, '停止不动');
+      await expect(chat.getByText('停止状态已保存')).toBeVisible();
+      await fixture.restart();
+
+      pet = await waitForRendererPage(fixture, 'pet', 15_000);
+      chat = await waitForRendererPage(fixture, 'chat', 15_000);
+      await expect.poll(() => fixture.getCharacterBehaviorProbe(), { timeout: 15_000 })
+        .toMatchObject({
+          actionId: 'safe-idle-action',
+          playbackStatus: expect.stringMatching(/^(started|completed)$/u)
+        });
+      await restoreB7ProviderAfterRestart(pet, {
+        profileId: 'behavior-b7-fast',
+        displayName: '行为导演 B7 快速 E2E',
+        modelId: 'behavior-b7-fast-model',
+        baseUrl: provider.baseUrl,
+        apiKey: provider.apiKey
+      });
+      await observeBehaviorActions(pet);
+      await pet.evaluate(() => window.myself.openChat());
+      await expect.poll(() => chat.evaluate(() => document.visibilityState)).toBe('visible');
+
+      await submitChatMessage(chat, '挥手一会儿');
+      await expect(chat.getByText('停止期间仍可挥手回应')).toBeVisible();
+      await expect.poll(() => behaviorActions(pet)).toContain('safe-wave-action');
+
+      const stoppedBaseline = await fixture.getCharacterMotionDeltaProbe();
+      await submitChatMessage(chat, '向左一点');
+      await expect(chat.getByText('停止期间移动请求已处理')).toBeVisible();
+      await pet.waitForTimeout(1_500);
+      const stoppedAfter = await fixture.getCharacterMotionDeltaProbe();
+      expect(stoppedAfter.horizontal).toBeLessThan(stoppedBaseline.horizontal);
+      expect(stoppedAfter.vertical).toBe(stoppedBaseline.vertical);
+      expect(stoppedAfter.moved).toBe(true);
+      provider.assertComplete();
+      expect(provider.inspectionErrors).toEqual([]);
+    } finally {
+      await fixture.dispose();
+      await provider.close();
+    }
+  });
+
+  test('B7 长时：三档主动性、阻塞暂停与重启清理保持真实纵向边界', async () => {
+    test.skip(
+      process.env['AI_PET_LONG_BEHAVIOR_E2E'] !== '1',
+      '默认门禁不执行 9–12 分钟的真实墙钟主动行为链。'
+    );
+    test.setTimeout(13 * 60_000);
+    const blockerWindowMs = 62_000;
+    const localWindowMs = 75_000;
+    const fixtureModule = await loadElectronFixtureModule();
+    const chattingGate = createProviderResponseGate();
+    const provider = await startProviderServer([
+      ...characterChatSteps('聊天阻塞已释放并挥手', {}, {gate: chattingGate, inspect: request => {
+          expectCharacterChatRequest(request);
+          expect(request.toolChoiceWasExplicit).toBe(true);
+        }}),
+
+    ]);
+    const fixture = await fixtureModule.createElectronAppFixture({
+      workspaceRoot: resolve(process.cwd()),
+      apiKey: provider.apiKey,
+      launchTimeoutMs: 15_000,
+      enableSoftwareRasterizer: true
+    });
+
+    const observeBehaviorActions = async (pet: Page): Promise<void> => {
+      await pet.evaluate(() => {
+        const scope = globalThis as typeof globalThis & { __b7LongActions?: string[] };
+        scope.__b7LongActions = [];
+        window.myself.subscribeCharacterMotion(event => {
+          if (event.type === 'behavior-action') scope.__b7LongActions?.push(event.actionId);
+        });
+      });
+    };
+    const behaviorActions = (pet: Page): Promise<string[]> => pet.evaluate(() => (
+      (globalThis as typeof globalThis & { __b7LongActions?: string[] })
+        .__b7LongActions?.slice() ?? []
+    ));
+    const saveMode = async (
+      pet: Page,
+      mode: 'passive' | 'assistive' | 'autonomous'
+    ): Promise<void> => {
+      await pet.evaluate(async proactivityMode => {
+        await window.myself.savePrivacySettings({
+          dataCategories: { memory: false },
+          longTermMemory: false,
+          proactivityMode
+        });
+      }, mode);
+    };
+
+    try {
+      let pet = await waitForRendererPage(fixture, 'pet');
+      let chat = await waitForRendererPage(fixture, 'chat');
+      const imported = await pet.evaluate(async () => window.myself.importCharacterPackage());
+      expect(imported.kind).toBe('imported');
+      if (imported.kind !== 'imported') return;
+      await pet.evaluate(async ({ characterId, baseUrl, apiKey }) => {
+        await window.myself.activateCharacter(characterId);
+        await window.myself.saveProviderProfile({
+          profile: {
+            id: 'behavior-b7-long',
+            displayName: '行为导演 B7 长时 E2E',
+            mode: 'custom',
+            protocol: 'openai-compatible',
+            baseUrl,
+            modelId: 'behavior-b7-long-model',
+            additionalParameters: {},
+            capabilities: ['chat', 'tools']
+          },
+          secret: apiKey,
+          persistSecret: true
+        });
+        await window.myself.saveModelRoute({
+          primaryProfileId: 'behavior-b7-long',
+          chatProfileId: 'behavior-b7-long',
+          agentProfileId: 'behavior-b7-long',
+          visionProfileId: null,
+          fallbackProfileIds: [],
+          allowCrossProviderFallback: false
+        });
+        await window.myself.savePrivacySettings({
+          dataCategories: { memory: false },
+          longTermMemory: false,
+          proactivityMode: 'passive'
+        });
+        await window.myself.chooseAuthorizedRoot();
+        await window.myself.openChat();
+      }, {
+        characterId: imported.characterId,
+        baseUrl: provider.baseUrl,
+        apiKey: provider.apiKey
+      });
+      await expect.poll(() => fixture.getCharacterBehaviorProbe()).toMatchObject({
+        actionId: 'safe-idle-action',
+        playbackStatus: expect.stringMatching(/^(started|completed)$/u)
+      });
+      await expect.poll(() => chat.evaluate(() => document.visibilityState)).toBe('visible');
+      await observeBehaviorActions(pet);
+
+      // passive 超过本地计时上限仍不产生主动动作或位移。
+      const passiveMotion = await fixture.getCharacterMotionDeltaProbe();
+      await pet.waitForTimeout(blockerWindowMs);
+      expect(await behaviorActions(pet)).toEqual([]);
+      expect(await fixture.getCharacterMotionDeltaProbe()).toEqual(passiveMotion);
+      expect(provider.requests).toEqual([]);
+
+      // chatting 持续超过本地计时上限，期间不得因计时发起自主动作或位移。
+      await saveMode(pet, 'assistive');
+      await submitChatMessage(chat, '请陪我聊一会再挥手');
+      await expect.poll(() => chattingGate.isWaiting()).toBe(true);
+      const chattingOffset = (await behaviorActions(pet)).length;
+      const chattingMotion = await fixture.getCharacterMotionDeltaProbe();
+      await pet.waitForTimeout(blockerWindowMs);
+      expect((await behaviorActions(pet)).slice(chattingOffset)).toEqual([]);
+      expect(await fixture.getCharacterMotionDeltaProbe()).toEqual(chattingMotion);
+      chattingGate.release();
+      await expect(chat.getByText('聊天阻塞已释放并挥手')).toBeVisible();
+
+      // assistive 恢复后只播放原地 idle，不产生位移。
+      const assistiveOffset = (await behaviorActions(pet)).length;
+      const assistiveMotion = await fixture.getCharacterMotionDeltaProbe();
+      await expect.poll(async () => (
+        (await behaviorActions(pet)).slice(assistiveOffset)
+      ), { timeout: localWindowMs }).toContain('safe-idle-action');
+      expect(await fixture.getCharacterMotionDeltaProbe()).toEqual(assistiveMotion);
+
+      // 原生拖拽 blocker 由 Main 事件 owner 与 Director 单元测试覆盖；本用例不伪造 Renderer 拖拽。
+      await saveMode(pet, 'autonomous');
+
+      // 文件确认卡使 Scheduler 继续暂停，取消后才恢复同一剩余时间。
+      await submitChatMessage(chat, '创建文件 b7-long-pending.txt');
+      const confirmation = chat.getByRole('article', { name: '本地任务授权' });
+      await expect(confirmation).toBeVisible();
+      await expect.poll(() => fixture.getConversationProbe()).toMatchObject({
+        phase: 'awaiting_confirmation',
+        fileConfirmationVisible: false
+      });
+      const confirmationOffset = (await behaviorActions(pet)).length;
+      const confirmationMotion = await fixture.getCharacterMotionDeltaProbe();
+      await pet.waitForTimeout(blockerWindowMs);
+      await expect(confirmation).toBeVisible();
+      expect((await behaviorActions(pet)).slice(confirmationOffset)).toEqual([]);
+      expect(await fixture.getCharacterMotionDeltaProbe()).toEqual(confirmationMotion);
+      await confirmation.getByRole('button', { name: '取消', exact: true }).click();
+      await expect(confirmation).toHaveCount(0);
+
+      // autonomous 解除阻塞后在 10–30 秒内发起当前单屏随机移动。
+      const autonomousOffset = (await behaviorActions(pet)).length;
+      const autonomousMotion = await fixture.getCharacterMotionDeltaProbe();
+      await expect.poll(async () => (
+        (await behaviorActions(pet)).slice(autonomousOffset)
+      ), { timeout: localWindowMs }).toContain('safe-move-action');
+      expect(await fixture.getCharacterMotionDeltaProbe()).not.toEqual(autonomousMotion);
+
+      // 重启后旧主动周期失效，新进程从 idle 建立基线。
+      await fixture.restart();
+      pet = await waitForRendererPage(fixture, 'pet', 15_000);
+      chat = await waitForRendererPage(fixture, 'chat', 15_000);
+      await expect.poll(() => fixture.getCharacterBehaviorProbe(), { timeout: 15_000 })
+        .toMatchObject({
+          actionId: 'safe-idle-action',
+          playbackStatus: expect.stringMatching(/^(started|completed)$/u)
+        });
+      await observeBehaviorActions(pet);
+      const restartedMotion = await fixture.getCharacterMotionDeltaProbe();
+      await pet.waitForTimeout(2_500);
+      expect(await behaviorActions(pet)).not.toContain('safe-wave-action');
+      expect(await fixture.getCharacterMotionDeltaProbe()).toEqual(restartedMotion);
+      provider.assertComplete();
+      expect(provider.inspectionErrors).toEqual([]);
+    } finally {
+      chattingGate.release();
+      await fixture.dispose();
+      await provider.close();
+    }
+  });
+
   test('E2E 只读探针观察默认角色待机播放', async () => {
     test.setTimeout(60_000);
     const fixtureModule = await loadElectronFixtureModule();
-    expect(typeof fixtureModule?.createElectronAppFixture).toBe('function');
-    if (!fixtureModule?.createElectronAppFixture) return;
     const fixture = await fixtureModule.createElectronAppFixture({
       workspaceRoot: resolve(process.cwd()),
       apiKey: runtimeDiagnosticKey(),
@@ -2915,261 +5016,29 @@ test.describe('自主行为最小闭环', () => {
 
     try {
       await expect.poll(() => fixture.getCharacterBehaviorProbe()).toMatchObject({
-        primaryStateId: 'idle',
+        stateId: 'idle',
         actionId: 'idle-main',
         playbackStatus: expect.stringMatching(/^(started|completed)$/u)
       });
       const probe = await fixture.getCharacterBehaviorProbe();
       expect(probe.revision).toBeGreaterThan(0);
-      expect(probe.modifierStateIds).toEqual([]);
       expect(Object.keys(probe).sort()).toEqual([
         'actionId',
-        'modifierStateIds',
         'playbackStatus',
-        'primaryStateId',
-        'revision'
+        'revision',
+        'stateId'
       ]);
     } finally {
       await fixture.dispose();
     }
   });
 
-  test('聊天阶段、情绪、错误降级与角色切换保持 Main 到 Renderer 闭环', async () => {
-    test.setTimeout(120_000);
-    const firstResponseGate = createProviderResponseGate();
-    const provider = await startProviderServer([
-      {
-        response: { type: 'text', text: '无意图本地降级完成' },
-        gate: firstResponseGate
-      },
-      {
-        response: {
-          type: 'text',
-          text: '情绪标签已安全处理',
-          emotion: 'happy'
-        }
-      }
-    ]);
-    const fixtureModule = await loadElectronFixtureModule();
-    expect(typeof fixtureModule?.createElectronAppFixture).toBe('function');
-    if (!fixtureModule?.createElectronAppFixture) {
-      await provider.close();
-      return;
-    }
-    const fixture = await fixtureModule.createElectronAppFixture({
-      workspaceRoot: resolve(process.cwd()),
-      apiKey: provider.apiKey,
-      launchTimeoutMs: 15_000,
-      enableSoftwareRasterizer: true
-    });
-    const pages = (): Page[] => fixture.browser.contexts().flatMap(context => context.pages());
-    const pageFor = (view: 'pet' | 'chat'): Page | undefined => pages().find(page => {
-      try {
-        return new URL(page.url()).searchParams.get('view') === view;
-      } catch {
-        return false;
-      }
-    });
-
-    try {
-      await expect.poll(() => Boolean(pageFor('pet') && pageFor('chat'))).toBe(true);
-      const pet = pageFor('pet')!;
-      const chat = pageFor('chat')!;
-      await pet.evaluate(() => {
-        const scope = globalThis as typeof globalThis & {
-          __behaviorActions?: Array<{ stateId: string; actionId: string }>;
-        };
-        scope.__behaviorActions = [];
-        window.myself.subscribeCharacterMotion(event => {
-          if (event.type !== 'behavior-action') return;
-          scope.__behaviorActions?.push({ stateId: event.stateId, actionId: event.actionId });
-        });
-      });
-      await chat.evaluate(() => {
-        const scope = globalThis as typeof globalThis & {
-          __taskPhases?: string[];
-          __emotionLabels?: string[];
-        };
-        scope.__taskPhases = [];
-        scope.__emotionLabels = [];
-        window.myself.onTaskEvent(event => {
-          if (event.type === 'phase') scope.__taskPhases?.push(event.phase);
-          if (event.type === 'character_emotion') scope.__emotionLabels?.push(event.label);
-        });
-      });
-      const imported = await pet.evaluate(async () => window.myself.importCharacterPackage());
-      expect(imported.kind).toBe('imported');
-      if (imported.kind !== 'imported') return;
-      await pet.evaluate(async characterId => {
-        await window.myself.activateCharacter(characterId);
-      }, imported.characterId);
-      await expect.poll(() => fixture.getCharacterBehaviorProbe()).toMatchObject({
-        primaryStateId: 'idle',
-        actionId: 'safe-idle-action',
-        playbackStatus: 'started'
-      });
-
-      const idleProbe = await fixture.getCharacterBehaviorProbe();
-      await pet.evaluate(async () => {
-        await window.myself.beginPetDrag();
-        await window.myself.endPetDrag();
-      });
-      await expect.poll(async () => {
-        const probe = await fixture.getCharacterBehaviorProbe();
-        return {
-          revisionAdvanced: probe.revision > idleProbe.revision,
-          primaryStateId: probe.primaryStateId,
-          actionId: probe.actionId,
-          playbackStatus: probe.playbackStatus
-        };
-      }).toEqual({
-        revisionAdvanced: true,
-        primaryStateId: 'idle',
-        actionId: 'safe-idle-action',
-        playbackStatus: 'started'
-      });
-
-      await pet.evaluate(async ({ baseUrl, apiKey }) => {
-        await window.myself.saveProviderProfile({
-          profile: {
-            id: 'behavior-e2e',
-            displayName: '自主行为 E2E',
-            mode: 'custom',
-            protocol: 'openai-compatible',
-            baseUrl,
-            modelId: 'behavior-e2e-model',
-            additionalParameters: {},
-            capabilities: ['chat', 'tools']
-          },
-          secret: apiKey,
-          persistSecret: false
-        });
-        await window.myself.saveModelRoute({
-          primaryProfileId: 'behavior-e2e',
-          chatProfileId: 'behavior-e2e',
-          agentProfileId: 'behavior-e2e',
-          visionProfileId: null,
-          fallbackProfileIds: [],
-          allowCrossProviderFallback: false
-        });
-        await window.myself.chooseAuthorizedRoot();
-      }, { baseUrl: provider.baseUrl, apiKey: provider.apiKey });
-      await pet.evaluate(() => window.myself.openChat());
-      await expect.poll(() => chat.evaluate(() => document.visibilityState)).toBe('visible');
-
-      const phaseOffset = await chat.evaluate(() => (
-        (globalThis as typeof globalThis & { __taskPhases?: string[] }).__taskPhases?.length ?? 0
-      ));
-      const conversationActionOffset = await pet.evaluate(() => (
-        (globalThis as typeof globalThis & { __behaviorActions?: unknown[] })
-          .__behaviorActions?.length ?? 0
-      ));
-      await submitChatMessage(chat, '验证模型无意图降级');
-      await expect.poll(() => firstResponseGate.isWaiting()).toBe(true);
-      await expect.poll(() => fixture.getCharacterBehaviorProbe(), {
-        intervals: [10, 20, 50, 100]
-      }).toMatchObject({
-        primaryStateId: 'thinking',
-        actionId: 'safe-think-action'
-      });
-      firstResponseGate.release();
-      await expect(chat.getByText('无意图本地降级完成')).toBeVisible();
-      await expect.poll(() => fixture.getCharacterBehaviorProbe()).toMatchObject({
-        primaryStateId: 'success',
-        actionId: 'safe-celebrate-action',
-        playbackStatus: expect.stringMatching(/^(started|completed)$/u)
-      });
-      const phases = await chat.evaluate(offset => (
-        (globalThis as typeof globalThis & { __taskPhases?: string[] })
-          .__taskPhases?.slice(offset) ?? []
-      ), phaseOffset);
-      expect(phases.indexOf('listening')).toBeGreaterThanOrEqual(0);
-      expect(phases.indexOf('thinking')).toBeGreaterThan(phases.indexOf('listening'));
-      const conversationActions = await pet.evaluate(offset => (
-        (globalThis as typeof globalThis & {
-          __behaviorActions?: Array<{ stateId: string; actionId: string }>;
-        }).__behaviorActions?.slice(offset) ?? []
-      ), conversationActionOffset);
-      expect(conversationActions).toEqual(expect.arrayContaining([
-        { stateId: 'listening', actionId: 'safe-listen-action' },
-        { stateId: 'thinking', actionId: 'safe-think-action' },
-        { stateId: 'success', actionId: 'safe-celebrate-action' }
-      ]));
-
-      const emotionActionOffset = await pet.evaluate(() => (
-        (globalThis as typeof globalThis & { __behaviorActions?: unknown[] })
-          .__behaviorActions?.length ?? 0
-      ));
-      const emotionEventOffset = await chat.evaluate(() => (
-        (globalThis as typeof globalThis & { __emotionLabels?: string[] })
-          .__emotionLabels?.length ?? 0
-      ));
-      await submitChatMessage(chat, '验证安全情绪标签');
-      await expect(chat.getByText('情绪标签已安全处理')).toBeVisible();
-      await expect.poll(() => chat.evaluate(offset => (
-        (globalThis as typeof globalThis & { __emotionLabels?: string[] })
-          .__emotionLabels?.slice(offset) ?? []
-      ), emotionEventOffset)).toEqual(['happy']);
-      const emotionActions = await pet.evaluate(offset => (
-        (globalThis as typeof globalThis & {
-          __behaviorActions?: Array<{ stateId: string; actionId: string }>;
-        }).__behaviorActions?.slice(offset) ?? []
-      ), emotionActionOffset);
-      expect(emotionActions).toEqual(expect.arrayContaining([
-        { stateId: 'thinking', actionId: 'safe-think-action' },
-        { stateId: 'success', actionId: 'safe-celebrate-action' }
-      ]));
-      await expect.poll(() => fixture.getCharacterBehaviorProbe()).toMatchObject({
-        primaryStateId: 'success',
-        actionId: 'safe-celebrate-action',
-        playbackStatus: expect.stringMatching(/^(started|completed)$/u)
-      });
-
-      await expect(chat.getByLabel('和我说点什么')).toBeEnabled();
-      await submitChatMessage(chat, '验证模型不可用');
-      await expect(chat.getByText('模型服务发生错误，请稍后重试。')).toBeVisible();
-      await expect.poll(() => fixture.getCharacterBehaviorProbe()).toMatchObject({
-        primaryStateId: 'error',
-        actionId: 'safe-fail-action',
-        playbackStatus: expect.stringMatching(/^(started|completed)$/u)
-      });
-
-      // 角色切换断言使用静止前置条件，避免仍在进行的 wander 被合法继承为移动语义。
-      await pet.evaluate(async () => {
-        await window.myself.beginPetDrag();
-        await window.myself.endPetDrag();
-      });
-      await expect.poll(() => pet.evaluate(async () => (
-        await window.myself.getCharacterMotionSnapshot()
-      ).moving)).toBe(false);
-
-      const characters = await pet.evaluate(() => window.myself.listCharacters());
-      const builtin = characters.find(character => character.id === 'builtin-default');
-      expect(builtin).toBeDefined();
-      await pet.evaluate(async characterId => {
-        await window.myself.activateCharacter(characterId);
-      }, builtin!.id);
-      await expect.poll(() => fixture.getCharacterBehaviorProbe()).toMatchObject({
-        primaryStateId: 'idle',
-        actionId: 'idle-main',
-        playbackStatus: expect.stringMatching(/^(started|completed)$/u)
-      });
-      expect((await fixture.getCharacterBehaviorProbe()).actionId).not.toBe('safe-fail-action');
-      expect(provider.inspectionErrors).toEqual([]);
-    } finally {
-      firstResponseGate.release();
-      await fixture.dispose();
-      await provider.close();
-    }
-  });
 });
 
 test.describe('Explorer 动态图层自动验收', () => {
   test('准确快照建立层级，非 Explorer 与失败路径不隐藏或置顶桌宠', async () => {
     test.setTimeout(60_000);
     const fixtureModule = await loadElectronFixtureModule();
-    expect(typeof fixtureModule?.createElectronAppFixture).toBe('function');
-    if (!fixtureModule?.createElectronAppFixture) return;
     const fixture = await fixtureModule.createElectronAppFixture({
       workspaceRoot: resolve(process.cwd()),
       apiKey: runtimeDiagnosticKey(),
@@ -3224,8 +5093,247 @@ test.describe('Explorer 动态图层自动验收', () => {
 });
 
 test.describe('真实 Provider 业务闭环', () => {
+  test('内置本地模型在真实 Electron 中经历加载、CPU 就绪、云路由恢复与退出清理', async () => {
+    test.setTimeout(120_000);
+    const fixtureModule = await loadElectronFixtureModule();
+    const stderrCanary = 'stderr-canary-local-electron';
+    const localPrompt = '本地模型窗口生命周期问候';
+    const localReply = '本地模型 fixture 回复';
+    const pendingPrompt = '请创建 switch-stale.txt';
+    const cloudPrompt = '关闭本地模型后回复我';
+    const cloudReply = '云端路由已恢复';
+    const logSentinels = [
+      stderrCanary,
+      localPrompt,
+      localReply,
+      pendingPrompt,
+      cloudPrompt,
+      cloudReply,
+      'body-canary-local-electron'
+    ];
+    const cloud = await startProviderServer([...characterChatSteps(cloudReply, {}, {inspect: request => {
+        expectCharacterChatRequest(request);
+        if (request.messages.at(-1)?.content !== cloudPrompt) {
+          throw new Error('关闭本地模型后没有恢复持久化云路由');
+        }
+      }})]);
+    let fixture: Awaited<ReturnType<ElectronFixtureModule['createElectronAppFixture']>>;
+    try {
+      fixture = await fixtureModule.createElectronAppFixture({
+        workspaceRoot: resolve(process.cwd()),
+        apiKey: cloud.apiKey,
+        logSentinels,
+        enableLocalModelFixture: true,
+        localModelStderrCanary: stderrCanary,
+        launchTimeoutMs: 15_000,
+        enableSoftwareRasterizer: true
+      });
+    } catch (error) {
+      await cloud.close();
+      throw error;
+    }
+    let finalLocalProcessId: number | undefined;
+    let finalTokenFilePath = '';
+    let firstLocalProcessId: number | undefined;
+    let firstTokenFilePath = '';
+    const rendererDiagnostics: string[] = [];
+    const publicLocalModelSnapshots: unknown[] = [];
+    const connectionCanaries: string[] = [];
+    let privateCanaries: string[] = [];
+    try {
+      await expect.poll(() => Boolean(
+        rendererPage(fixture, 'pet')
+        && rendererPage(fixture, 'chat')
+        && rendererPage(fixture, 'settings')
+      )).toBe(true);
+      const pet = rendererPage(fixture, 'pet');
+      const chat = rendererPage(fixture, 'chat');
+      let settings = rendererPage(fixture, 'settings');
+      if (!pet || !chat || !settings) throw new Error('本地模型 E2E 缺少首屏窗口');
+      for (const page of [pet, chat, settings]) {
+        page.on('console', message => rendererDiagnostics.push(message.text()));
+        page.on('pageerror', error => rendererDiagnostics.push(error.message));
+      }
+      await pet.evaluate(async ({ baseUrl, apiKey }) => {
+        await window.myself.saveProviderProfile({
+          profile: {
+            id: 'local-model-cloud-route',
+            displayName: '本地模型关闭后的云路由',
+            mode: 'custom',
+            protocol: 'openai-compatible',
+            baseUrl,
+            modelId: 'local-model-cloud-fixture',
+            additionalParameters: {},
+            capabilities: ['chat', 'tools']
+          },
+          secret: apiKey,
+          persistSecret: false
+        });
+        await window.myself.saveModelRoute({
+          primaryProfileId: 'local-model-cloud-route',
+          chatProfileId: 'local-model-cloud-route',
+          agentProfileId: 'local-model-cloud-route',
+          visionProfileId: null,
+          fallbackProfileIds: [],
+          allowCrossProviderFallback: false
+        });
+        await window.myself.savePrivacySettings({
+          dataCategories: { memory: false },
+          longTermMemory: false,
+          proactivityMode: 'passive'
+        });
+        await window.myself.chooseAuthorizedRoot();
+        await window.myself.openChat();
+      }, { baseUrl: cloud.baseUrl, apiKey: cloud.apiKey });
+      await expect.poll(() => chat.evaluate(() => document.visibilityState)).toBe('visible');
+
+      await expect(settings.getByText('正在检查资源', { exact: true })).toBeVisible();
+      await expect(chat.getByText('本地模型加载中，暂时不能发送消息。', { exact: true }))
+        .toBeVisible();
+      await expect(chat.getByRole('button', { name: '发送给 AI Pet' })).toBeDisabled();
+      expect(cloud.requests).toHaveLength(0);
+      connectionCanaries.push(...fixture.getLocalModelFixturePrivatePaths());
+
+      await fixture.markLocalModelValidationReady();
+      await expect(settings.getByText('本地模型加载中', { exact: true })).toBeVisible();
+      await fixture.markLocalModelReady();
+      await expect(chat.getByText('CPU 兼容模式', { exact: true })).toBeVisible();
+      const firstEvidence = await fixture.getLocalModelFixtureEvidence();
+      firstLocalProcessId = firstEvidence.processId;
+      firstTokenFilePath = firstEvidence.tokenFilePath;
+      expect(firstEvidence.requestedSpawnOptions).toEqual({ shell: false, windowsHide: true });
+      expect(firstEvidence.actualSpawnOptions).toEqual({ shell: false, windowsHide: true });
+      connectionCanaries.push(
+        firstEvidence.token,
+        String(firstEvidence.port),
+        firstEvidence.fixtureScriptPath,
+        firstEvidence.modelPath,
+        firstEvidence.requestedRuntimePath,
+        firstEvidence.actualRuntimePath,
+        firstEvidence.resourceRoot,
+        firstEvidence.tokenFilePath
+      );
+      publicLocalModelSnapshots.push(await settings.evaluate(async () => (
+        await window.myself.getSettingsDashboard()
+      ).localModel));
+      await submitChatMessage(chat, localPrompt);
+      await expect(chat.getByText(localReply, { exact: true })).toBeVisible();
+      expect(cloud.requests).toHaveLength(0);
+
+      await submitChatMessage(chat, pendingPrompt);
+      const pendingCard = chat.getByRole('article', { name: '本地任务授权' });
+      await expect(pendingCard).toBeVisible();
+      await expect(pendingCard).toContainText('builtin-local');
+      await expect(lstat(join(fixture.authorizedRootDirectory, 'switch-stale.txt')))
+        .rejects.toMatchObject({ code: 'ENOENT' });
+
+      await chat.getByRole('button', { name: '设置' }).click();
+      await expect.poll(() => Boolean(rendererPage(fixture, 'settings'))).toBe(true);
+      settings = rendererPage(fixture, 'settings');
+      if (!settings) throw new Error('缺少本地模型设置窗口');
+      await expect.poll(() => settings.evaluate(() => document.visibilityState)).toBe('visible');
+      const localSwitch = settings.getByRole('switch', { name: '启用内置本地模型' });
+      await expect(localSwitch).toBeChecked();
+      await localSwitch.uncheck();
+      await expect(settings.getByText('已关闭', { exact: true }).first()).toBeVisible();
+      await expect(localSwitch).toBeEnabled();
+      await expect(localSwitch).not.toBeChecked();
+      publicLocalModelSnapshots.push(await settings.evaluate(async () => (
+        await window.myself.getSettingsDashboard()
+      ).localModel));
+      await expect(pendingCard).toHaveCount(0);
+      await expect(lstat(join(fixture.authorizedRootDirectory, 'switch-stale.txt')))
+        .rejects.toMatchObject({ code: 'ENOENT' });
+      if (!firstLocalProcessId) throw new Error('缺少首次本地 fixture PID');
+      await expect(fixtureModule.probeWindowsProcess(firstLocalProcessId)).resolves.toEqual({
+        status: 'absent'
+      });
+      await expect(lstat(firstTokenFilePath)).rejects.toMatchObject({ code: 'ENOENT' });
+      await settings.getByRole('button', { name: '关闭设置', exact: true }).click();
+
+      await submitChatMessage(chat, cloudPrompt);
+      await expect(chat.getByText(cloudReply, { exact: true })).toBeVisible();
+      expect(cloud.requests).toHaveLength(2);
+      cloud.assertComplete();
+      expect(cloud.inspectionErrors).toEqual([]);
+
+      await chat.getByRole('button', { name: '设置' }).click();
+      await expect.poll(() => Boolean(rendererPage(fixture, 'settings'))).toBe(true);
+      settings = rendererPage(fixture, 'settings');
+      if (!settings) throw new Error('重新打开后缺少本地模型设置窗口');
+      await expect.poll(() => settings!.evaluate(() => document.visibilityState)).toBe('visible');
+      const reopenedSwitch = settings.getByRole('switch', { name: '启用内置本地模型' });
+      await expect(reopenedSwitch).not.toBeChecked();
+      await reopenedSwitch.click();
+      await expect(reopenedSwitch).toBeChecked();
+      await expect(settings.getByText('CPU 兼容模式', { exact: true })).toBeVisible();
+      const finalEvidence = await fixture.getLocalModelFixtureEvidence();
+      finalLocalProcessId = finalEvidence.processId;
+      finalTokenFilePath = finalEvidence.tokenFilePath;
+      connectionCanaries.push(
+        finalEvidence.token,
+        String(finalEvidence.port),
+        finalEvidence.fixtureScriptPath,
+        finalEvidence.modelPath,
+        finalEvidence.requestedRuntimePath,
+        finalEvidence.actualRuntimePath,
+        finalEvidence.resourceRoot,
+        finalEvidence.tokenFilePath
+      );
+      publicLocalModelSnapshots.push(await settings.evaluate(async () => (
+        await window.myself.getSettingsDashboard()
+      ).localModel));
+
+      privateCanaries = [...new Set([
+        ...connectionCanaries,
+        stderrCanary,
+        localPrompt,
+        localReply,
+        pendingPrompt,
+        cloudPrompt,
+        cloudReply,
+        'body-canary-local-electron'
+      ])];
+      const assertNoPrivateArtifacts = (): void => {
+        expect(fixture.inspectCapturedLogCanaries(privateCanaries))
+          .toEqual(privateCanaries.map(() => false));
+        const artifacts = [
+          rendererDiagnostics,
+          publicLocalModelSnapshots,
+          fixture.logs
+        ];
+        expect(fixtureModule.inspectPrivateArtifactCanaries(artifacts, privateCanaries))
+          .toEqual(privateCanaries.map(() => false));
+        expect(fixture.capturedLogEvidence).toEqual({
+          apiKey: false,
+          authorizedRoot: false,
+          authorizationHeader: false,
+          sentinels: logSentinels.map(() => false)
+        });
+      };
+      assertNoPrivateArtifacts();
+
+      await settings.evaluate(async () => window.myself.quit());
+      await fixture.closeApplicationForInspection();
+      if (!finalLocalProcessId) throw new Error('缺少退出前本地 fixture PID');
+      await expect(fixtureModule.probeWindowsProcess(finalLocalProcessId)).resolves.toEqual({
+        status: 'absent'
+      });
+      await expect(lstat(finalTokenFilePath)).rejects.toMatchObject({ code: 'ENOENT' });
+      // 关闭期间可能产生新的 console/pageerror/log；自然退出后重新序列化全部诊断。
+      assertNoPrivateArtifacts();
+    } finally {
+      try {
+        await fixture.dispose();
+      } finally {
+        await cloud.close();
+      }
+    }
+  });
+
   test('默认聊天与设置浮层提示', async () => {
     test.setTimeout(120_000);
+    const fixtureModule = await loadElectronFixtureModule();
     const chatInputs = [
       '你好',
       '聊天呀',
@@ -3258,50 +5366,25 @@ test.describe('真实 Provider 业务闭环', () => {
       fileRequestAfterAuthorization,
       fileReply
     ];
-    const chatSteps: ProviderStep[] = chatReplies.map((reply, index) => ({
-      response: { type: 'text', text: reply },
-      inspect: request => {
+    const chatSteps: ProviderStep[] = chatReplies.flatMap((reply, index) => (characterChatSteps(reply, {}, {inspect: request => {
         const systemMessage = request.messages[0];
-        if (request.tools.length !== 0
+        if (request.responseFormatWasJsonObject
+          || request.tools.length !== 1
           || systemMessage?.role !== 'system'
           || /只输出单个 JSON 对象|规划系统协议/u.test(systemMessage.content)
           || request.messages.at(-1)?.content !== chatInputs[index]) {
           throw new Error(`第 ${index + 1} 轮默认聊天请求越界`);
         }
-      }
-    }));
+      }})));
     const provider = await startProviderServer([
       { response: { type: 'text', text: connectionReplies[0] } },
       { response: { type: 'text', text: connectionReplies[1] } },
       ...chatSteps,
-      {
-        response: toolResponse(
-          'acceptance-list-root',
-          'builtin.files.list_files',
-          { relativePath: '.' }
-        )
-      },
-      {
-        response: { type: 'text', text: fileReply },
-        inspect: request => {
-          const result = lastToolResult(request) as {
-            toolName?: string;
-            entries?: Array<{ relativePath?: string; type?: string }>;
-          };
-          if (result.toolName !== 'list_files'
-            || !result.entries?.some(entry => entry.relativePath === 'docs'
-              && entry.type === 'directory')) {
-            throw new Error('文件列表结果未保持授权边界');
-          }
-        }
-      }
+      taskAuthorizationStep(),
+      taskAuthorizationStep(),
+      { response: codingResponse([{ name: 'read', args: { path: '.' } }]) },
+      { response: codingResponse(fileReply), inspectRaw: request => { expect(JSON.stringify(request.messages)).toContain('docs'); } }
     ]);
-    const fixtureModule = await loadElectronFixtureModule();
-    expect(typeof fixtureModule?.createElectronAppFixture).toBe('function');
-    if (!fixtureModule?.createElectronAppFixture) {
-      await provider.close();
-      return;
-    }
     let fixture: Awaited<ReturnType<ElectronFixtureModule['createElectronAppFixture']>>;
     try {
       fixture = await fixtureModule.createElectronAppFixture({
@@ -3415,13 +5498,12 @@ test.describe('真实 Provider 业务闭环', () => {
 
       await submitChatMessage(chat, fileRequestBeforeAuthorization);
       await expect(chat.getByRole('button', { name: '打开设置' })).toBeVisible();
-      expect(provider.requests).toHaveLength(10);
+      expect(provider.requests).toHaveLength(19);
       await chat.getByRole('button', { name: '打开设置' }).click();
       await expect.poll(() => Boolean(pageFor('settings'))).toBe(true);
       settings = pageFor('settings')!;
       await expect.poll(() => settings.evaluate(() => document.visibilityState)).toBe('visible');
       await settings.getByRole('button', { name: '隐私' }).click();
-      await settings.getByRole('checkbox', { name: '文件数据授权' }).check();
       await settings.getByRole('button', { name: '保存隐私设置' }).click();
       await expect(settings.getByText('隐私设置已保存。')).toBeVisible();
       await settings.getByRole('button', { name: '选择目录' }).click();
@@ -3430,6 +5512,7 @@ test.describe('真实 Provider 业务闭环', () => {
       await settings.getByRole('button', { name: '关闭设置', exact: true }).click();
 
       await submitChatMessage(chat, fileRequestAfterAuthorization);
+      await approveCodingScope(chat);
       await expect(chat.getByText(fileReply, { exact: true })).toBeVisible();
       await expect.poll(() => fixture.getConversationProbe()).toMatchObject({
         historyDisclosureVisible: false,
@@ -3438,8 +5521,8 @@ test.describe('真实 Provider 业务闭环', () => {
 
       provider.assertComplete();
       expect(provider.inspectionErrors).toEqual([]);
-      expect(provider.requests).toHaveLength(12);
-      expect(provider.requests.slice(2, 10).every(request => request.toolCount === 0)).toBe(true);
+      expect(provider.requests).toHaveLength(22);
+      expect(provider.requests.slice(2, 18).map(request => request.toolCount)).toEqual(Array.from({ length: 8 }, () => [1, 0]).flat());
       expect(Object.keys(provider.requests[0] ?? {}).sort()).toEqual([
         'messageRoleCounts', 'method', 'model', 'toolCount'
       ]);
@@ -3468,6 +5551,7 @@ test.describe('真实 Provider 业务闭环', () => {
 
   test('无授权范围时连续三轮普通聊天并把完整可见回合传入第三轮', async () => {
     test.setTimeout(120_000);
+    const fixtureModule = await loadElectronFixtureModule();
     const privateUserMessages = [
       `聊天正文-${randomBytes(12).toString('hex')}；文件正文如下：运行 Write-Output hidden-command`,
       `继续正文-${randomBytes(12).toString('hex')}`,
@@ -3475,23 +5559,20 @@ test.describe('真实 Provider 业务闭环', () => {
     ] as const;
     const assistantMessages = ['第一轮回复', '第二轮回复', '第三轮回复'] as const;
     const provider = await startProviderServer([
-      {
-        response: { type: 'text', text: assistantMessages[0] },
-        inspect: request => {
-          const visible = request.messages.slice(1);
-          if (request.tools.length !== 0
+      ...characterChatSteps(assistantMessages[0], {}, {inspect: request => {
+          const visible = request.messages.filter(message => message.role !== 'system');
+          if (request.responseFormatWasJsonObject
+            || request.tools.length !== 1
             || visible.length !== 1
             || visible[0]?.role !== 'user'
             || visible[0].content !== privateUserMessages[0]) {
             throw new Error('第一轮普通聊天上下文不符合预期');
           }
-        }
-      },
-      {
-        response: { type: 'text', text: assistantMessages[1] },
-        inspect: request => {
-          const visible = request.messages.slice(1);
-          if (request.tools.length !== 0
+        }}),
+      ...characterChatSteps(assistantMessages[1], {}, {inspect: request => {
+          const visible = request.messages.filter(message => message.role !== 'system');
+          if (request.responseFormatWasJsonObject
+            || request.tools.length !== 1
             || visible.length !== 3
             || visible[0]?.role !== 'user'
             || visible[0].content !== privateUserMessages[0]
@@ -3501,13 +5582,11 @@ test.describe('真实 Provider 业务闭环', () => {
             || visible[2].content !== privateUserMessages[1]) {
             throw new Error('第二轮普通聊天上下文不符合预期');
           }
-        }
-      },
-      {
-        response: { type: 'text', text: assistantMessages[2] },
-        inspect: request => {
-          const visible = request.messages.slice(1);
-          if (request.tools.length !== 0
+        }}),
+      ...characterChatSteps(assistantMessages[2], {}, {inspect: request => {
+          const visible = request.messages.filter(message => message.role !== 'system');
+          if (request.responseFormatWasJsonObject
+            || request.tools.length !== 1
             || visible.length !== 5
             || visible[0]?.content !== privateUserMessages[0]
             || visible[1]?.content !== assistantMessages[0]
@@ -3516,31 +5595,21 @@ test.describe('真实 Provider 业务闭环', () => {
             || visible[4]?.content !== privateUserMessages[2]) {
             throw new Error('第三轮未收到前两轮完整可见上下文');
           }
-        }
-      }
+        }})
     ]);
-    const fixtureModule = await loadElectronFixtureModule();
-    expect(typeof fixtureModule?.createElectronAppFixture).toBe('function');
-    if (!fixtureModule?.createElectronAppFixture) {
-      await provider.close();
-      return;
-    }
     const fixture = await fixtureModule.createElectronAppFixture({
       workspaceRoot: resolve(process.cwd()),
       apiKey: provider.apiKey,
       launchTimeoutMs: 15_000
     });
     try {
-      const pages = (): Page[] => fixture.browser.contexts().flatMap(context => context.pages());
-      const pageFor = (view: 'pet' | 'chat'): Page | undefined => pages().find(page => {
-        try {
-          return new URL(page.url()).searchParams.get('view') === view;
-        } catch {
-          return false;
-        }
-      });
-      await expect.poll(() => Boolean(pageFor('pet') && pageFor('chat'))).toBe(true);
-      const pet = pageFor('pet')!;
+      await expect.poll(() => Boolean(
+        rendererPage(fixture, 'pet') && rendererPage(fixture, 'chat')
+      )).toBe(true);
+      const pet = rendererPage(fixture, 'pet');
+      if (!pet) throw new Error('缺少 pet Renderer');
+      const chat = rendererPage(fixture, 'chat');
+      if (!chat) throw new Error('缺少 chat Renderer');
       await pet.evaluate(async ({ baseUrl, apiKey }) => {
         await window.myself.saveProviderProfile({
           profile: {
@@ -3568,7 +5637,7 @@ test.describe('真实 Provider 业务闭环', () => {
       }, { baseUrl: provider.baseUrl, apiKey: provider.apiKey });
 
       for (let index = 0; index < privateUserMessages.length; index += 1) {
-        await submitChatMessage(pageFor('chat')!, privateUserMessages[index]);
+        await submitChatMessage(chat, privateUserMessages[index]);
         await expect.poll(() => fixture.getConversationProbe()).toMatchObject({
           visibleMessageCount: (index + 1) * 2,
           historyDisclosureVisible: false,
@@ -3576,7 +5645,7 @@ test.describe('真实 Provider 业务闭环', () => {
         });
       }
 
-      await expect(pageFor('chat')!.getByRole('region', { name: '运行 PowerShell 命令' }))
+      await expect(chat.getByRole('region', { name: '运行 PowerShell 命令' }))
         .toHaveCount(0);
 
       provider.assertComplete();
@@ -3596,42 +5665,33 @@ test.describe('真实 Provider 业务闭环', () => {
 
   test('模糊请求按默认聊天回复且明确文件请求在无授权时只引导设置', async () => {
     test.setTimeout(120_000);
+    const fixtureModule = await loadElectronFixtureModule();
     const ambiguousText = '帮我整理一下';
     const privateLogSentinel = randomBytes(12).toString('hex');
     const fileName = `未授权-${privateLogSentinel}.txt`;
     const provider = await startProviderServer([
-      {
-        response: { type: 'text', text: '无法确定请求类型' },
-        inspect: request => {
-          if (request.tools.length !== 0 || request.messages.at(-1)?.content !== ambiguousText) {
-            throw new Error('模糊请求未走无工具聊天');
+      ...characterChatSteps('无法确定请求类型', {}, {inspect: request => {
+          if (request.responseFormatWasJsonObject
+            || request.tools.length !== 1
+            || request.messages.at(-1)?.content !== ambiguousText) {
+            throw new Error('模糊请求未走正式主请求');
           }
-        }
-      }
+        }}),
+      taskAuthorizationStep()
     ]);
-    const fixtureModule = await loadElectronFixtureModule();
-    expect(typeof fixtureModule?.createElectronAppFixture).toBe('function');
-    if (!fixtureModule?.createElectronAppFixture) {
-      await provider.close();
-      return;
-    }
     const fixture = await fixtureModule.createElectronAppFixture({
       workspaceRoot: resolve(process.cwd()),
       apiKey: provider.apiKey,
       launchTimeoutMs: 15_000
     });
     try {
-      const pages = (): Page[] => fixture.browser.contexts().flatMap(context => context.pages());
-      const pageFor = (view: 'pet' | 'chat'): Page | undefined => pages().find(page => {
-        try {
-          return new URL(page.url()).searchParams.get('view') === view;
-        } catch {
-          return false;
-        }
-      });
-      await expect.poll(() => Boolean(pageFor('pet') && pageFor('chat'))).toBe(true);
-      const pet = pageFor('pet')!;
-      const chat = pageFor('chat')!;
+      await expect.poll(() => Boolean(
+        rendererPage(fixture, 'pet') && rendererPage(fixture, 'chat')
+      )).toBe(true);
+      const pet = rendererPage(fixture, 'pet');
+      if (!pet) throw new Error('缺少 pet Renderer');
+      const chat = rendererPage(fixture, 'chat');
+      if (!chat) throw new Error('缺少 chat Renderer');
       await pet.evaluate(async ({ baseUrl, apiKey }) => {
         await window.myself.saveProviderProfile({
           profile: {
@@ -3676,7 +5736,7 @@ test.describe('真实 Provider 业务闭环', () => {
         fileConfirmationVisible: false
       });
       expect(await readdir(fixture.authorizedRootDirectory, { recursive: true })).toEqual(before);
-      expect(provider.requests).toHaveLength(1);
+      expect(provider.requests).toHaveLength(3);
       provider.assertComplete();
       expect(provider.inspectionErrors).toEqual([]);
 
@@ -3694,6 +5754,7 @@ test.describe('真实 Provider 业务闭环', () => {
 
   test('Chat 与 Agent 跨 Provider 时两种披露决定均继续且单次共享不会复用', async () => {
     test.setTimeout(120_000);
+    const fixtureModule = await loadElectronFixtureModule();
     const privateMessages = [
       `来源正文一-${randomBytes(12).toString('hex')}`,
       `读取 仅当前-${randomBytes(12).toString('hex')}.txt`,
@@ -3703,87 +5764,38 @@ test.describe('真实 Provider 业务闭环', () => {
     ] as const;
     const sourceReplies = ['来源服务回复一', '来源服务回复二'] as const;
     const sourceProvider = await startProviderServer([
-      {
-        response: { type: 'text', text: sourceReplies[0] }
-      },
-      {
-        response: { type: 'text', text: sourceReplies[1] }
-      }
+      ...characterChatSteps(sourceReplies[0], {}, {inspect: expectCharacterChatRequest}),
+      taskAuthorizationStep(),
+      ...characterChatSteps(sourceReplies[1], {}, {inspect: expectCharacterChatRequest}),
+      taskAuthorizationStep()
     ]);
     const targetProvider = await startProviderServer([
-      {
-        // 跨 Provider 的能力请求先由目标 Agent 预检，再在用户选定披露范围后续跑。
-        response: { type: 'text', text: '仅当前文件任务预检完成' },
-        inspect: request => {
-          if (request.tools.length === 0
-            || request.messages.some(message => message.content === privateMessages[0])
-            || request.messages.some(message => message.content === sourceReplies[0])
-            || request.messages.at(-1)?.content !== privateMessages[1]) {
-            throw new Error('仅当前消息决策向文件 Agent 携带了旧历史');
-          }
-        }
-      },
-      {
-        response: { type: 'text', text: '仅当前文件任务已结束' },
-        inspect: request => {
-          if (request.tools.length === 0
-            || request.messages.some(message => message.content === privateMessages[0])
-            || request.messages.some(message => message.content === sourceReplies[0])
-            || request.messages.length !== 3
-            || request.messages.at(-1)?.role !== 'system') {
-            throw new Error('仅当前消息确认续跑向文件 Agent 携带了旧历史');
-          }
-        }
-      },
-      {
-        response: { type: 'text', text: '共享文件任务预检完成' },
-        inspect: request => {
-          if (request.tools.length === 0
-            || !request.messages.some(message => message.content === privateMessages[2])
-            || !request.messages.some(message => message.content === sourceReplies[1])
-            || request.messages.at(-1)?.content !== privateMessages[3]) {
-            throw new Error('单次共享没有把可见历史交给文件 Agent');
-          }
-        }
-      },
-      {
-        response: { type: 'text', text: '共享文件任务已结束' },
-        inspect: request => {
-          if (request.tools.length === 0
-            || !request.messages.some(message => message.content === privateMessages[2])
-            || !request.messages.some(message => message.content === sourceReplies[1])
-            || request.messages.length !== 5
-            || request.messages.at(-1)?.role !== 'system') {
-            throw new Error('单次共享确认续跑没有把可见历史交给文件 Agent');
-          }
-        }
-      }
+      { response: codingResponse('仅当前文件任务已结束'), inspectRaw: request => {
+        const text = JSON.stringify(request.messages); expect(text).not.toContain(privateMessages[0]); expect(text).not.toContain(sourceReplies[0]); expect(text).toContain(privateMessages[1]);
+      } },
+      { response: codingResponse('共享文件任务已结束'), inspectRaw: request => {
+        const text = JSON.stringify(request.messages); expect(text).toContain(privateMessages[2]); expect(text).toContain(sourceReplies[1]); expect(text).toContain(privateMessages[3]);
+      } }
     ]);
-    const fixtureModule = await loadElectronFixtureModule();
-    expect(typeof fixtureModule?.createElectronAppFixture).toBe('function');
-    if (!fixtureModule?.createElectronAppFixture) {
-      await sourceProvider.close();
-      await targetProvider.close();
-      return;
-    }
     const fixture = await fixtureModule.createElectronAppFixture({
       workspaceRoot: resolve(process.cwd()),
       apiKey: sourceProvider.apiKey,
       additionalSecrets: [targetProvider.apiKey],
-      launchTimeoutMs: 15_000
+      launchTimeoutMs: 15_000,
+      // 披露验收使用静止模式，隔离间断活动请求与固定主请求脚本的竞争。
+      prepareUserData: async directories => {
+        const settings = new SettingsStore(join(directories.userDataDirectory, 'settings.json'), async () => false);
+        await settings.saveMovementMode(0);
+      }
     });
     try {
-      const pages = (): Page[] => fixture.browser.contexts().flatMap(context => context.pages());
-      const pageFor = (view: 'pet' | 'chat'): Page | undefined => pages().find(page => {
-        try {
-          return new URL(page.url()).searchParams.get('view') === view;
-        } catch {
-          return false;
-        }
-      });
-      await expect.poll(() => Boolean(pageFor('pet') && pageFor('chat'))).toBe(true);
-      const pet = pageFor('pet')!;
-      const chat = pageFor('chat')!;
+      await expect.poll(() => Boolean(
+        rendererPage(fixture, 'pet') && rendererPage(fixture, 'chat')
+      )).toBe(true);
+      const pet = rendererPage(fixture, 'pet');
+      if (!pet) throw new Error('缺少 pet Renderer');
+      const chat = rendererPage(fixture, 'chat');
+      if (!chat) throw new Error('缺少 chat Renderer');
       await pet.evaluate(async input => {
         for (const profile of input.profiles) {
           await window.myself.saveProviderProfile({
@@ -3810,12 +5822,7 @@ test.describe('真实 Provider 业务闭环', () => {
           allowCrossProviderFallback: false
         });
         await window.myself.savePrivacySettings({
-          dataCategories: {
-            file: true,
-            screenshot: false,
-            clipboard: false,
-            memory: false
-          },
+          dataCategories: { memory: false },
           longTermMemory: false,
           proactivityMode: 'passive'
         });
@@ -3854,6 +5861,7 @@ test.describe('真实 Provider 业务闭环', () => {
         historyDisclosureVisible: true
       });
       await chat.getByRole('button', { name: '仅发送当前消息' }).click();
+      await approveCodingScope(chat);
       await expect.poll(() => fixture.getConversationProbe()).toMatchObject({
         visibleMessageCount: 4,
         historyDisclosureVisible: false
@@ -3887,6 +5895,7 @@ test.describe('真实 Provider 业务闭环', () => {
         historyDisclosureVisible: true
       });
       await chat.getByRole('button', { name: '仅本次共享历史' }).click();
+      await approveCodingScope(chat);
       await expect.poll(() => fixture.getConversationProbe()).toMatchObject({
         visibleMessageCount: 4,
         historyDisclosureVisible: false
@@ -3902,9 +5911,9 @@ test.describe('真实 Provider 业务闭环', () => {
         historyDisclosureVisible: true
       });
 
-      expect(sourceProvider.requests).toHaveLength(2);
-      // 两种披露决定均必须经历“预检 + 依据用户决定续跑”两个目标 Provider 请求。
-      expect(targetProvider.requests).toHaveLength(4);
+      expect(sourceProvider.requests).toHaveLength(6);
+      // 两种披露决定各只启动获准后的正式 Core 请求。
+      expect(targetProvider.requests).toHaveLength(2);
 
       sourceProvider.assertComplete();
       targetProvider.assertComplete();
@@ -3928,49 +5937,34 @@ test.describe('真实 Provider 业务闭环', () => {
 
   test('模型响应挂起时新建对话会隔离迟到回复并允许新会话继续', async () => {
     test.setTimeout(120_000);
+    const fixtureModule = await loadElectronFixtureModule();
     const oldGate = createProviderResponseGate();
     const oldText = `旧会话正文-${randomBytes(12).toString('hex')}`;
     const newText = `新会话正文-${randomBytes(12).toString('hex')}`;
     const provider = await startProviderServer([
-      {
-        response: { type: 'text', text: '不得回流的旧回复' },
-        gate: oldGate
-      },
-      {
-        response: { type: 'text', text: '新会话回复' },
-        inspect: request => {
-          const visible = request.messages.slice(1);
-          if (request.tools.length !== 0
+      { response: { type: 'text', text: '不得回流的旧回复' }, gate: oldGate },
+      ...characterChatSteps('新会话回复', {}, {inspect: request => {
+          const visible = request.messages.filter(message => message.role !== 'system');
+          if (request.tools.length !== 1
             || visible.length !== 1
             || visible[0]?.content !== newText) {
             throw new Error('新会话错误携带了旧会话历史');
           }
-        }
-      }
+        }})
     ]);
-    const fixtureModule = await loadElectronFixtureModule();
-    expect(typeof fixtureModule?.createElectronAppFixture).toBe('function');
-    if (!fixtureModule?.createElectronAppFixture) {
-      await provider.close();
-      return;
-    }
     const fixture = await fixtureModule.createElectronAppFixture({
       workspaceRoot: resolve(process.cwd()),
       apiKey: provider.apiKey,
       launchTimeoutMs: 15_000
     });
     try {
-      const pages = (): Page[] => fixture.browser.contexts().flatMap(context => context.pages());
-      const pageFor = (view: 'pet' | 'chat'): Page | undefined => pages().find(page => {
-        try {
-          return new URL(page.url()).searchParams.get('view') === view;
-        } catch {
-          return false;
-        }
-      });
-      await expect.poll(() => Boolean(pageFor('pet') && pageFor('chat'))).toBe(true);
-      const pet = pageFor('pet')!;
-      const chat = pageFor('chat')!;
+      await expect.poll(() => Boolean(
+        rendererPage(fixture, 'pet') && rendererPage(fixture, 'chat')
+      )).toBe(true);
+      const pet = rendererPage(fixture, 'pet');
+      if (!pet) throw new Error('缺少 pet Renderer');
+      const chat = rendererPage(fixture, 'chat');
+      if (!chat) throw new Error('缺少 chat Renderer');
       await pet.evaluate(async ({ baseUrl, apiKey }) => {
         await window.myself.saveProviderProfile({
           profile: {
@@ -4013,8 +6007,9 @@ test.describe('真实 Provider 业务闭环', () => {
         fileConfirmationVisible: false
       });
 
+      // 重置已经中止旧连接，解除门闩不能把取消的 HTTP 误算成完成响应。
+      await expect.poll(() => oldGate.isWaiting()).toBe(false);
       oldGate.release();
-      await provider.waitForCompletedResponses(1);
       await expect.poll(() => fixture.getConversationProbe()).toMatchObject({
         phase: 'idle',
         visibleMessageCount: 0,
@@ -4023,7 +6018,7 @@ test.describe('真实 Provider 业务闭环', () => {
       });
 
       await submitChatMessage(chat, newText);
-      await provider.waitForCompletedResponses(2);
+      await provider.waitForCompletedResponses(1);
       await expect.poll(() => fixture.getConversationProbe()).toMatchObject({
         visibleMessageCount: 2,
         historyDisclosureVisible: false,
@@ -4047,830 +6042,151 @@ test.describe('真实 Provider 业务闭环', () => {
     }
   });
 
-  test('文件动作待确认时新建对话会使旧确认失效且不改文件', async () => {
+  test('MCP 正式链在普通聊天与只读文件任务的重启周期保持保留数据原始字节不变', async () => {
     test.setTimeout(120_000);
-    const fileName = `待确认-${randomBytes(12).toString('hex')}.txt`;
-    const newText = `重置后正文-${randomBytes(12).toString('hex')}`;
+    const fixtureModule = await loadElectronFixtureModule();
     const provider = await startProviderServer([
-      {
-        response: toolResponse(
-          'reset-pending-create',
-          'builtin.files.create_file',
-          { relativePath: fileName }
-        ),
-        inspect: request => {
-          if (request.tools.length === 0) throw new Error('文件 Agent 未收到工具白名单');
-        }
-      },
-      {
-        response: { type: 'text', text: '重置后新会话回复' },
-        inspect: request => {
-          const visible = request.messages.slice(1);
-          if (request.tools.length !== 0
-            || visible.length !== 1
-            || visible[0]?.content !== newText) {
-            throw new Error('重置后新会话携带了旧文件任务上下文');
+      ...characterChatSteps('你好呀，我在。', {}, {inspect: request => {
+          if (request.responseFormatWasJsonObject || request.tools.length !== 1) {
+            throw new Error('普通聊天只允许无副作用的范围申请');
           }
-        }
-      }
+        }}),
+      taskAuthorizationStep(),
+      { response: codingResponse([{ name: 'read', args: { path: '.' } }]) },
+      { response: codingResponse('只读目录已列出。'), inspectRaw: request => { expect(JSON.stringify(request.messages)).toContain('docs'); } }
     ]);
-    const fixtureModule = await loadElectronFixtureModule();
-    expect(typeof fixtureModule?.createElectronAppFixture).toBe('function');
-    if (!fixtureModule?.createElectronAppFixture) {
-      await provider.close();
-      return;
-    }
-    const fixture = await fixtureModule.createElectronAppFixture({
-      workspaceRoot: resolve(process.cwd()),
-      apiKey: provider.apiKey,
-      launchTimeoutMs: 15_000
-    });
-    try {
-      const pages = (): Page[] => fixture.browser.contexts().flatMap(context => context.pages());
-      const pageFor = (view: 'pet' | 'chat'): Page | undefined => pages().find(page => {
-        try {
-          return new URL(page.url()).searchParams.get('view') === view;
-        } catch {
-          return false;
-        }
-      });
-      await expect.poll(() => Boolean(pageFor('pet') && pageFor('chat'))).toBe(true);
-      const pet = pageFor('pet')!;
-      const chat = pageFor('chat')!;
-      await pet.evaluate(async ({ baseUrl, apiKey }) => {
-        await window.myself.saveProviderProfile({
-          profile: {
-            id: 'pending-reset-e2e',
-            displayName: '确认重置 E2E',
-            mode: 'custom',
-            protocol: 'openai-compatible',
-            baseUrl,
-            modelId: 'pending-reset-e2e-model',
-            additionalParameters: {},
-            capabilities: ['chat', 'tools']
-          },
-          secret: apiKey,
-          persistSecret: false
-        });
-        await window.myself.saveModelRoute({
-          primaryProfileId: 'pending-reset-e2e',
-          chatProfileId: 'pending-reset-e2e',
-          agentProfileId: 'pending-reset-e2e',
-          visionProfileId: null,
-          fallbackProfileIds: [],
-          allowCrossProviderFallback: false
-        });
-        await window.myself.savePrivacySettings({
-          dataCategories: {
-            file: true,
-            screenshot: false,
-            clipboard: false,
-            memory: false
-          },
-          longTermMemory: false,
-          proactivityMode: 'passive'
-        });
-        await window.myself.chooseAuthorizedRoot();
-        await window.myself.openChat();
-      }, { baseUrl: provider.baseUrl, apiKey: provider.apiKey });
-
-      const target = join(fixture.authorizedRootDirectory, fileName);
-      expect(await pathExistsForAssertion(target)).toBe(false);
-      await submitChatMessage(chat, `创建 ${fileName}`);
-      await expect.poll(() => fixture.getConversationProbe()).toMatchObject({
-        phase: 'awaiting_confirmation',
-        visibleMessageCount: 1,
-        historyDisclosureVisible: false,
-        fileConfirmationVisible: true
-      });
-      const oldConfirmation = chat.getByRole('button', { name: '确认创建文件' });
-      await expect(oldConfirmation).toBeVisible();
-      await chat.getByRole('button', { name: '新对话' }).click();
-      await expect.poll(() => fixture.getConversationProbe()).toMatchObject({
-        phase: 'idle',
-        visibleMessageCount: 0,
-        historyDisclosureVisible: false,
-        fileConfirmationVisible: false
-      });
-      await expect(oldConfirmation).toHaveCount(0);
-      expect(await pathExistsForAssertion(target)).toBe(false);
-
-      await submitChatMessage(chat, newText);
-      await expect.poll(() => fixture.getConversationProbe()).toMatchObject({
-        visibleMessageCount: 2,
-        historyDisclosureVisible: false,
-        fileConfirmationVisible: false
-      });
-      expect(await pathExistsForAssertion(target)).toBe(false);
-      provider.assertComplete();
-      expect(provider.inspectionErrors).toEqual([]);
-
-      const captured = fixture.logs.join('\n');
-      for (const privateText of [fileName, newText, provider.apiKey, target]) {
-        expect(captured.includes(privateText), '待确认重置诊断不得泄露私密数据').toBe(false);
-      }
-    } finally {
-      await fixture.dispose();
-      await provider.close();
-    }
-  });
-
-  test('回收站搬运闭环只在提交帧后写入隔离适配器并安全处理中断与失败', async () => {
-    test.setTimeout(120_000);
-    const provider = await startProviderServer([
-      {
-        response: toolResponse(
-          'recycle-success',
-          'builtin.files.delete_file',
-          { relativePath: 'success.txt' }
-        )
-      },
-      {
-        response: { type: 'text', text: 'success.txt 已移入回收站。' },
-        inspect: request => {
-          const result = lastToolResult(request) as {
-            toolName?: string;
-            targetRelativePath?: string;
-          };
-          if (
-            result.toolName !== 'delete_file'
-            || result.targetRelativePath !== 'success.txt'
-          ) throw new Error('回收站结果不符合脚本预期');
-        }
-      },
-      {
-        response: toolResponse(
-          'recycle-switch',
-          'builtin.files.delete_file',
-          { relativePath: 'switch.txt' }
-        )
-      },
-      {
-        response: toolResponse(
-          'recycle-drag',
-          'builtin.files.delete_file',
-          { relativePath: 'drag.txt' }
-        )
-      },
-      {
-        response: toolResponse(
-          'recycle-failure',
-          'builtin.files.delete_file',
-          { relativePath: 'failure.txt' }
-        )
-      }
-    ]);
-    const fixtureModule = await loadElectronFixtureModule();
-    expect(typeof fixtureModule?.createElectronAppFixture).toBe('function');
-    if (!fixtureModule?.createElectronAppFixture) {
-      await provider.close();
-      return;
-    }
-    const fixture = await fixtureModule.createElectronAppFixture({
-      workspaceRoot: resolve(process.cwd()),
-      apiKey: provider.apiKey,
-      launchTimeoutMs: 15_000,
-      enableSoftwareRasterizer: true
-    });
-    const recycleBinDirectory = fixture.recycleBinDirectory;
-    if (!recycleBinDirectory) throw new Error('缺少隔离回收站目录');
-    const pages = (): Page[] => fixture.browser.contexts().flatMap(context => context.pages());
-    const pageFor = (view: 'pet' | 'chat'): Page | undefined => pages().find(page => {
-      try {
-        return new URL(page.url()).searchParams.get('view') === view;
-      } catch {
-        return false;
-      }
-    });
-
-    try {
-      await expect.poll(() => Boolean(pageFor('pet') && pageFor('chat'))).toBe(true);
-      const pet = pageFor('pet')!;
-      const chat = pageFor('chat')!;
-      await pet.evaluate(() => {
-        const scope = globalThis as typeof globalThis & {
-          __recycleCarryEvents?: Array<{
-            playbackToken: string;
-            actionId: string;
-            commitFrameId: string | null;
-          }>;
-        };
-        scope.__recycleCarryEvents = [];
-        window.myself.subscribeCharacterMotion(event => {
-          if (event.type !== 'behavior-action' || event.stateId !== 'carrying') return;
-          scope.__recycleCarryEvents?.push({
-            playbackToken: event.playbackToken,
-            actionId: event.actionId,
-            commitFrameId: event.commitFrameId ?? null
-          });
-        });
-      });
-      const imported = await pet.evaluate(() => window.myself.importCharacterPackage());
-      expect(imported.kind).toBe('imported');
-      if (imported.kind !== 'imported') return;
-      await pet.evaluate(async ({ characterId, baseUrl, apiKey }) => {
-        await window.myself.activateCharacter(characterId);
-        await window.myself.saveProviderProfile({
-          profile: {
-            id: 'recycle-e2e',
-            displayName: '回收站 E2E',
-            mode: 'custom',
-            protocol: 'openai-compatible',
-            baseUrl,
-            modelId: 'recycle-e2e-model',
-            additionalParameters: {},
-            capabilities: ['chat', 'tools']
-          },
-          secret: apiKey,
-          persistSecret: false
-        });
-        await window.myself.saveModelRoute({
-          primaryProfileId: 'recycle-e2e',
-          chatProfileId: 'recycle-e2e',
-          agentProfileId: 'recycle-e2e',
-          visionProfileId: null,
-          fallbackProfileIds: [],
-          allowCrossProviderFallback: false
-        });
-        await window.myself.savePrivacySettings({
-          dataCategories: {
-            file: true,
-            screenshot: false,
-            clipboard: false,
-            memory: false
-          },
-          longTermMemory: false,
-          proactivityMode: 'passive'
-        });
-        await window.myself.chooseAuthorizedRoot();
-        await window.myself.openChat();
-      }, {
-        characterId: imported.characterId,
-        baseUrl: provider.baseUrl,
-        apiKey: provider.apiKey
-      });
-      await expect.poll(() => chat.evaluate(() => document.visibilityState)).toBe('visible');
-
-      const carryEventCount = async (): Promise<number> => pet.evaluate(() => (
-        (globalThis as typeof globalThis & { __recycleCarryEvents?: unknown[] })
-          .__recycleCarryEvents?.length ?? 0
-      ));
-      const waitForCarry = async (offset: number) => {
-        await expect.poll(() => fixture.getCharacterBehaviorProbe(), {
-          intervals: [10, 20, 50, 100]
-        }).toMatchObject({
-          primaryStateId: 'carrying',
-          actionId: 'safe-carry-action',
-          playbackStatus: 'started'
-        });
-        return pet.evaluate(index => {
-          const events = (globalThis as typeof globalThis & {
-            __recycleCarryEvents?: Array<{
-              playbackToken: string;
-              actionId: string;
-              commitFrameId: string | null;
-            }>;
-          }).__recycleCarryEvents ?? [];
-          const event = events[index];
-          if (!event) throw new Error('缺少搬运授权事件');
-          return event;
-        }, offset);
-      };
-      const beginRecycle = async (fileName: string): Promise<{
-        source: string;
-        carryOffset: number;
-      }> => {
-        const source = join(fixture.authorizedRootDirectory, fileName);
-        await writeFile(source, `${fileName} 内容`, 'utf8');
-        const carryOffset = await carryEventCount();
-        await submitChatMessage(chat, `把 ${fileName} 移动到回收站`);
-        const card = chat.getByRole('region', { name: `删除文件 ${fileName}` });
-        await expect(card).toBeVisible();
-        await expect(card.getByText(fileName, { exact: true })).toBeVisible();
-        await expect(card.getByText('将移入 Windows 回收站，可从回收站恢复；执行前还会再次检查。'))
-          .toBeVisible();
-        expect(await pathExistsForAssertion(source)).toBe(true);
-        await card.getByRole('button', { name: '确认删除' }).click();
-        return { source, carryOffset };
-      };
-
-      const success = await beginRecycle('success.txt');
-      const successGrant = await waitForCarry(success.carryOffset);
-      expect(await pathExistsForAssertion(success.source)).toBe(true);
-      expect((await readdir(recycleBinDirectory)).filter(name => name.startsWith('.attempt-')))
-        .toEqual([]);
-      await pet.evaluate(async grant => {
-        for (const candidate of [
-          { ...grant, playbackToken: 'forged-token', kind: 'commit-frame' as const },
-          { ...grant, actionId: 'cross-character-action', kind: 'commit-frame' as const },
-          { ...grant, commitFrameId: 'stale-frame', kind: 'commit-frame' as const }
-        ]) {
-          try {
-            await window.myself.reportCharacterActionMilestone({
-              playbackToken: candidate.playbackToken,
-              actionId: candidate.actionId,
-              kind: candidate.kind,
-              frameId: candidate.commitFrameId ?? 'missing-frame'
-            });
-          } catch {
-            // 伪造反馈必须由 Main 拒绝；测试只观察拒绝后无文件副作用。
-          }
-        }
-      }, successGrant);
-      expect(await pathExistsForAssertion(success.source)).toBe(true);
-      expect((await readdir(recycleBinDirectory)).filter(name => name.startsWith('.attempt-')))
-        .toEqual([]);
-      await expect.poll(() => pathExistsForAssertion(success.source)).toBe(false);
-      await expect(chat.getByText('success.txt 已移入回收站。')).toBeVisible();
-      await expect.poll(() => fixture.getCharacterBehaviorProbe()).toMatchObject({
-        primaryStateId: 'success',
-        actionId: 'safe-celebrate-action',
-        playbackStatus: expect.stringMatching(/^(started|completed)$/u)
-      });
-      expect((await readdir(recycleBinDirectory)).filter(name => name.startsWith('.attempt-')))
-        .toEqual(['.attempt-1']);
-      await pet.evaluate(async grant => {
-        try {
-          await window.myself.reportCharacterActionMilestone({
-            playbackToken: grant.playbackToken,
-            actionId: grant.actionId,
-            kind: 'commit-frame',
-            frameId: grant.commitFrameId ?? 'missing-frame'
-          });
-        } catch {
-          // 已完成事务的重复里程碑必须被拒绝。
-        }
-      }, successGrant);
-      expect((await readdir(recycleBinDirectory)).filter(name => name.startsWith('.attempt-')))
-        .toEqual(['.attempt-1']);
-
-      const switched = await beginRecycle('switch.txt');
-      const switchedGrant = await waitForCarry(switched.carryOffset);
-      await pet.evaluate(async oldGrant => {
-        try {
-          await window.myself.reportCharacterActionMilestone({
-            playbackToken: oldGrant.playbackToken,
-            actionId: oldGrant.actionId,
-            kind: 'commit-frame',
-            frameId: oldGrant.commitFrameId ?? 'missing-frame'
-          });
-        } catch {
-          // 上一事务真实授权不得提交当前事务。
-        }
-      }, successGrant);
-      expect(await pathExistsForAssertion(switched.source)).toBe(true);
-      expect((await readdir(recycleBinDirectory)).filter(name => name.startsWith('.attempt-')))
-        .toHaveLength(1);
-      const characters = await pet.evaluate(() => window.myself.listCharacters());
-      const builtin = characters.find(character => character.id === 'builtin-default');
-      if (!builtin) throw new Error('缺少内置角色');
-      await pet.evaluate(characterId => window.myself.activateCharacter(characterId), builtin.id);
-      await expect(chat.getByText('搬运动画未完成，文件未被移动。')).toBeVisible();
-      await pet.evaluate(async oldGrant => {
-        try {
-          await window.myself.reportCharacterActionMilestone({
-            playbackToken: oldGrant.playbackToken,
-            actionId: oldGrant.actionId,
-            kind: 'commit-frame',
-            frameId: oldGrant.commitFrameId ?? 'missing-frame'
-          });
-        } catch {
-          // 角色切换后原角色真实授权必须立即失效。
-        }
-      }, switchedGrant);
-      expect(await pathExistsForAssertion(switched.source)).toBe(true);
-      expect((await readdir(recycleBinDirectory)).filter(name => name.startsWith('.attempt-')))
-        .toHaveLength(1);
-
-      await pet.evaluate(characterId => window.myself.activateCharacter(characterId), imported.characterId);
-      await expect.poll(() => fixture.getCharacterBehaviorProbe()).toMatchObject({
-        primaryStateId: 'idle',
-        actionId: 'safe-idle-action',
-        playbackStatus: 'started'
-      });
-      const dragged = await beginRecycle('drag.txt');
-      await waitForCarry(dragged.carryOffset);
-      await pet.evaluate(async () => {
-        await window.myself.beginPetDrag();
-        await window.myself.endPetDrag();
-      });
-      await expect(chat.getByText('搬运动画未完成，文件未被移动。')).toHaveCount(2);
-      expect(await pathExistsForAssertion(dragged.source)).toBe(true);
-      expect((await readdir(recycleBinDirectory)).filter(name => name.startsWith('.attempt-')))
-        .toHaveLength(1);
-
-      await writeFile(join(recycleBinDirectory, '.force-failure'), '', 'utf8');
-      const failed = await beginRecycle('failure.txt');
-      await waitForCarry(failed.carryOffset);
-      await expect(chat.getByText('无法将目标移入 Windows 回收站，原目标仍保留。')).toBeVisible({
-        timeout: 10_000
-      });
-      await expect.poll(() => fixture.getCharacterBehaviorProbe()).toMatchObject({
-        primaryStateId: 'error',
-        actionId: 'safe-fail-action',
-        playbackStatus: expect.stringMatching(/^(started|completed)$/u)
-      });
-      expect(await pathExistsForAssertion(failed.source)).toBe(true);
-      expect((await readdir(recycleBinDirectory)).filter(name => name.startsWith('.attempt-')))
-        .toEqual(['.attempt-1', '.attempt-2']);
-
-      provider.assertComplete();
-      expect(provider.requests).toHaveLength(5);
-      expect(provider.inspectionErrors).toEqual([]);
-      const captured = fixture.logs.join('\n');
-      expect(captured).not.toContain(fixture.authorizedRootDirectory);
-      expect(captured).not.toContain(recycleBinDirectory);
-      // 四条事务分别使用唯一正文哨兵，确保成功、中断和失败路径都不会记录文件内容。
-      for (const fileName of ['success.txt', 'switch.txt', 'drag.txt', 'failure.txt']) {
-        expect(captured).not.toContain(`${fileName} 内容`);
-      }
-    } finally {
-      await fixture.dispose();
-      await provider.close();
-    }
-  });
-
-  test('通过正式白名单完成设置、文件操作与聊天窗口状态', async () => {
-    test.setTimeout(120_000);
-    const fixtureModule = await loadElectronFixtureModule();
-    expect(typeof fixtureModule?.createElectronAppFixture).toBe('function');
-    if (!fixtureModule?.createElectronAppFixture) return;
-
-    const privacyLogSentinels = [
-      'task6-user-body-sentinel',
-      'task6-model-body-sentinel',
-      'task6-file-body-sentinel',
-      "Write-Output task6-stdout-sentinel; [Console]::Error.Write('task6-stderr-sentinel')",
-      'task6-stdout-sentinel',
-      'task6-stderr-sentinel'
-    ] as const;
-    const providerSteps: ProviderStep[] = [
-      { response: { type: 'text', text: '本地连接正常' } },
-      {
-        response: toolResponse(
-          'list-root',
-          'builtin.files.list_files',
-          { relativePath: '.' }
-        ),
-        inspect: request => {
-          const names = request.tools.map(
-            (tool: { function: { name: string } }) => tool.function.name
-          );
-          if (
-            !names.includes('builtin.files.list_files')
-            || !names.includes('builtin.files.create_file')
-          ) {
-            throw new Error('Provider 未收到正式文件工具白名单');
-          }
-        }
-      },
-      {
-        response: { type: 'text', text: 'task6-model-body-sentinel' },
-        inspect: request => {
-          const result = lastToolResult(request) as {
-            toolName?: string;
-            entries?: Array<{ relativePath?: string; type?: string }>;
-          };
-          if (result.toolName !== 'list_files'
-            || !result.entries?.some(entry => entry.relativePath === 'docs' && entry.type === 'directory')) {
-            throw new Error('列目录工具结果不符合脚本预期');
-          }
-        }
-      },
-      {
-        response: toolResponse(
-          'create-file',
-          'builtin.files.create_file',
-          { relativePath: 'created.txt', content: 'task6-file-body-sentinel\n' }
-        )
-      },
-      {
-        response: { type: 'text', text: '文件已创建。' },
-        inspect: request => {
-          const result = lastToolResult(request) as { toolName?: string; targetRelativePath?: string };
-          if (result.toolName !== 'create_file' || result.targetRelativePath !== 'created.txt') {
-            throw new Error('创建文件结果不符合脚本预期');
-          }
-        }
-      },
-      {
-        response: toolResponse('patch-file', 'builtin.files.apply_patch', {
-          relativePath: 'created.txt',
-          patch: '@@ -1,1 +1,1 @@\n-task6-file-body-sentinel\n+patched content\n'
-        })
-      },
-      {
-        response: { type: 'text', text: '补丁已应用。' },
-        inspect: request => {
-          const result = lastToolResult(request) as {
-            toolName?: string;
-            targetRelativePath?: string;
-          };
-          if (result.toolName !== 'apply_patch'
-            || result.targetRelativePath !== 'created.txt') {
-            throw new Error('补丁结果不符合脚本预期');
-          }
-        }
-      },
-      {
-        response: toolResponse(
-          'cancel-file',
-          'builtin.files.create_file',
-          { relativePath: 'cancelled.txt' }
-        )
-      },
-      {
-        response: toolResponse(
-          'powershell-success',
-          'builtin.powershell.run',
-          { command: "Write-Output task6-stdout-sentinel; [Console]::Error.Write('task6-stderr-sentinel')" }
-        ),
-        inspect: request => {
-          const names = request.tools.map(
-            (tool: { function: { name: string } }) => tool.function.name
-          );
-          if (names.length !== 1 || names[0] !== 'builtin.powershell.run') {
-            throw new Error('PowerShell 会话未隔离为唯一工具白名单');
-          }
-        }
-      },
-      {
-        response: { type: 'text', text: '命令成功。' },
-        inspect: request => {
-          const result = lastToolResult(request) as {
-            toolName?: string;
-            ok?: boolean;
-            status?: string;
-            exitCode?: number | null;
-            stdout?: string;
-            stderr?: string;
-          };
-          if (result.toolName !== 'powershell' || result.ok !== true
-            || result.status !== 'succeeded' || result.exitCode !== 0
-            || !result.stdout?.includes('task6-stdout-sentinel')
-            || !result.stderr?.includes('task6-stderr-sentinel')) {
-            throw new Error('PowerShell 成功结果不符合脚本预期');
-          }
-        }
-      },
-      {
-        response: toolResponse(
-          'powershell-failure',
-          'builtin.powershell.run',
-          { command: 'exit 7' }
-        )
-      },
-      {
-        response: { type: 'text', text: '命令失败。' },
-        inspect: request => {
-          const result = lastToolResult(request) as {
-            ok?: boolean;
-            status?: string;
-            exitCode?: number | null;
-          };
-          if (result.ok !== false || result.status !== 'failed' || result.exitCode !== 7) {
-            throw new Error('PowerShell 非零退出结果不符合脚本预期');
-          }
-        }
-      },
-      {
-        response: toolResponse(
-          'powershell-cancel',
-          'builtin.powershell.run',
-          { command: 'Write-Output should-not-run' }
-        )
-      }
-    ];
-
-    const provider = await startProviderServer(providerSteps);
-    let fixture: Awaited<ReturnType<ElectronFixtureModule['createElectronAppFixture']>>;
+    let restartCount = 0;
+    let baselineSettingsBuffer: Buffer | undefined;
+    let baselineMcpSecretBuffer: Buffer | undefined;
+    let fixture: AppFixture;
     try {
       fixture = await fixtureModule.createElectronAppFixture({
         workspaceRoot: resolve(process.cwd()),
         apiKey: provider.apiKey,
-        logSentinels: privacyLogSentinels,
-        launchTimeoutMs: 15_000
+        launchTimeoutMs: 15_000,
+        beforeRestart: async directories => {
+          restartCount += 1;
+          const settingsFile = join(directories.userDataDirectory, 'settings.json');
+          const secretFile = join(directories.userDataDirectory, 'provider-secret.bin');
+          const profilesDirectory = `${secretFile}.profiles`;
+          const providerSlotFile = join(
+            profilesDirectory,
+            `${createHash('sha256').update('provider-main').digest('hex')}.bin`
+          );
+          const mcpSecretSlotFile = join(
+            profilesDirectory,
+            `${createHash('sha256').update('mcp:remote-tools').digest('hex')}.bin`
+          );
+
+          if (restartCount === 1) {
+            const settings = new SettingsStore(settingsFile, async () => false);
+            await settings.getPetPlacementState('builtin-default');
+            await settings.saveMcpServerSettings({
+              id: 'remote-tools',
+              enabled: true,
+              transport: {
+                type: 'http',
+                url: 'https://mcp.example.com',
+                secretNames: ['Authorization']
+              },
+              tools: {
+                search: {
+                  enabled: true,
+                  readOnly: true,
+                  description: '搜索'
+                }
+              }
+            });
+            await mkdir(profilesDirectory, { recursive: true });
+            await cp(providerSlotFile, mcpSecretSlotFile);
+            baselineSettingsBuffer = await readFile(settingsFile);
+            baselineMcpSecretBuffer = await readFile(mcpSecretSlotFile);
+          } else if (restartCount === 2) {
+            if (!baselineSettingsBuffer || !baselineMcpSecretBuffer) {
+              throw new Error('缺少首次重启的 MCP 原始字节基线');
+            }
+            const afterSettingsBuffer = await readFile(settingsFile);
+            const afterMcpSecretBuffer = await readFile(mcpSecretSlotFile);
+            expect(afterSettingsBuffer.equals(baselineSettingsBuffer)).toBe(true);
+            expect(afterMcpSecretBuffer.equals(baselineMcpSecretBuffer)).toBe(true);
+          }
+        }
       });
     } catch (error) {
       await provider.close();
       throw error;
     }
-    const userDataDirectory = fixture.userDataDirectory;
-    const authorizedRootDirectory = fixture.authorizedRootDirectory;
-    const rendererDiagnostics: string[] = [];
 
-    const rendererPages = (): Page[] => fixture.browser.contexts()
-      .flatMap(context => context.pages());
-    const pageFor = (view: 'pet' | 'chat' | 'settings'): Page | undefined => (
-      rendererPages().find(page => {
-        try {
-          return new URL(page.url()).searchParams.get('view') === view;
-        } catch {
-          return false;
-        }
-      })
-    );
-    const waitForPage = async (view: 'pet' | 'chat' | 'settings'): Promise<Page> => {
-      await expect.poll(() => Boolean(pageFor(view))).toBe(true);
-      const page = pageFor(view);
-      if (!page) throw new Error(`缺少 ${view} Renderer`);
-      return page;
-    };
-    const captureRendererDiagnostics = (pages: Page[]): void => {
-      for (const page of pages) {
-        page.on('console', message => {
-          rendererDiagnostics.push(sanitizeCapturedDiagnostic(
-            message.text(),
-            provider.apiKey,
-            authorizedRootDirectory
-          ));
-        });
-        page.on('pageerror', error => {
-          rendererDiagnostics.push(sanitizeCapturedDiagnostic(
-            error.message,
-            provider.apiKey,
-            authorizedRootDirectory
-          ));
-        });
-      }
-    };
-
-    let primaryError: unknown;
     try {
-      await mkdir(join(authorizedRootDirectory, 'docs'), { recursive: true });
+      await mkdir(join(fixture.authorizedRootDirectory, 'docs'), { recursive: true });
+      const petPage = await waitForRendererPage(fixture, 'pet');
+      await petPage.evaluate(async ({ baseUrl, apiKey }) => {
+        await window.myself.saveProviderProfile({
+          profile: {
+            id: 'provider-main',
+            displayName: 'MCP 生命周期 Provider',
+            mode: 'custom',
+            protocol: 'openai-compatible',
+            baseUrl,
+            modelId: 'mcp-lifecycle-model',
+            additionalParameters: {},
+            capabilities: ['chat', 'tools']
+          },
+          secret: apiKey,
+          persistSecret: true
+        });
+        await window.myself.saveModelRoute({
+          primaryProfileId: 'provider-main',
+          chatProfileId: 'provider-main',
+          agentProfileId: 'provider-main',
+          visionProfileId: null,
+          fallbackProfileIds: [],
+          allowCrossProviderFallback: false
+        });
+        await window.myself.savePrivacySettings({
+          dataCategories: { memory: false },
+          longTermMemory: false,
+          proactivityMode: 'assistive'
+        });
+        await window.myself.chooseAuthorizedRoot();
+      }, { baseUrl: provider.baseUrl, apiKey: provider.apiKey });
 
-      const petPage = await waitForPage('pet');
-      const chatPage = await waitForPage('chat');
-      const settingsPage = await waitForPage('settings');
-      captureRendererDiagnostics(rendererPages());
-
-      await expect(petPage.getByRole('main', { name: 'AI Pet 桌宠' })).toBeVisible();
-      await petPage.evaluate(() => window.myself.openChat());
+      // 首次配置阶段允许正式 coordinator 落盘 V3 placement；基线建立后不再改写几何。
+      const firstPetClosed = petPage.waitForEvent('close');
+      await petPage.evaluate(() => {
+        void window.myself.quit();
+      });
+      await firstPetClosed;
+      await fixture.restart();
+      const restartedPetPage = await waitForRendererPage(fixture, 'pet');
+      const chatPage = await waitForRendererPage(fixture, 'chat');
+      await restartedPetPage.evaluate(() => window.myself.openChat());
       await expect.poll(() => chatPage.evaluate(() => document.visibilityState)).toBe('visible');
 
-      await submitChatMessage(chatPage, '请列出工作目录');
-      await expect(chatPage.getByText('请先在设置中授权文件目录。')).toBeVisible();
-
-      await chatPage.getByRole('button', { name: '打开设置' }).click();
-      await expect.poll(() => settingsPage.evaluate(() => document.visibilityState)).toBe('visible');
-      await settingsPage.getByLabel('自定义').check();
-      await settingsPage.getByText('高级设置', { exact: true }).click();
-      await settingsPage.getByLabel('档案名称').fill('任务九本地服务');
-      await settingsPage.getByLabel('Base URL').fill(provider.baseUrl);
-      await settingsPage.getByLabel('Model ID').fill('task-9b2-model');
-      await settingsPage.getByLabel('API Key', { exact: true }).fill(provider.apiKey);
-      await settingsPage.getByRole('button', { name: '保存档案' }).click();
-      await expect(settingsPage.getByText('模型档案已保存。')).toBeVisible();
-
-      await settingsPage.getByRole('button', { name: '测试 任务九本地服务 连接' }).click();
-      await expect(settingsPage.getByText('连接测试完成。')).toBeVisible();
-      await settingsPage.getByRole('combobox', { name: '主模型', exact: true })
-        .selectOption({ label: '任务九本地服务' });
-      await settingsPage.getByRole('combobox', { name: 'Agent 模型', exact: true })
-        .selectOption({ label: '任务九本地服务' });
-      await settingsPage.getByRole('button', { name: '保存路由' }).click();
-      await expect(settingsPage.getByText('模型路由已保存。')).toBeVisible();
-
-      await settingsPage.getByRole('button', { name: '隐私' }).click();
-      await settingsPage.getByRole('checkbox', { name: '文件数据授权' }).check();
-      await settingsPage.getByRole('button', { name: '保存隐私设置' }).click();
-      await expect(settingsPage.getByText('隐私设置已保存。')).toBeVisible();
-      await settingsPage.getByRole('button', { name: '选择目录' }).click();
-      await expect(settingsPage.getByText('授权目录已更新。')).toBeVisible();
-      await expect(settingsPage.getByText('authorized-root', { exact: true })).toBeVisible();
-      await settingsPage.getByRole('button', { name: '关闭设置', exact: true }).click();
-
-      await submitChatMessage(chatPage, '列出当前目录 task6-user-body-sentinel');
-      await expect(chatPage.getByText('task6-model-body-sentinel')).toBeVisible();
-
-      await submitChatMessage(chatPage, '创建文件 created.txt');
-      const createCard = chatPage.getByRole('region', { name: '创建文件 created.txt' });
-      await expect(createCard).toBeVisible();
-      await createCard.getByRole('button', { name: '确认创建文件' }).click();
-      await expect(chatPage.getByText('文件已创建。')).toBeVisible();
-      expect(await pathExistsForAssertion(join(authorizedRootDirectory, 'created.txt'))).toBe(true);
-      expect(await readTextForAssertion(join(authorizedRootDirectory, 'created.txt')))
-        .toBe('task6-file-body-sentinel\n');
-
-      await submitChatMessage(chatPage, '修改 created.txt');
-      const patchCard = chatPage.getByRole('region', {
-        name: '修改文件 created.txt'
-      });
-      await expect(patchCard).toBeVisible();
-      await patchCard.getByRole('button', { name: '确认应用补丁' }).click();
-      await expect(chatPage.getByText('补丁已应用。')).toBeVisible();
-      expect(await readTextForAssertion(join(authorizedRootDirectory, 'created.txt')))
-        .toBe('patched content\n');
-
-      await submitChatMessage(chatPage, '创建 cancelled.txt，但先让我确认');
-      const cancelCard = chatPage.getByRole('region', { name: '创建文件 cancelled.txt' });
-      await expect(cancelCard).toBeVisible();
-      await cancelCard.getByRole('button', { name: '先不创建' }).click();
-      await expect(cancelCard).toHaveCount(0);
-      expect(await pathExistsForAssertion(join(authorizedRootDirectory, 'cancelled.txt'))).toBe(false);
-
-      await submitChatMessage(
-        chatPage,
-        "运行 Write-Output task6-stdout-sentinel; [Console]::Error.Write('task6-stderr-sentinel')"
-      );
-      const successPowerShellCard = chatPage.getByRole('region', { name: '运行 PowerShell 命令' });
-      await expect(successPowerShellCard).toBeVisible();
-      await expect(successPowerShellCard.getByText('工作目录：已授权工作目录')).toBeVisible();
-      await expect(successPowerShellCard.getByText(
-        "Write-Output task6-stdout-sentinel; [Console]::Error.Write('task6-stderr-sentinel')",
-        { exact: true }
-      )).toBeVisible();
-      await successPowerShellCard.getByRole('button', { name: '确认运行命令' }).click();
-      await expect(chatPage.getByText('命令成功。')).toBeVisible();
-
-      await submitChatMessage(chatPage, '运行 exit 7');
-      const failurePowerShellCard = chatPage.getByRole('region', { name: '运行 PowerShell 命令' });
-      await expect(failurePowerShellCard).toBeVisible();
-      await failurePowerShellCard.getByRole('button', { name: '确认运行命令' }).click();
-      await expect(chatPage.getByText('命令失败。')).toBeVisible();
-      await expect.poll(() => fixture.getConversationProbe()).toMatchObject({ phase: 'error' });
-
-      await submitChatMessage(chatPage, '运行 Write-Output should-not-run');
-      const cancelPowerShellCard = chatPage.getByRole('region', { name: '运行 PowerShell 命令' });
-      await expect(cancelPowerShellCard).toBeVisible();
-      await cancelPowerShellCard.getByRole('button', { name: '先不运行' }).click();
-      await expect(cancelPowerShellCard).toHaveCount(0);
-      await expect.poll(() => fixture.getConversationProbe()).toMatchObject({ phase: 'cancelled' });
-
-      await chatPage.getByRole('button', { name: '关闭聊天气泡' }).click();
-      expect(chatPage.isClosed()).toBe(false);
-      await expect(chatPage.getByText('补丁已应用。')).toBeVisible();
-      await petPage.evaluate(() => window.myself.openChat());
-      expect(chatPage.isClosed()).toBe(false);
-      await expect(chatPage.getByText('补丁已应用。')).toBeVisible();
-      const reopenedComposer = chatPage.getByLabel('和我说点什么');
-      await reopenedComposer.fill('聊天重开命令路径验证');
-      await expect(reopenedComposer).toHaveValue('聊天重开命令路径验证');
-      await reopenedComposer.fill('');
-
+      await submitChatMessage(chatPage, '你好呀');
+      await expect.poll(() => provider.requests.length).toBe(2);
       expect(provider.inspectionErrors).toEqual([]);
-      expect(provider.remainingSteps()).toBe(0);
+      await expect(chatPage.getByText('你好呀，我在。', { exact: true })).toBeVisible();
+      await submitChatMessage(chatPage, '列出当前目录');
+      await approveCodingScope(chatPage);
+      await expect(chatPage.getByText('只读目录已列出。', { exact: true })).toBeVisible();
+
       provider.assertComplete();
-      expect(provider.requests).toHaveLength(13);
-      for (const request of provider.requests) {
-        expect(request).toMatchObject({
-          method: 'POST',
-          model: 'task-9b2-model'
-        });
-        expect(request.toolCount).toBeGreaterThanOrEqual(0);
-      }
-
-      const captured = [...rendererDiagnostics, ...fixture.logs].join('\n');
-      expect(fixture.capturedLogEvidence).toEqual({
-        apiKey: false,
-        authorizedRoot: false,
-        authorizationHeader: false,
-        sentinels: privacyLogSentinels.map(() => false)
+      expect(provider.inspectionErrors).toEqual([]);
+      const secondPetClosed = restartedPetPage.waitForEvent('close');
+      await restartedPetPage.evaluate(() => {
+        void window.myself.quit();
       });
-      expect(captured).not.toContain(provider.apiKey);
-      expect(captured).not.toContain(authorizedRootDirectory);
-      expect(captured).not.toMatch(/authorization\s*:/iu);
-    } catch (error) {
-      primaryError = error;
-    }
-
-    const supplementalErrors: unknown[] = [];
-    if (provider.remainingSteps() > 0) {
+      await secondPetClosed;
+      await fixture.restart();
+      expect(restartCount).toBe(2);
+    } finally {
       try {
-        provider.assertComplete();
-      } catch (error) {
-        supplementalErrors.push(error);
+        await fixture.dispose();
+      } finally {
+        await provider.close();
       }
     }
-    try {
-      await fixture.dispose();
-    } catch (error) {
-      supplementalErrors.push(error);
-    }
-    try {
-      await provider.close();
-    } catch (error) {
-      supplementalErrors.push(error);
-    }
-    try {
-      expect(await pathExistsForAssertion(userDataDirectory)).toBe(false);
-      expect(await pathExistsForAssertion(authorizedRootDirectory)).toBe(false);
-    } catch (error) {
-      supplementalErrors.push(error);
-    }
-
-    if (primaryError) {
-      if (primaryError instanceof Error && supplementalErrors.length > 0) {
-        const diagnostics = supplementalErrors.map(error => sanitizeCapturedDiagnostic(
-          error instanceof Error ? error.message : String(error),
-          provider.apiKey,
-          authorizedRootDirectory
-        ));
-        primaryError.message += `\n附加清理诊断：${diagnostics.join('；')}`;
-      }
-      throw primaryError;
-    }
-    if (supplementalErrors[0]) throw supplementalErrors[0];
   });
 });
 
@@ -4878,40 +6194,70 @@ test.describe('真实桌宠位置重启恢复', () => {
   test('移动并等待持久化后使用同一 userData 重启恢复位置', async () => {
     test.setTimeout(120_000);
     const fixtureModule = await loadElectronFixtureModule();
-    expect(typeof fixtureModule?.createElectronAppFixture).toBe('function');
-    if (!fixtureModule?.createElectronAppFixture) return;
-
+    type Placement = PetPlacementForE2e;
+    const readPlacementAt = async (directory: string): Promise<Placement | null> => {
+      try {
+        const settings = JSON.parse(
+          await readFile(join(directory, 'settings.json'), 'utf8')
+        ) as {
+          petPlacementState?: {
+            kind?: string;
+            placements?: Placement[];
+          };
+        };
+        const state = settings.petPlacementState;
+        if (state?.kind !== 'ready') {
+          return null;
+        }
+        const placement = state.placements?.find(
+          candidate => candidate.characterId === 'builtin-default'
+        );
+        return placement ?? null;
+      } catch {
+        return null;
+      }
+    };
+    const sameFoot = (left: Placement | null, right: Placement | null): boolean => Boolean(
+      left && right
+      && left.footAnchorDip.x === right.footAnchorDip.x
+      && left.footAnchorDip.y === right.footAnchorDip.y
+    );
+    const sameScale = (left: Placement | null, right: Placement | null): boolean => Boolean(
+      left && right && left.scale === right.scale
+    );
+    const sameDisplay = (left: Placement | null, right: Placement | null): boolean => Boolean(
+      left && right && left.displayId === right.displayId
+    );
+    const placementChanged = (left: Placement | null, right: Placement | null): boolean => Boolean(
+      left && right && !sameFoot(left, right)
+    );
+    let savedPlacementAfterShutdown: Placement | null = null;
     const fixture = await fixtureModule.createElectronAppFixture({
       workspaceRoot: resolve(process.cwd()),
       apiKey: runtimeDiagnosticKey(),
-      launchTimeoutMs: 15_000
+      launchTimeoutMs: 15_000,
+      beforeRestart: async directories => {
+        savedPlacementAfterShutdown = await readPlacementAt(directories.userDataDirectory);
+      }
     });
     const userDataDirectory = fixture.userDataDirectory;
     const authorizedRootDirectory = fixture.authorizedRootDirectory;
-    const rendererPages = (): Page[] => fixture.browser.contexts()
-      .flatMap(context => context.pages());
-    const petPageForCurrentLaunch = (): Page | undefined => (
-      rendererPages().find(page => {
-        try {
-          return new URL(page.url()).searchParams.get('view') === 'pet';
-        } catch {
-          return false;
-        }
-      })
-    );
-    const waitForPetPage = async (): Promise<Page> => {
-      await expect.poll(() => Boolean(petPageForCurrentLaunch())).toBe(true);
-      const page = petPageForCurrentLaunch();
-      if (!page) throw new Error('缺少 pet Renderer');
-      return page;
-    };
+    const readPlacement = (): Promise<Placement | null> => readPlacementAt(userDataDirectory);
 
     try {
-      const petPage = await waitForPetPage();
-      const originalPosition = await petPage.evaluate(() => ({
-        x: window.screenX,
-        y: window.screenY
-      }));
+      const petPage = await waitForRendererPage(fixture, 'pet');
+      // G4 的 player ready 早于 Main 事务落盘；先等初始位置可见，再模拟真实用户移动。
+      await expect(petPage.locator('.character-player')).toHaveAttribute(
+        'data-status',
+        'ready',
+        { timeout: 20_000 }
+      );
+      await expect.poll(readPlacement, { timeout: 20_000 }).not.toBeNull();
+      await expect.poll(async () => (await fixture.getMainE2eState()).geometry).toMatchObject({
+        scaleTick: 10,
+        outOfBounds: false
+      });
+      const initialPlacement = await readPlacement();
       await petPage.evaluate(({ offsetX, offsetY }) => {
         const currentScreen = window.screen as Screen & {
           availLeft?: number;
@@ -4930,26 +6276,46 @@ test.describe('真实桌宠位置重启恢复', () => {
         window.moveTo(targetX, targetY);
       }, { offsetX: 64, offsetY: 48 });
       await expect.poll(async () => {
-        const current = await petPage.evaluate(() => ({
-          x: window.screenX,
-          y: window.screenY
-        }));
-        return current.x !== originalPosition.x || current.y !== originalPosition.y;
-      }).toBe(true);
-      const savedPosition = await petPage.evaluate(() => ({
-        x: window.screenX,
-        y: window.screenY
-      }));
-      await petPage.waitForTimeout(500);
-
+        const current = await readPlacement();
+        return placementChanged(initialPlacement, current);
+      }, { timeout: 20_000 }).toBe(true);
+      await expect.poll(async () => (await fixture.getMainE2eState()).geometry).toMatchObject({
+        outOfBounds: false
+      });
+      const movedPlacement = await readPlacement();
+      if (!movedPlacement) throw new Error('用户移动后缺少持久位置');
+      await expect.poll(() => renderedFootMatchesPlacement(
+        petPage,
+        movedPlacement
+      )).toBe(true);
+      const petClosed = petPage.waitForEvent('close');
+      await petPage.evaluate(() => {
+        void window.myself.quit();
+      });
+      await petClosed;
       await fixture.restart();
-      const restartedPetPage = await waitForPetPage();
-      const restoredPosition = await restartedPetPage.evaluate(() => ({
-        x: window.screenX,
-        y: window.screenY
-      }));
-      expect(Math.abs(restoredPosition.x - savedPosition.x)).toBeLessThanOrEqual(1);
-      expect(Math.abs(restoredPosition.y - savedPosition.y)).toBeLessThanOrEqual(1);
+      expect(Boolean(savedPlacementAfterShutdown)).toBe(true);
+      const restartedPetPage = await waitForRendererPage(fixture, 'pet');
+      await expect(restartedPetPage.locator('.character-player')).toHaveAttribute(
+        'data-status',
+        'ready',
+        { timeout: 20_000 }
+      );
+      await expect.poll(async () => (await fixture.getMainE2eState()).geometry, {
+        timeout: 15_000
+      }).toMatchObject({
+        scaleTick: 10,
+        outOfBounds: false
+      });
+      const restoredPlacement = await readPlacement();
+      expect(sameFoot(restoredPlacement, savedPlacementAfterShutdown)).toBe(true);
+      expect(sameScale(restoredPlacement, savedPlacementAfterShutdown)).toBe(true);
+      expect(sameDisplay(restoredPlacement, savedPlacementAfterShutdown)).toBe(true);
+      if (!savedPlacementAfterShutdown) throw new Error('重启前缺少持久位置');
+      await expect.poll(() => renderedFootMatchesPlacement(
+        restartedPetPage,
+        savedPlacementAfterShutdown
+      )).toBe(true);
 
       const diagnostics = fixture.logs.join('\n');
       expect(diagnostics).not.toMatch(/myself-e2e-[a-f0-9]{48}/u);

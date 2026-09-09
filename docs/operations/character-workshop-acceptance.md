@@ -1,5 +1,7 @@
 # AI Pet 角色工作室验收清单
 
+> 当前角色规格为 [V3 自定义状态与持续心情](../superpowers/specs/2026-09-05-ai-pet-custom-state-autonomy-design.md)，最新实施证据见[本轮开发记录](2026-09-06-custom-state-autonomy.md)。下文是各日期的历史验收；旧核心／扩展状态、固定语义及旧 Agent 链路的通过结果不代表 V3 已验收，也不再作为新行为的要求。
+
 本文记录任务 13 的自动验证范围和必须由人工完成的性能观察。自动项只有在对应测试实际通过后才能勾选；人工项不得用单元测试结果替代。
 
 ## 自动验收
@@ -7,7 +9,7 @@
 - [x] E2E 固定素材只从仓库内 8 张四帧透明 PNG 复制到临时 `userData`，不读取用户图片目录。
 - [x] 安全角色包包含 `idle`、`carrying`、`carry` 锚点和扩展状态；恶意包包含路径穿越条目，等长替换次数严格为 2。
 - [x] E2E 对话框队列仅在开发 E2E 模式启用，所有输入、输出路径均限制在临时目录，Renderer 和 preload 不暴露测试路径 API。
-- [x] 正式 Renderer 控件可新建角色、导入精灵图、设置 2×2 网格、有效帧、帧率和 `ground` 锚点。
+- [x] 正式 Renderer 控件可新建角色、导入精灵图、设置 2×2 网格、有效帧、播放参数和 `ground` 锚点。
 - [x] 正式 Renderer 控件可新增核心动作、搬运动作、`carry` 锚点和点击触发扩展状态。
 - [x] 可显式保存草稿、编译并发布、确认不完整角色并启用。
 - [x] 缺少 `thinking` 时降级到 `idle`，角色运行不阻断 Agent 请求。
@@ -53,6 +55,11 @@ pnpm verify:characters
 
 ## 当前记录
 
+### 2026-08-24 发布播放参数修复（替代 2026-08-23 旧结论）
+
+- 工作室的播放倍速与水平反转已使用独立 `playbackRate`、`mirrorX` 表现字段，完成草稿保存、编译发布、旧运行时投影和 Pixi 播放消费；不复用 `action.direction`。
+- 自动化与独立审查证据统一记录在 `docs/operations/character-published-playback-acceptance.md`。第 6 项保持“自动化通过、真实 Windows 视觉由用户验收”的既有结论，本轮不改写其生产逻辑。
+
 - 2026-07-29：`pnpm verify:characters` 总验收通过；根 TypeScript 检查、Desktop 生产构建和沙箱 preload 外部依赖校验通过。
 - 角色运行时 4 个文件、76 项通过；角色素材 3 个文件、82 项通过；Desktop 51 个文件、733 项通过；integration 3 个文件、14 项通过；security 1 个文件、9 项通过。
 - 损坏索引恢复覆盖候选目录消失、真实 junction/symlink、不跟随链接、恢复记录写失败降级和官方默认角色启动；单实例和 Renderer 错误恢复均有定向测试。
@@ -65,3 +72,153 @@ pnpm verify:characters
 - CPU、内存和纹理释放没有进行人工测量，结果保持“待人工”。
 - 2026-07-31：角色工作室真实闭环 E2E 使用新行级加减号完成空动作直接删除、4 帧动作删除取消和完整进程重启恢复；重启后无需重新导入或编译即可恢复 `idle.png`、`carrying.png`、`acting.png`、帧率 9、首帧选择和 Pixi 预览，切换到无动作状态后预览为空。单用例 1 项通过，耗时 57.5 秒。
 - 本轮 Desktop 类型检查通过；角色工作室精确单测 6 个文件、154 项通过，Desktop 完整单测 59 个文件、897 项通过，security 1 个文件、9 项通过，integration 3 个文件、14 项通过。
+
+## 2026-08-20 减法 Task 6 最终门禁（B1）
+
+B1 已删除 `CharacterTransactionRecoveryKind`、`kind`、`deferred`、`budgetExceeded` 和可由两个分面错误码推导的辅助状态；正式恢复结果只保留角色 ID、草稿错误码和发布错误码。协调器与 Store 的重复矩阵已收敛，保留真实 marker、能力门、预算、Junction 与原子报告证据。
+
+`pnpm.cmd verify:characters` 退出 0：character-runtime 13 个文件 221 项、character-assets 4 个文件 92 项、Desktop 85 个文件 1741 项（14 跳过）、security 20/20、integration 46/46 与 Electron E2E 60/60 全部通过，约 3.1 分钟。`pnpm.cmd verify:behavior` 也退出 0，含 Electron E2E 60/60。`pnpm.cmd verify:desktop` 的单次结果为 1，历史失败为“默认聊天与设置浮层提示”E2E 的页面/上下文关闭；其一次定向复现 1/1 通过。主裁决采用上述等价证据放行；只读诊断显示减法未触及窗口 owner、Electron fixture 或该失败场景主体，细根因尚未证实。B1 自动化完成，B2/B3 可在按本减法规格重写计划并再次审查删除门后进入。
+
+旧 owner 扫描无输出（`rg` 退出码 1，表示零命中）；受保护网站、CloudBase、scanner 和网站 E2E/配置路径在 `875048c..HEAD` 零差异，`git diff --check 875048c..HEAD` 退出 0 且无输出。相对 `875048c`，生产代码 +42/-74（净 -32），测试与 E2E 合计 +230/-669（净 -439）；相对 `c7d951d` 测试与 E2E 的净减同为 -439。既有真实 Windows、性能与资源释放人工项仍待用户确认。
+
+## 2026-08-20 角色包导入恢复验收（B2）
+
+环境为 Windows 11 专业版 10.0.26200。唯一新增 Electron 场景“角色包恢复一坏一好时继续启动桌宠与普通聊天”使用正式 `CharacterStore` 准备健康活动角色、带所有权令牌的半安装角色、合法 v3 marker 和可归属半截 marker；它验证合法半安装目录被回滚、坏 marker 原字节被排他保留、桌宠播放器进入 `ready`，并可继续普通聊天。Task 3 已先完成，因此该场景首次运行即为先验已绿，没有伪造 RED。
+
+实际命令与结果如下：
+
+- `pnpm.cmd --filter @myself/desktop build`：退出 0，约 7.5 秒。
+- `pnpm.cmd exec playwright test --config tests/playwright.config.ts -g "角色包恢复一坏一好时继续启动桌宠与普通聊天"`：退出 0，1/1 通过，9.1 秒。
+- `pnpm.cmd --filter @myself/desktop test -- atomic-file-coordinator.test.ts character-store.test.ts character-package-service.test.ts`：退出 0；当前 Vitest 配置实际执行 Desktop 全组，86 个文件、1775 项通过、14 项跳过，43.5 秒。
+- `pnpm.cmd --filter @myself/desktop typecheck`：退出 0，约 8.4 秒。
+- `pnpm.cmd test:security`：退出 0，20/20 通过，1.36 秒。
+- `pnpm.cmd test:integration`：退出 0，46/46 通过，4.77 秒。
+- `pnpm.cmd verify:characters`：退出 0；character-runtime 221/221、character-assets 92/92、Desktop 1775 项通过（14 项跳过）、security 20/20、integration 46/46、Electron E2E 61/61，约 4.6 分钟。
+- `pnpm.cmd verify:desktop`：退出 0；全仓类型检查通过，单测 2220 项通过（14 项跳过）、security 20/20、integration 46/46、Electron E2E 61/61，约 4.5 分钟。
+
+删除门确认 `CharacterImportJournal`、v4 正式 marker、旧 `CharacterOwnership`/摘要 helper、`preserveRollback()` 和 PackageService 的普通 `store.delete()` 均为零命中，Journal 文件不存在。`character-store.ts` 仍保留 owner 文件、活动角色保护以及移动前后身份复核。以 B2 计划提交 `6bae15f` 为基线，生产代码 +468/-271（净 +197），测试与 E2E +981/-57（净 +924）；本次 Task 4 自身只增加一个纵向 E2E，+87/-1。受保护的网站、CloudBase、scanner 与网站 E2E 路径零差异，`git diff --check` 退出 0。
+
+终审进一步收紧了两项边界：`.complete-*` 只是不再执行的原字节证据；清理失败只有在正式 marker 排他恢复成功时才能由正式名支持下次重试，清理与恢复正式名双故障只允许固定诊断，不生成角色 issue。候选稳定排序后只取活动项加最多其余 255 项；第 257 项及以后保持不变且不逐项 issue/log，只记录一次聚合诊断；deferred 仅用于已入 256 项但因 2000ms 预算尚未开始的 marker。上述既有命令不作为这两项收紧边界的通过证据，须由后续定向测试与门禁重新验证。
+
+真实断电、强制终止、非恶意外部程序在恢复期间替换 marker，以及 B3 窗口提示可读性没有本次人工证据，状态均为“待用户人工确认”。同一 Windows 用户下主动绕过检查的恶意进程不在本阶段威胁模型内，不列为待验收承诺。
+
+### Task 3 边界收紧后的复验
+
+以 `124bb49` 为新实现基线复验，不覆盖上面的首次验收记录。该修复相对规格收紧提交 `ecdc3f5`，生产代码 +47/-49（净 -2），测试 +64/-65（净 -1）；删除了 detached 证据的执行入口，并把恢复 inventory 在排序后截断为 256 项。
+
+- `pnpm.cmd --filter @myself/desktop build`：退出 0，约 7.5 秒。
+- `pnpm.cmd exec playwright test --config tests/playwright.config.ts -g "角色包恢复一坏一好时继续启动桌宠与普通聊天"`：退出 0，1/1 通过，8.2 秒。
+- `pnpm.cmd verify:characters`：退出 0；character-runtime 221/221、character-assets 92/92、Desktop 1775 项通过（14 项跳过）、security 20/20、integration 46/46、Electron E2E 61/61，约 4.5 分钟。
+- `pnpm.cmd verify:desktop`：退出 1；全仓类型检查通过，单测阶段 2218 项通过、14 项跳过，两个未修改的旧场景分别在 5 秒超时，因此后续 security、integration 与 Electron 阶段未由该命令执行。失败场景为 `saveCompiled 首次写拒绝既有 ID，覆盖要求 expectedPreviousSha256 匹配` 和 `事务恢复协调：活动与非活动角色的坏分面彼此隔离且原 marker 字节保持不变`。
+- 按“一次定向复现”约束执行 `pnpm.cmd --dir apps/desktop exec vitest run --config vitest.config.ts tests/character-asset-service.test.ts tests/character-store.test.ts -t "saveCompiled 首次写拒绝既有 ID|事务恢复协调：活动与非活动角色"`：退出 0，2/2 通过，3.31 秒；没有重跑完整门。`verify:desktop` 的失败仍按事实保留，不写成通过；同一新 HEAD 的 security 20/20、integration 46/46 与 Electron 61/61 证据来自此前已完整通过的 `verify:characters`。
+
+复验删除门再次确认旧 Journal、v4 正式 marker、旧所有权摘要 helper、`preserveRollback()`、PackageService 普通 `store.delete()` 与 detached marker 执行匹配均为零命中，Journal 文件不存在；`.complete-*` 只保留在当前 marker 移动清理的内部临时文件名。生产代码明确先稳定排序，再用 `slice(0, MAX_IMPORT_RECOVERY_ENTRIES)` 截断 256 项。以最新 B2 计划提交 `ecdc3f5` 为保护基线，网站、CloudBase、scanner 与网站 E2E 路径零差异，`git diff --check` 退出 0。
+
+### 最终代码基线复验
+
+最终 B2 代码基线为 `c2455b2`。它相对上一验收提交 `aa2fb57` 的生产代码 +26/-27（净 -1）、测试 +25/-27（净 -2），把 2000ms 预算起点移到 inventory 排序与 256 项截断之后，并使已开始处理的坏候选同样受单项完成边界保护。其相邻 151 项测试与 Desktop typecheck 的通过属于修复提交前置证据；依据终审裁决，本轮不重复完整门禁。
+
+本轮实际执行 `pnpm.cmd --filter @myself/desktop build`，退出 0，约 7.8 秒；随后执行唯一纵向场景 `pnpm.cmd exec playwright test --config tests/playwright.config.ts -g "角色包恢复一坏一好时继续启动桌宠与普通聊天"`，退出 0，1/1 通过，7.9 秒。旧 Journal、v4 正式 marker、旧所有权摘要 helper、`preserveRollback()`、PackageService 普通 `store.delete()` 与 detached marker 执行匹配继续零命中，Journal 文件不存在；代码仍先截断 256 项，再记录 `startedAt`。以 `ecdc3f5` 为保护基线，网站、CloudBase、scanner 与网站 E2E 路径零差异，`git diff --check` 退出 0。此前完整门及 `verify:desktop` 的历史结果保持原文，不由本轮小范围复验改写。
+
+## 2026-08-21 角色恢复降级纵向验收（B3）
+
+环境为 Windows 11 专业版 10.0.26200。原“角色包启动恢复”场景已原位替换为两个真实 Electron 重启场景，没有新增 fixture fault seam，也没有修改生产代码：
+
+- 非活动角色场景通过正式工作室导入健康角色；退出后同时准备坏草稿 marker、坏包 marker 和可安全回滚的包 marker。重启后桌宠播放器保持 `ready`、不显示 fallback，工作室只在选中目标角色时显示草稿与导入恢复提示，普通聊天可继续提交；公开快照不含用户目录、marker sentinel、hash、token、owner 或事务标识。
+- 活动角色场景通过正式工作室导入并启用角色；退出后写入坏发布 marker。重启后活动角色切换为 `builtin-default`，桌宠显示降级提示和工作室入口，原 marker 字节保留，默认角色与问题角色仍在工作室列出，普通聊天可继续提交。
+
+实际命令与结果：
+
+- `rg -n -i "recovery|恢复|marker|restart\\(" tests/e2e/desktop.spec.ts`：完成既有恢复、marker 与重启场景盘点；B3 最终只保留下述两个“角色恢复”重启场景。
+- `pnpm.cmd --filter @myself/desktop build`：退出 0，生产构建和沙箱 preload 外部依赖校验通过，约 14 秒。
+- `pnpm.cmd --dir apps/desktop exec vitest run --config vitest.config.ts tests/character-startup.test.ts tests/character-ipc.test.ts tests/preload-api.test.ts tests/official-default-character.test.ts tests/character-recovery.test.ts tests/pet-view.test.tsx tests/character-workshop-components.test.tsx tests/character-workshop-close-renderer.test.tsx`：退出 0，8 个文件、141 项通过。
+- `pnpm.cmd --filter @myself/desktop typecheck`：退出 0。
+- `pnpm.cmd exec playwright test --config tests/playwright.config.ts --grep "角色恢复"`：最终退出 0，2/2 通过，约 37 秒。
+- `pnpm.cmd --filter @myself/desktop test -- character-startup.test.ts character-ipc.test.ts preload-api.test.ts official-default-character.test.ts character-recovery.test.ts pet-view.test.tsx character-workshop-components.test.tsx character-workshop-close-renderer.test.tsx`：该 package script 实际执行 Desktop 全组，退出 1；1801 项通过、14 项跳过，恢复矩阵用例达到固定 5 秒超时；随后一次定向复现退出 0，1/1 约 1.37 秒。
+- `pnpm.cmd test:security`：退出 0，20/20 通过。
+- `pnpm.cmd test:integration`：退出 0，46/46 通过。
+- `pnpm.cmd verify:characters`：退出 1；Desktop 阶段 1800 项通过、14 项跳过，两个既有 5 秒用例在并行负载下超时，因此后续 security、integration 与 Electron 阶段未由该命令执行。两个超时用例分别单独定向复现时均退出 0，其中恢复矩阵 1/1 约 1.37 秒、包导入串行场景 1/1 约 1.34 秒。
+- `pnpm.cmd verify:desktop`：退出 1；工作区类型检查通过，单元阶段 2238 项通过、14 项跳过，9 个既有文件系统重测试在并行负载下达到固定 5 秒超时，因此后续阶段未由该命令执行。本记录不把该门禁写成通过，也不为本次 E2E 范围修改生产代码或放宽安全断言。
+
+旧 `startupRecoveryErrorCode`、动态 recovery callback、`loadCharacterStartupRecovery`、Actions recovery getter、`fallbackActive` 及跨 IPC 派生字段扫描均为零命中。以 B3 计划基线 `d58f2e8` 检查，网站、CloudBase、scanner 和网站 E2E 路径零差异，`git diff --check` 退出 0，仅有工作树 CRLF 转换提示。
+
+Task 3 的 E2E 变更为 +139/-54（净 +85），已从初稿净 +110 继续删减重复导航与快照矩阵；最终恢复重启场景严格为两个。相对减法基线 `c7d951d`，Desktop 测试与 E2E 当前合计 +1837/-860（净 +977），尚未达到“测试与 E2E 净减”总门，不能宣称减法阶段完成；该缺口主要位于此前 B2/B3 单元测试提交，超出本 Task 3 仅允许 E2E 与验收记录的修改范围，须在提交前由主任务继续审计合并。
+
+真实 Windows 窗口层级、焦点、布局、文案可读性及重启视觉没有本次人工观察，均保持“待用户人工确认”。
+
+## 2026-08-21 Task 6 新鲜全门禁与减法账本（`035fd96`）
+
+此前 `c715f13` 的全绿门禁仅作历史记录。本节从 Task 5 fix round 2 后的 `035fd96` 重新执行全部七条顶层命令，且每条仅一次、均未达到 15 分钟：定向聚合 8 文件/182 通过（39.11 秒）、Desktop typecheck 退出 0（10.39 秒）、Desktop test 86 文件/1808 通过/14 跳过（54.18 秒）、security 20/20（2.70 秒）、integration 46/46（6.13 秒）、`verify:characters` 退出 0（runtime 221、assets 92、Desktop 1808/14、security 20/20、integration 46/46、Electron E2E 62/62，335.74 秒）。
+
+`verify:desktop` 在 unit 阶段退出 1（73.15 秒）：workspace typecheck 通过，108 文件通过、1 文件失败，2252 通过、1 失败、14 跳过；后续 security、integration 与 Electron 阶段未执行。失败为 `draft-character-preview.test.tsx` 中“场景播放帧回写父级，纯索引同步不重建且后续控制从实际帧继续”，`showAction` 期望 2 次、实际 3 次。按失败后只定向一次的约束，该用例单独复现退出 0、1/1 通过（3.50 秒）。本记录不将完整 `verify:desktop` 写为通过，也不以定向通过掩盖原失败。
+
+相对 `c7d951d` 的精确 numstat 为 Desktop tests `+1661/-822`（净 `+839`）、E2E `+297/-313`（净 `-16`），合计 `+1958/-1135`（净 `+823`）。**行数门未满足，不得宣称全局减法完成。**本次没有新鲜 owner 审计可证明“安全减法已耗尽”，因此不作该项结论；后续收敛不得删除唯一安全证据。
+
+旧生产符号扫描为零命中；`fallbackActive` 只在 `character-ipc.test.ts:48` 的严格 Schema 负例出现一次。Workshop StrictMode 只读一次恢复快照且不写入、恢复快照 RPC 失败的通用文案/路径与 token 脱敏、Pet RPC 失败不伪造完成 fallback 均由本次定向聚合覆盖。网站、CloudBase、scanner、网站 E2E 与配置保护路径在提交、工作树及暂存区均为零差异；`git diff --check c7d951d..HEAD`、`git diff --check` 与 `git diff --cached --check` 均退出 0。Task 5 fix round 2 的独立复审已通过，先前关于重复 Renderer 页面发现 helper 的 Important 已清零。
+
+### Tasks 1–5 正式证据简表
+
+| Task | 提交区间与精确净值 | mutation RED | 最终 GREEN | 独立复审 |
+| --- | --- | --- | --- | --- |
+| 1 | `67ee510..4c78325`：`+55/-95`，净 `-40` | 将 `publicFallbackCode()` 的 `CHARACTER_RESOURCE_INTEGRITY_FAILED` 退化为 `CHARACTER_OPERATION_FAILED`；启动测试 18 项中 2 项按预期失败 | `character-startup` + `character-recovery`：2 文件/33 通过；Desktop typecheck 通过 | C0/I0 |
+| 2 | `4c78325..8283932`：`+83/-86`，净 `-3` | Preload 直接返回 IPC payload，使两类非法结果被错误接受；Pet 在空运行错误时清空启动 fallback，使“启动 fallback 先到”断言失败 | `character-ipc` + `preload-api` + `pet-view`：3 文件/69 通过；Desktop typecheck 通过 | C0/I0 |
+| 3 | `8283932..5d2b34d`：`+19/-38`，净 `-19` | 在 exclusive link 失败后 `catch` 并 `rename` 临时文件；final 被覆盖或意外出现，失败阶段断言按预期失败 | `atomic-file-coordinator`：1 文件/5 通过；Desktop typecheck 通过 | 主任务双审查 C0/I0/M0 |
+| 4 | `5d2b34d..2db5ed1`：`+160/-177`，净 `-17` | 将恢复循环的 owner token 改为错误 UUID；真实重启用例失败且半安装 `demo` 目录保留 | `character-package-service`：1 文件/71 通过；Desktop typecheck 通过 | C0/I0/M1（行计数差异；Git numstat `-17` 为准） |
+| 5 | `2db5ed1..035fd96`：`+103/-181`，净 `-78` | 无 mutation RED：仅收敛 E2E 页面发现 helper，报告未修改生产行为，不能伪造破坏点；先验绿为现有完整 E2E 62/62 | build 通过；定向 2/2 通过；完整 Desktop E2E 62/62 | fix round 2 后复审 C0/I0/M0 |
+
+表中任务证据来自各 Task 忽略报告、ledger 与对应提交；Task 4 使用 Git numstat，而不是文件行计数。该表补充证据归属，不改变上方 `+823` 总账或完整 `verify:desktop` 失败事实。
+
+真实 Windows 窗口层级、焦点、布局、文案可读性、重启视觉与拖拽体验仍待用户人工确认。
+
+## 2026-08-21 第二轮测试表达减法验收（`957ec00`）
+
+本轮严格限定在五个既有测试文件内做表达减法，没有新增生产 seam、共享测试框架或依赖。Task 1 将 Electron fixture loader 深化为非空装载 owner，并在启动 Provider 前完成装载；Task 2 让启动入口复用既有 `recordingDependencies()`；Task 3 删除 Main 与 Preload 已由现有边界矩阵覆盖的重复恢复 Schema 样例；Task 4 复用既有 `preservedEvidence()` 读取两份 corrupt 证据。相对实施基线 `a11f59f`（与计划基线 `b16d542` 在五个任务文件上等价），五文件合计 `+22/-183`，净减 `161` 行：Task 1 `+14/-159`（净 `-145`）、Task 2 `+4/-7`（净 `-3`）、Task 3 `+3/-12`（净 `-9`）、Task 4 `+1/-5`（净 `-4`）。
+
+四组 mutation 均先按预期 RED 并已恢复生产代码零差异：fixture 路径改为不存在模块后直接报缺失模块；启动最终 `loadFinalIndex()` 的第二次读取被移除后顺序断言失败；Main 空输入解析与 Preload 返回 Schema 解析分别被绕过后各自边界断言失败；证据发布与 marker 完成顺序交换后 EEXIST、EACCES、ENOSPC 三项均因原 marker 被错误清理而失败。每个实现任务的独立复审均为 C0/I0/M0。
+
+最终代码上的定向聚合为 4 文件/140 项通过，shared-types 为 31/31，Desktop typecheck 退出 0，Desktop test 为 86 文件、1807 项通过、14 项跳过，security 20/20，integration 46/46。`verify:characters` 退出 0：character-runtime 221/221、character-assets 92/92、Desktop 1807/14、security 20/20、integration 46/46、Electron E2E 62/62；整条命令约 5.5 分钟，没有命令达到 15 分钟硬上限。
+
+Task 5 最终阶段没有单独重复运行 build、完整 Desktop E2E 与 `--list` 三条顶层命令。Task 1 已在提交 `14ae339` 的同一 E2E 文件最终实现上完成恢复后 build、完整 E2E 62/62 和清单 62 项；后续 Tasks 2–4 未修改 `tests/e2e/desktop.spec.ts`。最终 `957ec00` 的 `verify:characters` 又通过其内嵌 build 与完整 E2E 62/62 覆盖最终代码。上述来源分别登记，不把历史命令或脚本内嵌步骤写成 Task 5 独立顶层执行。
+
+`verify:desktop` 只执行一次并退出 1：workspace typecheck 通过，unit 阶段 108 文件通过、1 文件失败，2251 项通过、1 项失败、14 项跳过，后续 security、integration 与 Electron 阶段未由该命令执行。唯一失败是 `official-default-character.test.ts` 的“损坏索引后重建可写索引并保留有效用户角色、草稿与损坏证据”达到固定 5000ms 超时；按约束只做一次精确定向复现，该用例 1/1 通过、约 1.06 秒。本记录不把完整 `verify:desktop` 写成通过，也不以定向通过掩盖原失败。第一轮 `035fd96` 上的另一项 `verify:desktop` 并行波动仍按上节保留为历史事实。
+
+相对总门基线 `c7d951d`，`apps/desktop/tests` 为 `+1648/-825`（净 `+823`），`tests/e2e` 为 `+308/-469`（净 `-161`），合计 `+1956/-1294`（净 `+662`）。因此状态只能是：**第二轮安全表达减法完成，测试行数总门仍未达。**剩余正值继续登记为唯一 owner 债务，主要包括角色包导入 token、真实 Store 重启、竞态、证据发布/保留、256 项与 2000ms 预算；启动恢复顺序、fallback、最终 load 瞬时/持续失败与深冻结快照；Main/Preload Schema 双边界、Pet 异步顺序、Workshop StrictMode 与 RPC 失败脱敏；Desktop Electron 生命周期、安全诊断、窗口交互和两条角色恢复重启 E2E，以及既有减法规格列明的其余安全与跨进程证据。本轮不宣称债务归零、安全减法已耗尽或可以删除唯一 owner。
+
+最终静态检查确认 loader 调用点仍为 58 个，`if (!fixture.restart) return` 业务能力守卫保留，启动最终 load、完整共享 Schema 矩阵、Preload 代表非法返回、两份 corrupt 原字节断言与三类证据发布失败 owner 均仍存在；旧生产符号扫描零命中，`fallbackActive` 只在严格 Schema 负例保留。网站、CloudBase、scanner、网站 E2E 与配置保护路径在提交历史、工作树和暂存区均为零差异；`git diff --check b16d542..HEAD`、`git diff --check` 与 `git diff --cached --check` 均无输出。真实 Windows 窗口层级、焦点、布局、文案可读性、重启视觉和拖拽体验仍待用户人工确认。
+
+## 2026-08-22 恢复开发门最终验收（`0c541f3`）
+
+上一回合的 Store 六场景重复磁盘矩阵在 5000ms 超时后，按既有减法规格删除 51 行；没有新增生产代码或放宽测试。最终可执行树上 `verify:desktop`、`verify:characters`、`verify:behavior`、`test:security`、`test:integration` 依次退出 0，工具墙钟分别为 328.5、303.3、289.5、2.9、6.4 秒；其中 Desktop 单元为 109/109 文件、2251 项通过、14 项跳过，安全 20/20、集成 46/46、Electron E2E 62/62。独立证据复审为 C0/I0/M0 Ready，自动化恢复开发门已通过。
+
+测试总账更新为 `+1955/-1344`、净增 `611`，网站、CloudBase、scanner 与网站 E2E 四态零差异。真实 Windows 窗口层级、鼠标拖拽、系统托盘、干净环境安装卸载仍为“待用户人工确认”，不把自动化通过改写成人工观察通过。
+
+稳定性准入通过，已知偶发超时根因未定位；本次验收不宣称更早的偶发超时已经找到统一根因。
+
+## 2026-08-25 行为控制与固定尺寸修复状态
+
+- 本轮没有改变角色工作台的自定义状态、动作、语义标签、速度或方向发布契约；运行时仍从用户已发布的公开候选中选择最高相似动作。
+- 停止锁、运动计划、固定尺寸、文件执行和匿名模型属于跨模块修复，其现行实现与自动证据统一记录在 `docs/operations/2026-08-25-ai-pet-core-repair-acceptance.md`，不在角色工作台验收记录中重复维护。
+
+## 2026-08-29 角色工作台布局稳定性验收（`a2514f4`）
+
+本节只登记 2026-08-29 在最终代码基线 `a2514f44af00c2351c866b4c72fa1657df0976d9` 上新鲜执行的结果，不改写也不借用前述历史门禁。环境为 Windows NT 10.0.26200.0、Node.js v24.18.0、pnpm 11.9.0。
+
+首次执行 `pnpm.cmd verify:characters` 在 104.01 秒后退出 1：character-runtime 341/341、character-assets 99/99 以及脚本内 Desktop typecheck 已通过；Desktop 单测为 107/108 个文件、2856/2857 项通过，唯一失败是 `draft-character-preview.test.tsx` 的“场景播放帧回写父级，纯索引同步不重建且后续控制从实际帧继续”，`showAction` 期望 1 次、实际 3 次。由于顶层脚本使用 `&&`，该次运行没有执行后续 security、integration 与 Electron E2E，不能写成总门通过。
+
+失败后只做一次诊断重跑：`pnpm.cmd --filter @myself/desktop test -- draft-character-preview.test.tsx` 的参数经既有 package script 转发后实际运行了 Desktop 全组；失败场景在该次运行中通过，最终为 108/108 个文件、2857/2857 项通过，命令退出 0、耗时 92.62 秒。此结果表明首次失败具有全量并发时序波动特征，但不抹去首次总门失败，也不宣称已经定位统一根因。
+
+随后仅重跑一次完整 `pnpm.cmd verify:characters`，命令退出 0、总耗时 653 秒（10 分 53 秒），且未达到 15 分钟时间盒：character-runtime 15/15 个文件、341/341 项通过；character-assets 6/6 个文件、99/99 项通过；Desktop 108/108 个文件、2857/2857 项通过；security 28/28、integration 92/92；真实 Electron E2E 共 80 项，79 项通过、1 项按既有标记跳过，Playwright 报告耗时 8.7 分钟。独立执行 `pnpm.cmd --filter @myself/desktop typecheck` 退出 0、耗时 12.34 秒；修改文档前执行 `git diff --check` 退出 0、耗时 0.16 秒且无输出，文档修改后复查同样退出 0、耗时 0.17 秒。
+
+本次自动化覆盖边界如下：
+
+- 组件测试验证扩展状态与发布要求对话框实际调用原生 `showModal()`/`close()`；真实 Electron 工作室闭环通过鼠标点击“创建扩展状态”完成状态创建，而不是用 Enter 绕过命中问题。
+- DOM 测试验证 separator 的 Pointer Capture、8px/Shift+32px 键盘调节、ARIA、约束收敛、提交时保存及失败提示；真实 Electron E2E 验证四条分隔器的鼠标拖动、重开持久化恢复、窗口缩窄后的响应式隐藏与重新放宽后的恢复。
+- 组件测试确认工作台不再暴露皮肤编辑界面；双皮肤 fixture 的 integration 与真实 Electron E2E 验证 V2 包导入、编译、默认皮肤运行表现、导出和回导仍保留两个皮肤及 `defaultSkinId`，不把删除 UI 误写成删除角色包兼容链。
+
+以下项目没有 2026-08-29 的人工观察证据，状态保持“待用户人工确认”：真实 Windows 窗口中模态顶层的视觉观感与遮挡关系；不同 DPI/缩放比例及多种显示器尺寸下的布局手感；四条分隔器长时间、反复拖动的跟手性与可用性。自动化命中、数值变化和持久化通过不能替代这些人工结论。
+
+### 最终复审修复补充
+
+- 右侧属性栏分隔器的键盘与指针现统一使用空间方向语义：`ArrowRight` 使分隔线向右并将 `rightWidth` 减少 8px，`ArrowLeft` 使分隔线向左并增加 8px，Shift 步长为 32px。DOM 回归覆盖双向、Shift 与原指针方向；真实 Electron E2E 覆盖 `ArrowRight`、Shift 32px、分隔线几何方向以及后续鼠标拖动、重开和窄屏恢复。
+- 布局保存失败只保留当前窗口的 rendered 布局并显示脱敏非阻塞提示，不写入失败标记，也不把失败值伪装成已持久化。下次启动从 SettingsStore 恢复上一次成功持久化值；从未成功持久化时恢复默认值。DOM 回归通过卸载和新实例挂载验证该语义。
+- 定向布局、preload 与组件测试 76/76 通过；Desktop typecheck 与 build 退出 0；目标真实 Electron E2E 1/1 通过。未运行完整 `verify:characters`，因此本补充不改写上一节完整门禁的历史结果。

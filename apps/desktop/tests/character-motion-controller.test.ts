@@ -11,6 +11,13 @@ import {
   bindCharacterMotionWindow,
   startCharacterMotionTimers
 } from '../src/main/characters/character-motion-service';
+import type {
+  CharacterMotionServiceOptions,
+  CharacterMotionWindow
+} from '../src/main/characters/character-motion-service';
+import type { PetGeometrySnapshot } from
+  '../src/main/characters/pet-visual-geometry';
+import type { Rectangle } from 'electron';
 import type { CharacterManifestV1 } from '@myself/character-runtime';
 import { readFileSync } from 'node:fs';
 
@@ -51,6 +58,42 @@ const manifest = {
     ]
   }]
 } satisfies CharacterManifestV1;
+
+type MotionServiceTestOptions = Omit<
+  CharacterMotionServiceOptions,
+  'getDisplays' | 'getGeometrySnapshot'
+> & {
+  window: CharacterMotionWindow;
+  getWorkAreas?: () => readonly Rectangle[];
+  getDisplays?: CharacterMotionServiceOptions['getDisplays'];
+  getGeometrySnapshot?: CharacterMotionServiceOptions['getGeometrySnapshot'];
+};
+
+/** 旧用例显式把整窗口当作可见区，仅保留其原本测试意图。 */
+function createMotionService(options: MotionServiceTestOptions): CharacterMotionService {
+  const { getWorkAreas, ...rest } = options;
+  return new CharacterMotionService({
+    ...rest,
+    getDisplays: options.getDisplays ?? (() => (
+      getWorkAreas?.().map((workAreaDip, index) => ({
+        id: `legacy-display-${index}`,
+        workAreaDip
+      })) ?? []
+    )),
+    getGeometrySnapshot: options.getGeometrySnapshot ?? (() => {
+      const window = options.window.getBounds();
+      return {
+        revision: 1,
+        characterId: 'demo',
+        scale: 1,
+        footAnchorDip: { x: window.x + window.width / 2, y: window.y + window.height },
+        visualBoundsInWindowDip: { x: 0, y: 0, width: window.width, height: window.height },
+        windowBoundsDip: window,
+        displayId: 'legacy-display-0'
+      };
+    })
+  });
+}
 
 describe('Renderer 角色运动控制器', () => {
   test('一万次 Alpha 命中只读取缓存掩码，不触发 Canvas 或 GPU 回读', () => {
@@ -265,20 +308,362 @@ describe('Renderer 角色运动控制器', () => {
     }
     expect(controller.advance(1_600).position.x).toBe(160);
   });
-});
 
+  test('用户拖拽的非运动权威快照立即清零表现残差', () => {
+    const controller = new CharacterMotionController({
+      position: { x: 0, y: 0 },
+      speed: 100,
+      maxResidualPx: 48
+    });
+    controller.accept({
+      revision: 1,
+      timestampMs: 0,
+      position: { x: 0, y: 0 },
+      target: { x: 300, y: 0 },
+      direction: 'right',
+      moving: true,
+      carrying: false
+    });
+    controller.advance(0);
+    controller.accept({
+      revision: 2,
+      timestampMs: 50,
+      position: { x: 180, y: 90 },
+      target: { x: 180, y: 90 },
+      direction: 'right',
+      moving: false,
+      carrying: false
+    });
+
+    expect(controller.advance(16).position).toEqual({ x: 180, y: 90 });
+  });
+});
 describe('Main 角色运动服务', () => {
-  test('桌宠右键菜单只保留受限 IPC 入口并复用同一弹出回调', () => {
+  const geometrySnapshot = (input: {
+    scale?: number;
+    window: { x: number; y: number; width: number; height: number };
+    visual: { x: number; y: number; width: number; height: number };
+    foot?: { x: number; y: number };
+    displayId?: string;
+  }): PetGeometrySnapshot => ({
+    revision: 1,
+    characterId: 'demo',
+    scale: input.scale ?? 1,
+    footAnchorDip: input.foot ?? {
+      x: input.window.x + input.visual.x + input.visual.width / 2,
+      y: input.window.y + input.visual.y + input.visual.height
+    },
+    visualBoundsInWindowDip: input.visual,
+    windowBoundsDip: input.window,
+    displayId: input.displayId ?? 'primary'
+  });
+
+  test('仅随机远行进入 24 DIP 容差即停止，不强求精确到达目标点', () => {
+    expect(advanceMotion({
+      current: { x: 100, y: 100 },
+      target: { x: 120, y: 110 },
+      speed: 160,
+      deltaMs: 50,
+      arrivalToleranceDip: 24
+    })).toEqual({ position: { x: 100, y: 100 }, arrived: true });
+  });
+
+  test.each([
+    { scale: 0.5, visual: { x: 60, y: 70, width: 50, height: 60 } },
+    { scale: 1, visual: { x: 40, y: 45, width: 100, height: 120 } },
+    { scale: 2, visual: { x: 10, y: 5, width: 160, height: 210 } }
+  ])('$scale 倍缩放时四边只约束可见矩形', ({ scale, visual }) => {
+    let bounds = { x: 300, y: 200, width: 220, height: 260 };
+    let geometry = geometrySnapshot({ scale, window: bounds, visual });
+    const service = createMotionService({
+      window: {
+        getBounds: () => bounds,
+        setPosition: (x: number, y: number) => { bounds = { ...bounds, x, y }; }
+      },
+      getWorkAreas: () => [{ x: 0, y: 0, width: 1_000, height: 800 }],
+      getDisplays: () => [{
+        id: 'primary', workAreaDip: { x: 0, y: 0, width: 1_000, height: 800 }
+      }],
+      getGeometrySnapshot: () => geometry,
+      now: () => 0
+    } as unknown as ConstructorParameters<typeof CharacterMotionService>[0]);
+
+    const cases = [
+      { requested: { x: -5_000, y: 200 }, expected: { x: -visual.x, y: 200 } },
+      { requested: { x: 5_000, y: 200 }, expected: {
+        x: 1_000 - visual.x - visual.width, y: 200
+      } },
+      { requested: { x: 300, y: -5_000 }, expected: { x: 300, y: -visual.y } },
+      { requested: { x: 300, y: 5_000 }, expected: {
+        x: 300, y: 800 - visual.y - visual.height
+      } }
+    ];
+    for (const sample of cases) {
+      service.moveTo(sample.requested);
+      expect(service.tick().target).toEqual(sample.expected);
+      geometry = geometrySnapshot({ scale, window: bounds, visual });
+    }
+  });
+
+  test('相对移动与长距闲逛使用可见尺寸和可见边界', () => {
+    const bounds = { x: 400, y: 300, width: 300, height: 260 };
+    let geometry = geometrySnapshot({
+      window: bounds,
+      visual: { x: 80, y: 60, width: 60, height: 80 }
+    });
+    const service = createMotionService({
+      window: { getBounds: () => bounds, setPosition: vi.fn() },
+      getWorkAreas: () => [{ x: 0, y: 0, width: 1_000, height: 800 }],
+      getDisplays: () => [{
+        id: 'primary', workAreaDip: { x: 0, y: 0, width: 1_000, height: 800 }
+      }],
+      getGeometrySnapshot: () => geometry,
+      random: () => 1,
+      now: () => 0
+    } as unknown as ConstructorParameters<typeof CharacterMotionService>[0]);
+
+    expect(service.requestIntent({ kind: 'relative', direction: 'left', distance: 'near' }))
+      .toMatchObject({ target: { x: 370, y: 300 }, moving: true });
+    expect(service.tick().target).toEqual({ x: 370, y: 300 });
+    service.requestIntent({ kind: 'relative', direction: 'down', distance: 'far' });
+    expect(service.tick().target).toEqual({ x: 400, y: 460 });
+    service.requestIntent({ kind: 'wander', scope: 'work_area' });
+    expect(service.tick().target).toEqual({ x: 860, y: 660 });
+  });
+
+  test('远距随机连续落在近点时改选当前单屏最远可达点', () => {
+    const bounds = { x: 400, y: 300, width: 300, height: 260 };
+    const randomValues = [
+      480 / 940, 360 / 720,
+      480 / 940, 360 / 720,
+      480 / 940, 360 / 720
+    ];
+    const service = createMotionService({
+      window: { getBounds: () => bounds, setPosition: vi.fn() },
+      getDisplays: () => [{
+        id: 'primary', workAreaDip: { x: 0, y: 0, width: 1_000, height: 800 }
+      }],
+      getGeometrySnapshot: () => geometrySnapshot({
+        window: bounds,
+        visual: { x: 80, y: 60, width: 60, height: 80 }
+      }),
+      random: () => randomValues.shift() ?? 0.5,
+      now: () => 0
+    });
+
+    expect(service.requestIntent({
+      kind: 'wander', scope: 'work_area', distance: 'far'
+    })).toMatchObject({ target: { x: -80, y: -60 }, moving: true });
+  });
+
+  test('负坐标多屏依脚底选当前屏，目标脚底进入相邻屏时切换约束', () => {
+    const bounds = { x: 100, y: 100, width: 300, height: 240 };
+    let geometry = geometrySnapshot({
+      window: bounds,
+      visual: { x: 50, y: 20, width: 100, height: 100 },
+      foot: { x: -100, y: 220 },
+      displayId: 'left'
+    });
+    const service = createMotionService({
+      window: { getBounds: () => bounds, setPosition: vi.fn() },
+      getWorkAreas: () => [
+        { x: -1_000, y: 0, width: 1_000, height: 600 },
+        { x: 0, y: 0, width: 1_000, height: 600 }
+      ],
+      getDisplays: () => [
+        { id: 'left', workAreaDip: { x: -1_000, y: 0, width: 1_000, height: 600 } },
+        { id: 'right', workAreaDip: { x: 0, y: 0, width: 1_000, height: 600 } }
+      ],
+      getGeometrySnapshot: () => geometry,
+      now: () => 0
+    } as unknown as ConstructorParameters<typeof CharacterMotionService>[0]);
+
+    service.requestIntent({ kind: 'region', region: 'bottom_right' });
+    expect(service.tick().target).toEqual({ x: -150, y: 480 });
+    geometry = geometrySnapshot({
+      window: bounds,
+      visual: { x: 50, y: 20, width: 100, height: 100 },
+      foot: { x: 500, y: 220 },
+      displayId: 'left'
+    });
+    service.moveTo({ x: -250, y: 100 });
+    expect(service.tick().target).toEqual({ x: -50, y: 100 });
+  });
+
+  test('脚底位于屏间隙时先按当前可见交集选屏而不折返过期屏', () => {
+    const bounds = { x: 500, y: 100, width: 300, height: 240 };
+    const geometry = geometrySnapshot({
+      window: bounds,
+      visual: { x: 80, y: 20, width: 100, height: 100 },
+      foot: { x: 550, y: 220 },
+      displayId: 'left'
+    });
+    const service = createMotionService({
+      window: { getBounds: () => bounds, setPosition: vi.fn() },
+      getDisplays: () => [
+        { id: 'left', workAreaDip: { x: 0, y: 0, width: 400, height: 600 } },
+        { id: 'right', workAreaDip: { x: 600, y: 0, width: 400, height: 600 } }
+      ],
+      getGeometrySnapshot: () => geometry,
+      now: () => 0
+    });
+
+    service.requestIntent({ kind: 'region', region: 'bottom_right' });
+
+    expect(service.tick().target).toEqual({ x: 820, y: 480 });
+  });
+
+  test('脚底和可见矩形都在屏间隙时按脚底距离选最近屏', () => {
+    const bounds = { x: 500, y: 100, width: 300, height: 240 };
+    const geometry = geometrySnapshot({
+      window: bounds,
+      visual: { x: 0, y: 20, width: 50, height: 100 },
+      foot: { x: 550, y: 220 },
+      displayId: 'left'
+    });
+    const service = createMotionService({
+      window: { getBounds: () => bounds, setPosition: vi.fn() },
+      getDisplays: () => [
+        { id: 'left', workAreaDip: { x: 0, y: 0, width: 400, height: 600 } },
+        { id: 'right', workAreaDip: { x: 600, y: 0, width: 400, height: 600 } }
+      ],
+      getGeometrySnapshot: () => geometry,
+      now: () => 0
+    });
+
+    service.requestIntent({ kind: 'region', region: 'top_left' });
+
+    expect(service.tick().target).toEqual({ x: 600, y: -20 });
+  });
+
+  test('脚底同时落入重叠工作区时继续按可见交集选屏', () => {
+    const bounds = { x: 600, y: 100, width: 300, height: 240 };
+    const geometry = geometrySnapshot({
+      window: bounds,
+      visual: { x: 50, y: 20, width: 200, height: 100 },
+      foot: { x: 500, y: 220 },
+      displayId: 'left'
+    });
+    const service = createMotionService({
+      window: { getBounds: () => bounds, setPosition: vi.fn() },
+      getDisplays: () => [
+        { id: 'left', workAreaDip: { x: 0, y: 0, width: 700, height: 600 } },
+        { id: 'right', workAreaDip: { x: 300, y: 0, width: 700, height: 600 } }
+      ],
+      getGeometrySnapshot: () => geometry,
+      now: () => 0
+    });
+
+    service.requestIntent({ kind: 'region', region: 'bottom_right' });
+
+    expect(service.tick().target).toEqual({ x: 750, y: 480 });
+  });
+
+  test('几何快照未就绪时拒绝新目标且 tick 不写窗口', () => {
+    const bounds = { x: 120, y: 80, width: 300, height: 240 };
+    const setPosition = vi.fn();
+    const service = createMotionService({
+      window: { getBounds: () => bounds, setPosition },
+      getWorkAreas: () => [{ x: 0, y: 0, width: 1_000, height: 800 }],
+      getDisplays: () => [{
+        id: 'primary', workAreaDip: { x: 0, y: 0, width: 1_000, height: 800 }
+      }],
+      getGeometrySnapshot: () => null,
+      now: () => 100
+    } as unknown as ConstructorParameters<typeof CharacterMotionService>[0]);
+
+    service.moveTo({ x: 900, y: 700 });
+    expect(service.tick()).toMatchObject({
+      position: { x: 120, y: 80 },
+      target: { x: 120, y: 80 },
+      moving: false
+    });
+    expect(setPosition).not.toHaveBeenCalled();
+  });
+
+  test('小数可见边界在右下边缘向内取整', () => {
+    const bounds = { x: 20, y: 20, width: 100, height: 100 };
+    const geometry = geometrySnapshot({
+      window: bounds,
+      visual: { x: 10.2, y: 5.4, width: 50.2, height: 40.2 }
+    });
+    const service = createMotionService({
+      window: { getBounds: () => bounds, setPosition: vi.fn() },
+      getWorkAreas: () => [{ x: 0, y: 0, width: 100, height: 100 }],
+      getDisplays: () => [{
+        id: 'primary', workAreaDip: { x: 0, y: 0, width: 100, height: 100 }
+      }],
+      getGeometrySnapshot: () => geometry,
+      now: () => 0
+    } as unknown as ConstructorParameters<typeof CharacterMotionService>[0]);
+
+    service.moveTo({ x: 1_000, y: 1_000 });
+    expect(service.tick().target).toEqual({ x: 39, y: 54 });
+  });
+
+  test('对象化相对移动按当前窗口轴尺寸换算并经工作区钳制', () => {
+    let bounds = { x: 400, y: 300, width: 200, height: 100 };
+    const service = createMotionService({
+      window: {
+        getBounds: () => bounds,
+        setPosition: (x, y) => { bounds = { ...bounds, x, y }; }
+      },
+      getWorkAreas: () => [{ x: 0, y: 0, width: 1_000, height: 800 }],
+      now: () => 0
+    });
+
+    service.requestIntent({ kind: 'relative', direction: 'left', distance: 'near' });
+    expect(service.tick().target).toEqual({ x: 300, y: 300 });
+    service.requestIntent({ kind: 'relative', direction: 'up', distance: 'far' });
+    expect(service.tick().target).toEqual({ x: 400, y: 100 });
+    service.requestIntent({ kind: 'relative', direction: 'right', distance: 'far' });
+    expect(service.tick().target).toEqual({ x: 800, y: 300 });
+  });
+
+  test('对象化区域移动只接受区域名并使用当前显示器工作区', () => {
+    const service = createMotionService({
+      window: {
+        getBounds: () => ({ x: 1_100, y: 200, width: 200, height: 100 }),
+        setPosition: vi.fn()
+      },
+      getWorkAreas: () => [
+        { x: 0, y: 0, width: 1_000, height: 800 },
+        { x: 1_000, y: 100, width: 800, height: 600 }
+      ],
+      now: () => 0
+    });
+
+    service.requestIntent({ kind: 'region', region: 'bottom_right' });
+
+    expect(service.tick().target).toEqual({ x: 1_600, y: 600 });
+  });
+
+  test('短距闲逛保持在窗口尺度范围内且停止会立即撤销旧目标', () => {
+    const service = createMotionService({
+      window: {
+        getBounds: () => ({ x: 400, y: 300, width: 200, height: 100 }),
+        setPosition: vi.fn()
+      },
+      getWorkAreas: () => [{ x: 0, y: 0, width: 1_000, height: 800 }],
+      random: () => 1,
+      now: () => 0
+    });
+
+    service.requestIntent({ kind: 'wander', scope: 'short' });
+    expect(service.tick().target).toEqual({ x: 600, y: 400 });
+    service.stop();
+    expect(service.tick().target).toEqual({ x: 400, y: 300 });
+  });
+
+  test('桌宠右键菜单不扩大像素命中且只保留 Main 原生尽力入口', () => {
     const source = readFileSync(
       new URL('../src/main/index.ts', import.meta.url),
       'utf8'
     );
 
-    expect(source).not.toContain("pet.webContents.on('context-menu'");
+    expect(source).toContain("pet.webContents.on('context-menu', openPetContextMenu)");
     expect(source.match(/registerPetWindowInteractionIpc\(/gu)).toHaveLength(1);
-    expect(source).toMatch(
-      /registerPetWindowInteractionIpc\(\s*ipcMain,\s*petWindowInteraction,\s*pet\.webContents,\s*openPetContextMenu/u
-    );
+    expect(source).not.toContain('petContextMenuOpen:');
   });
 
   test('窗口真实位置由 Main 推进并受工作区边界约束', () => {
@@ -287,7 +672,7 @@ describe('Main 角色运动服务', () => {
     const setPosition = vi.fn((x: number, y: number) => {
       bounds = { ...bounds, x, y };
     });
-    const service = new CharacterMotionService({
+    const service = createMotionService({
       window: { getBounds: () => bounds, setPosition },
       getWorkAreas: () => [{ x: 0, y: 0, width: 400, height: 400 }],
       now: () => now,
@@ -302,49 +687,9 @@ describe('Main 角色运动服务', () => {
     expect(snapshot.target).toEqual({ x: 220, y: 180 });
   });
 
-  test('待机间隔未到不选择，到达后只选择一次并传入最近 N 个动作', () => {
-    let now = 0;
-    const selectAction = vi.fn((input: Parameters<typeof import('@myself/character-runtime').selectCharacterAction>[0]) => ({
-      stateId: 'idle' as const,
-      action: manifest.states[0]!.actions[0]!,
-      reason: 'matched' as const,
-    }));
-    const service = new CharacterMotionService({
-      window: {
-        getBounds: () => ({ x: 0, y: 0, width: 180, height: 220 }),
-        setPosition: vi.fn()
-      },
-      getWorkAreas: () => [{ x: 0, y: 0, width: 400, height: 400 }],
-      now: () => now,
-      idleIntervalMs: 1_000,
-      recentActionLimit: 2,
-      selectAction
-    });
-    service.recordPlayedAction('old-a');
-    service.recordPlayedAction('old-b');
-    service.recordPlayedAction('old-c');
-
-    expect(service.pollIdle(manifest, 'right', () => 0)).toBeNull();
-    now = 999;
-    expect(service.pollIdle(manifest, 'right', () => 0)).toBeNull();
-    now = 1_000;
-    expect(service.pollIdle(manifest, 'right', () => 0)?.action.id).toBe('idle-a');
-    expect(service.pollIdle(manifest, 'right', () => 0)).toBeNull();
-    expect(selectAction).toHaveBeenCalledOnce();
-    expect(selectAction.mock.calls[0]?.[0].recentActionIds).toEqual(['old-b', 'old-c']);
-    now = 2_000;
-    service.pollIdle(manifest, 'right', () => 0);
-    expect(selectAction.mock.calls[1]?.[0].recentActionIds).toEqual(['old-b', 'old-c']);
-    service.recordPlayedAction('idle-a');
-    service.recordPlayedAction('idle-a');
-    now = 3_000;
-    service.pollIdle(manifest, 'right', () => 0);
-    expect(selectAction.mock.calls[2]?.[0].recentActionIds).toEqual(['old-c', 'idle-a']);
-  });
-
   test('快照订阅可清理且每次修订只广播一次', () => {
     let now = 0;
-    const service = new CharacterMotionService({
+    const service = createMotionService({
       window: {
         getBounds: () => ({ x: 0, y: 0, width: 180, height: 220 }),
         setPosition: vi.fn()
@@ -368,7 +713,7 @@ describe('Main 角色运动服务', () => {
     const setPosition = vi.fn((x: number, y: number) => {
       bounds = { ...bounds, x, y };
     });
-    const service = new CharacterMotionService({
+    const service = createMotionService({
       window: { getBounds: () => bounds, setPosition },
       getWorkAreas: () => [{ x: 0, y: 0, width: 800, height: 600 }],
       now: () => now
@@ -387,7 +732,7 @@ describe('Main 角色运动服务', () => {
     const setPosition = vi.fn((x: number, y: number) => {
       bounds = { ...bounds, x, y };
     });
-    const service = new CharacterMotionService({
+    const service = createMotionService({
       window: { getBounds: () => bounds, setPosition },
       getWorkAreas: () => [{ x: 0, y: 0, width: 800, height: 600 }],
       now: () => now
@@ -417,7 +762,7 @@ describe('Main 角色运动服务', () => {
     const setPosition = vi.fn((x: number, y: number) => {
       bounds = { ...bounds, x, y };
     });
-    const service = new CharacterMotionService({
+    const service = createMotionService({
       window: { getBounds: () => bounds, setPosition },
       getWorkAreas: () => [{ x: 0, y: 0, width: 800, height: 600 }],
       now: () => now,
@@ -434,10 +779,131 @@ describe('Main 角色运动服务', () => {
     expect(setPosition).toHaveBeenNthCalledWith(2, 20, 0);
   });
 
+  test('几何协调器可预登记 setBounds 的程序化位置且不会夺走既有运动目标', () => {
+    let now = 0;
+    let bounds = { x: 0, y: 0, width: 180, height: 220 };
+    const service = createMotionService({
+      window: { getBounds: () => bounds, setPosition: vi.fn() },
+      getWorkAreas: () => [{ x: 0, y: 0, width: 800, height: 600 }],
+      now: () => now
+    });
+    service.moveTo({ x: 400, y: 0 }, 100);
+    service.expectProgrammaticPosition({ x: 40, y: 30 });
+    (service.beginUserMove as unknown as (point: { x: number; y: number }) => void)({
+      x: 40,
+      y: 30
+    });
+    bounds = { ...bounds, x: 40, y: 30 };
+    service.handleWindowMoved();
+
+    now = 100;
+    service.tick();
+    expect(service.getSnapshot().target).toEqual({ x: 440, y: 30 });
+    expect(() => service.expectProgrammaticPosition({ x: Number.NaN, y: 0 }))
+      .toThrow('CHARACTER_MOTION_INPUT_INVALID');
+  });
+
+  test('活动运动期间几何布局改变窗口原点时以同一差值重基目标', () => {
+    let now = 0;
+    let bounds = { x: 0, y: 0, width: 180, height: 220 };
+    const service = createMotionService({
+      window: { getBounds: () => bounds, setPosition: vi.fn() },
+      getWorkAreas: () => [{ x: 0, y: 0, width: 800, height: 600 }],
+      now: () => now
+    });
+    service.moveTo({ x: 400, y: 100 }, 100);
+
+    service.expectProgrammaticPosition({ x: 40, y: 30 });
+    bounds = { ...bounds, x: 40, y: 30 };
+    now = 10;
+
+    expect(service.tick().target).toEqual({ x: 440, y: 130 });
+  });
+
+  test('运动期间可见形状变宽时在下一 tick 向内收紧旧目标', () => {
+    const bounds = { x: 100, y: 100, width: 300, height: 240 };
+    let geometry = geometrySnapshot({
+      window: bounds,
+      visual: { x: 0, y: 0, width: 100, height: 100 }
+    });
+    const service = createMotionService({
+      window: { getBounds: () => bounds, setPosition: vi.fn() },
+      getDisplays: () => [{
+        id: 'primary', workAreaDip: { x: 0, y: 0, width: 1_000, height: 800 }
+      }],
+      getGeometrySnapshot: () => geometry,
+      now: () => 0
+    });
+    service.moveTo({ x: 900, y: 100 });
+    expect(service.tick().target).toEqual({ x: 900, y: 100 });
+
+    geometry = geometrySnapshot({
+      window: bounds,
+      visual: { x: 0, y: 0, width: 200, height: 100 }
+    });
+
+    expect(service.tick().target).toEqual({ x: 800, y: 100 });
+  });
+
+  test('静止窗口的程序化布局同步 motion target，后续 tick 不拉回旧位置', () => {
+    let bounds = { x: 0, y: 0, width: 180, height: 220 };
+    const setPosition = vi.fn();
+    const service = createMotionService({
+      window: { getBounds: () => bounds, setPosition },
+      getWorkAreas: () => [{ x: 0, y: 0, width: 800, height: 600 }],
+      now: () => 100
+    });
+    service.expectProgrammaticPosition({ x: 40, y: 30 });
+    service.beginUserMove({ x: 40, y: 30 });
+    bounds = { ...bounds, x: 40, y: 30 };
+    service.handleWindowMoved();
+
+    expect(service.tick()).toMatchObject({
+      position: { x: 40, y: 30 },
+      target: { x: 40, y: 30 },
+      moving: false
+    });
+    expect(setPosition).not.toHaveBeenCalled();
+  });
+
+  test('隐藏窗口 setBounds 未发 move 事件时，预登记布局仍阻止首 tick 拉回', () => {
+    let bounds = { x: 0, y: 0, width: 180, height: 220 };
+    const setPosition = vi.fn();
+    const service = createMotionService({
+      window: { getBounds: () => bounds, setPosition },
+      getWorkAreas: () => [{ x: 0, y: 0, width: 800, height: 600 }],
+      now: () => 100
+    });
+    service.expectProgrammaticPosition({ x: 40, y: 30 });
+    bounds = { ...bounds, x: 40, y: 30 };
+
+    expect(service.tick()).toMatchObject({
+      position: { x: 40, y: 30 }, target: { x: 40, y: 30 }, moving: false
+    });
+    expect(setPosition).not.toHaveBeenCalled();
+  });
+
+  test('控制器拖拽在程序化位置积压时仍无条件接管并失效旧预期', () => {
+    const service = createMotionService({
+      window: {
+        getBounds: () => ({ x: 40, y: 30, width: 180, height: 220 }),
+        setPosition: vi.fn()
+      },
+      getWorkAreas: () => [{ x: 0, y: 0, width: 800, height: 600 }],
+      now: () => 100
+    });
+    service.expectProgrammaticPosition({ x: 40, y: 30 });
+
+    service.beginUserMove(undefined, 'controller');
+
+    expect(service.isUserMoving()).toBe(true);
+    expect(service.hasPendingProgrammaticPosition()).toBe(false);
+  });
+
   test('积压的程序化 moved 以 20→10 真正乱序确认时不会覆盖运动目标', () => {
     let now = 0;
     let bounds = { x: 0, y: 0, width: 180, height: 220 };
-    const service = new CharacterMotionService({
+    const service = createMotionService({
       window: {
         getBounds: () => bounds,
         setPosition: (x, y) => { bounds = { ...bounds, x, y }; }
@@ -458,7 +924,7 @@ describe('Main 角色运动服务', () => {
   test('will-move 清空程序化积压，用户经过历史程序坐标也立即接管', () => {
     let now = 0;
     let bounds = { x: 0, y: 0, width: 180, height: 220 };
-    const service = new CharacterMotionService({
+    const service = createMotionService({
       window: {
         getBounds: () => bounds,
         setPosition: (x, y) => { bounds = { ...bounds, x, y }; }
@@ -477,7 +943,7 @@ describe('Main 角色运动服务', () => {
     expect(service.tick().position).toEqual({ x: 10, y: 100 });
   });
 
-  test('生产窗口接线使用 will-move 开始接管并由 move/moved 同步位置', () => {
+  test('生产窗口接线使用 will-move 开始接管并在 moved 边界立即结束', () => {
     const listeners = new Map<string, Array<() => void>>();
     const window = {
       on: vi.fn((name: string, listener: () => void) => {
@@ -499,10 +965,83 @@ describe('Main 角色运动服务', () => {
     listeners.get('moved')?.[0]?.();
 
     expect(service.beginUserMove).toHaveBeenCalledOnce();
-    expect(service.handleWindowMoved).toHaveBeenCalledOnce();
+    expect(service.handleWindowMoved).toHaveBeenCalledTimes(2);
     expect(service.endUserMove).toHaveBeenCalledOnce();
     release();
     expect(window.removeListener).toHaveBeenCalledTimes(3);
+  });
+
+  test('分段 moved 释放后，后续裸 move 只同步最终位置而不制造伪 owner', () => {
+    let bounds = { x: 20, y: 10, width: 180, height: 220 };
+    const listeners = new Map<string, Set<() => void>>();
+    const emit = (name: string): void => {
+      for (const listener of listeners.get(name) ?? []) listener();
+    };
+    const window = {
+      on: (name: string, listener: () => void) => {
+        const current = listeners.get(name) ?? new Set();
+        current.add(listener);
+        listeners.set(name, current);
+      },
+      removeListener: (name: string, listener: () => void) => {
+        listeners.get(name)?.delete(listener);
+      },
+      getBounds: () => bounds,
+      setPosition: vi.fn()
+    };
+    const service = createMotionService({
+      window,
+      getWorkAreas: () => [{ x: 0, y: 0, width: 800, height: 600 }],
+      now: () => 0
+    });
+    const release = bindCharacterMotionWindow(window, service);
+
+    emit('will-move');
+    bounds = { ...bounds, x: 40 };
+    emit('move');
+    expect(service.isUserMoving()).toBe(true);
+
+    bounds = { ...bounds, x: 80 };
+    emit('move');
+    expect(service.isUserMoving()).toBe(true);
+    emit('moved');
+    expect(service.isUserMoving()).toBe(false);
+    bounds = { ...bounds, x: 100 };
+    emit('move');
+    expect(service.isUserMoving()).toBe(false);
+    emit('moved');
+    expect(service.isUserMoving()).toBe(false);
+    expect(service.getSnapshot()).toMatchObject({
+      position: { x: 100, y: 10 },
+      target: { x: 100, y: 10 }
+    });
+    release();
+  });
+
+  test('没有 will-move 的裸 move 只同步窗口位置且不建立用户 owner', () => {
+    const listeners = new Map<string, Array<() => void>>();
+    const window = {
+      on: (name: string, listener: () => void) => {
+        listeners.set(name, [...(listeners.get(name) ?? []), listener]);
+      },
+      removeListener: vi.fn(),
+      getBounds: () => ({ x: 20, y: 10, width: 180, height: 220 }),
+      setPosition: vi.fn()
+    };
+    const service = {
+      beginUserMove: vi.fn(),
+      handleWindowMoved: vi.fn(),
+      endUserMove: vi.fn()
+    };
+    bindCharacterMotionWindow(window, service);
+
+    listeners.get('move')?.[0]?.();
+
+    expect(service.beginUserMove).not.toHaveBeenCalled();
+    expect(service.handleWindowMoved).toHaveBeenCalledOnce();
+    expect(service.endUserMove).not.toHaveBeenCalled();
+    listeners.get('moved')?.[0]?.();
+    expect(service.endUserMove).not.toHaveBeenCalled();
   });
 
   test('真实接线忽略同一次程序化 move→moved 重复回调并继续远端目标', () => {
@@ -525,7 +1064,7 @@ describe('Main 角色运动服务', () => {
         listeners.get(name)?.delete(listener);
       }
     };
-    const service = new CharacterMotionService({
+    const service = createMotionService({
       window,
       getWorkAreas: () => [{ x: 0, y: 0, width: 800, height: 600 }],
       now: () => now,
@@ -545,6 +1084,7 @@ describe('Main 角色运动服务', () => {
   });
 
   test('真实接线的 will-move→move→moved 完整序列由用户位置接管', () => {
+    vi.useFakeTimers();
     let now = 0;
     let bounds = { x: 0, y: 0, width: 180, height: 220 };
     const listeners = new Map<string, Set<() => void>>();
@@ -567,7 +1107,7 @@ describe('Main 角色运动服务', () => {
         listeners.get(name)?.delete(listener);
       }
     };
-    const service = new CharacterMotionService({
+    const service = createMotionService({
       window,
       getWorkAreas: () => [{ x: 0, y: 0, width: 800, height: 600 }],
       now: () => now
@@ -591,10 +1131,227 @@ describe('Main 角色运动服务', () => {
     release();
   });
 
+  test('程序化 setBounds 的实际坐标超过 DPI 容差时，首个 move 仍只消费预登记回执', () => {
+    let bounds = { x: 0, y: 0, width: 180, height: 220 };
+    const listeners = new Map<string, Set<() => void>>();
+    const emit = (name: string): void => {
+      for (const listener of listeners.get(name) ?? []) listener();
+    };
+    const window = {
+      getBounds: () => bounds,
+      setPosition: vi.fn(),
+      on: (name: string, listener: () => void) => {
+        const current = listeners.get(name) ?? new Set();
+        current.add(listener);
+        listeners.set(name, current);
+      },
+      removeListener: (name: string, listener: () => void) => {
+        listeners.get(name)?.delete(listener);
+      }
+    };
+    const service = createMotionService({
+      window,
+      getWorkAreas: () => [{ x: 0, y: 0, width: 800, height: 600 }],
+      now: () => 0
+    });
+    const release = bindCharacterMotionWindow(window, service);
+
+    service.expectProgrammaticPosition({ x: 300, y: 200 });
+    bounds = { ...bounds, x: 294, y: 196 };
+    emit('move');
+
+    expect(service.isUserMoving()).toBe(false);
+    expect(service.hasPendingProgrammaticPosition()).toBe(false);
+    release();
+  });
+
+  test('Windows 高 DPI 将程序化位置取整偏移两 DIP 时仍继续远端目标', () => {
+    vi.useFakeTimers();
+    let now = 0;
+    let bounds = { x: 0, y: 0, width: 180, height: 220 };
+    const listeners = new Map<
+      string,
+      Set<(event?: unknown, next?: typeof bounds) => void>
+    >();
+    const emit = (name: string, next?: typeof bounds): void => {
+      for (const listener of listeners.get(name) ?? []) listener(undefined, next);
+    };
+    const window = {
+      getBounds: () => bounds,
+      setPosition: (x: number, y: number) => {
+        const roundedByWindows = { ...bounds, x: x + 2, y };
+        // Electron/Windows 的程序化 will-move 预告值可能尚未完成 DPI 归一化。
+        emit('will-move', { ...roundedByWindows, x: roundedByWindows.x + 100 });
+        bounds = roundedByWindows;
+        emit('move');
+        emit('moved');
+      },
+      on: (
+        name: string,
+        listener: (event?: unknown, next?: typeof bounds) => void
+      ) => {
+        const current = listeners.get(name) ?? new Set();
+        current.add(listener);
+        listeners.set(name, current);
+      },
+      removeListener: (
+        name: string,
+        listener: (event?: unknown, next?: typeof bounds) => void
+      ) => listeners.get(name)?.delete(listener)
+    };
+    const service = createMotionService({
+      window,
+      getWorkAreas: () => [{ x: 0, y: 0, width: 800, height: 600 }],
+      now: () => now,
+      maxDeltaMs: 100
+    });
+    const release = bindCharacterMotionWindow(window, service);
+
+    service.moveTo({ x: 400, y: 0 }, 100);
+    now = 100;
+    service.tick();
+
+    expect(service.getSnapshot().target).toEqual({ x: 400, y: 0 });
+    expect(service.isUserMoving()).toBe(false);
+    release();
+  });
+
+  test('控制器拖拽 owner 不被每帧原生 moved 提前释放', () => {
+    vi.useFakeTimers();
+    let bounds = { x: 0, y: 0, width: 180, height: 220 };
+    const listeners = new Map<string, Set<(event?: unknown, next?: typeof bounds) => void>>();
+    const emit = (name: string, next?: typeof bounds): void => {
+      for (const listener of listeners.get(name) ?? []) listener(undefined, next);
+    };
+    const window = {
+      getBounds: () => bounds,
+      setPosition: (x: number, y: number) => {
+        const next = { ...bounds, x, y };
+        emit('will-move', next);
+        bounds = next;
+        emit('move');
+        emit('moved');
+      },
+      on: (
+        name: string,
+        listener: (event?: unknown, next?: typeof bounds) => void
+      ) => {
+        const current = listeners.get(name) ?? new Set();
+        current.add(listener);
+        listeners.set(name, current);
+      },
+      removeListener: (
+        name: string,
+        listener: (event?: unknown, next?: typeof bounds) => void
+      ) => {
+        listeners.get(name)?.delete(listener);
+      }
+    };
+    const service = createMotionService({
+      window,
+      getWorkAreas: () => [{ x: 0, y: 0, width: 2_000, height: 1_200 }],
+      now: () => 0
+    });
+    const release = bindCharacterMotionWindow(window, service);
+    const ownedMotion = service as unknown as {
+      beginUserMove(next?: { x: number; y: number }, source?: 'controller' | 'native'): void;
+      endUserMove(source?: 'controller' | 'native'): void;
+    };
+
+    ownedMotion.beginUserMove(undefined, 'controller');
+    for (let index = 1; index <= 100; index += 1) {
+      window.setPosition(index, index);
+      expect(service.isUserMoving()).toBe(true);
+      expect(bounds).toMatchObject({ width: 180, height: 220 });
+    }
+    ownedMotion.endUserMove('controller');
+
+    expect(service.isUserMoving()).toBe(false);
+    release();
+  });
+
+  test('控制器结束时 getBounds 抛错仍释放 motion owner 且不打断清理链', () => {
+    let failGetBounds = false;
+    const service = createMotionService({
+      window: {
+        getBounds: () => {
+          if (failGetBounds) throw new Error('GET_BOUNDS_FAILED');
+          return { x: 0, y: 0, width: 180, height: 220 };
+        },
+        setPosition: vi.fn()
+      },
+      getWorkAreas: () => [{ x: 0, y: 0, width: 800, height: 600 }],
+      now: () => 0
+    });
+    service.beginUserMove(undefined, 'controller');
+    failGetBounds = true;
+
+    expect(() => service.endUserMove('controller')).not.toThrow();
+    expect(service.isUserMoving()).toBe(false);
+  });
+
+  test('控制器仍持有 owner 时原生事件不发布虚假拖拽边沿', () => {
+    let bounds = { x: 0, y: 0, width: 180, height: 220 };
+    const listeners = new Map<string, Set<(event?: unknown, next?: typeof bounds) => void>>();
+    const emit = (name: string, next?: typeof bounds): void => {
+      for (const listener of listeners.get(name) ?? []) listener(undefined, next);
+    };
+    const window = {
+      getBounds: () => bounds,
+      setPosition: (x: number, y: number) => {
+        const next = { ...bounds, x, y };
+        emit('will-move', next);
+        bounds = next;
+        emit('move');
+        emit('moved');
+      },
+      on: (
+        name: string,
+        listener: (event?: unknown, next?: typeof bounds) => void
+      ) => {
+        const current = listeners.get(name) ?? new Set();
+        current.add(listener);
+        listeners.set(name, current);
+      },
+      removeListener: (
+        name: string,
+        listener: (event?: unknown, next?: typeof bounds) => void
+      ) => {
+        listeners.get(name)?.delete(listener);
+      }
+    };
+    const service = createMotionService({
+      window,
+      getWorkAreas: () => [{ x: 0, y: 0, width: 2_000, height: 1_200 }],
+      now: () => 0
+    });
+    const onUserMoveStarted = vi.fn();
+    const onUserMoveEnded = vi.fn();
+    const release = bindCharacterMotionWindow(window, service, {
+      onUserMoveStarted,
+      onUserMoveEnded
+    });
+
+    service.beginUserMove(undefined, 'controller');
+    window.setPosition(20, 30);
+
+    expect(service.isUserMoving()).toBe(true);
+    expect(onUserMoveStarted).not.toHaveBeenCalled();
+    expect(onUserMoveEnded).not.toHaveBeenCalled();
+
+    service.endUserMove('controller');
+    window.setPosition(40, 50);
+
+    expect(service.isUserMoving()).toBe(false);
+    expect(onUserMoveStarted).toHaveBeenCalledOnce();
+    expect(onUserMoveEnded).toHaveBeenCalledOnce();
+    release();
+  });
+
   test('handleWindowMoved 在注入时钟倒退时保持快照时间单调', () => {
     let now = 100;
     let bounds = { x: 0, y: 0, width: 180, height: 220 };
-    const service = new CharacterMotionService({
+    const service = createMotionService({
       window: {
         getBounds: () => bounds,
         setPosition: vi.fn()
@@ -611,65 +1368,8 @@ describe('Main 角色运动服务', () => {
     expect(service.getSnapshot().timestampMs).toBe(100);
   });
 
-  test('idle 播放令牌绑定角色和动作且只能消费一次', () => {
-    let now = 1_000;
-    const service = new CharacterMotionService({
-      window: {
-        getBounds: () => ({ x: 0, y: 0, width: 180, height: 220 }),
-        setPosition: vi.fn()
-      },
-      getWorkAreas: () => [{ x: 0, y: 0, width: 800, height: 600 }],
-      now: () => now,
-      createPlaybackToken: () => 'opaque-token'
-    });
-    const token = service.issueIdlePlayback({
-      actionId: 'idle-a',
-      characterId: 'demo',
-      revision: 3
-    });
-
-    expect(() => service.confirmIdlePlayback({
-      playbackToken: token,
-      actionId: 'idle-b',
-      characterId: 'demo'
-    })).toThrow('CHARACTER_PLAYBACK_UNAUTHORIZED');
-    expect(() => service.confirmIdlePlayback({
-      playbackToken: token,
-      actionId: 'idle-a',
-      characterId: 'demo'
-    })).toThrow('CHARACTER_PLAYBACK_UNAUTHORIZED');
-
-    const validToken = service.issueIdlePlayback({
-      actionId: 'idle-a',
-      characterId: 'demo',
-      revision: 4
-    });
-    service.confirmIdlePlayback({
-      playbackToken: validToken,
-      actionId: 'idle-a',
-      characterId: 'demo'
-    });
-    expect(() => service.confirmIdlePlayback({
-      playbackToken: validToken,
-      actionId: 'idle-a',
-      characterId: 'demo'
-    })).toThrow('CHARACTER_PLAYBACK_UNAUTHORIZED');
-
-    const expired = service.issueIdlePlayback({
-      actionId: 'idle-a',
-      characterId: 'demo',
-      revision: 5
-    });
-    now += 31_000;
-    expect(() => service.confirmIdlePlayback({
-      playbackToken: expired,
-      actionId: 'idle-a',
-      characterId: 'demo'
-    })).toThrow('CHARACTER_PLAYBACK_UNAUTHORIZED');
-  });
-
   test('可信 Main 搬运标志进入权威快照并可关闭', () => {
-    const service = new CharacterMotionService({
+    const service = createMotionService({
       window: {
         getBounds: () => ({ x: 0, y: 0, width: 180, height: 220 }),
         setPosition: vi.fn()
@@ -683,8 +1383,8 @@ describe('Main 角色运动服务', () => {
     expect(service.getSnapshot().carrying).toBe(false);
   });
 
-  test('工作区小于窗口时仍钳制到工作区原点', () => {
-    const service = new CharacterMotionService({
+  test('可见矩形大于工作区时保持当前位置', () => {
+    const service = createMotionService({
       window: {
         getBounds: () => ({ x: 0, y: 0, width: 180, height: 220 }),
         setPosition: vi.fn()
@@ -695,12 +1395,12 @@ describe('Main 角色运动服务', () => {
     service.moveTo({ x: 999, y: 999 });
     expect(service.getSnapshot().position).toEqual({ x: 0, y: 0 });
     service.tick();
-    expect(service.getSnapshot().target).toEqual({ x: 50, y: 60 });
+    expect(service.getSnapshot().target).toEqual({ x: 0, y: 0 });
   });
 
   test('注入时钟倒退时快照时间戳保持单调', () => {
     let now = 100;
-    const service = new CharacterMotionService({
+    const service = createMotionService({
       window: {
         getBounds: () => ({ x: 0, y: 0, width: 180, height: 220 }),
         setPosition: vi.fn()
@@ -711,25 +1411,6 @@ describe('Main 角色运动服务', () => {
     service.tick();
     now = 50;
     expect(service.tick().timestampMs).toBe(100);
-  });
-
-  test('任务活动期间不选择 idle 且不污染最近动作', () => {
-    let now = 0;
-    const selectAction = vi.fn();
-    const service = new CharacterMotionService({
-      window: {
-        getBounds: () => ({ x: 0, y: 0, width: 180, height: 220 }),
-        setPosition: vi.fn()
-      },
-      getWorkAreas: () => [{ x: 0, y: 0, width: 800, height: 600 }],
-      now: () => now,
-      idleIntervalMs: 100,
-      selectAction
-    });
-    service.applyTaskEvent({ type: 'phase', phase: 'acting' });
-    now = 10_000;
-    expect(service.pollIdle(manifest, 'right', () => 0)).toBeNull();
-    expect(selectAction).not.toHaveBeenCalled();
   });
 
   test('窗口销毁后清理定时器且不再 tick 或 poll', () => {
@@ -752,5 +1433,50 @@ describe('Main 角色运动服务', () => {
     expect(tick).toHaveBeenCalledTimes(2);
     runtime.destroy();
     vi.useRealTimers();
+  });
+
+  test('原生 setPosition 抛错时 timer 收口异常并停止后续原生调用', () => {
+    vi.useFakeTimers();
+    try {
+      let now = 0;
+      const bounds = { x: 0, y: 0, width: 180, height: 220 };
+      const setPosition = vi.fn(() => {
+        throw new Error('NATIVE_POSITION_PRIVATE_DETAIL');
+      });
+      const service = createMotionService({
+        window: { getBounds: () => bounds, setPosition },
+        getWorkAreas: () => [{ x: 0, y: 0, width: 800, height: 600 }],
+        now: () => now
+      });
+      const reportError = vi.fn();
+      const poll = vi.fn();
+      service.moveTo({ x: 10, y: 0 }, 100);
+      now = 100;
+      const runtime = startCharacterMotionTimers({
+        tick: () => { service.tick(); },
+        poll,
+        isDestroyed: () => false,
+        tickIntervalMs: 10,
+        idleIntervalMs: 20,
+        reportError
+      });
+
+      expect(() => vi.advanceTimersByTime(10)).not.toThrow();
+      expect(setPosition).toHaveBeenCalledOnce();
+      expect(reportError).toHaveBeenCalledWith('CHARACTER_MOTION_TIMER_FAILED');
+
+      // 窗口保持存活，确认冻结来自 timer 清理而非销毁 guard 短路。
+      vi.advanceTimersByTime(50);
+      expect(setPosition).toHaveBeenCalledOnce();
+      expect(poll).not.toHaveBeenCalled();
+      expect(reportError).toHaveBeenCalledOnce();
+
+      runtime.destroy();
+      vi.advanceTimersByTime(50);
+      expect(setPosition).toHaveBeenCalledOnce();
+      expect(reportError).toHaveBeenCalledOnce();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

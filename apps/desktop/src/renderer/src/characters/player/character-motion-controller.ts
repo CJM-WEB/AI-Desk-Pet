@@ -83,7 +83,8 @@ export class CharacterMotionController {
     if (this.snapshot && snapshot.revision <= this.snapshot.revision) return false;
     validatePoint(snapshot.position);
     validatePoint(snapshot.target);
-    if (!this.snapshot) {
+    if (!this.snapshot || !snapshot.moving) {
+      // 用户拖拽已经移动真实 BrowserWindow；静止快照必须清零 Renderer 二次追赶残差。
       this.position = { ...snapshot.position };
       // Main 时间戳只用于快照元数据；本地 delta 从首个 RAF 建立基线。
       this.lastAdvanceMs = null;

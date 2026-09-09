@@ -3,7 +3,9 @@ import type {
   CharacterActionPresentationV2,
   CharacterDraftV2,
   CharacterManifestV2,
-  CharacterSkinV2
+  CharacterSkinV2,
+  PreparedCharacterManifestV2,
+  PublishedCharacterActionPresentationV2
 } from './character-v2-schema';
 
 /** 表现解析路径，调用方可据此解释实际使用的回退层级。 */
@@ -14,13 +16,18 @@ export type CharacterPresentationSource =
   | 'default-state';
 
 /** 解析后真正可播放的动作定义与皮肤表现。 */
-export type ResolvedCharacterPresentation = {
+export type ResolvedCharacterPresentation<
+  TPresentation extends CharacterActionPresentationV2 = CharacterActionPresentationV2
+> = {
   action: CharacterActionDefinitionV2;
-  presentation: CharacterActionPresentationV2;
+  presentation: TPresentation;
   source: CharacterPresentationSource;
 };
 
-type CharacterPresentationDocument = CharacterDraftV2 | CharacterManifestV2;
+type CharacterPresentationDocument =
+  | CharacterDraftV2
+  | PreparedCharacterManifestV2
+  | CharacterManifestV2;
 
 /** 只接受含有至少一帧的表现，避免将不可播放的草稿表现返回给运行时。 */
 function exactPresentation(
@@ -72,7 +79,17 @@ function defaultStatePresentation(
  * 默认皮肤精确动作、默认状态可播放表现。该函数只读取输入，不会修改草稿或清单。
  */
 export function resolveCharacterPresentation(
-  document: CharacterDraftV2 | CharacterManifestV2,
+  document: CharacterManifestV2,
+  skinId: string,
+  actionId: string
+): ResolvedCharacterPresentation<PublishedCharacterActionPresentationV2> | null;
+export function resolveCharacterPresentation(
+  document: CharacterDraftV2 | PreparedCharacterManifestV2,
+  skinId: string,
+  actionId: string
+): ResolvedCharacterPresentation | null;
+export function resolveCharacterPresentation(
+  document: CharacterPresentationDocument,
   skinId: string,
   actionId: string
 ): ResolvedCharacterPresentation | null {

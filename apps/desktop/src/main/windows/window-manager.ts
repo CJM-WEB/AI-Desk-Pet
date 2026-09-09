@@ -5,12 +5,23 @@ import type {
   WebPreferences
 } from 'electron';
 
-const PET_WIDTH = 180;
-const PET_HEIGHT = 220;
-const EDGE_MARGIN = 16;
-
 export type Point = { x: number; y: number };
 export type WindowSize = { width: number; height: number };
+export const PET_WINDOW_SIZE: Readonly<WindowSize> = Object.freeze({
+  width: 180,
+  height: 220
+});
+export type VisualAnchorConstraintInput = Readonly<{
+  anchorDip: Point;
+  visualBoundsFromAnchorDip: Rectangle;
+  workAreaDip: Rectangle;
+  edgeMarginDip?: number;
+}>;
+export type VisualWindowConstraintInput = Readonly<{
+  windowPositionDip: Point;
+  visualBoundsInWindowDip: Rectangle;
+  workAreaDip: Rectangle;
+}>;
 export type BrowserWindowConstructor = new (
   options?: BrowserWindowConstructorOptions
 ) => BrowserWindow;
@@ -30,8 +41,12 @@ export function petWindowOptions(
   options: { enableE2eProbe?: boolean } = {}
 ): BrowserWindowConstructorOptions {
   return {
-    width: PET_WIDTH,
-    height: PET_HEIGHT,
+    width: PET_WINDOW_SIZE.width,
+    height: PET_WINDOW_SIZE.height,
+    minWidth: PET_WINDOW_SIZE.width,
+    maxWidth: PET_WINDOW_SIZE.width,
+    minHeight: PET_WINDOW_SIZE.height,
+    maxHeight: PET_WINDOW_SIZE.height,
     transparent: true,
     frame: false,
     alwaysOnTop: false,
@@ -155,7 +170,7 @@ type PetWebContentsTransientEvent =
 
 type PetWindowInteractionLifecycleController = {
   setPassthrough(ignore: boolean): void;
-  endDrag(reason: 'cancelled'): void;
+  endDrag(): void;
   dispose(): void;
 };
 
@@ -175,11 +190,15 @@ export function bindPetWindowInteractionLifecycle(
         event === 'destroyed' ? release : failOpen
       );
     }
-    controller.dispose();
+    try {
+      controller.endDrag();
+    } finally {
+      controller.dispose();
+    }
   };
   const failOpen = (): void => {
     if (released) return;
-    controller.endDrag('cancelled');
+    controller.endDrag();
     controller.setPassthrough(true);
   };
   controller.setPassthrough(true);
@@ -202,47 +221,95 @@ const webContentsTransientEvents: readonly PetWebContentsTransientEvent[] = [
   'will-navigate'
 ];
 
-function isFullyVisible(position: Point, size: WindowSize, workArea: Rectangle): boolean {
-  return position.x >= workArea.x
-    && position.y >= workArea.y
-    && position.x + size.width <= workArea.x + workArea.width
-    && position.y + size.height <= workArea.y + workArea.height;
+type AxisRange = Readonly<{ minimum: number; maximum: number }>;
+
+function finitePoint(point: Point): boolean {
+  return Number.isFinite(point.x) && Number.isFinite(point.y);
 }
 
-export function clampPositionToVisibleWorkArea(
-  position: Point,
-  size: WindowSize,
-  workAreas: readonly Rectangle[]
-): Point {
-  if (workAreas.some(workArea => isFullyVisible(position, size, workArea))) return position;
-  const primary = workAreas[0];
-  if (!primary) return { x: 0, y: 0 };
+function validRectangle(rectangle: Rectangle): boolean {
+  return Number.isFinite(rectangle.x)
+    && Number.isFinite(rectangle.y)
+    && Number.isFinite(rectangle.width)
+    && Number.isFinite(rectangle.height)
+    && rectangle.width > 0
+    && rectangle.height > 0
+    && Number.isFinite(rectangle.x + rectangle.width)
+    && Number.isFinite(rectangle.y + rectangle.height);
+}
+
+/**
+ * 所有桌宠边界入口共享同一组可见矩形允许区间；窗口透明 padding 不参与约束。
+ */
+function visualAnchorRanges(
+  visualBoundsFromAnchorDip: Rectangle,
+  workAreaDip: Rectangle,
+  edgeMarginDip: number
+): Readonly<{ x: AxisRange; y: AxisRange }> | null {
+  if (!validRectangle(visualBoundsFromAnchorDip)
+    || !validRectangle(workAreaDip)
+    || !Number.isFinite(edgeMarginDip)
+    || edgeMarginDip < 0) return null;
+  const workAreaRight = workAreaDip.x + workAreaDip.width;
+  const workAreaBottom = workAreaDip.y + workAreaDip.height;
+  const visualRight = visualBoundsFromAnchorDip.x + visualBoundsFromAnchorDip.width;
+  const visualBottom = visualBoundsFromAnchorDip.y + visualBoundsFromAnchorDip.height;
+  const ranges = {
+    x: {
+      minimum: workAreaDip.x + edgeMarginDip - visualBoundsFromAnchorDip.x,
+      maximum: workAreaRight - edgeMarginDip - visualRight
+    },
+    y: {
+      minimum: workAreaDip.y + edgeMarginDip - visualBoundsFromAnchorDip.y,
+      maximum: workAreaBottom - edgeMarginDip - visualBottom
+    }
+  };
+  if (![ranges.x.minimum, ranges.x.maximum, ranges.y.minimum, ranges.y.maximum]
+    .every(Number.isFinite)) return null;
+  return ranges.x.minimum <= ranges.x.maximum && ranges.y.minimum <= ranges.y.maximum
+    ? ranges
+    : null;
+}
+
+/** 以脚底等语义锚点连续投影到最近合法位置，角色动作切换时不会产生额外位移。 */
+export function clampAnchorToVisualWorkArea(
+  input: VisualAnchorConstraintInput
+): Point | null {
+  if (!finitePoint(input.anchorDip)) return null;
+  const ranges = visualAnchorRanges(
+    input.visualBoundsFromAnchorDip,
+    input.workAreaDip,
+    input.edgeMarginDip ?? 0
+  );
+  if (!ranges) return null;
   return {
-    x: Math.max(primary.x, primary.x + primary.width - size.width - EDGE_MARGIN),
-    y: Math.max(primary.y, primary.y + primary.height - size.height - EDGE_MARGIN)
+    x: Math.min(ranges.x.maximum, Math.max(ranges.x.minimum, input.anchorDip.x)),
+    y: Math.min(ranges.y.maximum, Math.max(ranges.y.minimum, input.anchorDip.y))
   };
 }
 
 /**
- * 实时拖拽只在目标显示器内逐轴钳制，避免单轴越界把另一轴跳到恢复位置。
+ * Windows 实际窗口原点为整数；允许区间向内取整，避免小数视觉边界在右下缘溢出。
  */
-export function clampPositionToWorkArea(
-  position: Point,
-  size: WindowSize,
-  workArea: Rectangle
-): Point {
-  const maxX = Math.max(workArea.x, workArea.x + workArea.width - size.width);
-  const maxY = Math.max(workArea.y, workArea.y + workArea.height - size.height);
-  return {
-    x: Math.min(maxX, Math.max(workArea.x, position.x)),
-    y: Math.min(maxY, Math.max(workArea.y, position.y))
-  };
-}
-
-export function defaultPetPosition(workArea: Rectangle): Point {
-  return clampPositionToVisibleWorkArea(
-    { x: Number.POSITIVE_INFINITY, y: Number.POSITIVE_INFINITY },
-    { width: PET_WIDTH, height: PET_HEIGHT },
-    [workArea]
+export function clampIntegerWindowPositionToVisualWorkArea(
+  input: VisualWindowConstraintInput
+): Point | null {
+  if (!finitePoint(input.windowPositionDip)) return null;
+  const ranges = visualAnchorRanges(
+    input.visualBoundsInWindowDip,
+    input.workAreaDip,
+    0
   );
+  if (!ranges) return null;
+  const minimumX = Math.ceil(ranges.x.minimum);
+  const maximumX = Math.floor(ranges.x.maximum);
+  const minimumY = Math.ceil(ranges.y.minimum);
+  const maximumY = Math.floor(ranges.y.maximum);
+  if (minimumX > maximumX || minimumY > maximumY) return null;
+  const desiredX = Math.round(input.windowPositionDip.x);
+  const desiredY = Math.round(input.windowPositionDip.y);
+  return {
+    x: Math.min(maximumX, Math.max(minimumX, desiredX)),
+    y: Math.min(maximumY, Math.max(minimumY, desiredY))
+  };
 }

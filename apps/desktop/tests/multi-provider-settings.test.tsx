@@ -1,16 +1,18 @@
 // @vitest-environment jsdom
 
+import { readFile } from 'node:fs/promises';
+import { join } from 'node:path';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
-import { afterEach, describe, expect, test, vi } from 'vitest';
+import { afterEach, describe, expect, expectTypeOf, test, vi } from 'vitest';
 import type { SettingsDashboardDto } from '../src/shared/myself-api';
 import { ProviderSettings } from '../src/renderer/src/settings/ProviderSettings';
-import { McpSettings } from '../src/renderer/src/settings/McpSettings';
 import { PrivacySettings } from '../src/renderer/src/settings/PrivacySettings';
 import {
   availableSettingsTabs,
-  resolveSettingsTab,
-  SettingsWorkspace
+  SettingsWorkspace,
+  type SettingsTab,
+  type SettingsWorkspaceProps
 } from '../src/renderer/src/settings/SettingsView';
 
 const dashboard: SettingsDashboardDto = {
@@ -75,32 +77,8 @@ const dashboard: SettingsDashboardDto = {
     fallbackProfileIds: [],
     allowCrossProviderFallback: false
   },
-  mcpServers: [{
-    id: 'notes',
-    enabled: true,
-    status: 'connected',
-    transport: {
-      type: 'stdio',
-      summary: 'C:\\tools\\notes.exe --stdio',
-      secretNames: ['TOKEN']
-    },
-    tools: [{
-      name: 'read-note',
-      description: '读取笔记',
-      enabled: true,
-      readOnly: true
-    }, {
-      name: 'delete-note',
-      description: '删除笔记',
-      enabled: false,
-      readOnly: false
-    }]
-  }],
   privacy: {
     dataCategories: {
-      file: true,
-      screenshot: false,
-      clipboard: false,
       memory: false
     },
     longTermMemory: false,
@@ -108,15 +86,18 @@ const dashboard: SettingsDashboardDto = {
   },
   privacyRuntimeSupport: {
     dataCategories: {
-      file: true,
-      screenshot: false,
-      clipboard: false,
       memory: false
     },
     longTermMemory: false,
     proactivity: false
   },
   petAlwaysOnTop: false,
+  localModel: {
+    enabled: true,
+    phase: 'loading',
+    backend: null,
+    reasonCode: null
+  },
   authorizedRoot: {
     id: 'root-1',
     displayName: 'workspace',
@@ -127,6 +108,11 @@ const dashboard: SettingsDashboardDto = {
 afterEach(cleanup);
 
 describe('多 Provider 设置组件', () => {
+  test('设置工作区不再公开工具标签或 MCP 操作 Props', () => {
+    expectTypeOf<'tools'>().not.toMatchTypeOf<SettingsTab>();
+    expectTypeOf<SettingsWorkspaceProps>().not.toHaveProperty('mcpActions');
+  });
+
   test('普通模式聚焦 Provider、Model 和 API Key，高级字段折叠', () => {
     const markup = renderToStaticMarkup(
       <ProviderSettings
@@ -146,6 +132,108 @@ describe('多 Provider 设置组件', () => {
     expect(markup).toContain('高级设置');
     expect(markup).toContain('Base URL');
     expect(markup).toContain('tools');
+  });
+
+  test('模型页在云档案之前展示默认开启的内置本地模型状态卡', () => {
+    render(
+      <SettingsWorkspace
+        dashboard={dashboard}
+        activeTab="models"
+        busy={false}
+        notice={null}
+        onDismissNotice={vi.fn()}
+        onTabChange={vi.fn()}
+        onClose={vi.fn()}
+        providerActions={{
+          onSave: vi.fn(),
+          onTest: vi.fn(),
+          onRouteSave: vi.fn(),
+          onDelete: vi.fn()
+        }}
+        privacyActions={{
+          incognito: false,
+          onSave: vi.fn(),
+          onPetAlwaysOnTopChange: vi.fn(),
+          onIncognitoChange: vi.fn(),
+          onChooseRoot: vi.fn(),
+          onRevokeRoot: vi.fn()
+        }}
+        onClear={vi.fn()}
+        onOpenCharacterWorkshop={vi.fn()}
+      />
+    );
+
+    expect((screen.getByRole('switch', { name: '启用内置本地模型' }) as HTMLInputElement).checked).toBe(true);
+    expect(screen.getByText(/无需 API Key/u)).toBeTruthy();
+    expect(screen.getByText('本地模型加载中')).toBeTruthy();
+    expect(screen.getByLabelText('API Key')).toBeTruthy();
+  });
+
+  test('本地模型卡用文字区分 CPU 兼容模式与故障原因', () => {
+    const cpuDashboard: SettingsDashboardDto = {
+      ...dashboard,
+      localModel: {
+        enabled: true,
+        phase: 'ready',
+        backend: 'cpu',
+        reasonCode: null
+      }
+    };
+    const { rerender } = render(
+      <SettingsWorkspace
+        dashboard={cpuDashboard}
+        activeTab="models"
+        busy={false}
+        notice={null}
+        onDismissNotice={vi.fn()}
+        onTabChange={vi.fn()}
+        onClose={vi.fn()}
+        providerActions={{ onSave: vi.fn(), onTest: vi.fn(), onRouteSave: vi.fn(), onDelete: vi.fn() }}
+        privacyActions={{
+          incognito: false,
+          onSave: vi.fn(),
+          onPetAlwaysOnTopChange: vi.fn(),
+          onIncognitoChange: vi.fn(),
+          onChooseRoot: vi.fn(),
+          onRevokeRoot: vi.fn()
+        }}
+        onClear={vi.fn()}
+        onOpenCharacterWorkshop={vi.fn()}
+      />
+    );
+    expect(screen.getByText('CPU 兼容模式')).toBeTruthy();
+
+    rerender(
+      <SettingsWorkspace
+        dashboard={{
+          ...cpuDashboard,
+          localModel: {
+            enabled: true,
+            phase: 'faulted',
+            backend: null,
+            reasonCode: 'MODEL_LOAD_TIMEOUT'
+          }
+        }}
+        activeTab="models"
+        busy={false}
+        notice={null}
+        onDismissNotice={vi.fn()}
+        onTabChange={vi.fn()}
+        onClose={vi.fn()}
+        providerActions={{ onSave: vi.fn(), onTest: vi.fn(), onRouteSave: vi.fn(), onDelete: vi.fn() }}
+        privacyActions={{
+          incognito: false,
+          onSave: vi.fn(),
+          onPetAlwaysOnTopChange: vi.fn(),
+          onIncognitoChange: vi.fn(),
+          onChooseRoot: vi.fn(),
+          onRevokeRoot: vi.fn()
+        }}
+        onClear={vi.fn()}
+        onOpenCharacterWorkshop={vi.fn()}
+      />
+    );
+    expect(screen.getByRole('alert').textContent).toContain('模型加载超时');
   });
 
   test('预置模型输入提示可直接填写服务商公布的模型 ID', () => {
@@ -268,71 +356,6 @@ describe('多 Provider 设置组件', () => {
     expect(markup).toContain('会把必要上下文发送给另一家提供商');
   });
 
-  test('MCP 展示状态、逐工具开关和未授权工具的确认入口', () => {
-    const markup = renderToStaticMarkup(
-      <McpSettings
-        servers={dashboard.mcpServers}
-        busy={false}
-        launchSummary={null}
-        onCancelLaunch={vi.fn()}
-        onUpsert={vi.fn()}
-        onConfirmLaunch={vi.fn()}
-        onTest={vi.fn()}
-        onToggleServer={vi.fn()}
-        onToggleTool={vi.fn()}
-        onAuthorizeReadOnly={vi.fn()}
-        onRevokeReadOnly={vi.fn()}
-        onDelete={vi.fn()}
-      />
-    );
-
-    expect(markup).toContain('已连接');
-    expect(markup).toContain('read-note');
-    expect(markup).toContain('delete-note');
-    expect(markup).toContain('只有经本机逐工具确认的只读工具才可启用');
-    expect(markup).toContain('aria-label="授权 delete-note 为只读"');
-    expect(markup).toContain('aria-label="撤销 read-note 只读授权"');
-    expect(markup).toMatch(/aria-label="delete-note 工具开关"[^>]*>/u);
-    expect(markup).not.toMatch(/aria-label="delete-note 工具开关"[^>]*disabled=""/u);
-    expect(markup).not.toContain('private-token');
-  });
-
-  test('stdio 启动摘要明确展示命令、参数、目录和环境变量名', () => {
-    const markup = renderToStaticMarkup(
-      <McpSettings
-        servers={[]}
-        busy={false}
-        launchSummary={{
-          serverId: 'local',
-          command: 'C:\\tools\\mcp.exe',
-          args: ['--stdio'],
-          cwd: 'C:\\workspace',
-          explicitEnvNames: ['TOKEN'],
-          inheritedEnvNames: [],
-          fingerprint: 'fingerprint'
-        }}
-        onCancelLaunch={vi.fn()}
-        onUpsert={vi.fn()}
-        onConfirmLaunch={vi.fn()}
-        onTest={vi.fn()}
-        onToggleServer={vi.fn()}
-        onToggleTool={vi.fn()}
-        onAuthorizeReadOnly={vi.fn()}
-        onRevokeReadOnly={vi.fn()}
-        onDelete={vi.fn()}
-      />
-    );
-
-    expect(markup).toContain('确认启动本地服务');
-    expect(markup).toContain('C:\\tools\\mcp.exe');
-    expect(markup).toContain('--stdio');
-    expect(markup).toContain('C:\\workspace');
-    expect(markup).toContain('TOKEN');
-    expect(markup).toContain('aria-modal="true"');
-    expect(markup).toContain('取消');
-    expect(markup).not.toContain('fingerprint');
-  });
-
   test('隐私类别独立开关、主动性分段控件和权限撤销均可访问', () => {
     const onPetAlwaysOnTopChange = vi.fn();
     const markup = renderToStaticMarkup(
@@ -351,9 +374,9 @@ describe('多 Provider 设置组件', () => {
       />
     );
 
-    expect(markup).toContain('文件');
-    expect(markup).toContain('截图');
-    expect(markup).toContain('剪贴板');
+    expect(markup).not.toContain('文件数据授权');
+    expect(markup).not.toContain('截图');
+    expect(markup).not.toContain('剪贴板');
     expect(markup).toContain('长期记忆');
     expect(markup).toContain('被动');
     expect(markup).toContain('辅助');
@@ -382,14 +405,25 @@ describe('多 Provider 设置组件', () => {
     expect(onPetAlwaysOnTopChange).toHaveBeenCalledExactlyOnceWith(true);
   });
 
-  test('MCP 禁用时设置导航不公开工具页且旧 tools 状态回退到模型档案', () => {
+  test('设置 UI 不保留匿名模型的专属状态或文案', async () => {
+    const desktopRoot = process.cwd().replaceAll('\\', '/').endsWith('/apps/desktop')
+      ? process.cwd()
+      : join(process.cwd(), 'apps/desktop');
+    const source = await readFile(
+      join(desktopRoot, 'src/renderer/src/settings/ProviderSettings.tsx'),
+      'utf8'
+    );
+
+    expect(source).not.toMatch(/anonymous|OpenCode Zen|匿名试用/u);
+  });
+
+  test('设置导航只公开三个现行分类', () => {
     expect(availableSettingsTabs()).toEqual(['models', 'privacy', 'local']);
-    expect(resolveSettingsTab('tools')).toBe('models');
 
     const markup = renderToStaticMarkup(
       <SettingsWorkspace
         dashboard={dashboard}
-        activeTab="tools"
+        activeTab="models"
         busy={false}
         notice={null}
         onDismissNotice={vi.fn()}
@@ -399,18 +433,6 @@ describe('多 Provider 设置组件', () => {
           onSave: vi.fn(),
           onTest: vi.fn(),
           onRouteSave: vi.fn(),
-          onDelete: vi.fn()
-        }}
-        mcpActions={{
-          launchSummary: null,
-          onCancelLaunch: vi.fn(),
-          onUpsert: vi.fn(),
-          onConfirmLaunch: vi.fn(),
-          onTest: vi.fn(),
-          onToggleServer: vi.fn(),
-          onToggleTool: vi.fn(),
-          onAuthorizeReadOnly: vi.fn(),
-          onRevokeReadOnly: vi.fn(),
           onDelete: vi.fn()
         }}
         privacyActions={{
@@ -427,6 +449,39 @@ describe('多 Provider 设置组件', () => {
     );
 
     expect(markup).toContain('模型档案');
-    expect(markup).not.toContain('MCP 服务');
+    expect(markup).not.toContain('工具');
+  });
+
+  test('角色工作室入口保留可见文案并使用专属布局职责', () => {
+    const markup = renderToStaticMarkup(
+      <SettingsWorkspace
+        dashboard={dashboard}
+        activeTab="models"
+        busy={false}
+        notice={null}
+        onDismissNotice={vi.fn()}
+        onTabChange={vi.fn()}
+        onClose={vi.fn()}
+        providerActions={{
+          onSave: vi.fn(),
+          onTest: vi.fn(),
+          onRouteSave: vi.fn(),
+          onDelete: vi.fn()
+        }}
+        privacyActions={{
+          incognito: false,
+          onSave: vi.fn(),
+          onPetAlwaysOnTopChange: vi.fn(),
+          onIncognitoChange: vi.fn(),
+          onChooseRoot: vi.fn(),
+          onRevokeRoot: vi.fn()
+        }}
+        onClear={vi.fn()}
+        onOpenCharacterWorkshop={vi.fn()}
+      />
+    );
+
+    expect(markup).toContain('class="settings-workshop-button"');
+    expect(markup).toContain('角色工作室</button>');
   });
 });

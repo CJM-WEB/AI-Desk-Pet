@@ -17,21 +17,31 @@ import { join } from 'node:path';
 import type {
   CharacterDraftV1,
   CharacterDraftV2,
+  CharacterDraftV3,
+  CharacterManifestV3,
+  CharacterPlaybackView,
   CharacterManifestV1,
-  CharacterManifestV2
+  CharacterManifestV2,
+  PreparedCharacterManifestV2
 } from '@myself/character-runtime';
 import {
+  characterManifestV2Schema,
+  characterManifestV3Schema,
+  migrateCharacterDraftToV3,
+  migrateCharacterManifestToV3,
+  createCharacterPlaybackView,
   convertCharacterDraftV1ToV2,
-  convertCharacterManifestV1ToV2,
-  projectCharacterManifestV2ToLegacy
+  convertCharacterManifestV1ToV2
 } from '@myself/character-runtime';
-import { afterEach, beforeEach, describe, expect, test } from 'vitest';
+import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import electronViteConfig from '../electron.vite.config';
 import desktopPackage from '../package.json';
 import { CharacterStore } from '../src/main/characters/character-store';
 import {
+  finalizeCharacterManifestMigration,
   migrateCharacterDocument,
-  migrateCharacterManifest
+  migrateCharacterManifest,
+  prepareCharacterManifestMigration
 } from '../src/main/characters/character-migrations';
 import { atomicWriteText } from '../src/main/storage/atomic-file-coordinator';
 
@@ -76,8 +86,8 @@ function createDraftV1(id = 'demo', name = '演示角色'): CharacterDraftV1 {
   };
 }
 
-function createDraft(id = 'demo', name = '演示角色'): CharacterDraftV2 {
-  return convertCharacterDraftV1ToV2(createDraftV1(id, name)).document;
+function createDraft(id = 'demo', name = '演示角色'): CharacterDraftV3 {
+  return migrateCharacterDraftToV3(createDraftV1(id, name)).document;
 }
 
 function createDraftV2(id = 'demo', name = '演示角色'): CharacterDraftV2 {
@@ -186,14 +196,30 @@ function createRuntime(
   atlasBytes = new Uint8Array([1, 2, 3]),
   thumbnailBytes = new Uint8Array([4, 5, 6])
 ): {
-  manifest: CharacterManifestV2;
+  manifest: CharacterManifestV3;
   assets: Readonly<Record<string, Uint8Array>>;
 } {
   const runtime = createRuntimeV1(id, name, atlasBytes, thumbnailBytes);
+  const manifest = attachTestGeometry(convertCharacterManifestV1ToV2(runtime.manifest).document);
   return {
-    manifest: convertCharacterManifestV1ToV2(runtime.manifest).document,
+    manifest,
     assets: runtime.assets
   };
+}
+
+function attachTestGeometry(manifest: PreparedCharacterManifestV2): CharacterManifestV3 {
+  const revisions = new Map(manifest.resources.map(resource => [resource.assetId, resource.sha256]));
+  for (const skin of manifest.skins) {
+    for (const presentation of skin.presentations) {
+      presentation.geometry = {
+        visualBounds: { x: 0, y: 0, width: 1, height: 1 },
+        groundAnchor: { ...presentation.anchors.ground },
+        resourceRevision: [...new Set(presentation.frames.map(frame => revisions.get(frame.assetId)!))]
+          .sort().join('.')
+      };
+    }
+  }
+  return characterManifestV3Schema.parse(migrateCharacterManifestToV3(characterManifestV2Schema.parse(manifest)).document);
 }
 
 function createCompleteRuntime(
@@ -225,19 +251,19 @@ function createCompleteRuntime(
     }))
   };
   return {
-    manifest: convertCharacterManifestV1ToV2(completeManifest).document,
+    manifest: attachTestGeometry(convertCharacterManifestV1ToV2(completeManifest).document),
     assets: runtime.assets
   };
 }
 
-function runtimeView(manifest: CharacterManifestV2): CharacterManifestV1 {
-  return projectCharacterManifestV2ToLegacy(manifest);
+function runtimeView(manifest: CharacterManifestV3): CharacterPlaybackView {
+  return createCharacterPlaybackView(manifest, manifest.defaultSkinId);
 }
 
 async function writeRuntimeDirectory(
   directory: string,
   runtime: {
-    manifest: CharacterManifestV1 | CharacterManifestV2;
+    manifest: CharacterManifestV1 | CharacterManifestV2 | CharacterManifestV3;
     assets: Readonly<Record<string, Uint8Array>>;
   }
 ): Promise<void> {
@@ -404,7 +430,7 @@ describe('CharacterStore', () => {
     await store.create({ id: 'demo', name: '演示角色' });
 
     await expect(store.getDraft('demo')).resolves.toMatchObject({
-      version: 2,
+      version: 3,
       id: 'demo',
       name: '演示角色'
     });
@@ -423,12 +449,67 @@ describe('CharacterStore', () => {
 
     await expect(new CharacterStore(charactersDirectory)
       .rollbackImportedCharacter('demo', '22222222-2222-4222-8222-222222222222'))
-      .resolves.toBe(false);
+      .resolves.toEqual({ kind: 'ownership-mismatch' });
     await expect(new CharacterStore(charactersDirectory)
       .rollbackImportedCharacter('demo', transactionId))
-      .resolves.toBe(true);
+      .resolves.toEqual({ kind: 'rolled-back' });
     await expect(store.list()).resolves.toEqual([]);
     await expect(access(join(charactersDirectory, 'demo'))).rejects.toThrow();
+  });
+
+  test('不存在角色返回 absent 且不创建目录或索引项', async () => {
+    const transactionId = '11111111-1111-4111-8111-111111111111';
+    const store = new CharacterStore(charactersDirectory);
+
+    await expect(store.rollbackImportedCharacter('missing', transactionId))
+      .resolves.toEqual({ kind: 'absent' });
+    await expect(access(join(charactersDirectory, 'missing'))).rejects.toThrow();
+    await expect(store.list()).resolves.toEqual([]);
+  });
+
+  test('活动角色即使 owner 令牌匹配也返回 active-character 且不删除', async () => {
+    const transactionId = '11111111-1111-4111-8111-111111111111';
+    const store = new CharacterStore(charactersDirectory);
+    const runtime = createRuntime('demo', '导入中的活动角色');
+    await store.create(
+      { id: 'demo', name: '导入中的活动角色' },
+      { importTransactionId: transactionId }
+    );
+    await store.publishCompiled('demo', runtime.manifest, runtime.assets);
+    await store.setActive('demo', true);
+
+    await expect(store.rollbackImportedCharacter('demo', transactionId))
+      .resolves.toEqual({ kind: 'active-character' });
+    await expect(access(join(charactersDirectory, 'demo'))).resolves.toBeUndefined();
+    await expect(store.list()).resolves.toEqual([
+      expect.objectContaining({ id: 'demo', active: true })
+    ]);
+  });
+
+  test('回滚 checkpoint 后另一 Store 激活角色时返回 active-character 且保留所有权', async () => {
+    const transactionId = '11111111-1111-4111-8111-111111111111';
+    const creatorStore = new CharacterStore(charactersDirectory);
+    const activeStore = new CharacterStore(charactersDirectory);
+    const rollbackStore = new CharacterStore(charactersDirectory, {
+      async onImportRollbackCheckpoint(checkpoint) {
+        if (checkpoint === 'before-rename') await activeStore.setActive('demo', true);
+      }
+    });
+    const runtime = createRuntime('demo', '导入中的竞争活动角色');
+    await creatorStore.create(
+      { id: 'demo', name: '导入中的竞争活动角色' },
+      { importTransactionId: transactionId }
+    );
+    await creatorStore.publishCompiled('demo', runtime.manifest, runtime.assets);
+
+    await expect(rollbackStore.rollbackImportedCharacter('demo', transactionId))
+      .resolves.toEqual({ kind: 'active-character' });
+    await expect(access(join(charactersDirectory, 'demo'))).resolves.toBeUndefined();
+    await expect(access(join(charactersDirectory, 'demo', '.package-import-owner.json')))
+      .resolves.toBeUndefined();
+    await expect(new CharacterStore(charactersDirectory).list()).resolves.toEqual([
+      expect.objectContaining({ id: 'demo', active: true })
+    ]);
   });
 
   test('角色包回滚读取令牌后同 ID 目录被替换时保留替代角色', async () => {
@@ -447,7 +528,7 @@ describe('CharacterStore', () => {
     );
 
     await expect(rollbackStore.rollbackImportedCharacter('demo', transactionId))
-      .resolves.toBe(false);
+      .resolves.toEqual({ kind: 'ownership-mismatch' });
     await expect(replacementStore.getDraft('demo')).resolves.toMatchObject({
       id: 'demo',
       name: '替代角色'
@@ -669,6 +750,32 @@ describe('CharacterStore', () => {
     });
   });
 
+  test('保留 V2 发布备份时未编辑草稿的保存修订仍可编译发布', async () => {
+    const store = new CharacterStore(charactersDirectory);
+    const runtime = createRuntime();
+    const legacy = convertCharacterManifestV1ToV2(createRuntimeV1().manifest).document;
+    legacy.skins[0]!.presentations[0]!.geometry = runtime.manifest.skins[0]!.presentations[0]!.geometry;
+    await store.create({ id: 'demo', name: '演示角色' });
+    await store.publishCompiled('demo', runtime.manifest, runtime.assets);
+    await writeRuntimeDirectory(join(charactersDirectory, 'demo', 'compiled.backup'), {
+      manifest: characterManifestV2Schema.parse(legacy), assets: runtime.assets
+    });
+    // 草稿缩略图引用源素材，已发布缩略图引用图集；重新保存不等于作者再次编辑。
+    const sourceDraft = createDraft();
+    sourceDraft.thumbnailAssetId = 'source-thumbnail';
+    await store.saveDraft('demo', sourceDraft);
+    const unchangedDraft = await store.getDraft('demo');
+    const revision = '33333333-3333-4333-8333-333333333333';
+    await store.saveDraft('demo', unchangedDraft, revision);
+    // 正式工作台会在保存的 index-changed 事件后读取列表。
+    await store.list();
+
+    await expect(store.publishCompiled('demo', runtime.manifest, runtime.assets, revision))
+      .resolves.toBeUndefined();
+    expect(await store.getDraft('demo')).toEqual(unchangedDraft);
+    expect(await store.getPublishedManifest('demo')).toEqual(runtime.manifest);
+  });
+
   test('发布在途时拒绝用同一修订令牌保存不同草稿并回滚旧编译结果', async () => {
     let manifestWriteStarted!: () => void;
     let releaseManifestWrite!: () => void;
@@ -846,7 +953,7 @@ describe('CharacterStore', () => {
     await expect(restartedStore.getActive()).resolves.toEqual(runtimeView(runtime.manifest));
   });
 
-  test('活动 V2 清单保留发布原文而旧运行接口继续返回 V1 投影', async () => {
+  test('活动 V3 清单保留发布原文而运行接口返回ID播放视图', async () => {
     const store = new CharacterStore(charactersDirectory);
     const runtime = createRuntime();
     await store.create({ id: 'demo', name: '演示角色' });
@@ -854,13 +961,13 @@ describe('CharacterStore', () => {
     await store.setActive('demo', true);
 
     const internalStore = store as CharacterStore & {
-      getActiveManifestV2?: () => Promise<CharacterManifestV2>;
+      getActiveManifestV3?: () => Promise<CharacterManifestV3>;
     };
-    expect(internalStore.getActiveManifestV2, 'Main 应能读取活动 V2 发布清单')
+    expect(internalStore.getActiveManifestV3, 'Main 应能读取活动 V2 发布清单')
       .toBeTypeOf('function');
-    if (!internalStore.getActiveManifestV2) return;
+    if (!internalStore.getActiveManifestV3) return;
 
-    await expect(internalStore.getActiveManifestV2()).resolves.toEqual(runtime.manifest);
+    await expect(internalStore.getActiveManifestV3()).resolves.toEqual(runtime.manifest);
     await expect(store.getActive()).resolves.toEqual(runtimeView(runtime.manifest));
   });
 
@@ -1411,7 +1518,7 @@ describe('CharacterStore', () => {
     await expect(access(join(charactersDirectory, 'demo'))).resolves.toBeUndefined();
 
     await writeFile(manifestFile, validManifestText, 'utf8');
-    await expect(store.getPublishedManifest('demo')).resolves.toMatchObject({ version: 2 });
+    await expect(store.getPublishedManifest('demo')).resolves.toMatchObject({ version: 3 });
   });
 
   test('损坏索引保留原内容并创建隔离副本且只返回内存空视图', async () => {
@@ -1467,31 +1574,294 @@ describe('CharacterStore', () => {
       .some(name => /^index\.json\.corrupt-/u.test(name))).toBe(true);
   });
 
-  test('迁移器把版本一草稿转换为版本二并原样接受版本二', () => {
+  test('迁移器把版本一和版本二草稿统一转换为版本三', () => {
     expect(migrateCharacterDocument(createDraftV1())).toMatchObject({
       sourceVersion: 1,
-      document: { version: 2, defaultSkinId: 'default' }
+      document: { version: 3, defaultSkinId: 'default' }
     });
-    expect(migrateCharacterDocument(createDraftV2())).toEqual({
-      sourceVersion: 2,
-      document: createDraftV2()
-    });
+    expect(migrateCharacterDocument(createDraftV2())).toEqual(migrateCharacterDraftToV3(createDraftV2()));
     expect(() => migrateCharacterDocument({ version: 3 }))
-      .toThrow('CHARACTER_VERSION_UNSUPPORTED');
+      .toThrow('CHARACTER_MIGRATION_FAILED');
     expect(() => migrateCharacterDocument({ ...createDraftV1(), script: 'run.exe' }))
       .toThrow('CHARACTER_MIGRATION_FAILED');
   });
 
-  test('迁移器把版本一发布清单转换为版本二并拒绝未知版本', () => {
-    expect(migrateCharacterManifest(createRuntimeV1().manifest)).toMatchObject({
+  test('迁移器只准备版本一清单，资源校验后才生成严格视觉几何', async () => {
+    const runtime = createRuntimeV1();
+    const prepared = prepareCharacterManifestMigration(runtime.manifest);
+    expect(prepared).toMatchObject({
       sourceVersion: 1,
-      document: { version: 2, defaultSkinId: 'default' }
+      requiresPersistence: true,
+      document: { version: 3, defaultSkinId: 'default' }
+    });
+    const finalized = await finalizeCharacterManifestMigration(prepared, runtime.assets, {
+      decodeAlpha: async () => ({
+        width: 32,
+        height: 32,
+        alpha: new Uint8Array(32 * 32).fill(255)
+      })
+    });
+    expect(finalized.document.skins[0]!.presentations[0]!.geometry).toEqual({
+      visualBounds: { x: 0, y: 0, width: 1, height: 1 },
+      groundAnchor: { x: 0.5, y: 1 },
+      resourceRevision: runtime.manifest.resources[0]!.sha256
     });
     expect(() => migrateCharacterManifest({ version: 3 }))
-      .toThrow('CHARACTER_VERSION_UNSUPPORTED');
+      .toThrow('CHARACTER_MIGRATION_FAILED');
   });
 
-  test('首次读取版本一草稿原子安装版本二并保留一次恢复备份', async () => {
+  test('旧 V2 已带不匹配资源修订时拒绝且不以重新解码覆盖', async () => {
+    const runtime = createRuntimeV1();
+    const stale = convertCharacterManifestV1ToV2(runtime.manifest).document;
+    stale.skins[0]!.presentations[0]!.geometry = {
+      visualBounds: { x: 0, y: 0, width: 1, height: 1 },
+      groundAnchor: { x: 0.5, y: 1 },
+      resourceRevision: 'f'.repeat(64)
+    };
+    const decodeAlpha = vi.fn();
+
+    await expect(finalizeCharacterManifestMigration(
+      prepareCharacterManifestMigration(stale),
+      runtime.assets,
+      { decodeAlpha }
+    )).rejects.toThrow();
+    expect(decodeAlpha).not.toHaveBeenCalled();
+  });
+
+  test.each([
+    {
+      name: 'V1 的 501 帧',
+      create() {
+        const runtime = createRuntimeV1();
+        const action = runtime.manifest.states[0]!.actions[0]!;
+        action.frames = Array.from(
+          { length: 501 },
+          (_, index) => ({ ...action.frames[0]!, x: index })
+        );
+        return runtime;
+      }
+    },
+    {
+      name: '旧 V2 的单帧超尺寸',
+      create() {
+        const runtime = createRuntimeV1();
+        const manifest = convertCharacterManifestV1ToV2(runtime.manifest).document;
+        manifest.skins[0]!.presentations[0]!.frames[0]!.width = 4097;
+        return { manifest, assets: runtime.assets };
+      }
+    },
+    {
+      name: '旧 V2 的累计帧面积超预算',
+      create() {
+        const runtime = createRuntimeV1();
+        const manifest = convertCharacterManifestV1ToV2(runtime.manifest).document;
+        const frame = manifest.skins[0]!.presentations[0]!.frames[0]!;
+        manifest.skins[0]!.presentations[0]!.frames = [
+          { ...frame, width: 4096, height: 4096 },
+          { ...frame, width: 1, height: 1 }
+        ];
+        return { manifest, assets: runtime.assets };
+      }
+    }
+  ])('$name 在解码前拒绝', async ({ create }) => {
+    const runtime = create();
+    const decodeAlpha = vi.fn();
+
+    await expect(Promise.resolve().then(async () => finalizeCharacterManifestMigration(
+      prepareCharacterManifestMigration(runtime.manifest),
+      runtime.assets,
+      { decodeAlpha }
+    ))).rejects.toThrow();
+    expect(decodeAlpha).not.toHaveBeenCalled();
+  });
+
+  test('旧 V2 确定性删除非默认空表现后迁移其余可播放表现', async () => {
+    const runtime = createRuntimeV1();
+    const manifest = convertCharacterManifestV1ToV2(runtime.manifest).document;
+    manifest.skins.push({
+      ...structuredClone(manifest.skins[0]!),
+      id: 'winter',
+      presentations: [{
+        ...structuredClone(manifest.skins[0]!.presentations[0]!),
+        frames: []
+      }]
+    });
+    const decodeAlpha = vi.fn(async () => ({
+      width: 32,
+      height: 32,
+      alpha: new Uint8Array(32 * 32).fill(255)
+    }));
+
+    const prepared = prepareCharacterManifestMigration(manifest);
+    expect(prepared.document.skins[1]!.presentations[0]?.actionId).toBe('idle-main');
+    expect(prepared.issues).toEqual([]);
+    await expect(finalizeCharacterManifestMigration(prepared, runtime.assets, {
+      decodeAlpha
+    })).resolves.toMatchObject({ document: { version: 3 } });
+    expect(decodeAlpha).toHaveBeenCalledOnce();
+  });
+
+  test('删除旧 V2 空表现后默认链不可播放时仍在解码前拒绝', async () => {
+    const runtime = createRuntimeV1();
+    const manifest = convertCharacterManifestV1ToV2(runtime.manifest).document;
+    manifest.skins[0]!.presentations[0]!.frames = [];
+    const decodeAlpha = vi.fn();
+
+    await expect(Promise.resolve().then(async () => finalizeCharacterManifestMigration(
+      prepareCharacterManifestMigration(manifest),
+      runtime.assets,
+      { decodeAlpha }
+    ))).rejects.toThrow('CHARACTER_MIGRATION_FAILED');
+    expect(decodeAlpha).not.toHaveBeenCalled();
+  });
+
+  test('多资源表现逐资源解码一次且不会同时持有多份解码结果', async () => {
+    const runtime = createRuntimeV1();
+    const secondBytes = new Uint8Array([7, 8, 9]);
+    runtime.manifest.resources.push({
+      assetId: 'atlas-second',
+      fileName: 'atlas-second.png',
+      sha256: checksum(secondBytes),
+      byteLength: secondBytes.byteLength
+    });
+    runtime.assets = {
+      ...runtime.assets,
+      'atlas-second.png': secondBytes
+    };
+    runtime.manifest.states[0]!.actions[0]!.frames = [{
+      assetId: 'atlas', x: 0, y: 0, width: 1, height: 1
+    }, {
+      assetId: 'atlas-second', x: 1, y: 0, width: 1, height: 1
+    }];
+    let activeDecodes = 0;
+    let maximumActiveDecodes = 0;
+    const decodeAlpha = vi.fn(async () => {
+      activeDecodes += 1;
+      maximumActiveDecodes = Math.max(maximumActiveDecodes, activeDecodes);
+      await Promise.resolve();
+      activeDecodes -= 1;
+      return {
+        width: 2,
+        height: 1,
+        alpha: new Uint8Array([255, 255])
+      };
+    });
+
+    const finalized = await finalizeCharacterManifestMigration(
+      prepareCharacterManifestMigration(runtime.manifest),
+      runtime.assets,
+      { decodeAlpha }
+    );
+
+    expect(decodeAlpha).toHaveBeenCalledTimes(2);
+    expect(maximumActiveDecodes).toBe(1);
+    expect(finalized.document.skins[0]!.presentations[0]!.geometry)
+      .toMatchObject({ visualBounds: { x: 0, y: 0, width: 1, height: 1 } });
+  });
+
+  test('跨皮肤表现共用同一资源时整个文档只解码一次', async () => {
+    const runtime = createRuntimeV1();
+    const manifest = convertCharacterManifestV1ToV2(runtime.manifest).document;
+    manifest.skins.push({
+      ...structuredClone(manifest.skins[0]!),
+      id: 'winter'
+    });
+    const decodeAlpha = vi.fn(async () => ({
+      width: 32,
+      height: 32,
+      alpha: new Uint8Array(32 * 32).fill(255)
+    }));
+
+    const finalized = await finalizeCharacterManifestMigration(
+      prepareCharacterManifestMigration(manifest),
+      runtime.assets,
+      { decodeAlpha }
+    );
+
+    expect(decodeAlpha).toHaveBeenCalledOnce();
+    expect(finalized.document.skins.map(skin => skin.presentations[0]!.geometry))
+      .toHaveLength(2);
+  });
+
+  test('图片结构预检错误必须终止迁移且不得改写原清单', async () => {
+    const runtime = createRuntimeV1();
+    const original = structuredClone(runtime.manifest);
+    const reportDiagnostic = vi.fn();
+
+    await expect(finalizeCharacterManifestMigration(
+      prepareCharacterManifestMigration(runtime.manifest),
+      runtime.assets,
+      {
+        decodeAlpha: async () => {
+          throw new Error('CHARACTER_IMAGE_STRUCTURE_INVALID');
+        },
+        reportDiagnostic
+      }
+    )).rejects.toThrow('CHARACTER_IMAGE_STRUCTURE_INVALID');
+    expect(runtime.manifest).toEqual(original);
+    expect(reportDiagnostic).not.toHaveBeenCalled();
+  });
+
+  test('本地旧清单图片结构错误时不创建迁移备份或覆盖原文', async () => {
+    const store = new CharacterStore(charactersDirectory, {
+      geometryMigration: {
+        decodeAlpha: async () => {
+          throw new Error('CHARACTER_IMAGE_STRUCTURE_INVALID');
+        }
+      }
+    });
+    const runtime = createRuntimeV1();
+    await store.create({ id: 'demo', name: '演示角色' });
+    const compiled = join(charactersDirectory, 'demo', 'compiled');
+    await writeRuntimeDirectory(compiled, runtime);
+    const manifestFile = join(compiled, 'manifest.json');
+    const before = await readFile(manifestFile, 'utf8');
+
+    await expect(store.getPublishedManifest('demo')).rejects.toThrow();
+
+    expect(await readFile(manifestFile, 'utf8')).toBe(before);
+    await expect(access(join(charactersDirectory, 'demo', 'compiled.backup')))
+      .rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  test.each([
+    {
+      name: '未知字段',
+      mutate(presentation: Record<string, unknown>) {
+        presentation.script = 'run.exe';
+      }
+    },
+    {
+      name: '非法锚点',
+      mutate(presentation: Record<string, unknown>) {
+        presentation.anchors = { ground: { x: 2, y: 1 } };
+      }
+    },
+    {
+      name: '未知动作引用',
+      mutate(presentation: Record<string, unknown>) {
+        presentation.actionId = 'missing-action';
+      }
+    }
+  ])('旧 V2 空表现含$name时拒绝而非删除掩盖', ({ mutate }) => {
+    const runtime = createRuntimeV1();
+    const manifest = convertCharacterManifestV1ToV2(runtime.manifest).document;
+    const empty = {
+      ...structuredClone(manifest.skins[0]!.presentations[0]!),
+      frames: []
+    } as unknown as Record<string, unknown>;
+    mutate(empty);
+    manifest.skins.push({
+      ...structuredClone(manifest.skins[0]!),
+      id: 'winter',
+      presentations: [empty as never]
+    });
+
+    expect(() => prepareCharacterManifestMigration(manifest))
+      .toThrow('CHARACTER_MIGRATION_FAILED');
+  });
+
+  test('首次读取版本一草稿原子安装版本三并保留一次恢复备份', async () => {
     const store = new CharacterStore(charactersDirectory);
     await store.create({ id: 'demo', name: '演示角色' });
     const draftDirectory = join(charactersDirectory, 'demo', 'draft');
@@ -1502,17 +1872,23 @@ describe('CharacterStore', () => {
       'utf8'
     );
 
-    await expect(store.getDraft('demo')).resolves.toMatchObject({ version: 2, id: 'demo' });
+    await expect(store.getDraft('demo')).resolves.toMatchObject({ version: 3, id: 'demo' });
     expect(JSON.parse(await readFile(join(draftDirectory, 'draft.json'), 'utf8')))
-      .toMatchObject({ version: 2 });
+      .toMatchObject({ version: 3 });
     expect(JSON.parse(await readFile(join(draftDirectory, 'draft.backup.json'), 'utf8')))
       .toMatchObject({ version: 1 });
     expect(JSON.parse(await readFile(join(charactersDirectory, 'index.json'), 'utf8')))
-      .toMatchObject({ characters: [{ id: 'demo', draftVersion: 2 }] });
+      .toMatchObject({ characters: [{ id: 'demo', draftVersion: 3 }] });
   });
 
-  test('首次读取版本一清单原子安装版本二且运行接口仍返回版本一投影', async () => {
-    const store = new CharacterStore(charactersDirectory);
+  test('首次读取版本一清单原子安装版本三且运行接口返回ID播放视图', async () => {
+    const store = new CharacterStore(charactersDirectory, {
+      geometryMigration: {
+        decodeAlpha: async () => ({
+          width: 32, height: 32, alpha: new Uint8Array(32 * 32).fill(255)
+        })
+      }
+    });
     const legacyRuntime = createRuntimeV1();
     await store.create({ id: 'demo', name: '演示角色' });
     await writeRuntimeDirectory(
@@ -1520,12 +1896,17 @@ describe('CharacterStore', () => {
       legacyRuntime
     );
 
-    await expect(store.getRuntimeManifest('demo')).resolves.toMatchObject({ version: 1 });
-    await expect(store.getPublishedManifest('demo')).resolves.toMatchObject({ version: 2 });
+    await expect(store.getRuntimeManifest('demo')).resolves.toMatchObject({ version: 3 });
+    await expect(store.getPublishedManifest('demo')).resolves.toMatchObject({
+      version: 3,
+      skins: [{ presentations: [{ geometry: {
+        visualBounds: { x: 0, y: 0, width: 1, height: 1 }
+      } }] }]
+    });
     expect(JSON.parse(await readFile(
       join(charactersDirectory, 'demo', 'compiled', 'manifest.json'),
       'utf8'
-    ))).toMatchObject({ version: 2 });
+    ))).toMatchObject({ version: 3 });
     expect(JSON.parse(await readFile(
       join(charactersDirectory, 'demo', 'compiled.backup', 'manifest.json'),
       'utf8'
@@ -1546,8 +1927,17 @@ describe('CharacterStore', () => {
     const restarted = new CharacterStore(charactersDirectory, { writeText: writer.writeText });
     writer.arm();
 
+    const before = await readFile(
+      join(charactersDirectory, 'demo', 'compiled', 'manifest.json'),
+      'utf8'
+    );
+
     await expect(restarted.getPublishedManifest('demo'))
-      .resolves.toMatchObject({ version: 2 });
+      .resolves.toMatchObject({ version: 3 });
+    expect(await readFile(
+      join(charactersDirectory, 'demo', 'compiled', 'manifest.json'),
+      'utf8'
+    )).toBe(before);
   });
 
   test('草稿迁移索引提交失败时恢复版本一原文并允许新实例重试', async () => {
@@ -1565,7 +1955,7 @@ describe('CharacterStore', () => {
     await expect(store.getDraft('demo')).rejects.toThrow('TEST_INDEX_WRITE_FAILED');
     expect(await readFile(draftFile, 'utf8')).toBe(legacyText);
     await expect(new CharacterStore(charactersDirectory).getDraft('demo'))
-      .resolves.toMatchObject({ version: 2 });
+      .resolves.toMatchObject({ version: 3 });
   });
 
   test('草稿迁移写入 next 失败时不改动版本一原文且不留下事务文件', async () => {
@@ -1609,7 +1999,7 @@ describe('CharacterStore', () => {
     await store.create({ id: 'demo', name: '演示角色' });
     const draftDirectory = join(charactersDirectory, 'demo', 'draft');
     const legacyDraft = { ...createDraftV1(), thumbnailAssetId: undefined };
-    const migratedDraft = convertCharacterDraftV1ToV2(legacyDraft).document;
+    const migratedDraft = migrateCharacterDraftToV3(legacyDraft).document;
     await writeFile(
       join(draftDirectory, 'draft.backup.json'),
       `${JSON.stringify(legacyDraft, null, 2)}\n`,
@@ -1638,7 +2028,7 @@ describe('CharacterStore', () => {
     );
 
     const restarted = new CharacterStore(charactersDirectory);
-    await expect(restarted.getDraft('demo')).resolves.toMatchObject({ version: 2 });
+    await expect(restarted.getDraft('demo')).resolves.toMatchObject({ version: 3 });
     expect(JSON.parse(await readFile(join(draftDirectory, 'draft.backup.json'), 'utf8')))
       .toMatchObject({ version: 1 });
     await expect(access(join(draftDirectory, 'draft-transaction.json'))).rejects.toThrow();
@@ -1663,10 +2053,10 @@ describe('CharacterStore', () => {
     await expect(store.saveDraft('demo', changed))
       .rejects.toThrow('TEST_PERSISTENT_BACKUP_REMOVE_FAILED');
     expect(JSON.parse(await readFile(join(draftDirectory, 'draft.json'), 'utf8')))
-      .toMatchObject({ version: 2, identity: { background: migrated.identity.background } });
+      .toMatchObject({ version: 3, identity: { background: migrated.identity.background } });
     await expect(new CharacterStore(charactersDirectory).getDraft('demo'))
       .resolves.toMatchObject({
-        version: 2,
+        version: 3,
         identity: { background: migrated.identity.background }
       });
   });
@@ -1690,9 +2080,9 @@ describe('CharacterStore', () => {
     expect(JSON.parse(await readFile(
       join(charactersDirectory, 'demo', 'compiled', 'manifest.json'),
       'utf8'
-    ))).toMatchObject({ version: 2, compilerVersion: migrated.compilerVersion });
+    ))).toMatchObject({ version: 3, compilerVersion: migrated.compilerVersion });
     await expect(new CharacterStore(charactersDirectory).getPublishedManifest('demo'))
-      .resolves.toMatchObject({ version: 2, compilerVersion: migrated.compilerVersion });
+      .resolves.toMatchObject({ version: 3, compilerVersion: migrated.compilerVersion });
   });
 
   test('审查修复：列表迁移索引失败后不以污染的内存索引二次写盘', async () => {
@@ -1724,9 +2114,9 @@ describe('CharacterStore', () => {
     await writeFile(join(draftDirectory, 'draft.backup.json'), '{损坏恢复点', 'utf8');
 
     await expect(new CharacterStore(charactersDirectory).getDraft('demo'))
-      .resolves.toMatchObject({ version: 2, id: 'demo' });
+      .resolves.toMatchObject({ version: 3, id: 'demo' });
     expect(JSON.parse(await readFile(join(draftDirectory, 'draft.json'), 'utf8')))
-      .toMatchObject({ version: 2, id: 'demo' });
+      .toMatchObject({ version: 3, id: 'demo' });
   });
 
   test('审查修复：当前发布目录有效时损坏的可选永久恢复点不阻断读取', async () => {
@@ -1739,7 +2129,7 @@ describe('CharacterStore', () => {
     await writeFile(join(backupDirectory, 'manifest.json'), '{损坏恢复点', 'utf8');
 
     await expect(new CharacterStore(charactersDirectory).getPublishedManifest('demo'))
-      .resolves.toMatchObject({ version: 2, id: 'demo' });
+      .resolves.toMatchObject({ version: 3, id: 'demo' });
   });
 
   test('损坏草稿保留原文件并创建隔离副本', async () => {
@@ -1775,8 +2165,11 @@ describe('CharacterStore', () => {
   test('事务中间目录为 Junction 时拒绝恢复且不触碰链接目标', async () => {
     const store = new CharacterStore(charactersDirectory);
     const runtime = createRuntime();
+    const healthyRuntime = createRuntime('healthy', '健康角色');
     await store.create({ id: 'demo', name: '演示角色' });
+    await store.create({ id: 'healthy', name: '健康角色' });
     await store.publishCompiled('demo', runtime.manifest, runtime.assets);
+    await store.publishCompiled('healthy', healthyRuntime.manifest, healthyRuntime.assets);
     const outsideDirectory = join(testDirectory, 'outside-transaction');
     await mkdir(outsideDirectory);
     await writeFile(join(outsideDirectory, 'sentinel.txt'), '保留', 'utf8');
@@ -1788,10 +2181,359 @@ describe('CharacterStore', () => {
 
     const restartedStore = new CharacterStore(charactersDirectory);
 
+    await expect(restartedStore.list()).resolves.toMatchObject([{
+      id: 'demo',
+      completeness: 'broken'
+    }, {
+      id: 'healthy'
+    }]);
     await expect(restartedStore.getRuntimeManifest('demo'))
-      .rejects.toThrow('CHARACTER_PATH_UNSAFE');
+      .rejects.toThrow('CHARACTER_PUBLISH_RECOVERY_BLOCKED');
+    expect(restartedStore.getTransactionRecoveryReport()).toMatchObject({
+      characters: [{
+        characterId: 'demo',
+        draftErrorCode: null,
+        publishErrorCode: 'CHARACTER_PUBLISH_RECOVERY_BLOCKED'
+      }, {
+        characterId: 'healthy',
+        draftErrorCode: null,
+        publishErrorCode: null
+      }]
+    });
+    await expect(restartedStore.getRuntimeManifest('healthy'))
+      .resolves.toEqual(runtimeView(healthyRuntime.manifest));
     await expect(readFile(join(outsideDirectory, 'sentinel.txt'), 'utf8'))
       .resolves.toBe('保留');
+  });
+
+  test('事务恢复协调：坏草稿仅关闭草稿保存与发布，健康活动运行时仍可读取', async () => {
+    const store = new CharacterStore(charactersDirectory);
+    const runtime = createRuntime();
+    await store.create({ id: 'demo', name: '演示角色' });
+    await store.publishCompiled('demo', runtime.manifest, runtime.assets);
+    await store.setActive('demo', true);
+    const markerFile = join(
+      charactersDirectory,
+      'demo',
+      'draft',
+      'draft-transaction.json'
+    );
+    const markerBytes = Buffer.from('{"version":1');
+    await writeFile(markerFile, markerBytes);
+
+    const restarted = new CharacterStore(charactersDirectory);
+
+    await expect(restarted.getRuntimeManifest('demo'))
+      .resolves.toEqual(runtimeView(runtime.manifest));
+    await expect(restarted.getPublishedManifest('demo')).resolves.toEqual(runtime.manifest);
+    await expect(restarted.getActive()).resolves.toEqual(runtimeView(runtime.manifest));
+    await expect(restarted.getActiveManifestV3()).resolves.toEqual(runtime.manifest);
+    await expect(restarted.readActiveRuntimeAsset('atlas'))
+      .resolves.toEqual(runtime.assets['atlas.png']);
+    await expect(restarted.getDraft('demo')).resolves.toMatchObject({
+      version: 3,
+      id: 'demo',
+      name: '演示角色'
+    });
+    await expect(restarted.setActive('demo', true)).resolves.toBeUndefined();
+    await expect(restarted.saveDraft('demo', createDraft('demo', '新草稿')))
+      .rejects.toThrow('CHARACTER_DRAFT_RECOVERY_BLOCKED');
+    await expect(restarted.publishCompiled('demo', runtime.manifest, runtime.assets))
+      .rejects.toThrow('CHARACTER_DRAFT_RECOVERY_BLOCKED');
+    expect(await readFile(markerFile)).toEqual(markerBytes);
+  });
+
+  test('事务恢复协调：坏发布仅关闭发布与运行时，草稿保存和其他角色保持可用', async () => {
+    const store = new CharacterStore(charactersDirectory);
+    const targetRuntime = createRuntime('target', '目标角色');
+    const healthyRuntime = createRuntime('healthy', '健康角色');
+    await store.create({ id: 'target', name: '目标角色' });
+    await store.create({ id: 'healthy', name: '健康角色' });
+    await store.publishCompiled('target', targetRuntime.manifest, targetRuntime.assets);
+    await store.publishCompiled('healthy', healthyRuntime.manifest, healthyRuntime.assets);
+    await store.setActive('target', true);
+    const markerFile = join(charactersDirectory, 'target', 'publish-transaction.json');
+    const markerBytes = Buffer.from([0x7b, 0x22, 0xff]);
+    await writeFile(markerFile, markerBytes);
+    const restarted = new CharacterStore(charactersDirectory);
+
+    await expect(restarted.saveDraft('target', createDraft('target', '可保存草稿')))
+      .resolves.toBeUndefined();
+    await expect(restarted.publishCompiled(
+      'target',
+      targetRuntime.manifest,
+      targetRuntime.assets
+    )).rejects.toThrow('CHARACTER_PUBLISH_RECOVERY_BLOCKED');
+    await expect(restarted.setActive('target', true))
+      .rejects.toThrow('CHARACTER_PUBLISH_RECOVERY_BLOCKED');
+    await expect(restarted.getRuntimeManifest('target'))
+      .rejects.toThrow('CHARACTER_PUBLISH_RECOVERY_BLOCKED');
+    await expect(restarted.getPublishedManifest('target'))
+      .rejects.toThrow('CHARACTER_PUBLISH_RECOVERY_BLOCKED');
+    await expect(restarted.getActive())
+      .rejects.toThrow('CHARACTER_PUBLISH_RECOVERY_BLOCKED');
+    await expect(restarted.getActiveManifestV3())
+      .rejects.toThrow('CHARACTER_PUBLISH_RECOVERY_BLOCKED');
+    await expect(restarted.readActiveRuntimeAsset('atlas'))
+      .rejects.toThrow('CHARACTER_PUBLISH_RECOVERY_BLOCKED');
+    await expect(restarted.getRuntimeManifest('healthy'))
+      .resolves.toEqual(runtimeView(healthyRuntime.manifest));
+    expect(await readFile(markerFile)).toEqual(markerBytes);
+  });
+
+  test('事务恢复协调：坏草稿下 V1 草稿只做内存投影且不覆盖恢复证据', async () => {
+    const store = new CharacterStore(charactersDirectory);
+    await store.create({ id: 'demo', name: '演示角色' });
+    const draftFile = join(charactersDirectory, 'demo', 'draft', 'draft.json');
+    const markerFile = join(
+      charactersDirectory,
+      'demo',
+      'draft',
+      'draft-transaction.json'
+    );
+    const indexFile = join(charactersDirectory, 'index.json');
+    const draftBytes = Buffer.from(`${JSON.stringify(createDraftV1(), null, 2)}\n`);
+    const markerBytes = Buffer.from('{"version":1,"phase":');
+    await writeFile(draftFile, draftBytes);
+    await writeFile(markerFile, markerBytes);
+    const indexBytes = await readFile(indexFile);
+
+    const restarted = new CharacterStore(charactersDirectory);
+
+    await expect(restarted.getDraft('demo')).resolves.toMatchObject({
+      version: 3,
+      id: 'demo'
+    });
+    expect(await readFile(draftFile)).toEqual(draftBytes);
+    expect(await readFile(markerFile)).toEqual(markerBytes);
+    expect(await readFile(indexFile)).toEqual(indexBytes);
+    await expect(access(join(charactersDirectory, 'demo', 'draft', 'draft.backup.json')))
+      .rejects.toThrow();
+  });
+
+  test('迁移原始素材在后续发布后仍保留首次字节', async () => {
+    const store = new CharacterStore(charactersDirectory);
+    const original = createRuntimeV1();
+    await store.create({ id: 'demo', name: '演示角色' });
+    await writeRuntimeDirectory(join(charactersDirectory, 'demo', 'compiled'), original);
+    await store.getPublishedManifest('demo');
+    const next = createRuntime('demo', '演示角色', new Uint8Array([7, 8, 9]), new Uint8Array([10, 11, 12]));
+    await store.publishCompiled('demo', next.manifest, next.assets);
+    await expect(readFile(join(charactersDirectory, 'demo', 'migration-original-assets', 'atlas.png')))
+      .resolves.toEqual(Buffer.from(original.assets['atlas.png']!));
+    expect(JSON.parse(await readFile(join(charactersDirectory, 'demo', 'migration-original-manifest.json'), 'utf8')))
+      .toEqual(original.manifest);
+  });
+
+  test('事务恢复协调：坏草稿下健康 V1 compiled 只读投影且不触发发布事务', async () => {
+    const store = new CharacterStore(charactersDirectory);
+    const runtime = createRuntimeV1();
+    await store.create({ id: 'demo', name: '演示角色' });
+    await writeRuntimeDirectory(join(charactersDirectory, 'demo', 'compiled'), runtime);
+    const draftMarker = join(
+      charactersDirectory,
+      'demo',
+      'draft',
+      'draft-transaction.json'
+    );
+    await writeFile(draftMarker, Buffer.from('{"version":1'));
+    const manifestFile = join(charactersDirectory, 'demo', 'compiled', 'manifest.json');
+    const compiledDirectory = join(charactersDirectory, 'demo', 'compiled');
+    const indexFile = join(charactersDirectory, 'index.json');
+    const index = JSON.parse(await readFile(indexFile, 'utf8'));
+    index.characters[0].migrationErrorCode = 'CHARACTER_MIGRATION_FAILED';
+    index.activeCharacterId = 'demo';
+    await writeFile(indexFile, `${JSON.stringify(index, null, 2)}\n`, 'utf8');
+    const manifestBytes = await readFile(manifestFile);
+    const compiledSnapshot = new Map(await Promise.all(
+      (await readdir(compiledDirectory)).sort().map(async fileName => [
+        fileName,
+        await readFile(join(compiledDirectory, fileName))
+      ] as const)
+    ));
+    const indexBytes = await readFile(indexFile);
+
+    const originalFiles = await readdir(join(charactersDirectory, 'demo'));
+    const restarted = new CharacterStore(charactersDirectory);
+
+    await expect(restarted.list()).resolves.toHaveLength(1);
+    await expect(restarted.getRuntimeManifest('demo')).resolves.toMatchObject({ version: 3, id: runtime.manifest.id });
+    await expect(restarted.getPublishedManifest('demo')).resolves.toMatchObject({ version: 3 });
+    await expect(restarted.readActiveRuntimeAsset('atlas')).resolves.toEqual(runtime.assets['atlas.png']);
+    expect(await readdir(join(charactersDirectory, 'demo'))).toEqual(originalFiles);
+    expect(await readFile(manifestFile)).toEqual(manifestBytes);
+    const compiledAfter = new Map(await Promise.all(
+      (await readdir(compiledDirectory)).sort().map(async fileName => [
+        fileName,
+        await readFile(join(compiledDirectory, fileName))
+      ] as const)
+    ));
+    expect(compiledAfter).toEqual(compiledSnapshot);
+    expect(await readFile(indexFile)).toEqual(indexBytes);
+    await expect(access(join(charactersDirectory, 'demo', 'publish-transaction.json')))
+      .rejects.toThrow();
+    await expect(access(join(charactersDirectory, 'demo', 'compiled.backup')))
+      .rejects.toThrow();
+  });
+
+  test('事务恢复协调：软预算延后剩余角色且不读取或清理其事务文件', async () => {
+    const store = new CharacterStore(charactersDirectory);
+    await store.create({ id: 'first', name: '第一角色' });
+    await store.create({ id: 'second', name: '第二角色' });
+    const activeRuntime = createRuntime('second', '第二角色');
+    await store.publishCompiled('second', activeRuntime.manifest, activeRuntime.assets);
+    await store.setActive('second', true);
+    const deferredNext = join(
+      charactersDirectory,
+      'first',
+      'draft',
+      'draft.next.json'
+    );
+    const deferredBytes = Buffer.from('延后角色证据');
+    await writeFile(deferredNext, deferredBytes);
+    const clock = [0, 2_000];
+    const restarted = new CharacterStore(charactersDirectory, {
+      recoveryNow: () => clock.shift() ?? 2_000
+    });
+
+    await expect(restarted.list()).resolves.toHaveLength(2);
+    expect(restarted.getTransactionRecoveryReport()).toEqual({
+      characters: [{
+        characterId: 'first',
+        draftErrorCode: 'CHARACTER_RECOVERY_DEFERRED',
+        publishErrorCode: 'CHARACTER_RECOVERY_DEFERRED'
+      }, {
+        characterId: 'second',
+        draftErrorCode: null,
+        publishErrorCode: null
+      }]
+    });
+    expect(await readFile(deferredNext)).toEqual(deferredBytes);
+  });
+
+  test('事务恢复协调：权限故障替代注入仅阻塞对应角色的 draft 分面', async () => {
+    const store = new CharacterStore(charactersDirectory);
+    await store.create({ id: 'target', name: '目标角色' });
+    await store.create({ id: 'healthy', name: '健康角色' });
+    const targetDraftNext = join(
+      charactersDirectory,
+      'target',
+      'draft',
+      'draft.next.json'
+    );
+    let injected = false;
+    const restarted = new CharacterStore(charactersDirectory, {
+      async removePath(path, options) {
+        if (!injected && path === targetDraftNext) {
+          injected = true;
+          throw Object.assign(new Error('拒绝访问测试路径'), { code: 'EACCES' });
+        }
+        await rm(path, options);
+      }
+    });
+
+    await expect(restarted.list()).resolves.toHaveLength(2);
+    expect(restarted.getTransactionRecoveryReport()).toEqual({
+      characters: [{
+        characterId: 'target',
+        draftErrorCode: 'CHARACTER_DRAFT_RECOVERY_BLOCKED',
+        publishErrorCode: null
+      }, {
+        characterId: 'healthy',
+        draftErrorCode: null,
+        publishErrorCode: null
+      }]
+    });
+    expect(JSON.stringify(restarted.getTransactionRecoveryReport()))
+      .not.toContain('拒绝访问测试路径');
+  });
+
+  test('事务恢复协调：未分类异常中止时在途与失败后的 getter 均保留上一完整报告', async () => {
+    let armed = false;
+    let releaseRecovery!: () => void;
+    let recoveryReached!: () => void;
+    const recoveryBlocked = new Promise<void>(resolve => { releaseRecovery = resolve; });
+    const reachedRecovery = new Promise<void>(resolve => { recoveryReached = resolve; });
+    const targetNext = join(charactersDirectory, 'target', 'draft', 'draft.next.json');
+    const store = new CharacterStore(charactersDirectory, {
+      async removePath(path, options) {
+        if (armed && path === targetNext) {
+          recoveryReached();
+          await recoveryBlocked;
+          throw new TypeError('恢复程序错误');
+        }
+        await rm(path, options);
+      }
+    });
+    await store.create({ id: 'target', name: '目标角色' });
+    await store.create({ id: 'healthy', name: '健康角色' });
+    await store.list();
+    const previousReport = store.getTransactionRecoveryReport();
+    armed = true;
+
+    const pending = store.list();
+    await reachedRecovery;
+    expect(store.getTransactionRecoveryReport()).toEqual(previousReport);
+    releaseRecovery();
+    await expect(pending).rejects.toThrow('恢复程序错误');
+    expect(store.getTransactionRecoveryReport()).toEqual(previousReport);
+  });
+
+  test('事务恢复协调：显式删除不受坏分面 gate 阻断', async () => {
+    const store = new CharacterStore(charactersDirectory);
+    await store.create({ id: 'target', name: '目标角色' });
+    await store.create({ id: 'healthy', name: '健康角色' });
+    await writeFile(
+      join(charactersDirectory, 'target', 'draft', 'draft-transaction.json'),
+      Buffer.from('{"version":1')
+    );
+    await writeFile(
+      join(charactersDirectory, 'target', 'publish-transaction.json'),
+      Buffer.from('{"version":2')
+    );
+
+    const restarted = new CharacterStore(charactersDirectory);
+
+    await expect(restarted.delete('target')).resolves.toBeUndefined();
+    await expect(restarted.list()).resolves.toMatchObject([{ id: 'healthy' }]);
+  });
+
+  test('事务恢复协调：索引集合、空索引、缺失索引与坏索引均清除上一轮报告', async () => {
+    const store = new CharacterStore(charactersDirectory);
+    await store.create({ id: 'removed', name: '待移除角色' });
+    await store.create({ id: 'kept', name: '保留角色' });
+    await writeFile(
+      join(charactersDirectory, 'removed', 'draft', 'draft-transaction.json'),
+      Buffer.from('{"version":1')
+    );
+    const restarted = new CharacterStore(charactersDirectory);
+    await restarted.list();
+    expect(restarted.getTransactionRecoveryReport().characters)
+      .toHaveLength(2);
+
+    const indexFile = join(charactersDirectory, 'index.json');
+    const index = JSON.parse(await readFile(indexFile, 'utf8'));
+    index.characters = index.characters.filter((entry: { id: string }) => entry.id === 'kept');
+    await writeFile(indexFile, `${JSON.stringify(index, null, 2)}\n`, 'utf8');
+    await restarted.list();
+    expect(restarted.getTransactionRecoveryReport().characters.map(result => result.characterId))
+      .toEqual(['kept']);
+
+    index.characters = [];
+    index.activeCharacterId = null;
+    await writeFile(indexFile, `${JSON.stringify(index, null, 2)}\n`, 'utf8');
+    await restarted.list();
+    expect(restarted.getTransactionRecoveryReport()).toEqual({
+      characters: []
+    });
+
+    await unlink(indexFile);
+    await restarted.list();
+    expect(restarted.getTransactionRecoveryReport().characters).toEqual([]);
+
+    await writeFile(indexFile, Buffer.from('{损坏索引'));
+    await restarted.list();
+    expect(restarted.getTransactionRecoveryReport().characters).toEqual([]);
   });
 
   test('公开写入方法不修改调用方对象或字节', async () => {

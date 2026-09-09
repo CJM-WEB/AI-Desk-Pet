@@ -63,34 +63,15 @@ textarea {
 }
 
 .pet-shell {
+  width: 100%;
+  height: 100%;
   position: relative;
   display: grid;
   grid-template-rows: minmax(0, 1fr);
-  width: 180px;
-  height: 220px;
   max-width: 100%;
   max-height: 100%;
   padding: 18px 12px 10px;
   place-items: end center;
-}
-
-.pet-drag-hint {
-  position: absolute;
-  top: 5px;
-  left: 50%;
-  padding: 3px 9px;
-  transform: translateX(-50%);
-  border-radius: 999px;
-  color: rgba(91, 66, 46, 0.58);
-  background: rgba(255, 251, 243, 0.82);
-  font-size: 10px;
-  letter-spacing: 0.08em;
-  opacity: 0;
-  transition: opacity 160ms ease;
-}
-
-.pet-shell:hover .pet-drag-hint {
-  opacity: 1;
 }
 
 .pet-runtime-recovery {
@@ -119,6 +100,8 @@ textarea {
 }
 
 .pet-character-surface {
+  /* 拖拽由 Main 读取系统光标并固定尺寸移动，DOM 保留 pointerup 终态。 */
+  -webkit-app-region: no-drag;
   align-self: stretch;
   justify-self: stretch;
   width: 100%;
@@ -254,8 +237,8 @@ textarea {
 }
 
 @keyframes companion-breathe {
-  0%, 100% { transform: translateY(0) scale(1); }
-  50% { transform: translateY(-3px) scale(1.012); }
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-3px); }
 }
 
 @keyframes companion-think {
@@ -269,9 +252,8 @@ textarea {
 }
 
 @keyframes companion-celebrate {
-  0% { transform: translateY(0) scale(1); }
-  55% { transform: translateY(-10px) scale(1.04); }
-  100% { transform: translateY(0) scale(1); }
+  0%, 100% { transform: translateY(0); }
+  55% { transform: translateY(-10px); }
 }
 
 @keyframes companion-sorry {
@@ -773,8 +755,7 @@ textarea {
 }
 
 .settings-shell .settings-header button,
-.icon-actions button,
-.server-actions > button {
+.icon-actions button {
   display: inline-grid;
   width: 44px;
   height: 44px;
@@ -786,12 +767,25 @@ textarea {
   background: #ffffff;
 }
 
+/* 角色工作室入口保留可见文案，不能复用仅图标按钮的固定宽度。 */
+.settings-shell .settings-header .settings-workshop-button {
+  display: inline-flex;
+  width: auto;
+  min-width: 44px;
+  height: 44px;
+  padding: 0 10px;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  white-space: nowrap;
+}
+
 .settings-tabs {
   position: sticky;
   z-index: 2;
   top: 58px;
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   padding: 0 18px;
   border-bottom: 1px solid #dce1e5;
   background: #ffffff;
@@ -843,6 +837,51 @@ textarea {
   padding: 14px;
   background: #ffffff;
   box-shadow: none;
+}
+
+/* 本地模型状态使用文字、图标无关的状态与操作，避免只靠颜色传达运行能力。 */
+.local-model-card {
+  display: grid;
+  gap: 8px;
+}
+
+.local-model-card .pane-heading {
+  margin-bottom: 0;
+}
+
+.local-model-status,
+.local-model-fault p,
+.local-model-chat-notice {
+  margin: 0;
+  color: #35414b;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1.5;
+}
+
+.local-model-fault,
+.local-model-chat-notice {
+  display: grid;
+  gap: 8px;
+  border: 1px solid #e4d0ce;
+  border-radius: 7px;
+  padding: 9px 10px;
+  background: #fff7f5;
+}
+
+.local-model-fault .quiet-button {
+  justify-self: start;
+}
+
+.local-model-chat-notice {
+  width: 100%;
+  border-color: rgba(203, 135, 64, 0.38);
+  background: #fff8eb;
+}
+
+.local-model-chat-fault {
+  border-color: rgba(166, 81, 75, 0.35);
+  background: #fff1ed;
 }
 
 .pane-heading {
@@ -905,8 +944,7 @@ textarea {
   background: #f0f2f3;
 }
 
-.label-with-icon,
-.safety-inline {
+.label-with-icon {
   display: inline-flex;
   align-items: center;
   gap: 6px;
@@ -947,7 +985,6 @@ textarea {
 }
 
 .form-footer,
-.server-actions,
 .root-actions {
   display: flex;
   align-items: center;
@@ -957,8 +994,7 @@ textarea {
 }
 
 .compact-toggle,
-.permission-row,
-.tool-row {
+.permission-row {
   display: flex;
   min-height: 44px;
   align-items: center;
@@ -969,8 +1005,7 @@ textarea {
 }
 
 .compact-toggle input,
-.permission-row input,
-.tool-row input {
+.permission-row input {
   width: 18px;
   height: 18px;
   flex: 0 0 auto;
@@ -1008,15 +1043,12 @@ textarea {
 }
 
 .profile-list,
-.mcp-list,
-.permission-list,
-.tool-list {
+.permission-list {
   display: grid;
   gap: 8px;
 }
 
 .profile-row,
-.mcp-server,
 .authorized-root {
   min-width: 0;
   border: 1px solid #e0e4e7;
@@ -1026,7 +1058,6 @@ textarea {
 }
 
 .profile-row,
-.mcp-server > header,
 .authorized-root {
   display: flex;
   align-items: center;
@@ -1035,7 +1066,6 @@ textarea {
 }
 
 .profile-row > div:first-child,
-.server-title > div,
 .authorized-root > div:first-child {
   display: grid;
   min-width: 0;
@@ -1043,14 +1073,12 @@ textarea {
 }
 
 .profile-row strong,
-.server-title strong,
 .authorized-root strong {
   color: #263039;
   font-size: 12px;
 }
 
 .profile-row span,
-.server-title span,
 .authorized-root span {
   overflow: hidden;
   color: #6b7882;
@@ -1059,8 +1087,7 @@ textarea {
   white-space: nowrap;
 }
 
-.icon-actions,
-.server-title {
+.icon-actions {
   display: flex;
   align-items: center;
   gap: 7px;
@@ -1100,109 +1127,23 @@ textarea {
   background: #e8f3ec;
 }
 
-.mcp-server {
-  display: grid;
-  gap: 8px;
-}
-
-.server-actions {
-  margin: 0;
-}
-
-.status-label {
-  flex: 0 0 auto;
-  font-size: 10px;
-  font-weight: 800;
-}
-
-.status-connected {
-  color: #287449;
-}
-
-.status-error {
-  color: #a33b35;
-}
-
-.status-disconnected {
-  color: #6a7781;
-}
-
-.tool-row,
 .permission-row {
   justify-content: space-between;
   border-top: 1px solid #e4e7e9;
   padding: 7px 2px 0;
 }
 
-.tool-row > span,
 .permission-row > span {
   display: grid;
   min-width: 0;
   gap: 2px;
 }
 
-.tool-row small,
 .permission-row small {
   color: #73808a;
   font-size: 10px;
   font-weight: 400;
   line-height: 1.45;
-}
-
-.tool-trust-actions {
-  display: inline-flex;
-  flex: 0 0 auto;
-  align-items: center;
-  gap: 6px;
-}
-
-.tool-trust-actions button {
-  width: 44px;
-  min-width: 44px;
-  padding: 0;
-}
-
-.safety-inline {
-  margin: 10px 0 0;
-  color: #8c4b1e;
-  font-size: 11px;
-}
-
-.mcp-form {
-  margin-top: 12px;
-}
-
-.launch-confirmation {
-  border: 1px solid #d0aa78;
-  border-radius: 8px;
-  padding: 14px;
-  background: #fffaf2;
-}
-
-.launch-confirmation dl {
-  display: grid;
-  gap: 6px;
-  margin: 0 0 12px;
-}
-
-.launch-confirmation dl > div {
-  display: grid;
-  grid-template-columns: 110px minmax(0, 1fr);
-  gap: 8px;
-}
-
-.launch-confirmation dt {
-  color: #687681;
-  font-size: 10px;
-}
-
-.launch-confirmation dd {
-  min-width: 0;
-  margin: 0;
-  color: #263039;
-  font-family: Consolas, monospace;
-  font-size: 10px;
-  overflow-wrap: anywhere;
 }
 
 .dialog-actions {
@@ -1370,6 +1311,18 @@ textarea {
   background: #fef0ed;
 }
 
+.transient-toast-content {
+  min-width: 0;
+  display: grid;
+  gap: 8px;
+}
+
+.transient-toast-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
 .transient-toast button {
   width: 30px;
   height: 30px;
@@ -1387,4 +1340,18 @@ textarea {
 .transient-toast button:hover {
   border-color: #b7c3c1;
   background: rgba(255, 255, 255, 0.72);
+}
+
+.transient-toast .transient-toast-actions button {
+  width: auto;
+  min-width: 72px;
+  height: 30px;
+  flex: 0 0 auto;
+  padding: 0 10px;
+  border-color: currentColor;
+  font: inherit;
+}
+
+.transient-toast .transient-toast-actions button.is-danger {
+  color: #9b2c20;
 }

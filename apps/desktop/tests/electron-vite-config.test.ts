@@ -2,18 +2,29 @@ import { describe, expect, test } from 'vitest';
 import config from '../electron.vite.config';
 
 describe('Electron Vite workspace 打包', () => {
-  test('Main 构建会内联全部 workspace 源码包', () => {
+  test('Main 构建会内联 workspace 源码并保留 SDK 包名供生产门禁检测', () => {
     if (typeof config === 'function' || config instanceof Promise) {
       throw new Error('测试要求 electron-vite 配置为静态对象');
     }
 
+    expect(config.main?.resolve?.mainFields).toEqual(['module', 'main']);
     expect(config.main?.build?.externalizeDeps).toEqual({
+      include: ['@modelcontextprotocol/sdk'],
       exclude: [
         '@myself/agent-core',
+        '@myself/coding-task-core',
         '@myself/character-assets',
         '@myself/character-runtime',
         '@myself/file-tools',
-        '@myself/shared-types'
+        '@myself/shared-types',
+        '@opencode-ai/core',
+        '@opencode-ai/llm',
+        '@opencode-ai/effect-drizzle-sqlite',
+        '@opencode-ai/schema',
+        '@effect/platform-node',
+        'effect',
+        'drizzle-orm',
+        'jsonc-parser'
       ]
     });
   });

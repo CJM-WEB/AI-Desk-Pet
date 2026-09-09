@@ -7,6 +7,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { afterEach, describe, expect, test, vi } from 'vitest';
 import type { SettingsDashboardDto } from '../src/shared/myself-api';
 import { SettingsView, SettingsWorkspace } from '../src/renderer/src/settings/SettingsView';
+import type { LocalModelPublicStatus } from '../src/shared/local-model-ipc';
 
 const dashboard: SettingsDashboardDto = {
   catalog: [],
@@ -19,20 +20,30 @@ const dashboard: SettingsDashboardDto = {
     fallbackProfileIds: [],
     allowCrossProviderFallback: false
   },
-  mcpServers: [],
   privacy: {
-    dataCategories: { file: false, screenshot: false, clipboard: false, memory: false },
+    dataCategories: { memory: false },
     longTermMemory: false,
     proactivityMode: 'assistive'
   },
   privacyRuntimeSupport: {
-    dataCategories: { file: true, screenshot: false, clipboard: false, memory: false },
+    dataCategories: { memory: false },
     longTermMemory: false,
     proactivity: false
   },
   petAlwaysOnTop: false,
+  localModel: {
+    enabled: true,
+    phase: 'loading',
+    backend: null,
+    reasonCode: null
+  },
   authorizedRoot: null
 };
+
+const settingsViewSource = readFileSync(
+  resolve(import.meta.dirname, '../src/renderer/src/settings/SettingsView.tsx'),
+  'utf8'
+);
 
 function workspace(
   notice: Parameters<typeof SettingsWorkspace>[0]['notice'],
@@ -48,18 +59,6 @@ function workspace(
       onTabChange={vi.fn()}
       onClose={vi.fn()}
       providerActions={{ onSave: vi.fn(), onTest: vi.fn(), onRouteSave: vi.fn(), onDelete: vi.fn() }}
-      mcpActions={{
-        launchSummary: null,
-        onCancelLaunch: vi.fn(),
-        onUpsert: vi.fn(),
-        onConfirmLaunch: vi.fn(),
-        onTest: vi.fn(),
-        onToggleServer: vi.fn(),
-        onToggleTool: vi.fn(),
-        onAuthorizeReadOnly: vi.fn(),
-        onRevokeReadOnly: vi.fn(),
-        onDelete: vi.fn()
-      }}
       privacyActions={{
         incognito: false,
         onSave: vi.fn(),
@@ -80,6 +79,102 @@ afterEach(() => {
 });
 
 describe('设置页瞬时提示', () => {
+  test('组件卸载后 resolve 不会继续应用 dashboard、提示或 busy 状态', async () => {
+    let resolveSave: ((result: SettingsDashboardDto) => void) | undefined;
+    const api = {
+      getSettingsDashboard: vi.fn().mockResolvedValue(dashboard),
+      saveProviderProfile: vi.fn(() => new Promise<SettingsDashboardDto>(resolve => {
+        resolveSave = resolve;
+      }))
+    };
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const view = render(<SettingsView api={api as never} />);
+    await act(async () => { await Promise.resolve(); });
+    fireEvent.click(screen.getByRole('button', { name: '保存档案' }));
+    view.unmount();
+    await act(async () => {
+      resolveSave?.(dashboard);
+      await Promise.resolve();
+    });
+
+    expect(consoleError).not.toHaveBeenCalled();
+    const runSource = settingsViewSource.slice(
+      settingsViewSource.indexOf('const run = async'),
+      settingsViewSource.indexOf('return (\n    <SettingsWorkspace')
+    );
+
+    expect(runSource).toMatch(/const result = await operation\(\);\s*if \(!mounted\.current\) return;/s);
+    expect(runSource).toMatch(/applyDashboard\(result\);\s*showNotice/s);
+  });
+
+  test('组件卸载后 reject 与 finally 不会继续提示或重置 busy 状态', async () => {
+    let rejectSave: ((reason?: unknown) => void) | undefined;
+    const api = {
+      getSettingsDashboard: vi.fn().mockResolvedValue(dashboard),
+      saveProviderProfile: vi.fn(() => new Promise<SettingsDashboardDto>((_resolve, reject) => {
+        rejectSave = reject;
+      }))
+    };
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const view = render(<SettingsView api={api as never} />);
+    await act(async () => { await Promise.resolve(); });
+    fireEvent.click(screen.getByRole('button', { name: '保存档案' }));
+    view.unmount();
+    await act(async () => {
+      rejectSave?.(new Error('请求失败'));
+      await Promise.resolve();
+    });
+
+    expect(consoleError).not.toHaveBeenCalled();
+    const runSource = settingsViewSource.slice(
+      settingsViewSource.indexOf('const run = async'),
+      settingsViewSource.indexOf('return (\n    <SettingsWorkspace')
+    );
+
+    expect(runSource).toMatch(/catch \{\s*if \(!mounted\.current\) return;\s*showNotice/s);
+    expect(runSource).toMatch(/finally \{\s*if \(mounted\.current\) setBusy\(false\);\s*\}/s);
+  });
+
+  test('操作等待期间收到的最新本地模型事件不会被延迟 dashboard 响应覆盖', async () => {
+    let statusListener: ((status: LocalModelPublicStatus) => void) | undefined;
+    let resolveSave: ((result: SettingsDashboardDto) => void) | undefined;
+    const staleDashboard: SettingsDashboardDto = {
+      ...dashboard,
+      localModel: {
+        enabled: true,
+        phase: 'loading',
+        backend: null,
+        reasonCode: null
+      }
+    };
+    const api = {
+      getSettingsDashboard: vi.fn().mockResolvedValue(dashboard),
+      onLocalModelStatus: vi.fn((listener: (status: LocalModelPublicStatus) => void) => {
+        statusListener = listener;
+        return vi.fn();
+      }),
+      saveProviderProfile: vi.fn(() => new Promise<SettingsDashboardDto>(resolve => {
+        resolveSave = resolve;
+      }))
+    };
+    render(<SettingsView api={api as never} />);
+    await act(async () => { await Promise.resolve(); });
+
+    fireEvent.click(screen.getByRole('button', { name: '保存档案' }));
+    act(() => statusListener?.({
+      enabled: true,
+      phase: 'ready',
+      backend: 'vulkan',
+      reasonCode: null
+    }));
+    await act(async () => {
+      resolveSave?.(staleDashboard);
+      await Promise.resolve();
+    });
+
+    expect(screen.getByText('Vulkan 已就绪')).toBeTruthy();
+  });
+
   test('陈旧的初始读取不会覆盖后完成操作的 dashboard 或 success 提示', async () => {
     let rejectInitialDashboard: ((reason?: unknown) => void) | undefined;
     const newerDashboard: SettingsDashboardDto = {

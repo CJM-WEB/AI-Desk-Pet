@@ -1,7 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
-import { Bot, Box, Database, ShieldCheck, Wrench, X } from 'lucide-react';
+import { Bot, Box, Database, ShieldCheck, X } from 'lucide-react';
 import type {
-  McpServerInput,
   MyselfApi,
   PrivacySettingsDto,
   SaveProviderProfileInput,
@@ -9,18 +8,14 @@ import type {
 } from '../../../shared/myself-api';
 import type { LocalDataScope } from '../../../shared/myself-api';
 import type { ModelRouteConfig } from '@myself/shared-types';
-import { desktopRuntimeCapabilities } from '../../../shared/desktop-runtime-capabilities';
+import type { LocalModelPublicStatus } from '../../../shared/local-model-ipc';
 import { ProviderSettings } from './ProviderSettings';
-import {
-  McpSettings,
-  type McpLaunchConfirmation
-} from './McpSettings';
 import { PrivacySettings } from './PrivacySettings';
 import {
   TransientToastLayer,
   type TransientToast
 } from '../components/TransientToastLayer';
-export type SettingsTab = 'models' | 'tools' | 'privacy' | 'local';
+export type SettingsTab = 'models' | 'privacy' | 'local';
 type Notice = TransientToast | null;
 type NoticePayload = Omit<TransientToast, 'id'>;
 
@@ -35,28 +30,28 @@ const emptyDashboard: SettingsDashboardDto = {
     fallbackProfileIds: [],
     allowCrossProviderFallback: false
   },
-  mcpServers: [],
   privacy: {
     dataCategories: {
-      file: false,
-      screenshot: false,
-      clipboard: false,
       memory: false
     },
     longTermMemory: false,
+    autonomousMoodEnabled: true,
     proactivityMode: 'assistive'
   },
   privacyRuntimeSupport: {
     dataCategories: {
-      file: true,
-      screenshot: false,
-      clipboard: false,
       memory: false
     },
     longTermMemory: false,
     proactivity: false
   },
   petAlwaysOnTop: false,
+  localModel: {
+    enabled: true,
+    phase: 'loading',
+    backend: null,
+    reasonCode: null
+  },
   authorizedRoot: null
 };
 
@@ -74,18 +69,7 @@ export interface SettingsWorkspaceProps {
     onRouteSave(route: ModelRouteConfig): void;
     onDelete(profileId: string): void;
   };
-  mcpActions: {
-    launchSummary: McpLaunchConfirmation | null;
-    onCancelLaunch(): void;
-    onUpsert(input: McpServerInput): void;
-    onConfirmLaunch(serverId: string, fingerprint: string): void;
-    onTest(serverId: string): void;
-    onToggleServer(serverId: string, enabled: boolean): void;
-    onToggleTool(serverId: string, toolName: string, enabled: boolean): void;
-    onAuthorizeReadOnly(serverId: string, toolName: string): void;
-    onRevokeReadOnly(serverId: string, toolName: string): void;
-    onDelete(serverId: string): void;
-  };
+  onLocalModelEnabledChange?: ((enabled: boolean) => void) | undefined;
   privacyActions: {
     incognito: boolean;
     onSave(input: PrivacySettingsDto): void;
@@ -100,31 +84,27 @@ export interface SettingsWorkspaceProps {
 
 const tabs = [
   ['models', '模型', Bot],
-  ['tools', '工具', Wrench],
   ['privacy', '隐私', ShieldCheck],
   ['local', '本地数据', Database]
 ] as const;
 
 export function availableSettingsTabs(): readonly SettingsTab[] {
-  return tabs
-    .filter(([id]) => id !== 'tools' || desktopRuntimeCapabilities.mcp)
-    .map(([id]) => id);
-}
-
-export function resolveSettingsTab(tab: SettingsTab): SettingsTab {
-  return tab === 'tools' && !desktopRuntimeCapabilities.mcp ? 'models' : tab;
+  return tabs.map(([id]) => id);
 }
 
 export function SettingsWorkspace(props: SettingsWorkspaceProps) {
-  const activeTab = resolveSettingsTab(props.activeTab);
-  const visibleTabs = tabs.filter(([id]) => availableSettingsTabs().includes(id));
+  const activeTab = props.activeTab;
 
   return (
     <main className="settings-shell">
       <header className="settings-header">
         <div><span className="companion-kicker">AI PET</span><h1>设置</h1></div>
         <div className="settings-header-actions">
-          <button type="button" onClick={props.onOpenCharacterWorkshop}>
+          <button
+            className="settings-workshop-button"
+            type="button"
+            onClick={props.onOpenCharacterWorkshop}
+          >
             <Box size={17} />角色工作室
           </button>
           <button type="button" aria-label="关闭设置" title="关闭设置" onClick={props.onClose}>
@@ -139,7 +119,7 @@ export function SettingsWorkspace(props: SettingsWorkspaceProps) {
         ariaLabel="设置提示"
       />
       <nav className="settings-tabs" aria-label="设置分类">
-        {visibleTabs.map(([id, label, Icon]) => (
+        {tabs.map(([id, label, Icon]) => (
           <button
             key={id}
             type="button"
@@ -154,14 +134,9 @@ export function SettingsWorkspace(props: SettingsWorkspaceProps) {
         <ProviderSettings
           dashboard={props.dashboard}
           busy={props.busy}
+          localModel={props.dashboard.localModel}
+          onLocalModelEnabledChange={props.onLocalModelEnabledChange}
           {...props.providerActions}
-        />
-      ) : null}
-      {activeTab === 'tools' && desktopRuntimeCapabilities.mcp ? (
-        <McpSettings
-          servers={props.dashboard.mcpServers}
-          busy={props.busy}
-          {...props.mcpActions}
         />
       ) : null}
       {activeTab === 'privacy' ? (
@@ -196,8 +171,9 @@ export function SettingsView({ api = window.myself }: { api?: MyselfApi }) {
   const [activeTab, setActiveTab] = useState<SettingsTab>('models');
   const [busy, setBusy] = useState(false);
   const [incognito, setIncognito] = useState(false);
-  const [launchSummary, setLaunchSummary] = useState<McpLaunchConfirmation | null>(null);
+  const mounted = useRef(true);
   const noticeSequence = useRef(0);
+  const latestLocalModelStatus = useRef<LocalModelPublicStatus | null>(null);
   const [notice, setNotice] = useState<Notice>({
     id: 'settings-toast-0',
     tone: 'info',
@@ -215,19 +191,44 @@ export function SettingsView({ api = window.myself }: { api?: MyselfApi }) {
     setNotice(current => current?.id === id ? null : current);
   };
 
+  /** 所有 Dashboard 快照都以订阅到的最新公开状态为准，防止异步响应回退状态机。 */
+  const applyDashboard = (next: SettingsDashboardDto): void => {
+    setDashboard({
+      ...next,
+      localModel: latestLocalModelStatus.current ?? next.localModel
+    });
+  };
+
+  /** run 的异步续体只能在当前设置窗口仍挂载时更新 Renderer 状态。 */
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
+
   useEffect(() => {
     let active = true;
     const initialLoadOwner = noticeSequence.current;
+    latestLocalModelStatus.current = null;
+    const unsubscribe = api.onLocalModelStatus?.(status => {
+      if (!active) return;
+      latestLocalModelStatus.current = status;
+      setDashboard(current => ({ ...current, localModel: status }));
+    });
     void api.getSettingsDashboard().then(result => {
       if (!active || noticeSequence.current !== initialLoadOwner) return;
-      setDashboard(result);
+      applyDashboard(result);
       dismissNotice('settings-toast-0');
     }).catch(() => {
       if (active && noticeSequence.current === initialLoadOwner) {
         showNotice({ tone: 'error', text: '无法读取设置，请重新打开窗口。' });
       }
     });
-    return () => { active = false; };
+    return () => {
+      active = false;
+      unsubscribe?.();
+    };
   }, [api]);
 
   const run = async (
@@ -242,17 +243,19 @@ export function SettingsView({ api = window.myself }: { api?: MyselfApi }) {
     setBusy(true);
     try {
       const result = await operation();
+      if (!mounted.current) return;
       if (result && 'catalog' in result) {
-        setDashboard(result);
+        applyDashboard(result);
         showNotice({ tone: 'success', text: success });
       } else {
-        if (result?.dashboard) setDashboard(result.dashboard);
+        if (result?.dashboard) applyDashboard(result.dashboard);
         showNotice(result?.notice ?? { tone: 'success', text: success });
       }
     } catch {
+      if (!mounted.current) return;
       showNotice({ tone: 'error', text: '操作未完成，请检查输入后重试。' });
     } finally {
-      setBusy(false);
+      if (mounted.current) setBusy(false);
     }
   };
 
@@ -263,7 +266,7 @@ export function SettingsView({ api = window.myself }: { api?: MyselfApi }) {
       busy={busy}
       notice={notice}
       onDismissNotice={dismissNotice}
-      onTabChange={tab => setActiveTab(resolveSettingsTab(tab))}
+      onTabChange={setActiveTab}
       onClose={() => window.close()}
       providerActions={{
         onSave: input => void run(() => api.saveProviderProfile(input), '模型档案已保存。'),
@@ -281,59 +284,10 @@ export function SettingsView({ api = window.myself }: { api?: MyselfApi }) {
           '模型档案已删除。'
         )
       }}
-      mcpActions={{
-        launchSummary,
-        onCancelLaunch: () => {
-          setLaunchSummary(null);
-          showNotice({ tone: 'info', text: '已取消启动 MCP 服务。' });
-        },
-        onUpsert: input => void run(async () => {
-          const result = await api.upsertMcpServer(input);
-          if (result.kind === 'confirmation_required') {
-            setLaunchSummary({ serverId: input.id, ...result.summary });
-            return {
-              notice: {
-                tone: 'info' as const,
-                text: '请核对启动摘要；确认前服务不会启动。'
-              }
-            };
-          }
-          setLaunchSummary(null);
-          return result.dashboard;
-        }, 'MCP 配置已保存。'),
-        onConfirmLaunch: (serverId, fingerprint) => void run(async () => {
-          const result = await api.confirmMcpLaunch(serverId, fingerprint);
-          setLaunchSummary(null);
-          return result;
-        }, '启动边界已确认。'),
-        onTest: serverId => void run(async () => {
-          const result = await api.testMcpServer(serverId);
-          return {
-            dashboard: await api.getSettingsDashboard(),
-            notice: { tone: result.ok ? 'success' : 'error', text: result.message }
-          };
-        }, 'MCP 连接测试完成。'),
-        onToggleServer: (serverId, enabled) => void run(
-          () => api.setMcpServerEnabled(serverId, enabled),
-          '服务状态已更新。'
-        ),
-        onToggleTool: (serverId, toolName, enabled) => void run(
-          () => api.setMcpToolEnabled(serverId, toolName, enabled),
-          '工具状态已更新。'
-        ),
-        onAuthorizeReadOnly: (serverId, toolName) => void run(
-          () => api.authorizeMcpToolReadOnly(serverId, toolName),
-          '本地只读授权已保存，工具已启用。'
-        ),
-        onRevokeReadOnly: (serverId, toolName) => void run(
-          () => api.revokeMcpToolReadOnly(serverId, toolName),
-          '本地只读授权已撤销，工具已禁用。'
-        ),
-        onDelete: serverId => void run(
-          () => api.deleteMcpServer(serverId),
-          'MCP 服务已删除。'
-        )
-      }}
+      onLocalModelEnabledChange={enabled => void run(
+        () => api.setLocalModelEnabled(enabled),
+        enabled ? '内置本地模型已开启。' : '内置本地模型已关闭。'
+      )}
       privacyActions={{
         incognito,
         onSave: input => void run(() => api.savePrivacySettings(input), '隐私设置已保存。'),

@@ -16,6 +16,17 @@ export const TRUSTED_BEHAVIOR_SIGNALS = [
   'carry-start', 'carry-stop'
 ] as const;
 
+/** 角色素材与正式清单共同使用同一资源预算。 */
+export const CHARACTER_RESOURCE_LIMITS = {
+  maxSourceFilesPerImport: 500,
+  maxSourceBytesPerFile: 32 * 1024 * 1024,
+  maxTotalSourceBytesPerCharacter: 512 * 1024 * 1024,
+  maxFrameDimension: 4096,
+  maxFramesPerAction: 500,
+  maxStatesPerCharacter: 100,
+  maxActionsPerState: 100
+} as const;
+
 const SAFE_IDENTIFIER_PATTERN = /^[a-z0-9][a-z0-9_-]{0,119}$/;
 export const safeIdentifierSchema = z.string().regex(SAFE_IDENTIFIER_PATTERN);
 const finiteNumberSchema = z.number().finite();
@@ -44,7 +55,7 @@ const stateConditionSchema = z.object({
   clauses: z.array(stateConditionClauseSchema).min(1).max(16)
 }).strict();
 
-const characterIdentitySchema = z.object({
+export const characterIdentitySchema = z.object({
   description: boundedText(2_000),
   background: boundedText(4_000),
   traits: boundedTextList(32, 120),
@@ -65,9 +76,10 @@ const stateSemanticSchema = z.union([
   }).strict()
 ]);
 
-const stateDefinitionSchema = z.object({
+export const stateDefinitionSchema = z.object({
   id: safeIdentifierSchema,
   name: boundedText(120),
+  description: boundedText(2_000).optional(),
   kind: z.enum(['primary', 'modifier']),
   semantic: stateSemanticSchema,
   tags: z.array(safeIdentifierSchema).max(32),
@@ -81,9 +93,10 @@ const stateDefinitionSchema = z.object({
   actionIds: z.array(safeIdentifierSchema).max(128)
 }).strict();
 
-const actionDefinitionSchema = z.object({
+export const actionDefinitionSchema = z.object({
   id: safeIdentifierSchema,
   name: boundedText(120),
+  description: boundedText(2_000).optional(),
   semantic: z.enum(STANDARD_CHARACTER_SEMANTICS),
   tags: z.array(safeIdentifierSchema).max(32),
   preference: finiteNumberSchema.min(0.01).max(100),
@@ -102,17 +115,95 @@ const actionDefinitionSchema = z.object({
   capabilityRef: z.never().optional()
 }).strict();
 
-const actionPresentationSchema = z.object({
+const normalizedPointSchema = z.object({
+  x: finiteNumberSchema.min(0).max(1),
+  y: finiteNumberSchema.min(0).max(1)
+}).strict();
+
+const normalizedBoundsSchema = z.object({
+  x: finiteNumberSchema.min(0).max(1),
+  y: finiteNumberSchema.min(0).max(1),
+  width: finiteNumberSchema.positive().max(1),
+  height: finiteNumberSchema.positive().max(1)
+}).strict().superRefine((bounds, context) => {
+  if (bounds.x + bounds.width > 1) {
+    addReferenceIssue(context, '视觉包围盒不能超出表现画布。', ['width']);
+  }
+  if (bounds.y + bounds.height > 1) {
+    addReferenceIssue(context, '视觉包围盒不能超出表现画布。', ['height']);
+  }
+});
+
+export const presentationGeometryV2Schema = z.object({
+  visualBounds: normalizedBoundsSchema,
+  groundAnchor: normalizedPointSchema,
+  resourceRevision: z.string().regex(/^[a-f0-9]{64}(?:\.[a-f0-9]{64})*$/u)
+}, { required_error: '正式表现必须包含完整视觉几何。' }).strict();
+
+const actionPresentationFields = {
   actionId: safeIdentifierSchema,
   fps: finiteNumberSchema.min(1).max(60),
-  frames: z.array(actionFrameSchema),
+  playbackRate: finiteNumberSchema.min(0.25).max(2).optional(),
+  mirrorX: z.boolean().optional(),
   anchors: anchorSetSchema,
   commitFrameId: safeIdentifierSchema.optional(),
   regions: z.object({
     click: interactionRegionSchema.optional(),
     drag: interactionRegionSchema.optional(),
     collision: interactionRegionSchema.optional()
-  }).strict().optional()
+  }).strict().optional(),
+};
+
+const draftPresentationFramesSchema = z.array(actionFrameSchema);
+function validatePublishedFrameBudget(
+  frames: readonly z.output<typeof actionFrameSchema>[],
+  context: z.RefinementCtx
+): void {
+  let area = 0;
+  frames.forEach((frame, frameIndex) => {
+    if (
+      frame.width > CHARACTER_RESOURCE_LIMITS.maxFrameDimension
+      || frame.height > CHARACTER_RESOURCE_LIMITS.maxFrameDimension
+    ) {
+      addReferenceIssue(context, '正式表现帧尺寸超过资源上限。', [frameIndex]);
+    }
+    area += frame.width * frame.height;
+  });
+  if (area > CHARACTER_RESOURCE_LIMITS.maxFrameDimension ** 2) {
+    addReferenceIssue(context, '正式表现累计帧面积超过资源预算。', []);
+  }
+}
+
+const publishedPresentationFramesSchema = z.array(actionFrameSchema)
+  .min(1)
+  .max(CHARACTER_RESOURCE_LIMITS.maxFramesPerAction)
+  .superRefine(validatePublishedFrameBudget);
+const legacyPresentationFramesSchema = z.array(actionFrameSchema)
+  .max(CHARACTER_RESOURCE_LIMITS.maxFramesPerAction)
+  .superRefine(validatePublishedFrameBudget);
+
+export const actionPresentationSchema = z.object({
+  ...actionPresentationFields,
+  frames: draftPresentationFramesSchema,
+  geometry: presentationGeometryV2Schema.optional()
+}).strict();
+
+export const preparedActionPresentationSchema = z.object({
+  ...actionPresentationFields,
+  frames: publishedPresentationFramesSchema,
+  geometry: presentationGeometryV2Schema.optional()
+}).strict();
+
+const legacyActionPresentationSchema = z.object({
+  ...actionPresentationFields,
+  frames: legacyPresentationFramesSchema,
+  geometry: presentationGeometryV2Schema.optional()
+}).strict();
+
+export const publishedActionPresentationSchema = z.object({
+  ...actionPresentationFields,
+  frames: publishedPresentationFramesSchema,
+  geometry: presentationGeometryV2Schema
 }).strict();
 
 const semanticFallbackSchema = z.object({
@@ -128,12 +219,28 @@ function isAllowedSemanticFallback(
   return semantic === actionSemantic;
 }
 
-const skinSchema = z.object({
+const skinFields = {
   id: safeIdentifierSchema,
   name: boundedText(120),
   description: boundedText(2_000).optional(),
-  presentations: z.array(actionPresentationSchema).max(512),
   semanticFallbacks: z.array(semanticFallbackSchema).max(STANDARD_CHARACTER_SEMANTICS.length)
+};
+
+export const skinSchema = z.object({
+  ...skinFields,
+  presentations: z.array(actionPresentationSchema).max(512)
+}).strict();
+const preparedSkinSchema = z.object({
+  ...skinFields,
+  presentations: z.array(preparedActionPresentationSchema).max(512)
+}).strict();
+const legacySkinSchema = z.object({
+  ...skinFields,
+  presentations: z.array(legacyActionPresentationSchema).max(512)
+}).strict();
+const publishedSkinSchema = z.object({
+  ...skinFields,
+  presentations: z.array(publishedActionPresentationSchema).max(512)
 }).strict();
 
 const draftDocumentSchema = z.object({
@@ -149,13 +256,31 @@ const draftDocumentSchema = z.object({
   actions: z.array(actionDefinitionSchema).max(1_024)
 }).strict();
 
+const preparedManifestDocumentSchema = draftDocumentSchema.extend({
+  thumbnailAssetId: safeIdentifierSchema,
+  compilerVersion: boundedText(64),
+  resources: z.array(characterResourceSchema).max(4_096),
+  skins: z.array(preparedSkinSchema).min(1).max(128)
+}).strict();
+
+const legacyManifestDocumentSchema = draftDocumentSchema.extend({
+  thumbnailAssetId: safeIdentifierSchema,
+  compilerVersion: boundedText(64),
+  resources: z.array(characterResourceSchema).max(4_096),
+  skins: z.array(legacySkinSchema).min(1).max(128)
+}).strict();
+
 const manifestDocumentSchema = draftDocumentSchema.extend({
   thumbnailAssetId: safeIdentifierSchema,
   compilerVersion: boundedText(64),
-  resources: z.array(characterResourceSchema).max(4_096)
+  resources: z.array(characterResourceSchema).max(4_096),
+  skins: z.array(publishedSkinSchema).min(1).max(128)
 }).strict();
 
-type V2Document = z.output<typeof draftDocumentSchema> | z.output<typeof manifestDocumentSchema>;
+type V2Document = z.output<typeof draftDocumentSchema>
+  | z.output<typeof legacyManifestDocumentSchema>
+  | z.output<typeof preparedManifestDocumentSchema>
+  | z.output<typeof manifestDocumentSchema>;
 
 /** 为对象 ID 与 ID 引用提供统一且可定位的严格校验。 */
 function addUniqueIdIssues<T>(
@@ -358,16 +483,70 @@ export function characterV2Completeness(document: V2Document): CharacterV2Comple
 
 export const characterDraftV2Schema = draftDocumentSchema.superRefine(validateDocumentReferences);
 
-export const characterManifestV2Schema = manifestDocumentSchema.superRefine((manifest, context) => {
+function validatePreparedManifest(
+  manifest: z.output<typeof legacyManifestDocumentSchema>,
+  context: z.RefinementCtx
+): void {
   validateDocumentReferences(manifest, context);
   addUniqueIdIssues(manifest.resources, (resource) => resource.assetId, '资源', ['resources'], context, 'assetId');
-
   const resourceIds = new Set(manifest.resources.map((resource) => resource.assetId));
   if (!resourceIds.has(manifest.thumbnailAssetId)) {
     addReferenceIssue(context, '缩略图必须引用已声明的资源。', ['thumbnailAssetId']);
   }
   manifest.skins.forEach((skin, skinIndex) => {
     skin.presentations.forEach((presentation, presentationIndex) => {
+      presentation.frames.forEach((frame, frameIndex) => {
+        if (!resourceIds.has(frame.assetId)) {
+          addReferenceIssue(context, '皮肤表现帧必须引用已声明的资源。', [
+            'skins', skinIndex, 'presentations', presentationIndex, 'frames', frameIndex, 'assetId'
+          ]);
+        }
+      });
+    });
+  });
+  characterV2Completeness(manifest).forEach((issue) => {
+    addReferenceIssue(context, issue === 'default-state-action-missing'
+      ? '可发布角色清单的默认状态必须关联动作。'
+      : '可发布角色清单的默认回退链必须存在可播放表现。', ['defaultStateId']);
+  });
+}
+
+/** 只为历史 V2 放宽空 frames；其余字段、引用与预算仍保持严格。 */
+export const legacyPreparedCharacterManifestV2Schema =
+  legacyManifestDocumentSchema.superRefine(validatePreparedManifest);
+
+/** 仅供可信迁移在读取资源前识别旧 V2；该结果不能进入运行态。 */
+export const preparedCharacterManifestV2Schema =
+  preparedManifestDocumentSchema.superRefine(validatePreparedManifest);
+
+export const characterManifestV2Schema = manifestDocumentSchema.superRefine((manifest, context) => {
+  validateDocumentReferences(manifest, context);
+  addUniqueIdIssues(manifest.resources, (resource) => resource.assetId, '资源', ['resources'], context, 'assetId');
+
+  const resourceIds = new Set(manifest.resources.map((resource) => resource.assetId));
+  const resourcesById = new Map(manifest.resources.map((resource) => [resource.assetId, resource]));
+  if (!resourceIds.has(manifest.thumbnailAssetId)) {
+    addReferenceIssue(context, '缩略图必须引用已声明的资源。', ['thumbnailAssetId']);
+  }
+  manifest.skins.forEach((skin, skinIndex) => {
+    skin.presentations.forEach((presentation, presentationIndex) => {
+      const geometryPath = ['skins', skinIndex, 'presentations', presentationIndex, 'geometry'] as const;
+      if (!presentation.geometry) {
+        addReferenceIssue(context, '正式表现必须包含完整视觉几何。', geometryPath);
+      } else {
+        const expectedRevision = [...new Set(presentation.frames.map(
+          frame => resourcesById.get(frame.assetId)?.sha256
+        ).filter((revision): revision is string => revision !== undefined))].sort().join('.');
+        if (presentation.geometry.resourceRevision !== expectedRevision) {
+          addReferenceIssue(context, '表现几何必须绑定所引用资源的当前修订。', [...geometryPath, 'resourceRevision']);
+        }
+        if (
+          presentation.geometry.groundAnchor.x !== presentation.anchors.ground.x
+          || presentation.geometry.groundAnchor.y !== presentation.anchors.ground.y
+        ) {
+          addReferenceIssue(context, '表现几何脚底锚点必须与表现锚点一致。', [...geometryPath, 'groundAnchor']);
+        }
+      }
       presentation.frames.forEach((frame, frameIndex) => {
         if (!resourceIds.has(frame.assetId)) {
           addReferenceIssue(context, '皮肤表现帧必须引用已声明的资源。', [
@@ -394,5 +573,8 @@ export type CharacterSkinV2 = z.output<typeof skinSchema>;
 export type CharacterStateDefinitionV2 = z.output<typeof stateDefinitionSchema>;
 export type CharacterActionDefinitionV2 = z.output<typeof actionDefinitionSchema>;
 export type CharacterActionPresentationV2 = z.output<typeof actionPresentationSchema>;
+export type PublishedCharacterActionPresentationV2 = z.output<typeof publishedActionPresentationSchema>;
+export type PresentationGeometryV2 = z.output<typeof presentationGeometryV2Schema>;
 export type CharacterDraftV2 = z.output<typeof characterDraftV2Schema>;
+export type PreparedCharacterManifestV2 = z.output<typeof preparedCharacterManifestV2Schema>;
 export type CharacterManifestV2 = z.output<typeof characterManifestV2Schema>;
