@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { AdminApp } from '../components/admin/AdminApp';
 import { I18nProvider } from '../components/i18n/I18nProvider';
+import * as adminAuthModule from '../lib/admin-auth';
 import type { AdminAuthClient } from '../lib/admin-auth';
 import type {
   AdminApi,
@@ -81,10 +82,11 @@ describe('管理员审核工作台', () => {
       replace
     });
 
-    const { auth } = setup();
+    const createAuth = vi.spyOn(adminAuthModule, 'createAdminAuth');
+    render(<AdminApp />);
 
     await waitFor(() => expect(replace).toHaveBeenCalledWith('https://admin.example.com/admin/'));
-    expect(auth.getAccessToken).not.toHaveBeenCalled();
+    expect(createAuth).not.toHaveBeenCalled();
   });
 
   it('配置与当前来源相同时不跳转且正常初始化认证', async () => {
@@ -133,13 +135,14 @@ describe('管理员审核工作台', () => {
       replace
     });
 
-    const { auth } = setup();
+    const createAuth = vi.spyOn(adminAuthModule, 'createAdminAuth');
+    render(<AdminApp />);
 
     expect((await screen.findByRole('alert')).textContent).toBe(
       '管理员模式配置暂时不可用，请联系站点管理员。'
     );
     expect(replace).not.toHaveBeenCalled();
-    expect(auth.getAccessToken).not.toHaveBeenCalled();
+    expect(createAuth).not.toHaveBeenCalled();
   });
 
   it('浏览器配置缺失时显示受控错误而不是让页面崩溃', async () => {
