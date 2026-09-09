@@ -3,6 +3,7 @@
 ## 结论
 
 - 日期：2026-09-02。
+- 后续入口补充：2026-09-03 已配置 www 到新版根域的统一，公网复核通过，浏览器缓存收敛单独记录，见本文同日期补充节；不重新定义阶段 2C 或正式生产状态。
 - 范围：阶段 2C 零费用人工审核的本地实现、自动化验证、真实 Docker 候选、运维文档收敛，以及上海免费开发环境的实际最小部署与已完成远端 smoke 子项。
 - 提交范围：`5c914ef`（不含）至本次阶段 2C 整分支终审修复提交（含，本记录所在提交）。
 - 远端状态：`remote: pass`；最小部署、备案根域名接入、最终五章节视觉覆盖、真实 OTP 管理员登录、公开反馈／建议正文及其点赞、共享包强制发布/风险提示/下载/互动/隔离清理和官方下载计数均已通过；cleanup 每日 timer 配置已创建并启用，函数直调与真实清理通过，自然定时投递尚未观察。
@@ -84,6 +85,30 @@
 - CLI 复核上海环境仍为 `NORMAL` 的免费体验版，静态托管为 `online`，函数仍只有既有的 `ai-pet-api` 与 `ai-pet-cleanup`。本次没有购买、升级、创建套餐、开启按量服务、日志资源包、函数、数据库、Bucket 或密钥；部署后的套餐用量页面因浏览器登录态失效未重复读取，不能把旧读数冒充新读数。
 - 新鲜门禁：`verify:cloudbase` 为 CloudBase API 280/280、包扫描器 67/67；网站 typecheck、生产构建和单元测试 413/413 通过；范围门、测试所有权门及 `git diff --check` 通过。`verify:website` 的单浏览器串行 E2E 实际为 15/20，5 项均在进入交互阶段因同一 GPU 浏览器停滞至 60 秒或页面关闭而失败；没有提高 timeout、增加 retry 或放宽断言。相同 20 项此前已在独立新 Chromium 进程逐项通过，本次上海线上五章独立 headed smoke 也通过，因此保留该运行器限制事实，不把一键门禁写成全绿。
 - 当前发行清单继续是 `unpublished`，所以线上只验证下载章节的未发布状态及“计数失败不阻断”的自动化合同，没有伪造正式安装包链接或真实下载成功。
+
+## 2026-09-03 www 入口统一补充
+
+- 范围：经用户授权，仅统一 `www.cjmwebsite.cn` 与新版根域入口；不改变网站视觉、业务代码、上海 CloudBase 部署、数据库、认证、投稿开关或桌宠。没有购买、升级套餐或开启按量服务，不构成正式生产上线。
+- RED：切换前 HTTP/HTTPS www 均返回 200 旧 HTML，首页为 30,777 字节，SHA256 `625cb3208f4b74054fb2cf1833ea9e4f3582dce4fd00f1df92ede4904beeb514`，最后修改于 2026-08-08；根域为 2026-09-02 新版，证明是两个入口指向不同版本，而非新版源站回滚。
+- 新 CloudBase 环境新增域名受体验套餐限制；未解绑根域或调用 API 绕过。采用免费 Makers 独立项目 `cjmwebsite-www-redirect`（`makers-qt1q5odhgrbd`），只部署入口 HTML 与 `edgeone.json`，没有业务源码、函数、数据库或依赖。生效部署为 `dpmwptdfbx9l`，单条 `$wwwhost` → `$host` 301 规则；www 另开启平台强制 HTTPS 301。首个 `:splat` 候选实测错误，已由新候选替代且从未切流至该失败版本；平台部署历史保留，不承担业务流量。
+- 添加 `edgeonereclaim.www` TXT 并完成归属验证。证书访问角色 `TEO_QCSLinkedRoleInCertlist` 在说明查询、下载、上传、修改证书备注的权限范围后，取得用户明确同意才创建。复用已签发证书 `ZfX6LSdA`，覆盖根域和 www，到期时间 2026-10-30 21:59:59；控制台显示已部署，没有下载或输出私钥。
+- 切流前，Google DoH 查询新 CNAME 的目标节点为 `43.174.247.43`、`43.174.246.43`。使用 `curl.exe --head --resolve` 在两个节点测试 `/`、带 query 的 `/submission-status/`、`/legal/privacy.html` 和中文编码路径，共 8/8 正确返回 HTTPS 根域 Location，编码、路径、斜杠与 query 均保留；未使用 `-k` 或跳过证书校验。开启强制 HTTPS 后另用 `--location --max-redirs 4` 验证 HTTP 深层链接经两跳返回 HTTPS 根域 200。
+- 2026-09-03 11:15:50，DNSPod 仅将 www CNAME 从 `www.cjmwebsite.cn.tcbaccess.tencentcloudbase.com` 改为 `www.cjmwebsite.cn.pages.dnsoe6.com`，TTL 仍为 600 秒。根域仍为 `cjmwebsite.cn.cdn.dnsv1.com`；既有证书 TXT、MX、NS 未变，旧 CloudBase 绑定未删除。控制台显示修改成功，Google 公共 DNS 随即返回新 CNAME。
+- 11:17 普通网络、未固定 IP 的新鲜 GET：HTTP/HTTPS 根域及 www 四入口全部返回 200、31,526 字节，相同 SHA256 `65726be22ccaada18ad880a44fdc4fc318137fd561b55f32a54f2157d8c227ba`；www 最终地址为 `https://cjmwebsite.cn/`。新版 chunk 为 `page-cdfffdd545f99a66.js`，旧 chunk `page-58d4831cd3419131.js` 不在首页中。已有 HTTP 根域直接提供同一新版，不在本次范围内新增根域 HTTPS 强制跳转。
+- 新鲜 HEAD：`https://www.cjmwebsite.cn/submission-status/?entry_probe=20260903` 返回 301，Location 为 `https://cjmwebsite.cn/submission-status/?entry_probe=20260903`。浏览器某次刷新后实际地址变为 `https://cjmwebsite.cn/?www_unification_check=20260903`；11:26 原 TTL 窗口后，后续无参数、新 query 与新标签的部分 www 请求仍观察到旧 chunk，不能将该单次成功概括为内置浏览器全部收敛。命令行 HTTP www 为“HTTPS www → HTTPS 根域”两跳，HTTPS www 为一步跳转，没有循环。
+- 公开 `GET https://cjmwebsite.cn/api/v1/community` 返回 200；匿名管理员 `GET /api/v1/admin/submissions` 返回 401 `MISSING_CREDENTIALS`。全部检查为匿名只读请求，没有投稿、点赞、下载计数、安装包下载或远端内容写入。
+- 独立只读子智能体在 11:18 以 HEAD 重定向链、GET 和 SHA256 复核上述两个 www 首页、带 query 的投稿状态页及两类 API，结果一致，无 Critical/Important 问题。其独立 Google DoH 查询超时，不扩大为全球 DNS 已同步的结论。
+- 完成边界：配置切换、当前公共 DNS、新入口和命令行普通网络实测通过；内置浏览器缓存窗口后复验未通过，需重新启动浏览器或等待进一步传播后复查。现有浏览器工具不提供 DNS/连接缓存清除能力，未为此强制关闭整个用户应用、删除缓存或改变已通过的云配置；已保留直接访问新版根域的标签。其他用户也可能使用旧缓存，TTL 到期不保证所有递归解析器或连接缓存即时刷新。证书自动续期未验证，到期前须更新并确认 CloudBase/Makers 两处绑定。此轮未改业务代码，故未重复运行完整网站、CloudBase 或桌宠构建测试；执行 HTTP、TLS、内容指纹、权限边界检查及文档差异验证。
+
+复验命令示例（不跳过 TLS、不携带凭据、不发写请求）：
+
+```powershell
+curl.exe --silent --show-error --head --location --max-redirs 4 --max-time 25 'http://www.cjmwebsite.cn/'
+curl.exe --silent --show-error --head --max-time 25 'https://www.cjmwebsite.cn/submission-status/?entry_probe=20260903'
+curl.exe --silent --show-error --output NUL --write-out '%{http_code}' 'https://cjmwebsite.cn/api/v1/community'
+curl.exe --silent --show-error --output NUL --write-out '%{http_code}' 'https://cjmwebsite.cn/api/v1/admin/submissions'
+git diff --check
+```
 
 ## 2026-09-02 本轮新鲜本地验证
 

@@ -2,7 +2,11 @@
 
 本文是网站阶段 2C 零费用人工审核方案的现行运维入口。它只描述上海 CloudBase PostgreSQL 开发环境的最小运行面；不构成远端操作授权，更不构成正式生产上线授权。
 
-> 当前状态（2026-09-02）：`remote: pass`。上海免费开发环境 `ai-pet-scanner-dev-d0cp…826` 的 16 条 migration、私有 Bucket、两个函数、邮箱 OTP、最小网关、静态托管、备案根域名 `cjmwebsite.cn`、公开反馈／建议正文及其点赞、共享包强制发布/风险披露/互动/隔离清理和官方下载计数均已实际验证；cleanup 每日 timer 配置已创建并启用，函数直调和真实清理通过，自然定时投递尚未观察。用户已确认不实现共享资源留言或回复。共享包匿名投稿开关保持 `SHARED_PACKAGE_SUBMISSIONS_ENABLED=false`。根域名只接入本开发环境用于验收，不是正式生产上线，现行证据见 `website-stage-2c-zero-cost-manual-review-acceptance.md`。
+> 历史基线（2026-09-02）：`remote: pass`。上海免费开发环境 `ai-pet-scanner-dev-d0cp…826` 的 16 条 migration、私有 Bucket、两个函数、邮箱 OTP、最小网关、静态托管、备案根域名 `cjmwebsite.cn`、公开反馈／建议正文及其点赞、共享包强制发布/风险披露/互动/隔离清理和官方下载计数均已实际验证；cleanup 每日 timer 配置已创建并启用，函数直调和真实清理通过，自然定时投递尚未观察。用户已确认不实现共享资源留言或回复。当时共享包匿名投稿开关为 false。根域名只接入本开发环境用于验收，不是正式生产上线，该日期证据见 `website-stage-2c-zero-cost-manual-review-acceptance.md`。
+
+> 当前修复（2026-09-09 08:39）：管理员根域入口自动转到已允许认证的默认托管域，实际观察验证码发送被平台接受、后续工作台恢复。API CLS 已解除绑定；投稿曾开启实测，但根域存储预检因安全来源限制返回 403，控制台添加根域要求升级套餐，因此已恢复 `SHARED_PACKAGE_SUBMISSIONS_ENABLED=false`。用户已同意测试协议，不再是等待协议；上传仍未修复完成，待裁决免费默认测试域的临时入口。没有修改首页视觉、放开存储权限或增加收费资源，详见 [本次验收记录](website-login-upload-repair-2026-09-09.md)。不改变开发环境和正式上线边界。
+
+> 入口补充（2026-09-03）：`www.cjmwebsite.cn` 已通过免费 Makers 独立入口以 301 跳到 `https://cjmwebsite.cn`，11:17 命令行普通网络实测四个 HTTP/HTTPS、根域/www 入口最终首页字节一致。浏览器缓存收敛另行记录，不承诺即时刷新。仅统一入口，不改变上述开发环境与正式上线边界；配置及证据见同一验收记录的 2026-09-03 补充节。
 
 ## 1. 正式运行面与禁止部署项
 
@@ -21,8 +25,8 @@
 
 1. 开发与正式生产环境必须分离，分别保存环境标识；数据库、Bucket、函数、域名、密钥和告警不得复用。
 2. 服务端目标地域为 `ap-shanghai`；正式生产地域由独立生产计划重新裁决。
-3. `cjmwebsite.cn` 当前只指向本开发环境；既有 `www.cjmwebsite.cn` 解析保持不变。正式生产环境不得默认复用当前环境、证书、密钥、日志或数据库。
-4. 共享包投稿保持关闭：
+3. `cjmwebsite.cn` 当前只指向本开发环境。`www.cjmwebsite.cn` CNAME 为 `www.cjmwebsite.cn.pages.dnsoe6.com`，由独立 Makers 项目 `cjmwebsite-www-redirect` 承接 HTTPS 并保留路径、查询参数跳到根域，不承载业务或连接数据库。根域 CNAME 保持 `cjmwebsite.cn.cdn.dnsv1.com`。正式生产环境不得默认复用当前环境、证书、密钥、日志或数据库。
+4. 根域真实上传受到体验版安全来源限制，当前已恢复暂停；后续开启前仍须保持 API CLS 响应日志解除绑定，并验证实际浏览器来源的完整上传链路：
 
    ```text
    SHARED_PACKAGE_SUBMISSIONS_ENABLED=false
@@ -75,7 +79,11 @@ CLOUDBASE_API_KEY
 
 免费体验版调用 `CreateAuthDomain` 会被平台以 `OperationDenied.FreePackageDenied` 拒绝，因此不得购买套餐绕过。公开站构建把 `NEXT_PUBLIC_API_BASE_URL` 固定为 `https://cjmwebsite.cn/api/v1`，在备案根域名上走同源请求；管理员邮箱 OTP 继续从已存在于 Web 安全域名列表的默认静态托管域名进入，其跨域调用备案根域 API 已用真实已登录工作台验证。不得配置带认证信息的通配 CORS 来源。
 
+2026-09-09 起部署时同时设置 `NEXT_PUBLIC_ADMIN_ORIGIN=https://ai-pet-scanner-dev-d0cpbc8094826-1391054083.tcloudbaseapp.com`。根域 `/admin/` 会在初始化认证 SDK 前跳到该来源的 `/admin/`，不携带查询或 fragment；同来源不循环。配置只接受纯 HTTPS origin（允许尾部斜杠），错误配置显示原有配置错误页面。Memory E2E 构建必须清空该变量，正式产物不得从 `.e2e-out` 部署。
+
 ## 5. 静态托管与观测
+
+www 入口只有平台原生 `$wwwhost` → `$host` 301 规则和强制 HTTPS 301，不需要重新构建或部署业务站点。复用的 SSL 证书 `ZfX6LSdA` 覆盖根域与 www，控制台到期时间为 2026-10-30 21:59:59；到期前须完成续期并确认 CloudBase 与 Makers 两处均部署有效证书，本次未证明该托管证书会自动续期。变更或回滚 www 时必须先验证证书、深层链接和查询参数，不得恢复指向旧 CloudBase 的记录后仍宣称入口已统一。
 
 部署静态网站前先在本地运行：
 
@@ -83,9 +91,9 @@ CLOUDBASE_API_KEY
 pnpm.cmd --filter @myself/website build
 ```
 
-静态网站已使用以下三个前端环境变量构建：`NEXT_PUBLIC_CLOUDBASE_ENV_ID`、`NEXT_PUBLIC_CLOUDBASE_PUBLISHABLE_KEY`、`NEXT_PUBLIC_API_BASE_URL=https://cjmwebsite.cn/api/v1`；67/67 个构建文件上传成功，删除不再被新页面引用的旧哈希产物后，静态托管对象总数为 73，其中 6 个为平台维护的 `__auth` 与 `cloud-admin` 文件。根域 CNAME 指向 `cjmwebsite.cn.cdn.dnsv1.com`，CloudBase 域名状态与两项 DNS 状态均为成功，HTTPS 首页与公开 API 返回 200。日志、告警和审计不得记录状态令牌、签名 URL、管理员令牌、OTP、密钥或私有对象地址。
+静态网站构建使用 `NEXT_PUBLIC_CLOUDBASE_ENV_ID`、`NEXT_PUBLIC_CLOUDBASE_PUBLISHABLE_KEY`、`NEXT_PUBLIC_API_BASE_URL=https://cjmwebsite.cn/api/v1` 和上节的 `NEXT_PUBLIC_ADMIN_ORIGIN`。2026-09-02 全量部署曾上传 67/67 个构建文件，清理旧哈希后共有 73 个托管对象（含六个由平台维护的 `__auth` 与 `cloud-admin` 文件）；该对象数是历史证据，不是当前固定数量。2026-09-09 仅更新六项管理员产物，未删除旧哈希，首页字节校验不变。根域 CNAME 指向 `cjmwebsite.cn.cdn.dnsv1.com`，CloudBase 域名状态与两项 DNS 状态均为成功，HTTPS 首页与公开 API 返回 200。日志、告警和审计不得记录状态令牌、签名 URL、管理员令牌、OTP、密钥或私有对象地址。
 
-上海开发环境函数日志已临时开通且未购买独立日志资源包，用于定位函数、网关和数据库边界错误；CloudBase 系统日志会保存函数响应摘要，`IgnoreSysLog` 真实试验也没有消除该摘要。因此当前只允许测试数据且共享包投稿保持关闭，接入真实投稿或正式上线前必须关闭日志或先形成并验证独立脱敏方案。日志不得替代长期监控与告警。域名验收后套餐页显示当前计费周期总资源点 3000、已使用 81.39，按量付费开关关闭，HTTP 加速请求数为 0、流量为 0 Byte；资源点主要来自持续运行的 PostgreSQL。没有购买、升级或开启按量，但该观察不替代正式生产费用结论。
+上海开发环境曾临时开通函数日志用于定位边界错误；CloudBase 系统日志会保存响应摘要，`IgnoreSysLog` 真实试验没有消除该摘要，因此当时保持投稿暂停。2026-09-09 已解除 `ai-pet-api` 的 `ClsLogsetId` 与 `ClsTopicId` 绑定并读取回为空，短暂开启投稿实测后，因根域跨域限制恢复暂停；cleanup 配置与数据库审计不变。后续更新函数必须防止 SDK 默认重新注入 API CLS 绑定；若需要重新启用响应日志，应先暂停投稿并独立验证脱敏方案。日志不得替代长期监控与告警。2026-09-02 套餐观察为 81.39/3000 点，2026-09-09 为 269.4/3000 点、按量付费关闭，体验有效期至 2027-03-01。没有购买、升级或开启按量，但这些时点观察不替代正式生产费用结论，也不代表无限免费。
 
 ## 6. 投稿与人工审核部署后语义
 
@@ -115,7 +123,7 @@ docker run --rm --network none --read-only --cap-drop ALL `
 
 ## 8. 远端开发环境 smoke 与发布边界
 
-同一上海环境已经验证：migration、匿名与管理员授权、反馈直入人工队列、普通批准、公开读取、点赞与撤赞、删除隔离、审计记录、官方下载计数、私有对象短期上传/下载、共享包两步强制发布、三处公开风险提示、幂等下载计数和完整物理清理。cleanup 每日 timer 的名称、类型、Cron 与启用状态已核对，函数直调成功，但尚未观察一次平台自然定时投递。用户已确认规格中的“评论”仅指公开反馈／建议正文，不包含共享资源留言或回复；现有反馈发布、公开读取与点赞链即为该验收。共享包投稿开关继续关闭，直到另有裁决。
+同一上海环境在 2026-09-02 已经验证：migration、匿名与管理员授权、反馈直入人工队列、普通批准、公开读取、点赞与撤赞、删除隔离、审计记录、官方下载计数、私有对象短期上传/下载、共享包两步强制发布、三处公开风险提示、幂等下载计数和完整物理清理。cleanup 每日 timer 的名称、类型、Cron 与启用状态已核对，函数直调成功，但尚未观察一次平台自然定时投递。用户已确认规格中的“评论”仅指公开反馈／建议正文，不包含共享资源留言或回复；现有反馈发布、公开读取与点赞链即为该验收。2026-09-09 根域真实上传失败，投稿开关已恢复 false，不能引用旧通过记录替代当前验收。
 
 本次已按以下合同验证官方安装包计数，后续重新部署仍须复验：公开 `POST /api/v1/official-downloads/windows/click` 只接受空对象并只返回空数据；管理员 `GET /api/v1/admin/metrics/official-windows-download` 经现有管理员认证后才返回累计值；公开页面、公开 DTO 与静态导出均不含累计值。上述计数是被服务端接受的点击，既不代表下载、安装、独立用户，也不应把原始 IP、User-Agent、下载地址或管理员令牌写入日志。
 
