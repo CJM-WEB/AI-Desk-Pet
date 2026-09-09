@@ -30,16 +30,5 @@ extraResources:
     to: coding-task-resources/opencode/LICENSE
 asar: true
 win:
-  target:
-    - target: nsis
-      arch:
-        - x64
   icon: resources/icon.ico
   signAndEditExecutable: false
-nsis:
-  oneClick: false
-  allowToChangeInstallationDirectory: true
-  perMachine: false
-  deleteAppDataOnUninstall: false
-  createDesktopShortcut: true
-  createStartMenuShortcut: true

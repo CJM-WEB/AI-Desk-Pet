@@ -99,24 +99,35 @@ describe('electron-builder 配置', () => {
     expect(packageJson.description).toBe('AI Pet 第一阶段 Windows AI 桌宠 Alpha');
   });
 
-  test('生成未签名的用户级 Windows x64 NSIS 安装包', async () => {
+  test('先生成完整 Windows x64 目录，再由 Inno Setup 封装离线安装包', async () => {
     const configText = await readFile(new URL('../electron-builder.yml', import.meta.url), 'utf8');
+    const installerText = await readFile(new URL('../resources/windows/installer.iss', import.meta.url), 'utf8');
 
     expect(readScalarBlock(configText, 'appId')).toBe('com.myself.desktop');
     expect(readScalarBlock(configText, 'productName')).toBe('AI Pet');
     expect(readScalarBlock(configText, 'artifactName')).toBe('AI-Pet-${version}-windows-${arch}.${ext}');
 
     const windowsConfig = readSection(configText, 'win');
-    expect(windowsConfig).toContain('target: nsis');
-    expect(windowsConfig).toContain('arch:');
-    expect(windowsConfig).toContain('- x64');
     expect(windowsConfig).toContain('signAndEditExecutable: false');
     expect(windowsConfig).toContain('icon: resources/icon.ico');
+    expect(configText).not.toMatch(/^nsis:/mu);
 
-    const nsisConfig = readSection(configText, 'nsis');
-    expect(nsisConfig).toContain('oneClick: false');
-    expect(nsisConfig).toContain('perMachine: false');
-    expect(nsisConfig).toContain('deleteAppDataOnUninstall: false');
+    expect(packageJson.scripts['package:win'])
+      .toContain('electron-builder --win --dir --x64 --publish never --config electron-builder.yml');
+    expect(packageJson.scripts['package:win']).toContain('node scripts/build-windows-installer.mjs');
+
+    expect(installerText).toContain('AppId=com.myself.desktop');
+    expect(installerText).toContain('AppName=AI Pet');
+    expect(installerText).toContain('PrivilegesRequired=lowest');
+    expect(installerText).toContain('ArchitecturesAllowed=x64compatible');
+    expect(installerText).toContain('ArchitecturesInstallIn64BitMode=x64compatible');
+    expect(installerText).toContain('DiskSpanning=no');
+    expect(installerText).toContain('DefaultDirName={localappdata}\\Programs\\AI Pet');
+    expect(installerText).toContain('DisableDirPage=no');
+    expect(installerText).toContain('CloseApplications=no');
+    expect(installerText).toContain('recursesubdirs createallsubdirs');
+    expect(installerText).not.toContain('[UninstallDelete]');
+    expect(installerText).not.toContain('[Run]');
 
     const extraResources = readSection(configText, 'extraResources');
     expect([...extraResources.matchAll(/^\s*- from:\s*(.+)$/gmu)].map(match => match[1]?.trim())).toEqual([
