@@ -1,5 +1,7 @@
 import { execFile } from 'node:child_process';
-import { readFile } from 'node:fs/promises';
+import { readFile, stat } from 'node:fs/promises';
+import { createRequire } from 'node:module';
+import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { describe, expect, test, vi } from 'vitest';
@@ -28,6 +30,44 @@ function readSection(text: string, key: string): string {
 }
 
 describe('electron-builder 配置', () => {
+  test('实际依赖过滤器排除已内联工作区的开发文件并保留外部运行依赖', async () => {
+    const desktopRoot = fileURLToPath(new URL('..', import.meta.url));
+    const requireFromDesktop = createRequire(new URL('../package.json', import.meta.url));
+    const requireFromBuilder = createRequire(requireFromDesktop.resolve('electron-builder/package.json'));
+    const requireFromBuilderLibrary = createRequire(requireFromBuilder.resolve('app-builder-lib/package.json'));
+    const { load } = requireFromBuilderLibrary('js-yaml');
+    const { getNodeModuleFileMatcher } = requireFromBuilderLibrary('./out/fileMatcher.js');
+    const config = load(await readFile(new URL('../electron-builder.yml', import.meta.url), 'utf8'));
+    // 使用构建器本身的过滤器，覆盖 pnpm 工作区依赖自动收集时的虚拟发行路径。
+    const matcher = getNodeModuleFileMatcher(desktopRoot, desktopRoot, (value: string) => value, {}, {
+      config,
+      debugLogger: { isEnabled: false }
+    });
+    const filter = matcher.isEmpty() ? () => true : matcher.createFilter();
+    const fileStat = await stat(new URL('../package.json', import.meta.url));
+    const cases: Array<[string, boolean]> = [
+      ['node_modules/@myself/coding-task-core/.electron-smoke/meta.json', false],
+      ['node_modules/@myself/coding-task-core/declaration-check.log', false],
+      ['node_modules/@myself/coding-task-core/.cache/ripgrep/archive.zip', false],
+      ['node_modules/@myself/agent-core/src/index.ts', false],
+      ['node_modules/@opencode-ai/core/test/session.test.ts', false],
+      ['node_modules/zod/src/v4/classic/tests/object.test.ts', false],
+      ['node_modules/@effect/platform-node-shared/ai-docs/fixtures/input.txt', false],
+      ['node_modules/pend/test.js', false],
+      ['node_modules/msgpackr/dist/test.js', false],
+      ['node_modules/msgpackr/test-worker.js', false],
+      ['node_modules/pend/index.js', true],
+      ['node_modules/msgpackr/dist/index.js', true],
+      ['node_modules/zod/index.cjs', true],
+      ['node_modules/yauzl/index.js', true],
+      ['node_modules/yazl/index.js', true]
+    ];
+    for (const [path, expected] of cases) {
+      Object.assign(fileStat, { moduleFullFilePath: path });
+      expect(filter(join(desktopRoot, path), fileStat), path).toBe(expected);
+    }
+  });
+
   test('标准桌面门禁调用 Core 自身测试并执行可信资源 pretest', async () => {
     const root = JSON.parse(await readFile(new URL('../../../package.json', import.meta.url), 'utf8'));
     const core = JSON.parse(await readFile(new URL('../../../packages/coding-task-core/package.json', import.meta.url), 'utf8'));

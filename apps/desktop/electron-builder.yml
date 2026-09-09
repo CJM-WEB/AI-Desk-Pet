@@ -8,6 +8,13 @@ files:
   - out/**
   - package.json
   - resources/characters/default/**/*
+  # 工作区源码已内联到 out；运行期 helper、模型和许可仅经 extraResources 分发。
+  - '!node_modules/@myself{,/**/*}'
+  - '!node_modules/@opencode-ai{,/**/*}'
+  - '!node_modules/**/{test,tests,__tests__,fixtures,ai-docs}{,/**/*}'
+  - '!node_modules/pend/test.js'
+  - '!node_modules/msgpackr/dist/test.js'
+  - '!node_modules/msgpackr/test-worker.js'
 extraResources:
   - from: resources/windows/explorer-space-bridge.ps1
     to: windows/explorer-space-bridge.ps1
