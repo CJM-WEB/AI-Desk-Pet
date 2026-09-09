@@ -5,7 +5,7 @@
 - 日期：2026-09-09；环境：Windows 本地工作区，不涉及云端、线上部署或 Git 推送。
 - 依据：用户要求先 `main → WebsiteExtension`，再 `WebsiteExtension → main`；计划见 [双向集成计划](../superpowers/plans/2026-09-09-main-website-integration.md)。
 - 网站原始头 `a89920b46ad502a3a3b28adc8028475909232646`；main 原始头 `1e1744015fe3ada982cc170670fa772ed715dd7a`；网站文档现场保存提交 `c8ee7418460b5b5f255b60a1932d7381cad1383d`。
-- 三方合并没有文本冲突。第一步候选保留在 WebsiteExtension；当前完整门禁存在失败，尚未执行第二步，不把此记录解释为可以发布的全绿验收。
+- 三方合并没有文本冲突。第一步合并提交为 `520264ebee94bfe16953f368f1eedd7723ee3abf`，双亲为 `c8ee741` 与 `1e174401`，保留在 WebsiteExtension；当前完整门禁存在失败，尚未执行第二步，不把此记录解释为可以发布的全绿验收。
 - main 保持原提交；没有推送、删除分支、删除工作区或修改腾讯云。线上上传仍受体验环境安全域名限制，不因 Git 合并而恢复。
 
 ## 恢复点与业务完整性
@@ -38,13 +38,27 @@
 | `pnpm.cmd --filter @myself/desktop build` | 退出 0，包含 preload 与正式产物边界检查；保留第三方依赖构建警告 |
 | `pnpm.cmd verify:desktop` | 首次在网站 Playwright 配置 TS2769 处退出 2，未执行后续链；后续最小适配后单独全仓 `pnpm.cmd typecheck` 退出 0 |
 | 网站默认减少动效单项 | RED 真实媒体条件 false；配置修复后 1/1，通过原交互断言 |
+| 配置修复后完整网站 E2E | 18/20，2.8 分钟；正常动效五章和 390 宽度场景超时，整体退出 1 |
+| 上述两个网站场景分别用独立进程复验 | 分别 1/1 通过（14.0 秒、7.6 秒），不覆盖完整套件 18/20 的事实 |
 | `pnpm.cmd test:unit`（另行执行） | 2784 通过、88 失败，137 文件中 17 失败，另有 3 个未处理错误；不是全绿 |
 | `pnpm.cmd --filter @myself/coding-task-core test`（另行执行） | 106 通过、2 失败、1 跳过；失败文件随后独立复测 20/20，通过但不抹去首轮失败 |
 | `pnpm.cmd test:integration`（另行执行） | 52/54；Provider 数据不一致及一个素材 fixture 超时 |
 | `node --test tools/verification/*.test.mjs` | 111/112；失败为历史依赖审查规则冲突 |
 | `pnpm.cmd verify:web-chain:ownership` | 退出 0 |
+| 合并提交后的 `pnpm.cmd verify:web-chain:scope` | 退出 0；main 固定基线已为候选祖先，真实范围、manifest 和退役门检查通过 |
 
 本轮部分测试同时运行，出现多个超时；未全部独立复验，不推断所有失败均由负载引起。未提高 timeout、添加 retry、放宽断言或修补无关业务来制造通过。网站单元保留 jsdom Canvas/navigation 及预期错误路径警告；它们不是浏览器人工验收。
+
+补充复现命令（均在网站工作区执行，复用已通过隔离检查的 E2E 产物）：
+
+```powershell
+node node_modules/@playwright/test/cli.js test --config tests/playwright.website.config.ts
+node node_modules/@playwright/test/cli.js test --config tests/playwright.website.config.ts --grep '正常动效五章节液态视觉职责'
+node node_modules/@playwright/test/cli.js test --config tests/playwright.website.config.ts --grep '390 宽度液态玻璃首页无横向溢出'
+pnpm.cmd --filter @myself/coding-task-core exec vitest run --config vitest.config.ts tests/windows-job-spawner.test.ts
+```
+
+证据位于本任务命令回执，未另存完整原始日志文件。Playwright 的输出目录会被后续运行更新，不把早先失败 trace 当作已归档且仍然存在的证据。当前结论以上表实际退出码与输出为准。
 
 ## 已确认的历史阻断与待处理项
 
@@ -54,12 +68,24 @@
 - `tests/integration/provider-server.test.ts`：13 项中 1 项失败。`75ea43cb` 将 structured 响应拆为独立类型，测试仍将 `structured_output` 放在 text 响应；实际普通文本“向左移动”不能按 JSON 解析。
 - 上述复现在 main 现有依赖上直接执行 Vitest CLI 完成，未更改源码或安装。main 的 pnpm 入口另有工作区依赖元数据不同步，不能据此声称 main 原先全绿。
 
+main 原工作区 `D:/Python/Important/myself` 的实际命令如下，均成功启动测试后因上述断言退出 1；原始输出保留在本任务工具记录中，未另存独立日志：
+
+```powershell
+node node_modules/vitest/vitest.mjs run --project desktop apps/desktop/tests/pet-visual-geometry.test.ts
+node node_modules/vitest/vitest.mjs run --config tests/vitest.config.ts tests/integration/provider-server.test.ts
+```
+
 ### 网站原始分支已存在
 
 - `deps:audit:web` 返回 6 个 LiquidGlass 导入错误和 8 个 orphan 警告。原始网站头的六处组件导入、两份规则与审查入口完全相同。最终视觉恢复规格批准跨章节有限视觉事件，而旧规则仍禁止该直接依赖；本次不移除获批视觉或放宽规则。
-- 完整浏览器测试的五项失败发生在首页进入 interactive、付款码页面初始化或液态画布读取阶段，与此前网站验收记录中的五项一致。相同症状不是本次所有失败原因均已证明的替代；修复配置后的结果另记。
+
+### 浏览器待归因项
+
+- 配置修复前完整浏览器测试的五项失败发生在首页进入 interactive、付款码页面初始化或液态画布读取阶段，与此前网站验收记录中的五项一致。修复后原五项通过，另外两个显式正常动效场景超时，整轮为 18/20。相同症状不能证明所有运行器问题均已解决，独立复验另记。
+- 这两个场景随后在独立 Playwright 进程分别通过原断言。由于完整运行仍未全绿，保留运行器稳定性待归因状态，不把它们全部判为已确认历史问题。
 
 ### 尚未满足的第二步条件
 
 - 完整桌面门禁和网站依赖门尚未通过，其他超时与未处理错误也未全部归因。不能把“Git 无冲突”和“业务目录来源正确”写成“整体质量门已通过”。
 - 当前不执行 `WebsiteExtension → main`，不回退 main 的 V3／独立结构化响应，也不为合并改写定稿视觉。历史测试与门禁治理需另行明确范围并完成验证后，再执行获批的第二次合并。
+- 最终独立只读复审：第一阶段候选符合业务来源与最小修改要求，未发现集成增量的 Critical／Important 问题；鉴于完整门禁失败且尚有未归因项，不建议此时执行第二步。单项复验通过不构成对其余门禁的豁免。
