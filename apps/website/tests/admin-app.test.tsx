@@ -16,6 +16,8 @@ import { ApiClientError } from '../lib/api-client';
 afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
+  vi.unstubAllGlobals();
+  delete process.env.NEXT_PUBLIC_ADMIN_ORIGIN;
 });
 
 function detail(overrides: Partial<AdminSubmissionDetail> = {}): AdminSubmissionDetail {
@@ -71,6 +73,72 @@ function setup(overrides: Partial<AdminApi> = {}, authOverrides: Partial<AdminAu
 }
 
 describe('管理员审核工作台', () => {
+  it('配置不同 HTTPS 来源时在认证初始化前跳转到固定管理员路径', async () => {
+    process.env.NEXT_PUBLIC_ADMIN_ORIGIN = 'https://admin.example.com/';
+    const replace = vi.fn();
+    vi.stubGlobal('location', {
+      origin: 'https://www.example.com',
+      replace
+    });
+
+    const { auth } = setup();
+
+    await waitFor(() => expect(replace).toHaveBeenCalledWith('https://admin.example.com/admin/'));
+    expect(auth.getAccessToken).not.toHaveBeenCalled();
+  });
+
+  it('配置与当前来源相同时不跳转且正常初始化认证', async () => {
+    process.env.NEXT_PUBLIC_ADMIN_ORIGIN = 'https://admin.example.com';
+    const replace = vi.fn();
+    vi.stubGlobal('location', {
+      origin: 'https://admin.example.com',
+      replace
+    });
+
+    const { auth } = setup();
+
+    expect(await screen.findByText('改进建议')).toBeTruthy();
+    expect(replace).not.toHaveBeenCalled();
+    expect(auth.getAccessToken).toHaveBeenCalledOnce();
+  });
+
+  it('未配置管理员来源时保持现有初始化行为', async () => {
+    const replace = vi.fn();
+    vi.stubGlobal('location', {
+      origin: 'https://www.example.com',
+      replace
+    });
+
+    const { auth } = setup();
+
+    expect(await screen.findByText('改进建议')).toBeTruthy();
+    expect(replace).not.toHaveBeenCalled();
+    expect(auth.getAccessToken).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    'http://admin.example.com',
+    'https://user:password@admin.example.com',
+    'https://admin.example.com/path',
+    'https://admin.example.com?next=/admin',
+    'https://admin.example.com#token'
+  ])('拒绝非纯 HTTPS origin 配置：%s', async configuredOrigin => {
+    process.env.NEXT_PUBLIC_ADMIN_ORIGIN = configuredOrigin;
+    const replace = vi.fn();
+    vi.stubGlobal('location', {
+      origin: 'https://www.example.com',
+      replace
+    });
+
+    const { auth } = setup();
+
+    expect((await screen.findByRole('alert')).textContent).toBe(
+      '管理员模式配置暂时不可用，请联系站点管理员。'
+    );
+    expect(replace).not.toHaveBeenCalled();
+    expect(auth.getAccessToken).not.toHaveBeenCalled();
+  });
+
   it('浏览器配置缺失时显示受控错误而不是让页面崩溃', async () => {
     render(<AdminApp api={{} as AdminApi} />);
 

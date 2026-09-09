@@ -27,15 +27,31 @@ type Phase = 'checking' | 'login' | 'workspace' | 'forbidden';
 /** 管理员页面只在内存持有令牌；真实授权仍由每个后端路由执行。 */
 export function AdminApp({ auth, api }: AdminAppProps) {
   const { t } = useI18n();
+  const configuredAdminOrigin = process.env.NEXT_PUBLIC_ADMIN_ORIGIN;
   const [runtime, setRuntime] = useState<{ auth: AdminAuthClient; api: AdminApi } | null>(
-    auth && api ? { auth, api } : null
+    !configuredAdminOrigin && auth && api ? { auth, api } : null
   );
   const [initializationFailed, setInitializationFailed] = useState(false);
 
-  // 浏览器端配置异常时保留管理员页外壳，避免未捕获异常导致整页崩溃。
+  // 管理员来源必须在认证 SDK 初始化前裁决，避免根域误启动不可用的认证会话。
   useEffect(() => {
     if (runtime || initializationFailed) return;
     try {
+      if (configuredAdminOrigin) {
+        const target = new URL(configuredAdminOrigin);
+        if (
+          target.protocol !== 'https:'
+          || target.username
+          || target.password
+          || target.pathname !== '/'
+          || target.search
+          || target.hash
+        ) throw new Error('INVALID_ADMIN_ORIGIN');
+        if (target.origin !== globalThis.location.origin) {
+          globalThis.location.replace(`${target.origin}/admin/`);
+          return;
+        }
+      }
       setRuntime({
         auth: auth ?? createRuntimeAdminAuth(),
         api: api ?? new AdminApiClient(new ApiClient(
@@ -45,7 +61,7 @@ export function AdminApp({ auth, api }: AdminAppProps) {
     } catch {
       setInitializationFailed(true);
     }
-  }, [api, auth, initializationFailed, runtime]);
+  }, [api, auth, configuredAdminOrigin, initializationFailed, runtime]);
 
   if (initializationFailed) {
     return <main className={styles.centerPage}><p role="alert">{t('admin.error.config')}</p></main>;
