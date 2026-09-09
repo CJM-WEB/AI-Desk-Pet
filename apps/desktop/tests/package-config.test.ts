@@ -118,6 +118,8 @@ describe('electron-builder 配置', () => {
 
     expect(installerText).toContain('AppId=com.myself.desktop');
     expect(installerText).toContain('AppName=AI Pet');
+    expect(installerText).toContain('SetupArchitecture=x64');
+    expect(installerText).toContain('MinVersion=10.0');
     expect(installerText).toContain('PrivilegesRequired=lowest');
     expect(installerText).toContain('ArchitecturesAllowed=x64compatible');
     expect(installerText).toContain('ArchitecturesInstallIn64BitMode=x64compatible');

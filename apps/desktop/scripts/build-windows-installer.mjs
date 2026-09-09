@@ -1,6 +1,6 @@
 import { execFile } from 'node:child_process';
-import { readFile, stat } from 'node:fs/promises';
-import { dirname, join } from 'node:path';
+import { readFile, rm, stat } from 'node:fs/promises';
+import { dirname, isAbsolute, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const defaultDesktopRoot = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -25,6 +25,7 @@ async function requirePath(path, label) {
   }
 }
 
+// 主流程只接受调用方已验证的绝对编译器文件，并以独立 argv 传递固定构建边界。
 export async function buildWindowsInstaller({
   desktopRoot = defaultDesktopRoot,
   environment = process.env,
@@ -34,6 +35,9 @@ export async function buildWindowsInstaller({
   if (!compilerPath) {
     throw new Error('缺少 AI_PET_ISCC。请将其设置为已验证的 Inno Setup 7.1.0 x64 ISCC.exe 绝对路径后重试。');
   }
+  if (!isAbsolute(compilerPath)) {
+    throw new Error(`AI_PET_ISCC 必须是绝对路径：${compilerPath}`);
+  }
 
   const sourceDir = join(desktopRoot, 'dist', 'win-unpacked');
   const outputDir = join(desktopRoot, 'dist');
@@ -42,7 +46,8 @@ export async function buildWindowsInstaller({
   const sourceStat = await requirePath(sourceDir, '完整发行目录');
   if (!sourceStat.isDirectory()) throw new Error(`完整发行目录不是目录：${sourceDir}`);
   await requirePath(scriptPath, 'Inno Setup 脚本');
-  await requirePath(compilerPath, 'Inno Setup 编译器');
+  const compilerStat = await requirePath(compilerPath, 'Inno Setup 编译器');
+  if (!compilerStat.isFile()) throw new Error(`Inno Setup 编译器必须是普通文件：${compilerPath}`);
 
   const packageJson = JSON.parse(await readFile(packagePath, 'utf8'));
   const version = packageJson.version;
@@ -58,6 +63,8 @@ export async function buildWindowsInstaller({
     scriptPath
   ];
 
+  // 只移除本次构建的明确单文件目标，防止旧产物掩盖编译器未输出的问题。
+  await rm(outputPath, { force: true });
   try {
     await compile(compilerPath, args, { cwd: desktopRoot, windowsHide: true });
   } catch (error) {

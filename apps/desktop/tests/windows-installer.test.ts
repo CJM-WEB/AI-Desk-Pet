@@ -42,6 +42,30 @@ describe('Windows Inno Setup 安装器构建脚本', () => {
     expect(runCompiler).not.toHaveBeenCalled();
   });
 
+  test('拒绝相对编译器路径', async () => {
+    const root = await createDesktopFixture();
+    const runCompiler = vi.fn();
+
+    await expect(buildWindowsInstaller({
+      desktopRoot: root,
+      environment: { AI_PET_ISCC: 'ISCC.exe' },
+      runCompiler
+    })).rejects.toThrow('绝对路径');
+    expect(runCompiler).not.toHaveBeenCalled();
+  });
+
+  test('拒绝指向目录的编译器路径', async () => {
+    const root = await createDesktopFixture();
+    const runCompiler = vi.fn();
+
+    await expect(buildWindowsInstaller({
+      desktopRoot: root,
+      environment: { AI_PET_ISCC: root },
+      runCompiler
+    })).rejects.toThrow('普通文件');
+    expect(runCompiler).not.toHaveBeenCalled();
+  });
+
   test('通过独立参数传递版本和路径，并确认单个离线安装包存在', async () => {
     const root = await createDesktopFixture();
     const compiler = join(root, 'ISCC.exe');
@@ -67,7 +91,7 @@ describe('Windows Inno Setup 安装器构建脚本', () => {
     await expect(readFile(expectedOutput, 'utf8')).resolves.toBe('installer');
   });
 
-  test('编译失败和编译成功但未产生产物均返回明确失败', async () => {
+  test('编译失败时返回明确失败', async () => {
     const root = await createDesktopFixture();
     const compiler = join(root, 'ISCC.exe');
     await writeFile(compiler, 'fixture');
@@ -77,11 +101,20 @@ describe('Windows Inno Setup 安装器构建脚本', () => {
       environment: { AI_PET_ISCC: compiler },
       runCompiler: vi.fn(async () => { throw new Error('compiler fixture failure'); })
     })).rejects.toThrow('Inno Setup 编译失败');
+  });
 
+  test('编译前移除同名旧产物，避免编译器无输出时误报成功', async () => {
+    const root = await createDesktopFixture();
+    const compiler = join(root, 'ISCC.exe');
+    await writeFile(compiler, 'fixture');
+
+    const staleOutput = join(root, 'dist', 'AI-Pet-0.1.0-alpha.1-windows-x64.exe');
+    await writeFile(staleOutput, 'stale installer');
     await expect(buildWindowsInstaller({
       desktopRoot: root,
       environment: { AI_PET_ISCC: compiler },
       runCompiler: vi.fn(async () => undefined)
     })).rejects.toThrow('未生成预期安装包');
+    await expect(readFile(staleOutput, 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
   });
 });
