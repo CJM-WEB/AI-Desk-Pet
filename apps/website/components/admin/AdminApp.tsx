@@ -41,11 +41,10 @@ export function AdminApp({ auth, api }: AdminAppProps) {
         const target = new URL(configuredAdminOrigin);
         if (
           target.protocol !== 'https:'
-          || target.username
-          || target.password
-          || target.pathname !== '/'
-          || target.search
-          || target.hash
+          || (
+            configuredAdminOrigin !== target.origin
+            && configuredAdminOrigin !== `${target.origin}/`
+          )
         ) throw new Error('INVALID_ADMIN_ORIGIN');
         if (target.origin !== globalThis.location.origin) {
           globalThis.location.replace(`${target.origin}/admin/`);

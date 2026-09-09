@@ -120,7 +120,10 @@ describe('管理员审核工作台', () => {
     'http://admin.example.com',
     'https://user:password@admin.example.com',
     'https://admin.example.com/path',
+    'https://admin.example.com/./',
+    'https://admin.example.com?',
     'https://admin.example.com?next=/admin',
+    'https://admin.example.com#',
     'https://admin.example.com#token'
   ])('拒绝非纯 HTTPS origin 配置：%s', async configuredOrigin => {
     process.env.NEXT_PUBLIC_ADMIN_ORIGIN = configuredOrigin;
