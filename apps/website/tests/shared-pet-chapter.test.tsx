@@ -937,7 +937,7 @@ describe('共享仓库章节', () => {
     expect(harness.recordDownload).not.toHaveBeenCalled();
   });
 
-  it('下载响应从标准发布变为人工放行时首次阻断并刷新三处警告，第二次才下载', async () => {
+  it('下载响应从标准发布变为人工放行时保留首次同步、第二次下载，不展示提示', async () => {
     const harness = createRepository(1);
     harness.listPage.mockResolvedValueOnce(createPage([{
       ...createItem(1),
@@ -960,16 +960,16 @@ describe('共享仓库章节', () => {
 
     await waitFor(() => expect(harness.getDownload).toHaveBeenCalledTimes(1));
     expect(click).not.toHaveBeenCalled();
-    expect(screen.getByRole('note', { name: '共享包风险提示' })).toBeTruthy();
-    expect(within(dialog).getByRole('note', { name: '详情风险提示' })).toBeTruthy();
-    expect(within(dialog).getByRole('note', { name: '下载风险提示' })).toBeTruthy();
+    expect(screen.queryByRole('note', { name: '共享包风险提示' })).toBeNull();
+    expect(within(dialog).queryByRole('note', { name: '详情风险提示' })).toBeNull();
+    expect(within(dialog).queryByRole('note', { name: '下载风险提示' })).toBeNull();
 
     fireEvent.click(within(dialog).getByRole('button', { name: '下载 Pet 1' }));
     await waitFor(() => expect(click).toHaveBeenCalledTimes(1));
     expect(harness.getDownload).toHaveBeenCalledTimes(2);
   });
 
-  it('下载响应从人工放行变为标准发布时首次阻断并移除警告，第二次才下载', async () => {
+  it('下载响应从人工放行变为标准发布时保留首次同步、第二次下载，不展示提示', async () => {
     const harness = createRepository(1);
     harness.listPage.mockResolvedValueOnce(createPage([{
       ...createItem(1),
@@ -984,7 +984,7 @@ describe('共享仓库章节', () => {
     const click = vi.spyOn(HTMLAnchorElement.prototype, 'click')
       .mockImplementation(() => undefined);
     renderChapter(harness.repository);
-    await screen.findByRole('note', { name: '共享包风险提示' });
+    await screen.findByText('Pet 1');
 
     fireEvent.click(screen.getByRole('button', { name: '下载 Pet 1' }));
 

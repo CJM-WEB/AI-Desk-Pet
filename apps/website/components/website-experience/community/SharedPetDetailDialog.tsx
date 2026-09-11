@@ -5,7 +5,6 @@ import { Download } from 'lucide-react';
 import { interpolateMessage, useI18n } from '../../i18n/I18nProvider';
 import type { SharedPetPackageSummary } from './shared-pet-types';
 import { SharedPetDialogShell } from './SharedPetDialogShell';
-import { SharedPetOverrideWarning } from './SharedPetOverrideWarning';
 import { useObjectUrl } from './use-object-url';
 import styles from './community.module.css';
 
@@ -28,7 +27,7 @@ function formatSize(bytes: number, locale: string): string {
   return `${new Intl.NumberFormat(locale, { maximumFractionDigits: 1 }).format(value)} ${unit}`;
 }
 
-/** 展示列表摘要中的完整元数据，封面地址仅在弹窗存活期间保留。 */
+/** 详情只展示日期、大小和互动统计；原文件名仍由下载链使用。 */
 export function SharedPetDetailDialog({
   item,
   downloadDisabled,
@@ -57,20 +56,15 @@ export function SharedPetDetailDialog({
       closeLabel={t('sharedPet.detail.close')}
       onRequestClose={onRequestClose}
       footer={(
-        <div className={styles.downloadAction}>
-          {item.publicationBasis === 'admin_override' ? (
-            <SharedPetOverrideWarning ariaLabel={t('sharedPet.override.downloadLabel')} />
-          ) : null}
-          <button
-            type="button"
-            title={downloadLabel}
-            disabled={downloadDisabled}
-            onClick={() => onDownload(item)}
-          >
-            <Download aria-hidden="true" />
-            <span>{downloadLabel}</span>
-          </button>
-        </div>
+        <button
+          type="button"
+          title={downloadLabel}
+          disabled={downloadDisabled}
+          onClick={() => onDownload(item)}
+        >
+          <Download aria-hidden="true" />
+          <span>{downloadLabel}</span>
+        </button>
       )}
     >
       <div className={styles.detailContent}>
@@ -82,15 +76,11 @@ export function SharedPetDetailDialog({
           />
         ) : null}
         <p className={styles.detailDescription}>{item.description}</p>
-        {item.publicationBasis === 'admin_override' ? (
-          <SharedPetOverrideWarning ariaLabel={t('sharedPet.override.detailLabel')} />
-        ) : null}
         <dl className={styles.detailMetadata}>
-          <div><dt>{t('sharedPet.detail.fileName')}</dt><dd>{item.packageFileName}</dd></div>
-          <div><dt>{t('sharedPet.detail.fileSize')}</dt><dd>{formatSize(item.packageSizeBytes, locale)}</dd></div>
           <div><dt>{t('sharedPet.detail.publishedAt')}</dt><dd>{publishedAt}</dd></div>
-          <div><dt>{t('sharedPet.detail.likes')}</dt><dd>{item.likeCount}</dd></div>
+          <div><dt>{t('sharedPet.detail.fileSize')}</dt><dd>{formatSize(item.packageSizeBytes, locale)}</dd></div>
           <div><dt>{t('sharedPet.detail.downloads')}</dt><dd>{item.downloadCount}</dd></div>
+          <div><dt>{t('sharedPet.detail.likes')}</dt><dd>{item.likeCount}</dd></div>
         </dl>
       </div>
     </SharedPetDialogShell>

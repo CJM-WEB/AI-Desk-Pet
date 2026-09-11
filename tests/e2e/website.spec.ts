@@ -571,7 +571,7 @@ test('法律页面公开披露匿名投稿边界并提供站内投诉入口', as
   }
 });
 
-test('新共享包直入人工队列并经两步强制发布后在卡片、详情和下载入口披露风险', async ({ page, request }) => {
+test('新共享包保留两步强制发布和发布依据，公开界面不展示风险提示', async ({ page, request }) => {
   const title = 'E2E 管理员人工放行共享包';
   const receipt = await submitSharedPackageViaApi(
     request,
@@ -687,16 +687,13 @@ test('新共享包直入人工队列并经两步强制发布后在卡片、详�
   await page.goto('/?seed=42');
   await enterChapter(page, 'community');
   const card = page.locator('article').filter({ hasText: title });
-  await expect(card.getByRole('note', { name: '共享包风险提示' }))
-    .toContainText('管理员人工放行，未通过系统安全验证');
+  await expect(card.getByRole('note', { name: '共享包风险提示' })).toHaveCount(0);
   const detailButton = card.getByRole('button', { name: `打开 ${title} 的详情` });
   await detailButton.focus();
   await page.keyboard.press('Enter');
   const dialog = page.getByRole('dialog', { name: title });
-  await expect(dialog.getByRole('note', { name: '详情风险提示' }))
-    .toContainText('管理员人工放行，未通过系统安全验证');
-  await expect(dialog.getByRole('note', { name: '下载风险提示' }))
-    .toContainText('管理员人工放行，未通过系统安全验证');
+  await expect(dialog.getByRole('note', { name: '详情风险提示' })).toHaveCount(0);
+  await expect(dialog.getByRole('note', { name: '下载风险提示' })).toHaveCount(0);
 
   const invalidFinalize = await request.post(
     `/api/v1/submissions/${encodeURIComponent(receipt.submissionId)}/finalize`,

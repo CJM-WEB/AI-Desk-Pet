@@ -289,25 +289,6 @@
 .cardBody h3 { color: #fff6ac; font-size: clamp(0.9rem, 1.05vw, 1.18rem); line-height: 1.2; white-space: nowrap; }
 .cardBody p { margin-top: 4px; color: rgba(233, 255, 247, 0.82); font-size: clamp(0.7rem, 0.76vw, 0.84rem); line-height: 1.35; white-space: nowrap; }
 
-.overrideWarning {
-  display: grid;
-  gap: 3px;
-  margin-top: 8px;
-  padding: 8px 10px;
-  border: 1px solid rgba(255, 190, 152, 0.7);
-  border-inline-start-width: 4px;
-  border-radius: 10px;
-  background: rgba(72, 30, 24, 0.82);
-  color: #ffe0c8;
-  font-size: 0.72rem;
-  line-height: 1.35;
-  white-space: normal;
-}
-
-.overrideWarning strong { color: #fff6ac; }
-.downloadAction { display: grid; justify-items: end; gap: 10px; }
-.downloadAction .overrideWarning { max-width: 28rem; margin: 0; text-align: left; }
-
 .cardActions {
   position: relative;
   z-index: 3;
@@ -404,6 +385,8 @@
 
 .composerFields,
 .detailContent { display: grid; gap: 18px; }
+/* 详情正文撑开所在行，避免下载底栏的边框穿过日期和统计。 */
+.dialogPanel:has(.detailContent) { grid-template-rows: auto max-content auto; }
 .field { display: grid; gap: 8px; }
 .field label { color: #fff6ac; font-size: 0.88rem; font-weight: 720; }
 .field input,

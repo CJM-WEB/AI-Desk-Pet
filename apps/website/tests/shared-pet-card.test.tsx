@@ -124,7 +124,7 @@ describe('共享包卡片', () => {
     expect(onDownload).toHaveBeenCalledTimes(1);
   });
 
-  it('只有管理员人工放行的卡片显示固定风险提示', () => {
+  it('不同发布依据的卡片均不显示风险提示', () => {
     const renderCard = (publicationBasis: 'standard' | 'admin_override') => render(
       <I18nProvider initialLocale="zh-CN">
         <SharedPetCard
@@ -137,8 +137,7 @@ describe('共享包卡片', () => {
     );
 
     const override = renderCard('admin_override');
-    expect(screen.getByRole('note', { name: '共享包风险提示' }).textContent)
-      .toContain('管理员人工放行，未通过系统安全验证');
+    expect(screen.queryByRole('note', { name: '共享包风险提示' })).toBeNull();
     override.unmount();
 
     renderCard('standard');
