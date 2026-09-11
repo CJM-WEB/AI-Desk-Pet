@@ -5111,7 +5111,18 @@ test.describe('真实 Provider 业务闭环', () => {
       cloudReply,
       'body-canary-local-electron'
     ];
-    const cloud = await startProviderServer([...characterChatSteps(cloudReply, {}, {inspect: request => {
+    // 关闭本地模型释放待确认状态后，默认运动模式先向恢复的云路由请求一次活动匹配。
+    const activity = activityMatchStep();
+    const cloud = await startProviderServer([{ ...activity, inspect: request => {
+      activity.inspect?.(request);
+      expect(request.messages.at(-1)?.content).toBe('根据公开描述匹配适合真实移动的状态和动作。');
+      const schemaMessage = request.messages.find(message => message.role === 'system'
+        && message.content.startsWith('完整输出JSON Schema：'));
+      const schema = JSON.parse(schemaMessage?.content.slice('完整输出JSON Schema：'.length) ?? 'null');
+      expect(schema).toMatchObject({ type: 'object', additionalProperties: false,
+        required: ['moodUpdate', 'expressionPlan'] });
+      expect(Object.keys(schema.properties).sort()).toEqual(['expressionPlan', 'moodUpdate']);
+    } }, ...characterChatSteps(cloudReply, {}, {inspect: request => {
         expectCharacterChatRequest(request);
         if (request.messages.at(-1)?.content !== cloudPrompt) {
           throw new Error('关闭本地模型后没有恢复持久化云路由');
@@ -5251,9 +5262,11 @@ test.describe('真实 Provider 业务闭环', () => {
       await expect(lstat(firstTokenFilePath)).rejects.toMatchObject({ code: 'ENOENT' });
       await settings.getByRole('button', { name: '关闭设置', exact: true }).click();
 
+      await cloud.waitForCompletedResponses(1);
+      expect(cloud.requests).toHaveLength(1);
       await submitChatMessage(chat, cloudPrompt);
       await expect(chat.getByText(cloudReply, { exact: true })).toBeVisible();
-      expect(cloud.requests).toHaveLength(2);
+      expect(cloud.requests).toHaveLength(3);
       cloud.assertComplete();
       expect(cloud.inspectionErrors).toEqual([]);
 

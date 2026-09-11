@@ -30,6 +30,7 @@ import { randomUUID } from 'node:crypto';
 import type { CodingSessionEvent } from '@myself/coding-task-core';
 import { fileURLToPath } from 'node:url';
 import { resolveCodingTaskResources } from '../src/main/agent/coding-task-resources';
+import { LocalModelProvider } from '../src/main/providers/local-model-provider';
 
 function behaviorDouble(): ConversationBehaviorPort {
   return {
@@ -121,6 +122,7 @@ function codingTaskServiceDouble(overrides: Record<string, unknown> = {}) {
 
 function baseOptions(input: {
   chatResponse?: ModelResponse | Promise<ModelResponse>;
+  chatProvider?: ModelProvider;
   assertProviderReady?: (profile: ProviderProfileV2) => void;
   catalog?: typeof providerCatalog;
   createCodingTaskService?: (factory: MainConversationCodingTaskFactoryInput<
@@ -170,7 +172,7 @@ function baseOptions(input: {
         code: 'SETTINGS_INCOMPLETE'
       });
     }),
-    createChatAdapter: () => new ConversationChatAdapter(providerWith(
+    createChatAdapter: () => new ConversationChatAdapter(input.chatProvider ?? providerWith(
       input.chatResponse ?? {
         type: 'text',
         text: '你好'
@@ -196,7 +198,66 @@ function baseOptions(input: {
   };
 }
 
+// 通过真实本地 Provider 和 ChatAdapter 进入 Main，模型决定不能跳过范围授权。
+function localDecisionHarness(content: string | Promise<string>) {
+  const fetchClient = vi.fn(async () => new Response(JSON.stringify({ choices: [{ message: { content: await content } }] }), {
+    status: 200, headers: { 'content-type': 'application/json' }
+  }));
+  const provider = new LocalModelProvider({ getReadyConnection: () => ({ generation: 'local-1',
+    baseUrl: 'http://127.0.0.1:43123/v1', token: 'private-local-token', modelId: 'builtin-local' }) }, fetchClient);
+  const harness = baseOptions({ chatProvider: provider, catalog: [BUILTIN_LOCAL_PROVIDER_CATALOG_ENTRY],
+    assertProviderReady: value => assertProviderReady(value, { enabled: true, phase: 'ready', backend: 'cpu', reasonCode: null }) });
+  harness.readProviderSettings.mockResolvedValue(createLocalModelRoutingSnapshot(harness.providerSettings, true));
+  return { ...harness, fetchClient };
+}
+
 describe('Main 会话组合模块', () => {
+  test.each(['confirm', 'cancel'] as const)('Qwen 判别只申请范围，%s 决定是否创建执行服务', async resolution => {
+    const harness = localDecisionHarness('{"kind":"task","text":""}');
+    try {
+      await harness.composition.coordinator.submit('那 a 目录下又有什么？');
+      const scope = harness.events.find(event => event.type === 'capability_authorization_required');
+      expect(scope).toMatchObject({ directory: testRoot, modelId: 'builtin-local', actions: ['read', 'create', 'edit'] });
+      expect(harness.factoryInputs).toHaveLength(0);
+      expect(harness.fetchClient).toHaveBeenCalledOnce();
+      if (scope?.type !== 'capability_authorization_required') throw new Error('缺少范围授权');
+      await harness.composition.coordinator.resolveCapabilityAuthorization(scope.requestId, resolution);
+      if (resolution === 'confirm') {
+        await expect.poll(() => harness.factoryInputs.length).toBe(1);
+        expect(harness.factoryInputs[0]?.primaryProfile.id).toBe('builtin-local');
+      } else expect(harness.factoryInputs).toHaveLength(0);
+    } finally { await harness.composition.close(); }
+  });
+
+  test.each(['cancel', 'reset'] as const)('Qwen 判别在 %s 后迟到时没有范围或执行', async action => {
+    let finish!: (content: string) => void;
+    const harness = localDecisionHarness(new Promise(resolve => { finish = resolve; }));
+    const running = harness.composition.coordinator.submit('看吧，看看里面写了什么');
+    try {
+      await vi.waitFor(() => expect(harness.fetchClient).toHaveBeenCalledOnce());
+      if (action === 'reset') await harness.composition.resetForConfigurationChange();
+      else await harness.composition.coordinator.cancelActive();
+      finish('{"kind":"task","text":""}');
+      await running;
+      expect(harness.events.some(event => event.type === 'capability_authorization_required')).toBe(false);
+      expect(harness.readAuthorizedRootPath).not.toHaveBeenCalled();
+      expect(harness.factoryInputs).toHaveLength(0);
+    } finally { finish('{"kind":"task","text":""}'); await running; await harness.composition.close(); }
+  });
+
+  test.each(['{"kind":"task","text":"","path":"PRIVATE_PATH_CANARY","approved":true}',
+    '{"kind":"task","text":"PRIVATE_PATH_CANARY"}'])('非法 Qwen 判别不申请、不表现且不公开原文：%s', async content => {
+    const harness = localDecisionHarness(content);
+    try {
+      await expect(harness.composition.coordinator.submit('查看文件')).rejects.toMatchObject({ code: 'PROVIDER_MALFORMED_RESPONSE' });
+      expect(harness.fetchClient).toHaveBeenCalledOnce();
+      expect(harness.events.some(event => event.type === 'capability_authorization_required')).toBe(false);
+      expect(harness.factoryInputs).toHaveLength(0);
+      expect(JSON.stringify(harness.events)).not.toContain('PRIVATE_PATH_CANARY');
+      expect(harness.events).toContainEqual({ type: 'phase', phase: 'error' });
+    } finally { await harness.composition.close(); }
+  });
+
   test('不支持的任务协议在范围准备时明确拒绝，普通聊天入口保留', async () => {
     const harness = baseOptions();
     harness.providerSettings.profiles = [{ ...primary, mode: 'custom', protocol: 'anthropic', baseUrl: 'https://example.com', additionalParameters: {} }];

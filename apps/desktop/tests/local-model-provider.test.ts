@@ -79,13 +79,36 @@ function readyPort(getReadyConnection = () => connection): LocalModelConnectionP
   return { getReadyConnection };
 }
 
+const decisionJsonSchema = { anyOf: [
+  { type: 'object', additionalProperties: false, properties: {
+    kind: { type: 'string', enum: ['task'] }, text: { type: 'string', enum: [''] }
+  }, required: ['kind', 'text'] },
+  { type: 'object', additionalProperties: false, properties: {
+    kind: { type: 'string', enum: ['chat'] }, text: { type: 'string', minLength: 1, maxLength: 4000 }
+  }, required: ['kind', 'text'] }
+] };
+const emptyExpression = { moodUpdate: null, expressionPlan: null, requestKind: 'ambient',
+  explicitPlayback: null, movementControl: { kind: 'keep' } };
+
+/** 从正式适配器取得宿主入口，避免测试另造一套授权工具或提示。 */
+async function officialConversationRequest(): Promise<ModelRequest> {
+  let captured!: ModelRequest;
+  const adapter = new ConversationChatAdapter({ respond: async input => {
+    captured = input;
+    return { type: 'tool_request', request: { requestId: 'captured', toolName: 'request_task_authorization', arguments: {} } };
+  } });
+  await adapter.respond({ history: [], text: '请查看子目录', behaviorContext: localBehaviorContext, signal: new AbortController().signal });
+  return captured;
+}
+
 describe('LocalModelProvider', () => {
-  test('主聊天及独立表现合并system到首条，保留字节、非思考和原工具请求布局', async () => {
+  test('正式主聊天使用单次严格判别并保留人设历史正文，独立表现保持原协议', async () => {
     const requests: ModelRequest[] = [];
     const fetchClient = vi.fn<FetchLike>(async (_url, init) => {
       const body = JSON.parse(String(init?.body));
-      return jsonResponse({ choices: [{ message: { content: body.response_format ? JSON.stringify({ moodUpdate: null, expressionPlan: null,
-        requestKind: 'ambient', explicitPlayback: null, movementControl: { kind: 'keep' } }) : '  **保留正文😀**\n' } }] });
+      return jsonResponse({ choices: [{ message: { content: body.response_format?.schema.anyOf
+        ? JSON.stringify({ kind: 'chat', text: '  **保留正文😀**\n' })
+        : body.response_format ? JSON.stringify(emptyExpression) : '原工具正文' } }] });
     });
     const local = new LocalModelProvider(readyPort(), fetchClient);
     const adapter = new ConversationChatAdapter({ respond: (input, signal) => { requests.push(input); return local.respond(input, signal); } }, () => undefined, { inputByteBudget: 19_200 });
@@ -96,13 +119,19 @@ describe('LocalModelProvider', () => {
     for (const [index, original] of requests.entries()) {
       const body = JSON.parse(String(fetchClient.mock.calls[index]?.[1]?.body));
       const systems = original.messages.filter(message => message.role === 'system');
-      expect(body.messages).toEqual([{ role: 'system', content: systems.map(message => message.content).join('\n\n') }, ...original.messages.filter(message => message.role !== 'system')]);
+      expect(body.messages.slice(1)).toEqual(original.messages.filter(message => message.role !== 'system'));
       expect(body).toMatchObject({ stream: false, reasoning_effort: 'none', chat_template_kwargs: { enable_thinking: false }, parallel_tool_calls: false });
       if (index === 0) {
-        expect(body.tools.map((tool: ToolDefinition) => tool.function.name)).toEqual(['request_task_authorization']);
-        expect(body.tool_choice).toBe('auto'); expect(body).not.toHaveProperty('response_format');
+        expect(body.tools).toEqual([]);
+        expect(body).toMatchObject({ tool_choice: 'none', temperature: 0, response_format: { type: 'json_object', schema: decisionJsonSchema } });
+        expect(body.messages[0].content).not.toContain(systems[0]!.content);
+        expect(body.messages[0].content.endsWith('\n\n' + systems[1]!.content)).toBe(true);
+        expect(body.messages[0].content).toContain('角色人设仅影响普通回复的语气');
+        expect(body.messages[0].content).toContain('历史帮助理解目标，不继承许可，也不证明文件当前内容');
       } else {
+        expect(body.messages[0]).toEqual({ role: 'system', content: systems.map(message => message.content).join('\n\n') });
         expect(body.tools).toEqual([]); expect(body.tool_choice).toBe('none');
+        expect(body).not.toHaveProperty('temperature');
         expect(body.response_format.schema).toEqual(original.responseContract?.jsonSchema);
         expect(body.response_format.schema.properties).not.toHaveProperty('text');
         expect(body.response_format.schema.properties).not.toHaveProperty('capabilityPlan');
@@ -137,15 +166,174 @@ describe('LocalModelProvider', () => {
     expect(fetchClient).toHaveBeenCalledOnce();
   });
 
-  test('本地原生单申请可附正文，且不额外请求表现', async () => {
-    const fetchClient = vi.fn<FetchLike>(async () => jsonResponse({ choices: [{ message: { content: '准备查看', tool_calls: [{ id: 'call-1', type: 'function', function: { name: 'request_task_authorization', arguments: '{}' } }] } }] }));
+  test('合法本地task映射为空参数申请，且不额外请求表现', async () => {
+    const fetchClient = vi.fn<FetchLike>(async () => jsonResponse({ choices: [{ message: { content: '{"kind":"task","text":""}' } }] }));
     const adapter = new ConversationChatAdapter(new LocalModelProvider(readyPort(), fetchClient));
     expect(await adapter.respond({ history: [], text: '请查看目录', behaviorContext: localBehaviorContext, signal: new AbortController().signal })).toEqual({ text: '', capabilityPlan: { kind: 'agent_task' } });
     expect(fetchClient).toHaveBeenCalledOnce();
   });
+  test('每个合法task由宿主生成独立申请ID，模型不能携带范围或许可', async () => {
+    const fetchClient = vi.fn<FetchLike>(async () => jsonResponse({ choices: [{ message: { content: '{"kind":"task","text":""}' } }] }));
+    const provider = new LocalModelProvider(readyPort(), fetchClient);
+    const official = await officialConversationRequest();
+    const first = await provider.respond(official, new AbortController().signal);
+    const second = await provider.respond(official, new AbortController().signal);
+    const expected = { type: 'tool_request', request: { requestId: expect.stringMatching(/^[0-9a-f-]{36}$/), toolName: 'request_task_authorization', arguments: {} } };
+    expect(first).toEqual(expected);
+    expect(second).toEqual(expected);
+    expect(first).not.toEqual(second);
+  });
+  test.each([
+    ['空白及换行', '  正文\n\n保留缩进  \r\n'],
+    ['4000个Unicode码点', '😀'.repeat(4000)],
+    ['转义后大于16KiB的合法正文', '😀'.repeat(4000)]
+  ])('合法chat原样交付%s', async (name, text) => {
+    const raw = name.startsWith('转义') ? '{"kind":"chat","text":"' + '\\ud83d\\ude00'.repeat(4000) + '"}' : JSON.stringify({ kind: 'chat', text });
+    const fetchClient = vi.fn<FetchLike>(async (_url, init) => jsonResponse({ choices: [{ message: {
+      content: JSON.parse(String(init?.body)).response_format?.schema.anyOf ? raw : JSON.stringify(emptyExpression)
+    } }] }));
+    const adapter = new ConversationChatAdapter(new LocalModelProvider(readyPort(), fetchClient));
+    const reply = await adapter.respond({ history: [], text: '你好', behaviorContext: localBehaviorContext, signal: new AbortController().signal });
+    expect(reply).toMatchObject({ text, capabilityPlan: { kind: 'chat' }, expressionStatus: 'no_match' });
+    expect(fetchClient).toHaveBeenCalledTimes(2);
+  });
+  test.each([
+    ['坏JSON', '{"kind":"task","text":""'],
+    ['Markdown围栏', '```json\n{"kind":"task","text":""}\n```'],
+    ['未知分支', '{"kind":"unknown","text":"私密内容"}'],
+    ['缺字段', '{"kind":"task"}'],
+    ['额外字段', '{"kind":"task","text":"","root":"C:/private"}'],
+    ['伪造许可', '{"kind":"task","text":"","approved":true}'],
+    ['任务非空正文', '{"kind":"task","text":"我已经查看了私密文件"}'],
+    ['任务空白正文', '{"kind":"task","text":" "}'],
+    ['聊天空白', '{"kind":"chat","text":" \\n\\t"}'],
+    ['聊天空字符串', '{"kind":"chat","text":""}'],
+    ['聊天错误类型', '{"kind":"chat","text":1}'],
+    ['聊天超过4000码点', JSON.stringify({ kind: 'chat', text: '😀'.repeat(4001) })],
+    ['原始JSON超过64KiB', ' '.repeat(64 * 1024) + '{"kind":"chat","text":"正文"}'],
+    ['多个对象', '{"kind":"task","text":""}{"kind":"chat","text":"正文"}']
+  ])('正式入口对%s失败关闭且不重试、不泄露响应', async (_name, raw) => {
+    const fetchClient = vi.fn<FetchLike>(async () => jsonResponse({ choices: [{ message: { content: raw } }] }));
+    const adapter = new ConversationChatAdapter(new LocalModelProvider(readyPort(), fetchClient));
+    const error = await adapter.respond({ history: [], text: '请查看目录', behaviorContext: localBehaviorContext,
+      signal: new AbortController().signal }).catch(error => error);
+    expect(error).toMatchObject({ code: 'RESPONSE_FORMAT_UNSUPPORTED', stage: 'chat_control', retryable: false });
+    expect(String(error)).not.toContain(raw);
+    expect(JSON.stringify(error)).not.toContain('私密');
+    expect(fetchClient).toHaveBeenCalledOnce();
+  });
+  test.each([null, '{"kind":"task","text":""}', '{"kind":"chat","text":"正文"}'])('原生申请与%s混合时稳定拒绝且不回退', async content => {
+    const fetchClient = vi.fn<FetchLike>(async () => jsonResponse({ choices: [{ message: { content,
+      tool_calls: [{ id: 'model-generated-id', type: 'function', function: { name: 'request_task_authorization', arguments: '{}' } }]
+    } }] }));
+    const official = await officialConversationRequest();
+    // 历史保留同名工具，使失败不能仅依赖工具名codec恰好不认识该调用。
+    official.messages.splice(-1, 0, { role: 'assistant', content: '', toolRequest: {
+      requestId: 'old-request', toolName: 'request_task_authorization', arguments: {}
+    } }, { role: 'tool', toolCallId: 'old-request', content: '{"approved":false}' });
+    await expect(new LocalModelProvider(readyPort(), fetchClient).respond(official, new AbortController().signal))
+      .rejects.toMatchObject({ code: 'RESPONSE_FORMAT_UNSUPPORTED', retryable: false });
+    expect(fetchClient).toHaveBeenCalledOnce();
+  });
+  test('仅替换准确宿主system，人设和其他system相对顺序与原文保持', async () => {
+    const official = await officialConversationRequest();
+    const host = official.messages[0]!;
+    const before = { role: 'system' as const, content: '  前置系统\r\n内容' };
+    const after = { role: 'system' as const, content: '后置系统\n\n原样' };
+    const fetchClient = vi.fn<FetchLike>(async () => jsonResponse({ choices: [{ message: { content: '{"kind":"task","text":""}' } }] }));
+    await new LocalModelProvider(readyPort(), fetchClient).respond({ ...official, messages: [before, host, ...official.messages.slice(1), after] }, new AbortController().signal);
+    const body = JSON.parse(String(fetchClient.mock.calls[0]?.[1]?.body));
+    expect(body.messages[0].content.startsWith(before.content + '\n\n')).toBe(true);
+    expect(body.messages[0].content.endsWith('\n\n' + official.messages[1]!.content + '\n\n' + after.content)).toBe(true);
+    expect(body.messages[0].content).not.toContain(host.content);
+    expect(body.messages.slice(1)).toEqual(official.messages.filter(message => message.role !== 'system'));
+  });
+  test.each(['无工具', '其他工具', '两个工具', '非主请求', '不同宿主', '非system宿主', '重复宿主', '非空参数', '增量回调', 'required'])(
+    '%s保持既有协议，不通过局部文本或不匹配工具触发判别', async variant => {
+      const official = await officialConversationRequest();
+      let input: ModelRequest = official;
+      if (variant === '无工具') input = { ...official, tools: [], toolChoice: 'none' };
+      if (variant === '其他工具') input = { ...official, tools };
+      if (variant === '两个工具') input = { ...official, tools: [...official.tools, ...tools] };
+      if (variant === '非主请求') { input = { ...official }; delete input.purpose; }
+      if (variant === '不同宿主') input = { ...official, messages: official.messages.map((message, index) => index === 0 ? { ...message, content: message.content + '额外指示' } : message) };
+      if (variant === '非system宿主') input = { ...official, messages: official.messages.map((message, index) => index === 0 ? { role: 'user', content: message.content } : message) };
+      if (variant === '重复宿主') input = { ...official, messages: [official.messages[0]!, ...official.messages] };
+      if (variant === '非空参数') input = { ...official, tools: [{ ...official.tools[0]!, function: { ...official.tools[0]!.function,
+        parameters: { type: 'object', additionalProperties: false, properties: { root: { type: 'string' } }, required: [] } } }] };
+      if (variant === '增量回调') input = { ...official, onTextDelta: vi.fn() };
+      if (variant === 'required') input = { ...official, toolChoice: 'required' };
+      const fetchClient = vi.fn<FetchLike>(async () => jsonResponse({ choices: [{ message: { content: '保持正文' } }] }));
+      await expect(new LocalModelProvider(readyPort(), fetchClient).respond(input, new AbortController().signal)).resolves.toEqual({ type: 'text', text: '保持正文' });
+      const body = JSON.parse(String(fetchClient.mock.calls[0]?.[1]?.body));
+      expect(body).not.toHaveProperty('response_format');
+      expect(body.tool_choice).toBe(input.toolChoice);
+      expect(body.tools).toHaveLength(input.tools.length);
+      expect(body.messages.some((message: { content: string }) => message.content.includes(input.messages[0]!.content))).toBe(true);
+    }
+  );
+  test('已有响应契约与任务工具冲突仍拒绝，不以本地判别覆盖原校验', async () => {
+    const official = await officialConversationRequest();
+    const fetchClient = vi.fn<FetchLike>();
+    await expect(new LocalModelProvider(readyPort(), fetchClient).respond({ ...official, responseContract: structuredRequest.responseContract! }, new AbortController().signal))
+      .rejects.toMatchObject({ code: 'PROVIDER_RESPONSE_CONTRACT_CONFLICT' });
+    expect(fetchClient).not.toHaveBeenCalled();
+  });
+  test.each(['取消', 'generation'])('正式入口在HTTP返回后%s时拒绝迟到申请', async variant => {
+    const controller = new AbortController();
+    let current = connection;
+    const fetchClient = vi.fn<FetchLike>(async () => {
+      if (variant === '取消') controller.abort();
+      else current = { ...connection, generation: 'generation-late' };
+      return jsonResponse({ choices: [{ message: { content: '{"kind":"task","text":""}' } }] });
+    });
+    const provider = new LocalModelProvider(readyPort(() => current), fetchClient);
+    await expect(provider.respond(await officialConversationRequest(), controller.signal)).rejects.toMatchObject(
+      variant === '取消' ? { name: 'AbortError' } : { code: 'LOCAL_MODEL_CONNECTION_STALE', retryable: false });
+    expect(fetchClient).toHaveBeenCalledOnce();
+  });
+  test('合法响应完成解析后generation变化仍不能生成申请', async () => {
+    let checks = 0;
+    const fetchClient = vi.fn<FetchLike>(async () => jsonResponse({ choices: [{ message: { content: '{"kind":"task","text":""}' } }] }));
+    const provider = new LocalModelProvider(readyPort(() => ++checks <= 3 ? connection : { ...connection, generation: 'generation-after-parse' }), fetchClient);
+    await expect(provider.respond(await officialConversationRequest(), new AbortController().signal)).rejects.toMatchObject({ code: 'LOCAL_MODEL_CONNECTION_STALE' });
+  });
+  test('正式判别JSON的Unicode转义不能隐藏思考标签', async () => {
+    const fetchClient = vi.fn<FetchLike>(async () => jsonResponse({ choices: [{ message: {
+      content: '{"kind":"chat","text":"\\u003cthink\\u003e私密思考\\u003c/think\\u003e正文"}'
+    } }] }));
+    const provider = new LocalModelProvider(readyPort(), fetchClient);
+    const error = await provider.respond(await officialConversationRequest(), new AbortController().signal).catch(error => error);
+    expect(error).toMatchObject({ code: 'LOCAL_MODEL_REASONING_LEAK', retryable: false });
+    expect(JSON.stringify(error)).not.toContain('私密思考');
+    expect(fetchClient).toHaveBeenCalledOnce();
+  });
+  test('完整本地Schema计入预算，临界历史只按完整回合裁剪', async () => {
+    const official = await officialConversationRequest();
+    const bodies: Array<Record<string, any>> = [];
+    const fetchClient = vi.fn<FetchLike>(async (_url, init) => {
+      bodies.push(JSON.parse(String(init?.body)));
+      return jsonResponse({ choices: [{ message: { content: '{"kind":"task","text":""}' } }] });
+    });
+    const provider = new LocalModelProvider(readyPort(), fetchClient);
+    await provider.respond(official, new AbortController().signal);
+    const base = bodies[0]!;
+    expect(base.response_format?.schema).toEqual(decisionJsonSchema);
+    const recent = [{ role: 'user' as const, content: '最近用户' }, { role: 'assistant' as const, content: '最近回复' }];
+    const oldest = [{ role: 'user' as const, content: '最旧用户' }, { role: 'assistant' as const, content: '' }];
+    const messages = [base.messages[0], ...oldest, ...recent, base.messages.at(-1)];
+    const beforePadding = Buffer.byteLength(JSON.stringify({ messages, tools: [], responseSchema: null }));
+    oldest[1]!.content = 'x'.repeat(19_200 - beforePadding - 20);
+    expect(Buffer.byteLength(JSON.stringify({ messages, tools: [], responseSchema: null }))).toBeLessThan(19_200);
+    expect(Buffer.byteLength(JSON.stringify({ messages, tools: [], responseSchema: decisionJsonSchema }))).toBeGreaterThan(19_200);
+    await provider.respond({ ...official, messages: [...official.messages.slice(0, -1), ...oldest, ...recent, official.messages.at(-1)!] }, new AbortController().signal);
+    const bounded = bodies[1]!;
+    expect(bounded.messages.slice(1)).toEqual([...recent, official.messages.at(-1)]);
+    expect(Buffer.byteLength(JSON.stringify({ messages: bounded.messages, tools: bounded.tools, responseSchema: bounded.response_format?.schema }))).toBeLessThanOrEqual(19_200);
+  });
   test('过大公开角色目录不会挤占本地当前用户正文的固定输入预算', async () => {
     const fetchClient = vi.fn<FetchLike>(async () => jsonResponse({
-      choices: [{ message: { content: JSON.stringify({ text: '收到。' }) } }]
+      choices: [{ message: { content: JSON.stringify({ kind: 'chat', text: '收到。' }) } }]
     }));
     const adapter = new ConversationChatAdapter(new LocalModelProvider(readyPort(), fetchClient), () => undefined, { inputByteBudget: 19_200 });
     const text = '甲'.repeat(4_000);
@@ -435,12 +623,15 @@ describe('LocalModelProvider', () => {
     expect(bounded).toMatchObject({ startLine: 7, endLine: 7, truncated: true });
   });
 
-  test('本地主正文中的旧控制JSON按文字保留，独立表现故障不授权', async () => {
+  test('旧控制JSON在正式本地主入口失败关闭，不触发表现或授权且不泄露原文', async () => {
     const payload = JSON.stringify({ text: '正文', capabilityPlan: { kind: 'agent_task', preferredTool: 'unknown' } });
     const fetchClient = vi.fn<FetchLike>(async () => jsonResponse({ choices: [{ message: { content: payload } }] }));
     const adapter = new ConversationChatAdapter(new LocalModelProvider(readyPort(), fetchClient));
     const onTextDelta = vi.fn();
-    expect(await adapter.respond({ history: [], text: '普通聊天', behaviorContext: localBehaviorContext, signal: new AbortController().signal, onTextDelta })).toEqual({ text: payload, capabilityPlan: { kind: 'chat' }, expressionStatus: 'failed' });
+    const error = await adapter.respond({ history: [], text: '普通聊天', behaviorContext: localBehaviorContext, signal: new AbortController().signal, onTextDelta }).catch(error => error);
+    expect(error).toMatchObject({ code: 'RESPONSE_FORMAT_UNSUPPORTED', stage: 'chat_control', retryable: false });
+    expect(String(error)).not.toContain(payload);
+    expect(fetchClient).toHaveBeenCalledOnce();
     expect(onTextDelta).not.toHaveBeenCalled();
   });
   test.each([

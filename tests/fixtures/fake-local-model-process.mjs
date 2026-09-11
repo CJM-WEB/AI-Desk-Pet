@@ -1,5 +1,25 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { createServer } from 'node:http';
+import { isDeepStrictEqual } from 'node:util';
+
+const decisionSchema = { anyOf: [
+  { type: 'object', additionalProperties: false, properties: {
+    kind: { type: 'string', enum: ['task'] }, text: { type: 'string', enum: [''] }
+  }, required: ['kind', 'text'] },
+  { type: 'object', additionalProperties: false, properties: {
+    kind: { type: 'string', enum: ['chat'] },
+    text: { type: 'string', minLength: 1, maxLength: 4000 }
+  }, required: ['kind', 'text'] }
+] };
+
+/** 表现协议以严格根字段集合识别，不能把任意 JSON 请求当成会话判别。 */
+function hasObjectSchemaFields(schema, fields) {
+  return schema?.type === 'object' && schema.additionalProperties === false
+    && Array.isArray(schema.required) && schema.properties !== null
+    && typeof schema.properties === 'object'
+    && isDeepStrictEqual([...schema.required].sort(), [...fields].sort())
+    && isDeepStrictEqual(Object.keys(schema.properties).sort(), [...fields].sort());
+}
 
 const options = Object.fromEntries(process.argv.slice(2).map(argument => {
   const separator = argument.indexOf('=');
@@ -59,46 +79,27 @@ const server = createServer(async (request, response) => {
   }
   const body = JSON.parse(Buffer.concat(chunks).toString('utf8'));
   const latestUser = [...body.messages].reverse().find(message => message.role === 'user');
-  const wantsStaleFile = Array.isArray(body.tools)
-    && body.tools.length > 0
-    && typeof latestUser?.content === 'string'
-    && latestUser.content.includes('switch-stale.txt');
-  const message = wantsStaleFile
-    ? {
-        content: null,
-        tool_calls: [{
-          id: 'local-e2e-stale-action',
-          type: 'function',
-          function: {
-            name: 'builtin__files__create_file',
-            arguments: JSON.stringify({ relativePath: 'switch-stale.txt', content: '' })
-          }
-        }]
-      }
-    : {
-        content: JSON.stringify({
-          text: '本地模型 fixture 回复',
-          moodUpdate: null,
-          expressionPlan: null,
-          movementControl: { kind: 'keep' },
-          capabilityPlan: { kind: 'chat' }
-        })
-      };
-  if (body.stream === true && !wantsStaleFile) {
-    response.writeHead(200, {
-      'content-type': 'text/event-stream',
-      'cache-control': 'no-cache'
-    });
-    const midpoint = Math.floor(message.content.length / 2);
-    for (const content of [message.content.slice(0, midpoint), message.content.slice(midpoint)]) {
-      response.write(`data: ${JSON.stringify({ choices: [{ delta: { content } }] })}\n\n`);
-    }
-    response.end('data: [DONE]\n\n');
+  const schema = body.response_format?.type === 'json_object' ? body.response_format.schema : undefined;
+  let output;
+  if (isDeepStrictEqual(schema, decisionSchema)) {
+    // 仅为当前生命周期样例提供固定结果，任务只能申请原范围卡。
+    output = latestUser?.content === '请创建 switch-stale.txt'
+      ? { kind: 'task', text: '' }
+      : { kind: 'chat', text: '本地模型 fixture 回复' };
+  } else if (hasObjectSchemaFields(schema, ['moodUpdate', 'expressionPlan', 'requestKind', 'explicitPlayback', 'movementControl'])
+    && isDeepStrictEqual(schema.properties.requestKind, { enum: ['ambient', 'state', 'action', 'movement'] })) {
+    output = { moodUpdate: null, expressionPlan: null, requestKind: 'ambient',
+      explicitPlayback: null, movementControl: { kind: 'keep' } };
+  } else if (hasObjectSchemaFields(schema, ['moodUpdate', 'expressionPlan'])) {
+    output = { moodUpdate: null, expressionPlan: null };
+  } else {
+    response.writeHead(400, { 'content-type': 'application/json' });
+    response.end(JSON.stringify({ error: { message: 'LOCAL_MODEL_E2E_SCHEMA_UNSUPPORTED' } }));
     return;
   }
   response.writeHead(200, { 'content-type': 'application/json' });
   response.end(JSON.stringify({
-    choices: [{ message }],
+    choices: [{ message: { content: JSON.stringify(output) } }],
     fixture_canary: 'body-canary-local-electron'
   }));
 });

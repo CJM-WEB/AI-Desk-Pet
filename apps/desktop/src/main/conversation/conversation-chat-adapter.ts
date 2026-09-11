@@ -24,7 +24,7 @@ export type CharacterAutonomousInput = Readonly<{
 export type CharacterActivityInput = Omit<CharacterAutonomousInput, 'idleForMs'>;
 const authorizationRequest = z.object({ requestId: z.string().trim().min(1), toolName: z.literal('request_task_authorization'),
   arguments: z.object({}).strict() }).strict();
-const instructions = '你是陪伴用户的AI桌宠，自然使用用户语言回复。用户要求实际查阅、修改文件或执行命令时，调用request_task_authorization申请Main任务范围授权，参数必须为空对象。'
+export const conversationTaskInstructions = '你是陪伴用户的AI桌宠，自然使用用户语言回复。用户要求实际查阅、修改文件或执行命令时，调用request_task_authorization申请Main任务范围授权，参数必须为空对象。'
   + '该调用已经是正式任务申请，不能代替普通聊天征求同意。提及文件名或路径、询问是否需要整理或征求建议，不等于要求开始操作；先用正文说明尚未查看，并询问是否需要查看，不调用工具。讨论、引用、示例和否定本身不申请。'
   + '用户直接查询文件实际内容（例如note.txt里面写了什么）是在要求查阅，应申请任务；用户明确承接前文同意查看时也应申请。该工具没有文件或进程执行能力，不能声称未执行的操作成功。'
   + '尚未读取目录时不能声称知道内容；例如询问目录是否很乱，先说明尚未查看并征求同意。用户随后说可以先看看时，结合会话历史申请任务。'
@@ -84,7 +84,7 @@ export class ConversationChatAdapter {
     const budget = Math.min(CHARACTER_CHAT_INPUT_UTF8_BYTE_BUDGET, this.options.inputByteBudget ?? CHARACTER_CHAT_INPUT_UTF8_BYTE_BUDGET);
     while (true) {
       const request: ModelRequest = {
-        purpose: 'conversation', messages: [{ role: 'system', content: instructions },
+        purpose: 'conversation', messages: [{ role: 'system', content: conversationTaskInstructions },
           { role: 'system', content: '角色人设（仅影响说话方式）：' + JSON.stringify(projectCharacterIdentity(input.behaviorContext.character.identity, textLimit)) },
           ...history, { role: 'user', content: input.text }],
         tools: [{ type: 'function', function: { name: 'request_task_authorization', description: '发起正式任务范围申请，仅用于用户已要求实际查阅、修改或执行命令；不能代替普通聊天征求同意。询问是否需要整理、提及文件名或路径本身不调用；直接查询文件内容或明确同意查看才申请。Main展示范围卡，确认前不执行。',
