@@ -142,7 +142,7 @@ function createFixture(initialSettings: Readonly<{
     updateRuntimeFacts: vi.fn(), hasEligibleExpressionFor: vi.fn(() => true),
     context: vi.fn(() => null), snapshot: vi.fn(() => ({ schedule: { current: { ...activityAuthorization, startedAtMs: 0 } } }) as never), applyDecision: vi.fn(() => directedAuthorization),
     prepareActivity: vi.fn((): CharacterBehaviorAuthorization => behavior.hasEligibleExpressionFor() ? activityAuthorization : NONE),
-    releasePreparedActivity: vi.fn(), releaseExplicitPlayback: vi.fn(),
+    releasePreparedActivity: vi.fn(), releaseExplicitPlayback: vi.fn(), releaseBackgroundSelection: vi.fn(), cancelSingleEpisode: vi.fn(), hasActiveSingleEpisode: vi.fn(() => false), hasStartedPlayback: vi.fn(() => true),
     invalidateContext: vi.fn(), recordTrustedEvent: vi.fn(), handleUserInteraction: vi.fn(),
     getPublicBehaviorCatalog: vi.fn((): PublicBehaviorCatalog => ({ idleStateId: 'state-2241',
       identity: { formsOfAddress: [], dislikes: [], boundaries: [], exampleLines: [],
@@ -385,12 +385,12 @@ describe('Main 角色行为 Director', () => {
     { type: 'history_disclosure_required', requestId: 'history', targetProviderName: 'test', messageCount: 1, characterCount: 10 },
     { type: 'capability_authorization_required', requestId: 'scope', targetProviderName: 'test', capability: 'file', requestSummary: '读取',
       directory: 'C:\\test', modelId: 'test', actions: ['read', 'create', 'edit'], approvedCommands: [], expiresAt: '2026-09-06T12:00:00Z' }
-  ] satisfies TaskEvent[])('$type 清理等待但不伪造任务或确认事实', async event => {
+  ] satisfies TaskEvent[])('$type 进入授权等待且不伪造任务执行事实', async event => {
     const f = createFixture(); f.behavior.hasEligibleExpressionFor.mockReturnValue(false);
     f.director.handleTaskEvent({ type: 'phase', phase: 'thinking' });
     await f.director.prepareUserPrompt('向左一点');
     f.director.handleTaskEvent(event);
-    expect(f.director.getChatContext().runtime).toMatchObject({ chatting: true, taskRunning: false, awaitingConfirmation: false });
+    expect(f.director.getChatContext().runtime).toMatchObject({ chatting: false, taskRunning: false, awaitingConfirmation: true });
     expect(f.director.getChatContext().runtime).not.toHaveProperty('pendingMovement');
     f.setNow(9000); f.director.advance(); f.director.handleTaskEvent({ type: 'phase', phase: 'error' });
     expect(f.motion.requestIntent).not.toHaveBeenCalled();
@@ -1550,25 +1550,21 @@ describe('Main 角色行为 Director', () => {
     expect(fixture.motion.requestIntent).not.toHaveBeenCalled();
   });
 
-  test.each(['state', 'action'] as const)('明确 %s 无匹配时独立心情仍应用并提示，已有本地播放则不误报', async requestKind => {
+  test.each(['state', 'action'] as const)('明确 %s 无匹配时保留正文并准确提示，已有本地播放则不误报', async requestKind => {
     const fixture = createFixture({ movementMode: 0, proactivityMode: 'assistive' });
     const context = { instance: Symbol(), contextRevision: 0, moodRevision: 0 };
     fixture.behavior.context.mockReturnValue(context as never);
-    const moodUpdate = { summary: '平静', strength: .5 };
     const reply = await new ConversationChatAdapter({ respond: vi.fn()
       .mockResolvedValueOnce({ type: 'text', text: '仍然保留的正文' })
       .mockResolvedValueOnce({ type: 'structured', structured_output: {
-        moodUpdate, requestKind, explicitPlayback: null, movementControl: { kind: 'keep' },
-        expressionPlan: { states: [{ stateId: 'state-2241', score: 1, activity: null,
-          actions: [{ actionId: 'action-2309', score: 1 }] }] }
+        kind: requestKind, choice: null, mode: 'keep', target: null, distance: null
       } }) }).respond({ text: '表现一个未配置的状态或动作', history: [],
       signal: new AbortController().signal, behaviorContext: fixture.director.getChatContext() });
-    expect(reply).toMatchObject({ text: '仍然保留的正文', requestKind, expressionStatus: 'no_match', moodUpdate });
+    expect(reply).toMatchObject({ text: '仍然保留的正文', requestKind, expressionStatus: 'no_match' });
     const completion = { ...reply, generation: 'generation-1', context, explicitDirective: null };
     await fixture.director.completeUserPrompt({ ...completion, eventId: String(++completionSequence) });
     expect(fixture.behavior.applyDecision).toHaveBeenCalledWith(expect.objectContaining({
-      moodUpdate: expect.objectContaining(moodUpdate),
-      expressionPlan: expect.objectContaining({ states: [expect.objectContaining({ stateId: 'state-2241' })] })
+      expressionPlan: { states: [] }
     }));
     expect(fixture.notices).toEqual([{ code: 'CHARACTER_ACTION_UNAVAILABLE', message: '请先配置对应状态和动作。' }]);
     fixture.notices.length = 0;

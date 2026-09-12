@@ -12,13 +12,29 @@ const decisionSchema = { anyOf: [
   }, required: ['kind', 'text'] }
 ] };
 
-/** 表现协议以严格根字段集合识别，不能把任意 JSON 请求当成会话判别。 */
-function hasObjectSchemaFields(schema, fields) {
-  return schema?.type === 'object' && schema.additionalProperties === false
-    && Array.isArray(schema.required) && schema.properties !== null
-    && typeof schema.properties === 'object'
-    && isDeepStrictEqual([...schema.required].sort(), [...fields].sort())
-    && isDeepStrictEqual(Object.keys(schema.properties).sort(), [...fields].sort());
+const strictObject = properties => ({ type: 'object', additionalProperties: false, required: Object.keys(properties), properties });
+const expressionSchema = strictObject({
+  kind: { enum: ['none', 'reaction', 'state', 'action', 'background', 'movement'] },
+  choice: { anyOf: [strictObject({ stateId: { type: 'string' }, actionId: { type: 'string' } }), { type: 'null' }] },
+  mode: { enum: ['keep', 'still', 'continuous', 'intermittent', 'once'] },
+  target: { anyOf: [{ enum: ['random_work_area', 'left', 'right', 'top', 'bottom', 'top_left', 'top_right', 'bottom_left', 'bottom_right'] }, { type: 'null' }] },
+  distance: { anyOf: [{ enum: ['near', 'medium', 'far'] }, { type: 'null' }] }
+});
+const autonomySchema = { ...expressionSchema, properties: { ...expressionSchema.properties,
+  kind: { enum: ['none', 'reaction', 'background'] }, mode: { const: 'keep' }, target: { type: 'null' }, distance: { type: 'null' }
+} };
+const behaviorRoles = ['chatting', 'taskRunning', 'awaitingConfirmation', 'moving', 'success', 'error', 'praise', 'boredom', 'rest'];
+
+/** 作者配对随角色变化；重建完整严格结构，不能只靠九个字段放行任意 Schema。 */
+function isBindingsSchema(schema) {
+  const choices = schema?.$defs?.choice?.anyOf;
+  if (!Array.isArray(choices) || choices.length < 2 || !isDeepStrictEqual(choices.at(-1), { type: 'null' })) return false;
+  const pairs = choices.slice(0, -1).map(choice => ({ stateId: choice?.properties?.stateId?.const,
+    actionId: choice?.properties?.actionId?.const }));
+  if (pairs.some(pair => typeof pair.stateId !== 'string' || !pair.stateId || typeof pair.actionId !== 'string' || !pair.actionId)) return false;
+  return isDeepStrictEqual(schema, { ...strictObject(Object.fromEntries(behaviorRoles.map(role => [role, { $ref: '#/$defs/choice' }]))),
+    $defs: { choice: { anyOf: [...pairs.map(pair => strictObject({ stateId: { const: pair.stateId }, actionId: { const: pair.actionId } })), { type: 'null' }] } }
+  });
 }
 
 const options = Object.fromEntries(process.argv.slice(2).map(argument => {
@@ -86,12 +102,11 @@ const server = createServer(async (request, response) => {
     output = latestUser?.content === '请创建 switch-stale.txt'
       ? { kind: 'task', text: '' }
       : { kind: 'chat', text: '本地模型 fixture 回复' };
-  } else if (hasObjectSchemaFields(schema, ['moodUpdate', 'expressionPlan', 'backgroundSelection', 'requestKind', 'explicitPlayback', 'movementControl'])
-    && isDeepStrictEqual(schema.properties.requestKind, { enum: ['ambient', 'state', 'action', 'movement'] })) {
-    output = { moodUpdate: null, expressionPlan: null, backgroundSelection: null, requestKind: 'ambient',
-      explicitPlayback: null, movementControl: { kind: 'keep' } };
-  } else if (hasObjectSchemaFields(schema, ['moodUpdate', 'expressionPlan', 'backgroundSelection'])) {
-    output = { moodUpdate: null, expressionPlan: null, backgroundSelection: null };
+  } else if (isDeepStrictEqual(schema, expressionSchema) || isDeepStrictEqual(schema, autonomySchema)) {
+    output = { kind: 'none', choice: null, mode: 'keep', target: null, distance: null };
+  } else if (isBindingsSchema(schema)) {
+    // 协议夹具不模拟作者语义理解；完整返回明确未匹配的九项用途。
+    output = Object.fromEntries(behaviorRoles.map(role => [role, null]));
   } else {
     response.writeHead(400, { 'content-type': 'application/json' });
     response.end(JSON.stringify({ error: { message: 'LOCAL_MODEL_E2E_SCHEMA_UNSUPPORTED' } }));

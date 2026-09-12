@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import {
   CharacterExpressionEngine, characterPlaybackFeedbackSchema, createPublicBehaviorCatalog, resolveBehaviorTarget, resolveCharacterPresentationV3,
   type BehaviorTarget, type CharacterAgentBehaviorIntent, type CharacterBehaviorPlan,
-  type CharacterExpressionContext, type CharacterExpressionDecision, type CharacterExpressionResult,
+  type CharacterExpressionContext, type CharacterExpressionDecision, type CharacterExpressionResult, type CharacterExpressionPlanInput,
   type CharacterManifestV3, type CharacterPlaybackFeedback, type PublicBehaviorCatalog,
   type CharacterExpressionTarget, type TrustedCharacterEventV3, type CharacterRuntimeFacts
 } from '@myself/character-runtime';
@@ -45,6 +45,8 @@ export class CharacterBehaviorService {
   /** 仅保存最近十六个实际发布片段，辨认宿主先到期而 Renderer 终态稍晚的正常竞争。 */
   private readonly publishedPlaybacks = new Map<string, { actionId: string; scheduledAtMs: number }>();
   private engine: CharacterExpressionEngine | null = null;
+  /** 就绪事实只属于接纳过合法 started 的引擎实例，角色重载不能继承旧画面。 */
+  private startedPlaybackEngine: CharacterExpressionEngine | null = null;
   private manifest: CharacterManifestV3 | null = null;
   private direction: 'left' | 'right' = 'right';
   private moving = false;
@@ -123,10 +125,10 @@ export class CharacterBehaviorService {
     this.recordTrustedEvent(snapshot.moving ? 'move-start' : 'move-stop');
   }
   /** 真实事实即刻重判并发布；切换期间缓存，交由新角色的唯一 Engine 重新接纳。 */
-  updateRuntimeFacts(facts: Partial<CharacterRuntimeFacts>): void {
+  updateRuntimeFacts(facts: Partial<CharacterRuntimeFacts>, activityPlan?: CharacterExpressionPlanInput): void {
     if (this.closed) return;
     this.runtimeFacts = { ...this.runtimeFacts, ...facts };
-    if (!this.transitioning && this.engine) this.publish(this.engine.updateRuntimeFacts(facts));
+    if (!this.transitioning && this.engine) this.publish(this.engine.updateRuntimeFacts(facts, activityPlan));
   }
   hasEligibleExpressionFor(facts: Partial<CharacterRuntimeFacts>, requiredFact?: keyof CharacterRuntimeFacts): boolean {
     return !this.closed && !this.transitioning && !!this.engine && this.engine.hasEligibleExpressionFor(facts, requiredFact);
@@ -163,6 +165,18 @@ export class CharacterBehaviorService {
     // 同一角色的配置重置仍允许识别已发布片段的迟到回报；角色切换和关闭时再清空，避免旧生命周期穿透。
     if (this.engine) { this.publish(this.engine.reset()); this.publish(this.engine.updateRuntimeFacts(this.runtimeFacts)); }
   }
+  releaseBackgroundSelection(stateId: string): void {
+    if (!this.closed && !this.transitioning && this.engine) this.publish(this.engine.releaseBackgroundSelection(stateId));
+  }
+  cancelSingleEpisode(): void {
+    if (!this.closed && !this.transitioning && this.engine) this.publish(this.engine.cancelSingleEpisode());
+  }
+  hasActiveSingleEpisode(): boolean {
+    return !this.closed && !this.transitioning && !!this.engine?.hasActiveSingleEpisode();
+  }
+  hasStartedPlayback(): boolean {
+    return !this.closed && !this.transitioning && this.engine !== null && this.startedPlaybackEngine === this.engine;
+  }
   advance(): readonly string[] {
     if (this.closed || this.transitioning || !this.engine) return [];
     const previous = this.engine.snapshot().schedule.current?.playbackToken;
@@ -181,7 +195,11 @@ export class CharacterBehaviorService {
       || current.actionId !== feedback.actionId || feedback.occurredAtMs < current.scheduledAtMs || feedback.occurredAtMs > this.now()) {
       throw new Error('CHARACTER_PLAYBACK_UNAUTHORIZED');
     }
-    this.publish(this.engine.applyFeedback(feedback));
+    const result = this.engine.applyFeedback(feedback);
+    const accepted = result.snapshot.schedule.current;
+    if (feedback.status === 'started' && accepted?.playbackToken === feedback.playbackToken
+      && accepted.actionId === feedback.actionId && accepted.startedAtMs !== null) this.startedPlaybackEngine = this.engine;
+    this.publish(result);
     if (feedback.status === 'started') {
       const name = this.manifest?.actions.find(action => action.id === feedback.actionId)?.name;
       if (name && this.recentPublicActions.at(-1) !== name) this.recentPublicActions.push(name);
@@ -196,7 +214,7 @@ export class CharacterBehaviorService {
   close(): void {
     if (this.closed) return;
     if (this.engine) this.publish(this.engine.reset());
-    this.closed = true; this.loadRevision++; this.engine = null; this.manifest = null;
+    this.closed = true; this.loadRevision++; this.engine = null; this.startedPlaybackEngine = null; this.manifest = null;
     this.publishedPlaybacks.clear();
     this.recentPublicActions.splice(0); this.listeners.clear();
   }
@@ -206,7 +224,7 @@ export class CharacterBehaviorService {
     this.transitioning = true;
     if (this.engine) this.publish(this.engine.reset());
     this.publishedPlaybacks.clear();
-    this.engine = null; this.manifest = null; this.recentPublicActions.splice(0);
+    this.engine = null; this.startedPlaybackEngine = null; this.manifest = null; this.recentPublicActions.splice(0);
     try {
       const manifest = await this.options.store.getActiveManifestV3();
       if (this.closed || revision !== this.loadRevision) return;

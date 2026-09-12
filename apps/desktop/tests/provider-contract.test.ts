@@ -22,7 +22,7 @@ import {
 import { ProviderRegistry } from '../src/main/providers/provider-registry';
 import { BUILTIN_LOCAL_PROFILE_ID } from '../src/main/local-model/local-model-route';
 import { ConversationChatAdapter } from '../src/main/conversation/conversation-chat-adapter';
-import { characterExpressionSelectionJsonSchema, characterExpressionSelectionSchema } from '@myself/character-runtime';
+import { characterExpressionResponseContract } from '../src/main/conversation/character-expression-adapter';
 import {
   providerCatalog,
   toolRequestSchema,
@@ -102,12 +102,7 @@ const request: ModelRequest = {
   reasoningMode: 'provider_default'
 };
 
-const chatResponseContract: ModelResponseContract = {
-  type: 'json_object',
-  name: 'character_expression',
-  jsonSchema: characterExpressionSelectionJsonSchema,
-  validateStructuredOutput: value => characterExpressionSelectionSchema.safeParse(value).success
-};
+const chatResponseContract: ModelResponseContract = characterExpressionResponseContract;
 
 const structuredChatRequest: ModelRequest = {
   messages: [{ role: 'user', content: '向左走一点' }],
@@ -116,6 +111,9 @@ const structuredChatRequest: ModelRequest = {
   reasoningMode: 'provider_default',
   responseContract: chatResponseContract
 };
+
+// 所有表现夹具复用正式扁平协议，测试仍独立验证各 Provider 的传输与权限边界。
+const emptyExpression = { kind: 'none', choice: null, mode: 'keep', target: null, distance: null };
 
 function jsonResponse(value: unknown, status = 200): Response {
   return new Response(JSON.stringify(value), {
@@ -323,7 +321,7 @@ const structuredProviderCases: StructuredProviderCase[] = [
       expect(outputConfig.format.name).toBeUndefined();
       const serializedSchema = JSON.stringify(outputConfig.format.schema);
       expect(serializedSchema).toContain('"anyOf"');
-      expect(serializedSchema).toContain('"const"');
+      expect(serializedSchema).toContain('"enum"');
       expect(serializedSchema).not.toMatch(/"(?:oneOf|minLength|maxLength|pattern)"/u);
     }
   },
@@ -349,12 +347,11 @@ const structuredProviderCases: StructuredProviderCase[] = [
 describe('ConversationChatAdapter 三类 Provider 协议契约', () => {
   test.each(chatProviderContractCases)('$name先自然正文再独立表现，正文逐字保留且不增量公开', async contract => {
     const text = '  **自然正文**\n'; let calls = 0;
-    const selection = { moodUpdate: { summary: '开心', strength: .8 }, expressionPlan: null,
-      requestKind: 'ambient', explicitPlayback: null, movementControl: { kind: 'keep' } };
+    const selection = emptyExpression;
     const fetchClient = vi.fn<FetchLike>(async () => jsonResponse(contract.textResponse(++calls === 1 ? text : JSON.stringify(selection))));
     const onTextDelta = vi.fn();
     const reply = await new ConversationChatAdapter(contract.createProvider(fetchClient)).respond({ history: [], text: '你好', behaviorContext: providerBehaviorContext, signal: new AbortController().signal, onTextDelta });
-    expect(reply).toMatchObject({ text, capabilityPlan: { kind: 'chat' }, moodUpdate: { summary: '开心', strength: .8, fadeInMs: 0 }, expressionStatus: 'no_match', expressionPlan: { states: [] } });
+    expect(reply).toMatchObject({ text, capabilityPlan: { kind: 'chat' }, expressionStatus: 'no_match', expressionPlan: { states: [] } });
     expect(onTextDelta).not.toHaveBeenCalled();
     const bodies = fetchClient.mock.calls.map(call => JSON.parse(String(call[1]?.body)));
     expect(contract.requestTools(bodies[0])).toHaveLength(1);
@@ -622,7 +619,7 @@ describe('结构化聊天响应协议映射', () => {
     '$name 映射无工具响应契约并解码正文',
     async contract => {
       const fetchClient = vi.fn<FetchLike>(async () => jsonResponse(
-        contract.textResponse(JSON.stringify({"moodUpdate":null,"expressionPlan":null,"requestKind":"ambient","explicitPlayback":null,"movementControl":{"kind":"keep"}}))
+        contract.textResponse(JSON.stringify(emptyExpression))
       ));
       const provider = contract.createProvider(fetchClient);
 
@@ -630,7 +627,7 @@ describe('结构化聊天响应协议映射', () => {
         structuredChatRequest,
         new AbortController().signal
       )).resolves.toEqual({
-        type: 'structured', structured_output: {"moodUpdate":null,"expressionPlan":null,"requestKind":"ambient","explicitPlayback":null,"movementControl":{"kind":"keep"}}
+        type: 'structured', structured_output: emptyExpression
       });
 
       const body = JSON.parse(String(fetchClient.mock.calls[0]?.[1]?.body)) as Record<
@@ -1856,7 +1853,7 @@ describe('ProviderRegistry', () => {
           type: 'text',
           text: '首次正文。',
           structured_output: {
-            expressionPlan: { states: 'bad' },
+            choice: { stateId: 123, actionId: null },
             rawResponse: [
               'sk-private-control-key',
               'C:\\Users\\Alice\\Documents\\control.txt',
@@ -1867,15 +1864,14 @@ describe('ProviderRegistry', () => {
         })
         .mockResolvedValueOnce({
           type: 'text',
-          text: '修复正文不得替换首次正文。',
-          structured_output: {movementControl: { kind: 'keep' },
-capabilityPlan: { kind: 'chat' }}
+          text: '表现正文不得替换首次正文。',
+          structured_output: { ...emptyExpression, choice: 'bad' }
         })
     };
     const sink = vi.fn();
     const createCorrelationId = vi.fn()
       .mockReturnValueOnce('provider-call-1')
-      .mockReturnValueOnce('repair-call-2');
+      .mockReturnValueOnce('expression-call-2');
     const registry = new ProviderRegistry(
       providerCatalog,
       () => rawProvider,
@@ -1902,7 +1898,7 @@ capabilityPlan: { kind: 'chat' }}
       providerType: BUILTIN_LOCAL_PROFILE_ID,
       stage: 'chat_control',
       code: 'CONTROL_SCHEMA_INVALID',
-      correlationId: 'repair-call-2'
+      correlationId: 'expression-call-2'
     });
     expect(JSON.stringify(sink.mock.calls)).not.toContain('control response');
   });
@@ -2093,7 +2089,7 @@ capabilityPlan: { kind: 'chat' }}
   test('DeepSeek自然主请求无角色契约，独立表现沿用同一Provider且不思考', async () => {
     const profile: ProviderProfileV2 = { id: 'deepseek-chat-profile', displayName: 'DeepSeek', mode: 'preset', providerId: 'deepseek', modelId: 'deepseek-v4-flash', hasStoredSecret: true };
     const text = '  **自然回复**\n'; let calls = 0;
-    const fetchClient = vi.fn<FetchLike>(async () => jsonResponse({ choices: [{ message: { content: ++calls === 1 ? text : JSON.stringify({ moodUpdate: null, expressionPlan: null, requestKind: 'ambient', explicitPlayback: null, movementControl: { kind: 'keep' } }) } }] }));
+    const fetchClient = vi.fn<FetchLike>(async () => jsonResponse({ choices: [{ message: { content: ++calls === 1 ? text : JSON.stringify(emptyExpression) } }] }));
     const provider = new ProviderRegistry(providerCatalog).create(profile, async () => 'deepseek-secret', fetchClient);
     expect(await new ConversationChatAdapter(provider).respond({ history: [], text: '你好', behaviorContext: providerBehaviorContext, signal: new AbortController().signal })).toMatchObject({ text, capabilityPlan: { kind: 'chat' }, expressionStatus: 'no_match' });
     const first = JSON.parse(String(fetchClient.mock.calls[0]?.[1]?.body));
@@ -2103,17 +2099,14 @@ capabilityPlan: { kind: 'chat' }}
     expect(first.tools[0].function.description).toContain('不能代替普通聊天征求同意');
     expect(first.messages[0].content).toContain('是否需要整理');
     expect(second).toMatchObject({ model: 'deepseek-v4-flash', thinking: { type: 'disabled' }, tools: [], response_format: { type: 'json_object' } });
-    // JSON 模式仅保证 JSON；服务端实际收到的消息必须包含完整嵌套输出约定。
-    expect(second.messages).toContainEqual({ role: 'system', content: '完整输出JSON Schema：' + JSON.stringify(characterExpressionSelectionJsonSchema) });
+    // JSON 模式仅保证 JSON；服务端实际收到的消息必须包含完整扁平输出约定。
+    expect(second.messages).toContainEqual({ role: 'system', content: '完整输出JSON Schema：' + JSON.stringify(characterExpressionResponseContract.jsonSchema) });
   });
   test.each([['空 content', null, 'RESPONSE_SHAPE_INVALID'], ['全空白 content', ' \n\t'.repeat(18), 'RESPONSE_FORMAT_UNSUPPORTED']] as const)('DeepSeek自然聊天%s只失败一次，独立零工具表现不改变主请求拒绝', async (_name, content, code) => {
     const profile: ProviderProfileV2 = { id: 'deepseek-empty-chat-profile', displayName: 'DeepSeek', mode: 'preset', providerId: 'deepseek', modelId: 'deepseek-v4-flash', hasStoredSecret: true };
     const fetchClient = vi.fn<FetchLike>(async (_url, init) => {
       const body = JSON.parse(String(init?.body));
-      return jsonResponse({ choices: [{ message: { content: body.response_format ? JSON.stringify({
-        moodUpdate: null, expressionPlan: null, backgroundSelection: null, requestKind: 'ambient',
-        explicitPlayback: null, movementControl: { kind: 'keep' }
-      }) : content, tool_calls: [] } }] });
+      return jsonResponse({ choices: [{ message: { content: body.response_format ? JSON.stringify(emptyExpression) : content, tool_calls: [] } }] });
     });
     const adapter = new ConversationChatAdapter(new ProviderRegistry(providerCatalog).create(profile, async () => 'deepseek-secret', fetchClient));
     await expect(adapter.respond({ history: [], text: '你好', behaviorContext: providerBehaviorContext, signal: new AbortController().signal })).rejects.toMatchObject({ code, retryable: false });

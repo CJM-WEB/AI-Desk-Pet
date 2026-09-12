@@ -26,6 +26,7 @@ import type {
 } from '../storage/settings-store';
 import type { CharacterMotionSnapshot } from '../../shared/character-motion-ipc';
 import { CharacterSituation, type CharacterInteractionKind, type CharacterSituationSnapshot, type CharacterTaskPhase } from './character-situation';
+import { characterBehaviorRoles, type CharacterBehaviorBindings, type CharacterBehaviorChoice } from './character-behavior-bindings';
 
 export type CharacterMotionIntent =
   | Readonly<{
@@ -58,6 +59,7 @@ export type PreparedBehaviorPrompt = Readonly<{
 }>;
 
 export type ConversationBehaviorContext = Readonly<{
+  bindings?: CharacterBehaviorBindings;
   candidateSequence?: number;
   expression?: Readonly<{ stateId: string | null; actionId: string | null; backgroundStateId?: string | null; mood: { summary: string; strength: number } | null }>;
   situation?: CharacterSituationSnapshot;
@@ -84,6 +86,8 @@ export type CharacterActivityBlockers = Readonly<{
   awaitingConfirmation: boolean;
   movementModeTransition: boolean;
   pendingMovement?: boolean;
+  singleEpisode?: boolean;
+  rendererUnready?: boolean;
   movementMode: CharacterMovementMode;
   closed: boolean;
 }>;
@@ -110,6 +114,9 @@ export interface ConversationBehaviorPort {
   captureExpressionContext(): CharacterExpressionContext | null;
   completeUserPrompt(input: CompletedCharacterPrompt): Promise<void>;
   handleChatResponseFinished(): void;
+  needsBehaviorBindings?(): boolean;
+  applyBehaviorBindings?(input: { bindings: CharacterBehaviorBindings; context: CharacterExpressionContext; lifecycle: number }): boolean;
+  applyIdleBindings?(idleForMs: number): boolean;
   handleTaskEvent(event: TaskEvent): void;
   handleCapabilityTaskPhase?(phase: CharacterTaskPhase): void;
   prepareTaskPresentation?(signal: AbortSignal): Promise<void>;
@@ -142,6 +149,7 @@ type BehaviorServicePort = Pick<
   CharacterBehaviorService,
   | 'context' | 'snapshot' | 'applyDecision' | 'invalidateContext' | 'recordTrustedEvent' | 'handleUserInteraction'
   | 'updateRuntimeFacts' | 'hasEligibleExpressionFor' | 'prepareActivity' | 'releasePreparedActivity' | 'releaseExplicitPlayback'
+  | 'releaseBackgroundSelection' | 'cancelSingleEpisode' | 'hasActiveSingleEpisode' | 'hasStartedPlayback'
   | 'getPublicBehaviorCatalog'
   | 'getRecentPublicActions'
   | 'resolveBehaviorTarget'
@@ -230,6 +238,7 @@ export class CharacterBehaviorDirector {
   private continuousTarget: MotionTarget | null = null;
   private continuousDistance: MotionDistance = 'none';
   private currentMotionTarget: MotionTarget | 'relative' | null = null;
+  private currentMotionSource: BehaviorPlanSource | null = null;
   private lastSpatialTarget: CharacterMotionSnapshot['target'] | null = null;
   private motionWasMoving = false;
   private proactivityMode: CharacterBehaviorSettingsSnapshot['proactivityMode'];
@@ -246,7 +255,6 @@ export class CharacterBehaviorDirector {
   private movementPlaybackCycle: { stateId: string; actionId: string; expectedEndAtMs: number | null; startDeadlineAtMs: number | null } | null = null;
   private committingMotion = false;
   private lastContinuousAttemptRevision = -1;
-  private missingNoticeLifecycle = -1;
   private automaticMovementFailureLifecycle = -1;
   private readonly now: () => number;
   private active: Readonly<{
@@ -263,6 +271,10 @@ export class CharacterBehaviorDirector {
   private trustedTaskPhase: 'running' | 'waiting' | null = null;
   private preparedTaskToken: string | null = null;
   private pendingTaskStart: { token: string; finish(): void } | null = null;
+  /** 用途独立于逐轮计划；只绑定当前角色实例，配置边界显式撤销。 */
+  private behaviorBindings: { bindings: CharacterBehaviorBindings; instance: symbol } | null = null;
+  private idleBackgroundStateId: string | null = null;
+  private bindingSequence = 0;
 
   constructor(private readonly options: CharacterBehaviorDirectorOptions) {
     this.now = options.now ?? performance.now.bind(performance);
@@ -280,6 +292,8 @@ export class CharacterBehaviorDirector {
     if (this.options.ready) await this.options.ready;
     // 首次大素材加载也属于当前会话轮次；等待期间取消、reset 或关闭后不执行旧指令。
     if (!this.isTurnCurrent(turnEpoch)) return { originalText: text.trim(), capabilityText: text.trim(), explicitDirective: null };
+    this.clearIdleBackground();
+    this.retireBoundReaction();
     this.options.behavior.handleUserInteraction();
     this.noteUserInteraction('chat');
     this.options.behavior.recordTrustedEvent('conversation-start');
@@ -302,24 +316,71 @@ export class CharacterBehaviorDirector {
   }
 
   captureExpressionContext(): CharacterExpressionContext | null { return this.options.behavior.context(); }
+  needsBehaviorBindings(): boolean { return !this.closed && !!this.options.behavior.context() && this.currentBindings() === null; }
+
+  /** 角色就绪准备可在聊天期间完成；只接纳同实例、同上下文和同宿主生命周期的合法用途。 */
+  applyBehaviorBindings(input: { bindings: CharacterBehaviorBindings; context: CharacterExpressionContext; lifecycle: number }): boolean {
+    if (this.closed || input.lifecycle !== this.behaviorLifecycleGeneration || !this.isExpressionContextCurrent(input.context)) return false;
+    let catalog: PublicBehaviorCatalog;
+    try { catalog = this.options.behavior.getPublicBehaviorCatalog(); } catch { return false; }
+    if (characterBehaviorRoles.some(role => {
+      const choice = input.bindings[role];
+      if (choice === null) return false;
+      const state = choice && catalog.states.find(state => state.stateId === choice.stateId);
+      return !state?.agentInferable || !state.actions.some(action => action.actionId === choice!.actionId);
+    })) return false;
+    this.behaviorBindings = { bindings: structuredClone(input.bindings), instance: input.context.instance };
+    this.syncRuntimeFacts();
+    this.publishActivityChanged();
+    return true;
+  }
+
+  /** 自主未陪伴背景只填补空位；重复轮询不续期，明确休息等既有长期选择保持优先。 */
+  applyIdleBindings(idleForMs: number): boolean {
+    if (this.closed || !Number.isFinite(idleForMs) || idleForMs < 300_000 || this.chatting || this.capabilityTask
+      || this.awaitingConfirmation || this.dragging || this.options.motion.getSnapshot().moving || this.pendingMotion || this.active?.source === 'explicit') return false;
+    const choice = this.currentBindings()?.boredom;
+    const context = this.options.behavior.context();
+    if (!choice || !context) return false;
+    const background = this.options.behavior.snapshot()?.background;
+    if (background) return this.idleBackgroundStateId === background.stateId;
+    this.options.behavior.applyDecision({ context, eventId: `idle-binding-${++this.bindingSequence}`, source: 'autonomous',
+      backgroundSelection: { stateId: choice.stateId, actions: [{ actionId: choice.actionId, score: 1 }] } });
+    if (this.options.behavior.snapshot()?.background?.stateId !== choice.stateId) return false;
+    this.idleBackgroundStateId = choice.stateId;
+    return true;
+  }
   /** 自主建议只进入表达引擎；保留请求前修订，绝不复用聊天的运动或任务提交。 */
   applyAutonomousDecision(input: AutonomousCharacterDecision): void {
     if (this.closed || input.lifecycle !== this.behaviorLifecycleGeneration || this.chatting
-      || this.capabilityTask || this.awaitingConfirmation || this.dragging) return;
+      || this.capabilityTask || this.awaitingConfirmation || this.dragging || !this.isExpressionContextCurrent(input.context)) return;
+    const backgroundSelection = this.idleBackgroundStateId && input.backgroundSelection?.stateId === this.options.behavior.getPublicBehaviorCatalog().idleStateId
+      ? undefined : input.backgroundSelection;
+    const expressionPlan = this.preserveBoundActivities(input.expressionPlan);
+    const singleEpisode = !!expressionPlan?.states.some(state => state.lifetime !== 'condition');
     const authorization = this.options.behavior.applyDecision({ context: input.context, eventId: input.eventId, source: 'autonomous',
+      ...(singleEpisode ? { singleEpisode: true } : {}),
       ...(input.moodUpdate === undefined ? {} : { moodUpdate: input.moodUpdate }),
-      ...(input.backgroundSelection === undefined ? {} : { backgroundSelection: input.backgroundSelection }),
-      ...(input.expressionPlan === undefined ? {} : { expressionPlan: input.expressionPlan }) });
+      ...(backgroundSelection === undefined ? {} : { backgroundSelection }),
+      ...(expressionPlan === undefined ? {} : { expressionPlan }) });
+    // 自主重选同一无聊背景仍属于未陪伴事件，只有真正换到其他背景才交接来源。
+    if (backgroundSelection && this.options.behavior.snapshot()?.background?.stateId !== this.idleBackgroundStateId) this.idleBackgroundStateId = null;
     if (authorization.kind === 'play') this.active = { source: 'local-idle', playbackToken: authorization.playbackToken };
+    if (singleEpisode) this.pauseAutomaticMotionForReaction();
+    this.publishActivityChanged();
   }
-  handleChatResponseFinished(): void { this.options.behavior.recordTrustedEvent('response-finished'); }
-  noteUserInteraction(kind: CharacterInteractionKind): void { this.situation.noteInteraction(kind); }
+  handleChatResponseFinished(): void {
+    this.options.behavior.recordTrustedEvent('response-finished');
+    this.chatting = false; this.syncRuntimeFacts(); this.publishActivityChanged();
+  }
+  noteUserInteraction(kind: CharacterInteractionKind): void { this.clearIdleBackground(); this.situation.noteInteraction(kind); }
 
   /** 仅 Coordinator 的真实 Core 事件调用；普通聊天 phase 不能生成任务终态。 */
   handleCapabilityTaskPhase(phase: CharacterTaskPhase): void {
     if (this.closed) return;
     const previous = this.trustedTaskPhase;
     if (phase === 'running' || phase === 'waiting') {
+      this.retireBoundReaction();
       this.trustedTaskPhase = phase;
       if (previous === null) this.options.behavior.recordTrustedEvent('task-start');
       if (phase === 'waiting' && previous !== phase) this.options.behavior.recordTrustedEvent('task-waiting');
@@ -332,6 +393,7 @@ export class CharacterBehaviorDirector {
     this.awaitingConfirmation = this.trustedTaskPhase === 'waiting';
     this.syncRuntimeFacts();
     this.cancelTaskPreparation();
+    if (phase === 'success' || phase === 'error') this.applyBoundReaction(phase);
     this.publishActivityChanged();
   }
 
@@ -340,6 +402,7 @@ export class CharacterBehaviorDirector {
     this.cancelTaskPreparation();
     if (this.closed || signal.aborted) return;
     if (this.active?.source === 'explicit' && this.options.behavior.snapshot()?.schedule.current?.startedAtMs != null) return;
+    this.installPreparedBinding('taskRunning');
     const authorization = this.options.behavior.prepareActivity('taskRunning');
     if (authorization.kind !== 'play') { this.publishUnavailableNotice(); return; }
     this.preparedTaskToken = authorization.playbackToken;
@@ -364,6 +427,7 @@ export class CharacterBehaviorDirector {
     if (this.preparedTaskToken !== null) {
       this.preparedTaskToken = null;
       this.options.behavior.releasePreparedActivity();
+      this.syncRuntimeFacts();
     }
   }
 
@@ -397,6 +461,7 @@ export class CharacterBehaviorDirector {
     }
     const snapshot = this.options.behavior.snapshot();
     return {
+      ...(this.currentBindings() ? { bindings: structuredClone(this.currentBindings()!) } : {}),
       character,
       candidateSequence: this.candidateSequence++,
       expression: { stateId: snapshot?.stateId ?? null, actionId: snapshot?.schedule.current?.actionId ?? null,
@@ -429,6 +494,8 @@ export class CharacterBehaviorDirector {
       awaitingConfirmation: this.awaitingConfirmation,
       movementModeTransition: this.movementModeTransitionPending,
       pendingMovement: this.pendingMotion !== null || this.committingMotion,
+      ...(this.options.behavior.hasActiveSingleEpisode() ? { singleEpisode: true } : {}),
+      ...(!this.options.behavior.hasStartedPlayback() ? { rendererUnready: true } : {}),
       movementMode: this.movementMode,
       closed: this.closed
     };
@@ -457,6 +524,8 @@ export class CharacterBehaviorDirector {
   invalidateBehaviorLifecycle(): void {
     if (this.closed) return;
     this.behaviorLifecycleGeneration += 1;
+    if (this.currentBindings()) this.options.behavior.updateRuntimeFacts({}, { states: [] });
+    this.behaviorBindings = null; this.clearIdleBackground(); this.retireBoundReaction();
     this.lastContinuousAttemptRevision = -1;
     this.cancelTaskPreparation();
     this.clearPendingChat();
@@ -482,15 +551,21 @@ export class CharacterBehaviorDirector {
           : input.explicitPlayback.actionId !== undefined ? input.explicitPlayback : undefined;
       }
       if (explicit) { this.clearPendingChat(); this.clearContinuousMotion(); }
+      if (input.backgroundSelection) this.idleBackgroundStateId = null;
+      const expressionPlan = this.preserveBoundActivities(input.expressionPlan);
+      const singleEpisode = !!expressionPlan?.states.some(state => state.lifetime !== 'condition');
       const authorization = this.options.behavior.applyDecision({
         context: input.context, eventId: input.eventId, source: 'chat',
+        ...(singleEpisode ? { singleEpisode: true } : {}),
         ...(input.moodUpdate === undefined ? {} : { moodUpdate: input.moodUpdate }),
         ...(input.backgroundSelection === undefined ? {} : { backgroundSelection: input.backgroundSelection }),
-        ...(input.expressionPlan === undefined ? {} : { expressionPlan: input.expressionPlan }),
+        ...(expressionPlan === undefined ? {} : { expressionPlan }),
         ...(explicit === undefined ? {} : { explicitPlayback: explicit }),
         ...(input.explicitPlaybackToken === undefined ? {} : { preserveExplicitPlaybackToken: input.explicitPlaybackToken })
       });
       if (authorization.kind === 'play') this.active = { source: explicit ? 'explicit' : 'chat', playbackToken: authorization.playbackToken };
+      if (singleEpisode && !explicit) this.pauseAutomaticMotionForReaction();
+      this.publishActivityChanged();
     }
     // 同份已验证回复的候选先同步接纳，避免自身模式落盘推进生命周期时丢失活动匹配。
     // 落盘等待后仍检查取消与接纳后的修订，外部切换不能提交迟到运动。
@@ -567,7 +642,10 @@ export class CharacterBehaviorDirector {
   /** 播放反馈先由同一 Engine 验证，再据当前token决定提交或终止位移。 */
   applyPlaybackFeedback(feedback: CharacterPlaybackFeedback): void {
     if (this.closed) return;
+    const reactionActive = this.options.behavior.hasActiveSingleEpisode();
+    const rendererReady = this.options.behavior.hasStartedPlayback();
     this.options.behavior.applyPlaybackFeedback(feedback);
+    if (reactionActive && !this.options.behavior.hasActiveSingleEpisode()) this.publishActivityChanged();
     if (this.preparedTaskToken === feedback.playbackToken) {
       const current = this.options.behavior.snapshot()?.schedule.current;
       // 首帧回报本身不构成播放证据，必须与服务核验后的当前快照一致。
@@ -592,6 +670,7 @@ export class CharacterBehaviorDirector {
       }
       this.releasePlaybackToken(feedback.playbackToken);
     }
+    if (!rendererReady && this.options.behavior.hasStartedPlayback()) this.publishActivityChanged();
   }
 
   /** 供明确指令、聊天和本地待机共用同一条已解析授权链。 */
@@ -654,10 +733,12 @@ export class CharacterBehaviorDirector {
   /** 500ms 推进只更新本地心情与表现；模型重评和独立运动由宿主 Runtime 分别调度。 */
   advance(): void {
     if (this.closed) return;
+    const reactionActive = this.options.behavior.hasActiveSingleEpisode();
     if (this.pendingMotion?.playbackToken && this.now() >= this.pendingMotion.deadlineAtMs) this.expirePendingMotion();
     const expiredTokens = this.options.behavior.advance();
     for (const playbackToken of expiredTokens) this.releasePlaybackToken(playbackToken);
     if (this.movementPlaybackToken && !this.refreshMovementPlayback()) this.stopContinuousMotion();
+    if (reactionActive && !this.options.behavior.hasActiveSingleEpisode()) this.publishActivityChanged();
   }
 
   /** 拖拽事实只参与优先级阻塞，不在 Director 内复制运动或角色状态。 */
@@ -708,7 +789,7 @@ export class CharacterBehaviorDirector {
         );
         if (!this.isTurnCurrent(turnEpoch) || transitionRevision !== this.movementModeTransitionRevision) return;
         // 同值持久化仍代表用户明确重试；成功后开启新生命周期，自动tick不能自行解锁。
-        if (retrySameMode) this.invalidateBehaviorLifecycle();
+        if (retrySameMode) { this.behaviorLifecycleGeneration += 1; this.lastContinuousAttemptRevision = -1; }
       } finally {
         this.finishMovementModeTransition(transitionRevision);
       }
@@ -748,6 +829,7 @@ export class CharacterBehaviorDirector {
     } else if (arrived) {
       // 运动到达只结束空间目标；表达由同一引擎自行续播。
       this.currentMotionTarget = null;
+      this.currentMotionSource = null;
       this.options.behavior.releasePreparedActivity();
     }
     this.publishActivityChanged();
@@ -789,6 +871,7 @@ export class CharacterBehaviorDirector {
     this.generation = generation;
     this.cancelTaskPreparation();
     this.trustedTaskPhase = null; this.situation.reset();
+    this.behaviorBindings = null; this.idleBackgroundStateId = null;
     this.completedPrompts.clear();
     this.turnEpoch += 1;
     this.cancelMovementModeTransition();
@@ -810,6 +893,7 @@ export class CharacterBehaviorDirector {
   async close(): Promise<void> {
     if (this.closed) return;
     this.closed = true;
+    this.behaviorBindings = null; this.idleBackgroundStateId = null;
     this.cancelTaskPreparation();
     this.turnEpoch += 1;
     this.cancelMovementModeTransition();
@@ -834,6 +918,10 @@ export class CharacterBehaviorDirector {
     this.turnEpoch += 1;
     this.cancelMovementModeTransition();
     this.options.behavior.invalidateContext();
+    this.retireBoundReaction();
+    this.chatting = false;
+    if (this.trustedTaskPhase === null) this.awaitingConfirmation = false;
+    this.syncRuntimeFacts();
     this.clearPendingChat(); this.clearContinuousMotion();
     this.publishActivityChanged();
   }
@@ -871,6 +959,10 @@ export class CharacterBehaviorDirector {
   }
 
   private updateActivityFromTaskEvent(event: TaskEvent): void {
+    if (event.type === 'capability_authorization_required' || event.type === 'history_disclosure_required') {
+      this.chatting = false; this.awaitingConfirmation = true; this.capabilityTask = this.trustedTaskPhase !== null;
+      this.syncRuntimeFacts(); this.publishActivityChanged(); return;
+    }
     if (event.type !== 'phase') return;
     if (this.trustedTaskPhase !== null) {
       this.chatting = false; this.capabilityTask = true;
@@ -898,8 +990,62 @@ export class CharacterBehaviorDirector {
     const motion = this.options.motion.getSnapshot();
     this.situation.updateActivities({ moving: motion.moving, carrying: motion.carrying,
       dragging: this.dragging, chatting: this.chatting, taskRunning: this.capabilityTask, awaitingConfirmation: this.awaitingConfirmation });
+    // 首帧准备仍沿用其独立用途，刷新真实事实不能把尚未 started 的工作或移动换回聊天。
+    const role = this.preparedTaskToken && this.trustedTaskPhase === null ? 'taskRunning'
+      : this.awaitingConfirmation ? 'awaitingConfirmation' : this.capabilityTask ? 'taskRunning'
+        : this.pendingMotion?.playbackToken ? 'moving' : this.chatting ? 'chatting' : motion.moving ? 'moving' : null;
     this.options.behavior.updateRuntimeFacts({ dragging: this.dragging, chatting: this.chatting,
-      taskRunning: this.capabilityTask, awaitingConfirmation: this.awaitingConfirmation });
+      taskRunning: this.capabilityTask, awaitingConfirmation: this.awaitingConfirmation }, this.boundActivityPlan(role));
+  }
+
+  private currentBindings(): CharacterBehaviorBindings | null {
+    return this.behaviorBindings?.instance === this.options.behavior.context()?.instance ? this.behaviorBindings?.bindings ?? null : null;
+  }
+  private boundActivityPlan(role: 'chatting' | 'taskRunning' | 'awaitingConfirmation' | 'moving' | null): CharacterExpressionPlanInput | undefined {
+    const bindings = this.currentBindings();
+    if (!bindings) return undefined;
+    const choice = role && bindings[role];
+    return { states: choice ? [{ stateId: choice.stateId, score: 1, minStrength: 0, maxStrength: 1,
+      when: { [role!]: true }, lifetime: 'condition', actions: [{ actionId: choice.actionId, score: 1 }] }] : [] };
+  }
+  private installPreparedBinding(role: 'taskRunning' | 'moving'): void {
+    const plan = this.boundActivityPlan(role);
+    if (plan) this.options.behavior.updateRuntimeFacts({}, plan);
+  }
+  private preserveBoundActivities(plan: CharacterExpressionPlanInput | undefined): CharacterExpressionPlanInput | undefined {
+    if (!plan) return plan;
+    const bound = !!this.currentBindings();
+    const explicitMotion = this.pendingMotion !== null && this.pendingMotion.source !== 'local-idle'
+      || this.currentMotionSource !== null && this.currentMotionSource !== 'local-idle';
+    // 主动活动保留稳定用途；明确位移期间不让无关反应重签其首帧令牌。
+    return { ...plan, states: plan.states.filter(state => (!bound || state.lifetime !== 'condition')
+      && (!explicitMotion || state.lifetime === 'condition')) };
+  }
+  private clearIdleBackground(): void {
+    const stateId = this.idleBackgroundStateId; this.idleBackgroundStateId = null;
+    if (stateId) this.options.behavior.releaseBackgroundSelection(stateId);
+  }
+  private retireBoundReaction(): void {
+    this.options.behavior.cancelSingleEpisode();
+  }
+  /** 反应先进入唯一引擎，再释放自动移动；停止快照重入时已经能看到短时阻塞。 */
+  private pauseAutomaticMotionForReaction(): void {
+    const committing = this.committingMotion;
+    this.committingMotion = true;
+    try {
+      if (this.pendingMotion?.source === 'local-idle') this.clearPendingChat();
+      if (this.currentMotionSource === 'local-idle') this.clearContinuousMotion();
+    } finally { this.committingMotion = committing; }
+  }
+  private applyBoundReaction(role: 'success' | 'error'): void {
+    const choice: CharacterBehaviorChoice | null | undefined = this.currentBindings()?.[role];
+    const context = this.options.behavior.context();
+    if (!choice || !context || this.active?.source === 'explicit') return;
+    this.options.behavior.applyDecision({ context, eventId: `task-binding-${++this.bindingSequence}`, source: 'chat',
+      singleEpisode: true,
+      moodUpdate: { summary: role === 'success' ? '完成任务后的开心' : '任务失败后的沮丧', strength: 1, fadeInMs: 0 },
+      expressionPlan: { states: [{ stateId: choice.stateId, score: 1, minStrength: 0, maxStrength: 1, lifetime: 'episode', actions: [{ actionId: choice.actionId, score: 1 }] }] } });
+    this.pauseAutomaticMotionForReaction();
   }
 
   private createPendingMotion(request: MotionRequest, source: BehaviorPlanSource, lifecycle: PendingMotion['lifecycle']): PendingMotion {
@@ -922,6 +1068,7 @@ export class CharacterBehaviorDirector {
     const pending = this.pendingMotion;
     if (!pending) return false;
     if (!pending.playbackToken) {
+      this.installPreparedBinding('moving');
       const authorization = this.options.behavior.prepareActivity();
       if (authorization.kind !== 'play') return false;
       this.pendingMotion = { ...pending, playbackToken: authorization.playbackToken, actionId: authorization.actionId, deadlineAtMs: this.now() + 1500 };
@@ -940,6 +1087,7 @@ export class CharacterBehaviorDirector {
       || pending.behaviorLifecycleGeneration !== this.behaviorLifecycleGeneration
       || this.dragging || this.capabilityTask || this.awaitingConfirmation) { this.clearPendingChat(); return; }
     this.pendingMotion = null; this.movementPlaybackToken = current.playbackToken;
+    this.currentMotionSource = pending.source;
     this.movementPlaybackCycle = { stateId: current.stateId, actionId: current.actionId,
       expectedEndAtMs: current.expectedEndAtMs, startDeadlineAtMs: null };
     this.commitMotion(pending.request, pending.continuation);
@@ -1000,28 +1148,12 @@ export class CharacterBehaviorDirector {
     this.options.publishNotice?.({ code: 'CHARACTER_EXPRESSION_NOT_EXECUTED', message: '本次动作未执行。' });
   }
 
-  /** 自动匹配仅表达缺失结论时提示一次，不将失败冒充素材缺失。 */
-  needsActivityMatch(): boolean {
-    return this.movementMode !== 0 && !this.hasContinuousBlocker() && !this.pendingMotion
-      && !this.options.behavior.hasEligibleExpressionFor({ moving: true }, 'moving');
-  }
-  applyActivityDecision(input: AutonomousCharacterDecision): void {
-    if (this.closed || input.lifecycle !== this.behaviorLifecycleGeneration || !this.isExpressionContextCurrent(input.context)
-      || this.chatting || this.capabilityTask || this.awaitingConfirmation || this.dragging) return;
-    if (input.expressionPlan?.states.length) this.applyAutonomousDecision(input);
-    if (input.lifecycle !== this.behaviorLifecycleGeneration) return;
-    if (!this.options.behavior.hasEligibleExpressionFor({ moving: true }, 'moving')
-      && this.missingNoticeLifecycle !== input.lifecycle) {
-      this.missingNoticeLifecycle = input.lifecycle; this.publishUnavailableNotice();
-    }
-    this.publishActivityChanged();
-  }
-
   /** 每个入口先准备活动，失败留在原位；Motion 提交集中在同 token 的首帧之后。 */
   private requestMotion(plan: MotionRequest, source: BehaviorPlanSource, continuation = false): void {
     if (this.pendingMotion || this.committingMotion || this.closed || this.dragging || this.capabilityTask || this.awaitingConfirmation || this.movementModeTransitionPending) return;
-    if (source === 'local-idle' && this.movementMode === 0) return;
-    // 活动优先于普通表现；只有明确播放与可信任务阻塞自动运动。
+    // 冷加载不能提前消耗自动运动的首帧期限；用途预热与明确请求仍独立运行。
+    if (source === 'local-idle' && (this.movementMode === 0 || !this.options.behavior.hasStartedPlayback())) return;
+    // 自动活动遵守短时反应边界；明确播放和可信任务继续拥有更高优先级。
     if (source !== 'explicit' && (this.active?.source === 'explicit' || this.trustedRuntimeBlocked)) return;
     if (source === 'explicit') { this.options.behavior.releaseExplicitPlayback(); this.active = null; }
     if (!continuation) this.clearContinuousMotion();
@@ -1051,7 +1183,7 @@ export class CharacterBehaviorDirector {
         if (!snapshot.moving && !this.requestNextContinuousIntent(2)) this.stopContinuousMotion();
       } else {
         this.continuousTarget = null;
-        if (!snapshot.moving) this.currentMotionTarget = null;
+        if (!snapshot.moving) { this.currentMotionTarget = null; this.currentMotionSource = null; }
       }
       this.publishActivityChanged();
     } finally {
@@ -1079,6 +1211,7 @@ export class CharacterBehaviorDirector {
     this.continuousTarget = null;
     this.continuousDistance = 'none';
     this.currentMotionTarget = null;
+    this.currentMotionSource = null;
     this.lastSpatialTarget = null;
     this.motionWasMoving = false;
     this.movementPlaybackToken = null;
@@ -1108,6 +1241,7 @@ export class CharacterBehaviorDirector {
       || this.trustedRuntimeBlocked
       || this.capabilityTask
       || this.awaitingConfirmation
+      || this.options.behavior.hasActiveSingleEpisode()
       || this.active?.source === 'explicit';
   }
 
@@ -1120,6 +1254,7 @@ export class CharacterBehaviorDirector {
       || this.trustedRuntimeBlocked
       || this.capabilityTask
       || this.awaitingConfirmation
+      || this.options.behavior.hasActiveSingleEpisode()
       || this.options.motion.getSnapshot().moving
       || this.active?.source === 'explicit';
   }

@@ -9,7 +9,7 @@ const context = {
   proactivityMode: 'assistive' as const, recentActions: []
 };
 const selection: ModelResponse = { type: 'structured', structured_output: {
-  moodUpdate: null, expressionPlan: null, backgroundSelection: null, requestKind: 'ambient', explicitPlayback: null, movementControl: { kind: 'keep' }
+  kind: 'none', choice: null, mode: 'keep', target: null, distance: null
 } };
 const authorization: ModelResponse = { type: 'tool_request', request: { requestId: 'task-1', toolName: 'request_task_authorization', arguments: {} } };
 function deferred<T>() {
@@ -48,20 +48,18 @@ test('任务申请可先交付，表现随后仍独立完成', async () => {
   await vi.waitFor(() => expect(delivered).toEqual(['no_match']));
 });
 
-test('单推理槽先交付表现，再发起主任务请求', async () => {
+test('单推理槽任务申请不额外推理表现，运行阶段由用途绑定承担', async () => {
   const expression = deferred<ModelResponse>();
   const events: string[] = [];
   const provider: ModelProvider = { respond: async request => {
     if (request.responseContract) { events.push('expression'); return expression.promise; }
     events.push('main'); return authorization;
   } };
-  const running = new ConversationChatAdapter(provider, undefined, { expressionFirst: true }).respond({
+  const running = new ConversationChatAdapter(provider, undefined, { singleSlot: true }).respond({
     ...input(), onExpression: () => { events.push('delivered'); }
   });
-  await vi.waitFor(() => expect(events).toEqual(['expression']));
-  expression.resolve(selection);
   expect((await running).capabilityPlan?.kind).toBe('agent_task');
-  expect(events).toEqual(['expression', 'delivered', 'main']);
+  expect(events).toEqual(['main']);
 });
 
 test('主请求失败会撤销未交付的表现，迟到结果不能播放', async () => {

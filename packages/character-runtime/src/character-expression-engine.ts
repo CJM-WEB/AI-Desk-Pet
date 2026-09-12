@@ -3,7 +3,7 @@ import { resolveCharacterPresentationV3 } from './character-playback-view';
 import { characterPlaybackFeedbackSchema, type CharacterPlaybackFeedback } from './behavior-contracts';
 import { reduceCharacterActionSchedule, type CharacterBehaviorSchedule, type CharacterScheduleEffect } from './behavior-scheduler';
 import { characterMoodUpdateSchema, sampleMood, type CharacterMood, type CharacterMoodSnapshot } from './character-mood';
-import { characterBackgroundSelectionSchema, characterExpressionPlanSchema, characterExplicitPlaybackSchema, type CharacterExpressionPlan, type CharacterRuntimeFacts } from './character-expression-plan';
+import { characterBackgroundSelectionSchema, characterExpressionPlanSchema, characterExplicitPlaybackSchema, type CharacterExpressionPlan, type CharacterExpressionPlanInput, type CharacterRuntimeFacts } from './character-expression-plan';
 
 export type CharacterExpressionContext = Readonly<{ contextRevision: number; moodRevision: number; instance: symbol }>;
 export type CharacterExpressionEffect = Exclude<CharacterScheduleEffect, { type: 'play' } | { type: 'none' }>
@@ -20,6 +20,8 @@ export type CharacterExpressionDecision = {
   moodUpdate?: unknown; expressionPlan?: unknown;
   backgroundSelection?: unknown;
   explicitPlayback?: unknown;
+  /** Main 的单次事件反应只驻留一个 episode，不能在十秒冷却后重新出现。 */
+  singleEpisode?: boolean;
   /** 仅宿主提供；同轮明确播放保留原 token 与截止时间，更新其后的心情计划。 */
   preserveExplicitPlaybackToken?: string;
 };
@@ -51,6 +53,7 @@ export class CharacterExpressionEngine {
   /** 活动与心情候选独立换代，但共享下面唯一的当前状态与动作调度器。 */
   private activityPlan: CharacterExpressionPlan | null = null;
   private moodPlan: CharacterExpressionPlan | null = null;
+  private singleEpisodePlan: CharacterExpressionPlan | null = null;
   /** 背景独立持有选择与进入时间，临时计划换代不更改该所有权。 */
   private background: { entry: CandidateEntry; enteredAtMs: number } | null = null;
   private activeCandidate: ActiveCandidate | null = null;
@@ -98,7 +101,16 @@ export class CharacterExpressionEngine {
   private matches(context: CharacterExpressionContext): boolean {
     return context.instance === this.instance && context.contextRevision === this.contextRevision && context.moodRevision === this.moodRevision;
   }
-  updateRuntimeFacts(facts: Partial<CharacterRuntimeFacts>): CharacterExpressionResult {
+  updateRuntimeFacts(facts: Partial<CharacterRuntimeFacts>, activityPlan?: CharacterExpressionPlanInput): CharacterExpressionResult {
+    // Main 用途与真实事实在同一次重判中交接，避免先清旧事实而插入一帧待机。
+    if (activityPlan !== undefined) {
+      const plan = this.parseLegalPlan(activityPlan);
+      if (plan && plan.states.every(candidate => this.isActivityCandidate(candidate))) {
+        if (!plan.states.length && this.activityPlan) this.activityPlan.expiresAtMs = this.now();
+        this.activityPlan = null;
+        if (plan.states.length) this.installPlan({ ...plan, contextRevision: this.contextRevision, moodRevision: this.moodRevision, expiresAtMs: Infinity });
+      }
+    }
     this.facts = { ...this.facts, ...facts };
     if (this.preparedActivity && facts[this.preparedActivity] === true) this.preparedActivity = null;
     return this.advanceWith([], false, true);
@@ -147,6 +159,13 @@ export class CharacterExpressionEngine {
       moodStates.forEach(candidate => this.restingUntil.delete(candidate.stateId));
     }
   }
+  private parseLegalPlan(input: unknown) {
+    const parsed = characterExpressionPlanSchema.safeParse(input);
+    return parsed.success && parsed.data.states.every(candidate => {
+      const state = this.manifest.states.find(state => state.id === candidate.stateId);
+      return state?.agentInferable && candidate.actions.every(action => state.actionIds.includes(action.actionId));
+    }) ? parsed.data : null;
+  }
   private canReusePreparedActivity(fact: keyof CharacterRuntimeFacts): boolean {
     const current = this.schedule.current;
     const active = this.activeCandidate;
@@ -179,6 +198,27 @@ export class CharacterExpressionEngine {
     this.explicit = false; this.explicitUntilMs = null;
     return this.advanceWith(this.stop(), true, true);
   }
+  /** 仅撤销宿主仍拥有的空闲背景，不清空心情、明确播放或其他长期选择。 */
+  releaseBackgroundSelection(stateId: string): CharacterExpressionResult {
+    if (this.background?.entry.candidate.stateId !== stateId) return this.result();
+    this.background = null;
+    return this.advanceWith([], false, true);
+  }
+  /** 短时片段的真实播放所有权只从唯一引擎读取，宿主不维护第二份期限。 */
+  hasActiveSingleEpisode(): boolean {
+    return this.singleEpisodePlan !== null && !this.explicit && this.currentEntry()?.plan === this.singleEpisodePlan
+      && (this.schedule.current !== null || this.staticPlayback);
+  }
+  /** 新输入和真实活动只取消上一单次事件，不触碰独立心情或作者明确播放。 */
+  cancelSingleEpisode(): CharacterExpressionResult {
+    const plan = this.singleEpisodePlan;
+    if (!plan) return this.result();
+    this.singleEpisodePlan = null;
+    if (this.moodPlan === plan) this.moodPlan = null;
+    plan.expiresAtMs = this.now();
+    const effects = this.activeCandidate?.entry.plan === plan && !this.explicit ? this.stop() : [];
+    return this.advanceWith(effects, false, true);
+  }
   releasePreparedActivity(): CharacterExpressionResult {
     if (this.preparedActivity === null) return this.result();
     this.preparedActivity = null;
@@ -210,11 +250,7 @@ export class CharacterExpressionEngine {
     if (!this.matches(decision.context) || this.decisions.has(decision.eventId)) return this.result();
     const mood = decision.moodUpdate === undefined ? null : characterMoodUpdateSchema.safeParse(decision.moodUpdate);
     if (mood && !mood.success) return this.result();
-    const parsed = decision.expressionPlan === undefined ? null : characterExpressionPlanSchema.safeParse(decision.expressionPlan);
-    const legal = parsed?.success && parsed.data.states.every(candidate => {
-      const state = this.manifest.states.find(state => state.id === candidate.stateId);
-      return state?.agentInferable && candidate.actions.every(action => state.actionIds.includes(action.actionId));
-    });
+    const plan = decision.expressionPlan === undefined ? null : this.parseLegalPlan(decision.expressionPlan);
     this.decisions.add(decision.eventId);
     if (this.decisions.size > 1024) this.decisions.delete(this.decisions.values().next().value!);
     let effects: CharacterExpressionEffect[] = [];
@@ -232,9 +268,10 @@ export class CharacterExpressionEngine {
       if (!sameExplicit) this.lastExplicit = null;
       if (this.explicit && !preserveExplicit) { this.explicit = false; effects = this.stop(); }
     }
-    if (legal && parsed?.success) {
-      this.installPlan({ ...parsed.data, contextRevision: this.contextRevision, moodRevision: this.moodRevision,
-        expiresAtMs: this.now() + parsed.data.validForMs });
+    if (plan) {
+      this.installPlan({ ...plan, contextRevision: this.contextRevision, moodRevision: this.moodRevision,
+        expiresAtMs: this.now() + plan.validForMs });
+      if (this.moodPlan && this.moodPlan !== this.singleEpisodePlan) this.singleEpisodePlan = decision.singleEpisode ? this.moodPlan : null;
       this.blockedPlanState = sameExplicit ? this.lastExplicit!.stateId : null;
       if (!sameExplicit) this.lastExplicit = null;
     }
@@ -260,7 +297,7 @@ export class CharacterExpressionEngine {
         return { ...result, effects: [...effects, ...result.effects] };
       }
     }
-    return this.advanceWith(effects);
+    return this.advanceWith(effects, decision.singleEpisode === true);
   }
   invalidateContext(): CharacterExpressionResult {
     this.contextRevision++;
@@ -469,7 +506,12 @@ export class CharacterExpressionEngine {
     const currentEntry = this.currentEntry();
     // episode 从进入状态计时，动作轮换不续命；condition 则由实时条件持续性决定。
     if (currentEntry && this.episodeDue(currentEntry)) {
-      this.restingUntil.set(this.stateId, now + 10_000); force = true;
+      if (currentEntry.plan === this.singleEpisodePlan) {
+        currentEntry.plan.expiresAtMs = now;
+        if (this.moodPlan === currentEntry.plan) this.moodPlan = null;
+        this.singleEpisodePlan = null;
+      } else this.restingUntil.set(this.stateId, now + 10_000);
+      force = true;
     }
     // 已失去事实资格的播放立即撤销，不等待两秒保持或作者抗中断策略。
     const facts = this.effectiveFacts();
@@ -565,7 +607,7 @@ export class CharacterExpressionEngine {
   reset(): CharacterExpressionResult {
     const effects = this.stop();
     this.contextRevision++; this.moodRevision++; this.mood = null;
-    this.activityPlan = null; this.moodPlan = null; this.activeCandidate = null; this.explicit = false;
+    this.activityPlan = null; this.moodPlan = null; this.singleEpisodePlan = null; this.activeCandidate = null; this.explicit = false;
     this.background = null;
     this.episodeEnteredAtMs = null;
     this.explicitUntilMs = null; this.explicitDurationMs = 0; this.explicitSingleAction = false;

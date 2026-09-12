@@ -14,7 +14,7 @@ function fixture() {
     proactivityMode: 'assistive' as const, recentActions: [],
     expression: { stateId: 's0', actionId: 'a0', mood: null } };
   const requests: ModelRequest[] = [];
-  const controls = { moodUpdate: null, expressionPlan: null, requestKind: 'ambient', explicitPlayback: null, movementControl: { kind: 'keep' } };
+  const controls = { kind: 'none', choice: null, mode: 'keep', target: null, distance: null };
   const responses: ModelResponse[] = [{ type: 'text', text: '真为你开心！' }, { type: 'structured', structured_output: controls }];
   const provider: ModelProvider = { respond: async request => { requests.push(request); return responses.shift()!; } };
   const input = { text: '我获奖了，想看你兴奋地甩尾巴', history: [], behaviorContext, signal: new AbortController().signal };
@@ -39,10 +39,10 @@ describe('独立角色描述决策接线', () => {
     for (const request of f.requests) expect(Buffer.byteLength(JSON.stringify({ messages: request.messages, tools: request.tools, responseSchema: request.responseContract?.jsonSchema ?? null }))).toBeLessThanOrEqual(19200);
     expect(f.requests[0]!.messages.at(-1)?.content).toBe(f.input.text);
   });
-  it('空动作建议只补本轮发送的合法动作配对', async () => {
+  it('精简反应只接纳本轮描述召回并实际发送的合法动作配对', async () => {
     const f = fixture();
     f.responses[1] = { type: 'structured', structured_output: { ...f.controls,
-      expressionPlan: { states: [{ stateId: 's39', score: 1, activity: null, actions: [] }] } } };
+      kind: 'reaction', choice: { stateId: 's39', actionId: 'a39' } } };
     const reply = await new ConversationChatAdapter(f.provider).respond(f.input);
     expect(reply.expressionPlan?.states[0]?.actions).toEqual([{ actionId: 'a39', score: 1 }]);
     expect(catalogFrom(f.requests[1]!).states).toContainEqual(expect.objectContaining({ stateId: 's39' }));
@@ -53,9 +53,9 @@ describe('独立角色描述决策接线', () => {
       if (!request.responseContract) return { type: 'text', text: '合法正文' };
       const catalog = catalogFrom(request);
       const hidden = f.character.states.find(state => !catalog.states.some((item: { stateId: string }) => item.stateId === state.stateId))!;
-      return { type: 'structured', structured_output: { ...f.controls, moodUpdate: { summary: '开心', strength: .8 },
-        expressionPlan: { states: [{ stateId: kind === '未发送' ? hidden.stateId : 's39', score: 1, activity: null,
-          actions: [{ actionId: kind === '未发送' ? hidden.actions[0]!.actionId : 'a0', score: 1 }] }] } } };
+      return { type: 'structured', structured_output: { ...f.controls, kind: 'reaction',
+        choice: { stateId: kind === '未发送' ? hidden.stateId : 's39',
+          actionId: kind === '未发送' ? hidden.actions[0]!.actionId : 'a0' } } };
     } };
     expect(await new ConversationChatAdapter(provider).respond(f.input)).toEqual({ text: '合法正文', capabilityPlan: { kind: 'chat' }, expressionStatus: 'failed' });
   });

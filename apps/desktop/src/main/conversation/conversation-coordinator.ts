@@ -139,7 +139,6 @@ interface ActiveCapabilityTurn {
   assistantText: string | null;
   terminalPhase: 'success' | 'error' | 'cancelled' | null;
   outcomeReady: boolean;
-  terminalExpression: ExpressionTurn | null;
 }
 
 type ExpressionTurn = { context: TurnContext; controller: AbortController; adapter: ConversationChatAdapter };
@@ -197,15 +196,6 @@ export class ConversationCoordinator {
       throw normalizedError;
     }
 
-    if (this.resultSummary !== null && this.resultSummary.phase !== null
-      && /^(?:上一个任务|任务|上次任务)?(?:完成了吗|成功了吗|结束了吗)[？?。]?$/u.test(normalized)) {
-      const summary = this.resultSummary;
-      this.options.emit({ type: 'message', role: 'user', text: normalized });
-      this.options.emit({ type: 'message', role: 'assistant', text: `上一个任务已结束，状态：${summary.phase === 'success' ? '运行结束' : summary.phase === 'error' ? '失败' : '已取消'}。收到 ${summary.operations} 项实际工具结果。${summary.lastExit === undefined ? '' : `最近命令退出码：${summary.lastExit}。`}` });
-      this.options.emit({ type: 'phase', phase: 'success' });
-      return;
-    }
-
     const context: TurnContext = {
       text: normalized,
       explicitDirective: null,
@@ -230,6 +220,19 @@ export class ConversationCoordinator {
       if (!this.isRunning(context)) return;
       context.explicitDirective = prepared.explicitDirective;
       if (prepared.explicitPlaybackToken !== undefined) context.explicitPlaybackToken = prepared.explicitPlaybackToken;
+
+      // 本地结果追问同样经过新互动与旧响应撤销，只省略无需发生的 Provider 请求。
+      if (this.resultSummary !== null && this.resultSummary.phase !== null
+        && /^(?:上一个任务|任务|上次任务)?(?:完成了吗|成功了吗|结束了吗)[？?。]?$/u.test(normalized)) {
+        const summary = this.resultSummary;
+        this.options.emit({ type: 'message', role: 'assistant', text: `上一个任务已结束，状态：${summary.phase === 'success' ? '运行结束' : summary.phase === 'error' ? '失败' : '已取消'}。收到 ${summary.operations} 项实际工具结果。${summary.lastExit === undefined ? '' : `最近命令退出码：${summary.lastExit}。`}` });
+        if (!this.isRunning(context)) return;
+        this.options.behavior.handleChatResponseFinished();
+        if (!this.isRunning(context)) return;
+        this.state = { kind: 'idle' };
+        this.options.emit({ type: 'phase', phase: 'success' });
+        return;
+      }
 
       const target = await this.options.chatTurnFactory.create(context.controller.signal);
       if (!this.isRunning(context)) return;
@@ -454,6 +457,7 @@ export class ConversationCoordinator {
           generation: pending.generation,
           controller: pending.controller
         };
+        this.options.emit({ type: 'phase', phase: 'thinking' });
         await this.runChatReply(
           pending,
           pending.adapter,
@@ -594,6 +598,27 @@ export class ConversationCoordinator {
     visibleHistory: readonly ModelMessage[]
   ): Promise<void> {
     if (!this.isRunning(context)) return;
+    // 冷启动或配置变化后的用途准备有界完成；之后思考可与正文同步，不逐轮重新规划全部活动。
+    const bindingContext = this.options.behavior.needsBehaviorBindings?.() ? this.options.behavior.captureExpressionContext() : null;
+    const lifecycle = this.options.behavior.getBehaviorLifecycleGeneration?.();
+    if (bindingContext && lifecycle !== undefined && this.options.behavior.needsBehaviorBindings?.()) {
+      // 预热也属于当前表现owner；角色/配置切换必须立即释放单槽，而非等待旧请求超时。
+      const preparation = { context, controller: new AbortController(), adapter };
+      this.expressionTurn = preparation;
+      try {
+        const bindings = await adapter.respondBindings({ behaviorContext: this.options.behavior.getChatContext(),
+          signal: AbortSignal.any([context.controller.signal, preparation.controller.signal]),
+          beforeProviderCall: () => this.isRunning(context) && this.expressionTurn === preparation });
+        if (bindings && this.isRunning(context) && this.expressionTurn === preparation) {
+          this.options.behavior.applyBehaviorBindings?.({ bindings, context: bindingContext, lifecycle });
+        }
+      } catch { /* 表现准备失败保留基础聊天；父取消与会话失效仍在下方拦截。 */ }
+      finally {
+        preparation.controller.abort();
+        if (this.expressionTurn === preparation) this.expressionTurn = null;
+      }
+      if (!this.isRunning(context) || context.controller.signal.aborted) return;
+    }
     const turnId = `assistant-${++this.assistantTurnSequence}`;
     const bufferedDeltas: string[] = [];
     // 同步捕获公开快照和宿主标记；后者绝不进入模型请求或 Renderer。
@@ -601,9 +626,15 @@ export class ConversationCoordinator {
     const behaviorContext = this.options.behavior.getChatContext();
     const owner = { context, controller: new AbortController(), adapter };
     this.expressionTurn = owner;
+    let mainDelivered = false;
+    let pendingReaction: ConversationExpressionReply | null = null;
     const acceptExpression = async (reply: ConversationExpressionReply): Promise<void> => {
       if (this.expressionTurn !== owner || owner.controller.signal.aborted || context.controller.signal.aborted
         || context.generation !== this.generation || this.isClosed()) return;
+      // 提前完成的普通反应留到本轮正文后，不能抢走思考或提前消耗作者规定的片段时长。
+      if (!mainDelivered && reply.requestKind === 'ambient' && reply.expressionPlan?.states.some(state => state.lifetime === 'episode')) {
+        pendingReaction = reply; return;
+      }
       await this.options.behavior.completeUserPrompt({
         signal: owner.controller.signal,
         generation: context.generation, context: expressionContext, eventId: turnId,
@@ -658,14 +689,14 @@ export class ConversationCoordinator {
     if (!this.isRunning(context)) return;
     this.state = { kind: 'idle' };
     this.options.emit({ type: 'phase', phase: 'success' });
+    mainDelivered = true;
+    if (pendingReaction) await acceptExpression(pendingReaction);
   }
 
   private cancelExpression(context?: TurnContext): void {
     const owner = this.expressionTurn;
-    const pending = this.activeCapabilityTurn?.terminalExpression;
-    if (context && owner?.context.controller !== context.controller && pending?.context.controller !== context.controller) return;
+    if (context && owner?.context.controller !== context.controller) return;
     this.expressionTurn = null;
-    if (this.activeCapabilityTurn) this.activeCapabilityTurn.terminalExpression = null;
     owner?.controller.abort();
     this.options.behavior.cancelTaskPreparation?.();
   }
@@ -751,7 +782,7 @@ export class ConversationCoordinator {
     visibleHistory: readonly ModelMessage[]
   ): Promise<void> {
     if (!this.isRunning(context) || context.controller.signal.aborted) return;
-    if (this.expressionTurn?.context.controller === context.controller && this.expressionTurn.adapter.expressionFirst) {
+    if (this.expressionTurn?.context.controller === context.controller && this.expressionTurn.adapter.singleSlot) {
       try { await this.options.behavior.prepareTaskPresentation?.(context.controller.signal); }
       catch {
         // 表现是可选反馈；其清理或提示异常也不能吞掉已授权的正式任务。
@@ -770,8 +801,7 @@ export class ConversationCoordinator {
       target,
       assistantText: null,
       terminalPhase: null,
-      outcomeReady: false,
-      terminalExpression: null
+      outcomeReady: false
     };
     this.activeCapabilityTurn = active;
     this.state = { kind: 'running_capability_task', generation: context.generation, taskKind };
@@ -781,7 +811,6 @@ export class ConversationCoordinator {
       if (active.terminalPhase !== null && this.activeCapabilityTurn === active) {
         this.activeCapabilityTurn = null;
         this.state = { kind: 'idle' };
-        this.finishCapabilityExpression(active.terminalPhase, active.terminalExpression);
         this.options.emit({ type: 'phase', phase: active.terminalPhase });
       }
     } catch (error) {
@@ -791,7 +820,7 @@ export class ConversationCoordinator {
       this.activeCapabilityTurn = null;
       this.state = { kind: 'idle' };
       this.options.behavior.handleCapabilityTaskPhase?.('error');
-      this.finishCapabilityExpression('error');
+      this.cancelExpression();
       this.reportFailure(normalized);
     }
   }
@@ -829,40 +858,17 @@ export class ConversationCoordinator {
           });
         }
         active.terminalPhase = event.phase;
-        // 终态事实一到便撤销运行中响应，新的反应仍等待 Core 提交结算。
-        const previousExpression = this.expressionTurn;
+        // 终态事实一到便撤销运行中响应；表现由可信阶段驱动，入口仍等待 Core 提交结算。
         this.cancelExpression();
-        active.terminalExpression = previousExpression;
         if (this.resultSummary) this.resultSummary.phase = event.phase;
         // 提交 Promise 结算后再释放协调器入口，避免终态事件内同步重入新任务。
         if (!active.outcomeReady) return;
         this.activeCapabilityTurn = null;
         this.state = { kind: 'idle' };
-        this.finishCapabilityExpression(event.phase, active.terminalExpression);
       }
 
     }
     this.options.emit(event);
-  }
-
-  /** 终态反应不携带任务正文，并拥有新的取消 owner；运行中的旧响应不能覆盖真实结果。 */
-  private finishCapabilityExpression(phase: 'success' | 'error' | 'cancelled', previous = this.expressionTurn): void {
-    this.cancelExpression();
-    if (!previous || phase === 'cancelled' || this.isClosed() || previous.context.generation !== this.generation) return;
-    const context = this.options.behavior.captureExpressionContext();
-    if (!context) return;
-    const owner = { context: previous.context, controller: new AbortController(), adapter: previous.adapter };
-    this.expressionTurn = owner;
-    const eventId = `task-reaction-${++this.assistantTurnSequence}`;
-    const current = () => this.expressionTurn === owner && !owner.controller.signal.aborted
-      && !this.isClosed() && owner.context.generation === this.generation;
-    const behaviorContext = this.options.behavior.getChatContext();
-    void owner.adapter.respondAutonomous({ behaviorContext, idleForMs: behaviorContext.situation?.idleForMs ?? 0, taskEvent: phase,
-      signal: owner.controller.signal, beforeProviderCall: current }).then(async reply => {
-      if (!reply || !current()) return;
-      await this.options.behavior.completeUserPrompt({ ...reply, signal: owner.controller.signal, generation: this.generation, context, eventId,
-        explicitDirective: null, requestKind: 'ambient' });
-    }).catch(() => { /* 可选终态反应失败不改写已经发生的任务结果。 */ });
   }
 
   private handleTrustedToolResult(

@@ -10,6 +10,7 @@ import { pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
 import { expect, test, type Page } from '@playwright/test';
 import type { TaskEvent } from '@myself/shared-types';
+import { characterBehaviorRoles, type CharacterBehaviorBindings } from '../../apps/desktop/src/main/characters/character-behavior-bindings';
 import { CharacterStore } from '../../apps/desktop/src/main/characters/character-store';
 import { SettingsStore } from '../../apps/desktop/src/main/storage/settings-store';
 import {
@@ -19,149 +20,11 @@ import {
   type ProviderStep
 } from '../fixtures/provider-server';
 import { snapshotCharacterPersistence } from '../fixtures/character-storage-snapshot';
+import { readWindowsCursor, setWindowsCursor, setWindowsLeftButton, readWindowsPointerTarget,
+  readWindowsProcessWindowRect, raiseWindowsProcessWindow, type WindowsCursorSnapshot, type WindowsPointerTarget,
+  type WindowsWindowRect } from '../fixtures/windows-pointer';
 
 const execFileAsync = promisify(execFile);
-const WINDOWS_CURSOR_INTEROP = String.raw`
-using System;
-using System.Runtime.InteropServices;
-public static class MyselfCursorInterop {
-  [StructLayout(LayoutKind.Sequential)]
-  public struct Point { public int X; public int Y; }
-  [DllImport("user32.dll")] public static extern bool GetCursorPos(out Point point);
-  [DllImport("user32.dll")] public static extern bool SetCursorPos(int x, int y);
-  [DllImport("user32.dll")] public static extern IntPtr WindowFromPoint(Point point);
-  [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(
-    IntPtr window, out uint processId);
-  [DllImport("user32.dll")] public static extern short GetAsyncKeyState(int virtualKey);
-  [StructLayout(LayoutKind.Sequential)]
-  public struct Rect { public int Left; public int Top; public int Right; public int Bottom; }
-  [DllImport("user32.dll")] public static extern bool GetWindowRect(
-    IntPtr window, out Rect rect);
-  [DllImport("user32.dll")] public static extern bool SetWindowPos(
-    IntPtr window, IntPtr insertAfter, int x, int y, int width, int height, uint flags);
-  [DllImport("user32.dll")] public static extern void mouse_event(
-    uint flags, uint dx, uint dy, uint data, UIntPtr extraInfo);
-  [DllImport("user32.dll")] public static extern uint GetDpiForSystem();
-}`;
-
-type WindowsCursorSnapshot = Readonly<{ x: number; y: number; dpi: number }>;
-type WindowsPointerTarget = Readonly<{ processId: number; leftButtonDown: boolean }>;
-type WindowsWindowRect = Readonly<{
-  left: number; top: number; right: number; bottom: number;
-}>;
-
-/** E2E 只调用固定 Win32 光标 API，并由用例 finally 恢复进入测试前的位置。 */
-async function readWindowsCursor(): Promise<WindowsCursorSnapshot> {
-  const script = String.raw`
-Add-Type -TypeDefinition @'
-${WINDOWS_CURSOR_INTEROP}
-'@
-$point = [MyselfCursorInterop+Point]::new()
-if (-not [MyselfCursorInterop]::GetCursorPos([ref]$point)) { exit 2 }
-$dpi = [MyselfCursorInterop]::GetDpiForSystem()
-[Console]::Out.Write("$($point.X),$($point.Y),$dpi")`;
-  const { stdout } = await execFileAsync('powershell.exe', [
-    '-NoProfile', '-NonInteractive', '-Command', script
-  ], { windowsHide: true, timeout: 10_000, encoding: 'utf8' });
-  const match = /^(-?\d+),(-?\d+),(\d+)$/u.exec(stdout.trim());
-  if (!match) throw new Error('WINDOWS_CURSOR_PROBE_INVALID');
-  return { x: Number(match[1]), y: Number(match[2]), dpi: Number(match[3]) };
-}
-
-async function setWindowsCursor(point: Readonly<{ x: number; y: number }>): Promise<void> {
-  const x = Math.round(point.x);
-  const y = Math.round(point.y);
-  const script = String.raw`
-Add-Type -TypeDefinition @'
-${WINDOWS_CURSOR_INTEROP}
-'@
-if (-not [MyselfCursorInterop]::SetCursorPos(${x}, ${y})) { exit 2 }`;
-  await execFileAsync('powershell.exe', [
-    '-NoProfile', '-NonInteractive', '-Command', script
-  ], { windowsHide: true, timeout: 30_000, encoding: 'utf8' });
-}
-
-async function setWindowsLeftButton(down: boolean): Promise<void> {
-  const flag = down ? '0x0002' : '0x0004';
-  const script = String.raw`
-Add-Type -TypeDefinition @'
-${WINDOWS_CURSOR_INTEROP}
-'@
-[MyselfCursorInterop]::mouse_event(${flag}, 0, 0, 0, [UIntPtr]::Zero)`;
-  await execFileAsync('powershell.exe', [
-    '-NoProfile', '-NonInteractive', '-Command', script
-  ], { windowsHide: true, timeout: 10_000, encoding: 'utf8' });
-}
-
-/** 从 Win32 命中测试读取真实输入目标，避免以内存中的穿透标志代替系统事实。 */
-async function readWindowsPointerTarget(): Promise<WindowsPointerTarget> {
-  const script = String.raw`
-Add-Type -TypeDefinition @'
-${WINDOWS_CURSOR_INTEROP}
-'@
-$point = [MyselfCursorInterop+Point]::new()
-if (-not [MyselfCursorInterop]::GetCursorPos([ref]$point)) { exit 2 }
-$window = [MyselfCursorInterop]::WindowFromPoint($point)
-[uint32]$processId = 0
-[void][MyselfCursorInterop]::GetWindowThreadProcessId($window, [ref]$processId)
-$leftButtonDown = ([MyselfCursorInterop]::GetAsyncKeyState(1) -band 0x8000) -ne 0
-[Console]::Out.Write("$processId,$leftButtonDown")`;
-  const { stdout } = await execFileAsync('powershell.exe', [
-    '-NoProfile', '-NonInteractive', '-Command', script
-  ], { windowsHide: true, timeout: 10_000, encoding: 'utf8' });
-  const match = /^(\d+),(True|False)$/u.exec(stdout.trim());
-  if (!match) throw new Error('WINDOWS_POINTER_TARGET_PROBE_INVALID');
-  return { processId: Number(match[1]), leftButtonDown: match[2] === 'True' };
-}
-
-/** 读取目标 Electron 顶层窗口的真实物理矩形，避免混用 DIP 与 Win32 坐标。 */
-async function readWindowsProcessWindowRect(processId: number): Promise<WindowsWindowRect> {
-  if (!Number.isSafeInteger(processId) || processId <= 0) {
-    throw new Error('WINDOWS_WINDOW_PROCESS_ID_INVALID');
-  }
-  const script = String.raw`
-Add-Type -TypeDefinition @'
-${WINDOWS_CURSOR_INTEROP}
-'@
-$process = Get-Process -Id ${String(processId)} -ErrorAction Stop
-$window = $process.MainWindowHandle
-if ($window -eq [IntPtr]::Zero) { exit 2 }
-$rect = [MyselfCursorInterop+Rect]::new()
-if (-not [MyselfCursorInterop]::GetWindowRect($window, [ref]$rect)) { exit 3 }
-[Console]::Out.Write("$($rect.Left),$($rect.Top),$($rect.Right),$($rect.Bottom)")`;
-  const { stdout } = await execFileAsync('powershell.exe', [
-    '-NoProfile', '-NonInteractive', '-Command', script
-  ], { windowsHide: true, timeout: 10_000, encoding: 'utf8' });
-  const match = /^(-?\d+),(-?\d+),(-?\d+),(-?\d+)$/u.exec(stdout.trim());
-  if (!match) throw new Error('WINDOWS_WINDOW_RECT_PROBE_INVALID');
-  return {
-    left: Number(match[1]), top: Number(match[2]),
-    right: Number(match[3]), bottom: Number(match[4])
-  };
-}
-
-/** 将测试目标提升到普通窗口 Z 序顶部，但不激活、不改位置或尺寸。 */
-async function raiseWindowsProcessWindow(processId: number): Promise<void> {
-  if (!Number.isSafeInteger(processId) || processId <= 0) {
-    throw new Error('WINDOWS_WINDOW_PROCESS_ID_INVALID');
-  }
-  const script = String.raw`
-Add-Type -TypeDefinition @'
-${WINDOWS_CURSOR_INTEROP}
-'@
-$process = Get-Process -Id ${String(processId)} -ErrorAction Stop
-$window = $process.MainWindowHandle
-if ($window -eq [IntPtr]::Zero) { exit 2 }
-$flags = 0x0001 -bor 0x0002 -bor 0x0010
-if (-not [MyselfCursorInterop]::SetWindowPos(
-  $window, [IntPtr](-1), 0, 0, 0, 0, $flags)) { exit 3 }
-if (-not [MyselfCursorInterop]::SetWindowPos(
-  $window, [IntPtr](-2), 0, 0, 0, 0, $flags)) { exit 4 }`;
-  await execFileAsync('powershell.exe', [
-    '-NoProfile', '-NonInteractive', '-Command', script
-  ], { windowsHide: true, timeout: 10_000, encoding: 'utf8' });
-}
-
 type CharacterBehaviorProbe = {
   revision: number;
   stateId: string;
@@ -512,10 +375,30 @@ async function submitChatMessage(page: Page, text: string): Promise<void> {
   await send.click();
 }
 
+const noExpression = { kind: 'none', choice: null, mode: 'keep', target: null, distance: null } as const;
+type CharacterWire = {
+  kind: 'none' | 'reaction' | 'state' | 'action' | 'background' | 'movement';
+  choice: { stateId: string; actionId: string } | null;
+  mode: 'keep' | 'still' | 'continuous' | 'intermittent' | 'once';
+  target: 'random_work_area' | 'left' | 'right' | 'top' | 'bottom' | 'top_left' | 'top_right' | 'bottom_left' | 'bottom_right' | null;
+  distance: 'near' | 'medium' | 'far' | null;
+};
+
+/** 角色或模型生命周期先解释用途，逐轮与终态不再请求旧活动协议。 */
+function behaviorBindingsStep(bindings: Partial<CharacterBehaviorBindings> = {}, inspect?: ProviderStep['inspect']): ProviderStep {
+  return { response: { type: 'structured', structured_output: Object.fromEntries(characterBehaviorRoles.map(role => [role, bindings[role] ?? null])) },
+    inspect: request => {
+      expect(request.tools).toEqual([]); expect(request.toolChoice).toBe('none'); expect(request.responseFormatWasJsonObject).toBe(true);
+      const author = JSON.parse(request.messages.find(message => message.role === 'user')!.content);
+      expect(Array.isArray(author.authorStates)).toBe(true); expect(Object.keys(author.scenes).sort()).toEqual([...characterBehaviorRoles].sort());
+      inspect?.(request);
+    } };
+}
+
 /** 主正文与表现使用独立 Provider 请求，范围卡继续由 Main 裁决。 */
 function characterChatSteps(
   text: string,
-  selection: Readonly<Record<string, unknown>> = {},
+  selection: Readonly<Partial<CharacterWire>> = {},
   main: Omit<ProviderStep, 'response'> = {},
   inspectExpression?: ProviderStep['inspect']
 ): ProviderStep[] {
@@ -527,8 +410,7 @@ function characterChatSteps(
         && request.tools[0]?.function.name === 'request_task_authorization'
         && !request.responseFormatWasJsonObject } },
     { response: { type: 'structured', structured_output: {
-      moodUpdate: null, expressionPlan: null, requestKind: 'ambient', explicitPlayback: null,
-      movementControl: { kind: 'keep' }, ...selection
+      ...noExpression, ...selection
     } }, concurrent: { group, match: request => request.tools.length === 0
       && request.responseFormatWasJsonObject
       && request.messages.some(message => message.role === 'system'
@@ -542,24 +424,11 @@ function characterChatSteps(
   ];
 }
 
-function taskAuthorizationSteps(selection: Readonly<Record<string, unknown>> = {}): ProviderStep[] {
+function taskAuthorizationSteps(selection: Readonly<Partial<CharacterWire>> = {}): ProviderStep[] {
   const [main, expression] = characterChatSteps('', selection, { inspect: expectCharacterChatRequest });
   return [{ ...main!, response: { type: 'tool_request', request: {
     requestId: 'request-scope', toolName: 'request_task_authorization', arguments: {}
   } } }, expression!];
-}
-
-/** 正式任务终态使用独立零工具协议，不能消费下一轮聊天或 Core 响应。 */
-function taskReactionStep(selection: Readonly<Record<string, unknown>> = {}): ProviderStep {
-  return { response: { type: 'structured', structured_output: {
-    moodUpdate: null, expressionPlan: null, backgroundSelection: null, ...selection
-  } }, inspect: request => {
-    expect(request.tools).toEqual([]);
-    expect(request.toolChoice).toBe('none');
-    expect(request.responseFormatWasJsonObject).toBe(true);
-    const context = request.messages.find(message => message.role === 'system' && message.content.startsWith('Main公开情境与候选：'));
-    expect(JSON.parse(context!.content.slice('Main公开情境与候选：'.length))).toMatchObject({ trigger: 'task-event' });
-  } };
 }
 
 function coreRequestCount(provider: Awaited<ReturnType<typeof startProviderServer>>): number {
@@ -571,9 +440,9 @@ test('新默认角色实际首帧先于慢正文，持续休息三十秒不插�
   const mainGate = createProviderResponseGate();
   let seenCandidates: unknown;
   const provider = await startProviderServer([
+      behaviorBindingsStep(),
     ...characterChatSteps('好，我会继续休息。', {
-      requestKind: 'state', explicitPlayback: { stateId: 'state-2', actionId: 'state-2-action' },
-      backgroundSelection: { stateId: 'state-2', actions: [{ actionId: 'state-2-action', score: 1 }] }
+      kind: 'background', choice: { stateId: 'state-2', actionId: 'state-2-action' }
     }, { gate: mainGate }, request => {
       const encoded = request.messages.find(message => message.role === 'system' && message.content.startsWith('Main公开情境与候选：'))?.content;
       seenCandidates = request.messages.filter(message => message.role === 'system').map(message => message.content.slice(0, 24));
@@ -583,7 +452,7 @@ test('新默认角色实际首帧先于慢正文，持续休息三十秒不插�
         actions: expect.arrayContaining([expect.objectContaining({ actionId: 'state-2-action' })]) }));
     }),
     ...characterChatSteps('开心一下，然后继续休息。', {
-      requestKind: 'action', explicitPlayback: { stateId: 'state-8', actionId: 'state-8-action' }
+      kind: 'action', choice: { stateId: 'state-8', actionId: 'state-8-action' }
     })
   ]);
   const fixtureModule = await loadElectronFixtureModule();
@@ -640,19 +509,6 @@ test('新默认角色实际首帧先于慢正文，持续休息三十秒不插�
   }
 });
 
-/** 默认间断模式在任务释放后会进行一次无工具活动匹配，脚本不得误消费下一轮正文。 */
-function activityMatchStep(): ProviderStep {
-  return { response: { type: 'structured', structured_output: { moodUpdate: null, expressionPlan: null, backgroundSelection: null } },
-    inspect: request => {
-      expect(request.tools).toEqual([]);
-      expect(request.toolChoice).toBe('none');
-      expect(request.responseFormatWasJsonObject).toBe(true);
-      const context = request.messages.find(message => message.role === 'system'
-        && message.content.startsWith('Main公开情境与候选：'));
-      expect(JSON.parse(context!.content.slice('Main公开情境与候选：'.length))).toMatchObject({ trigger: 'activity' });
-    } };
-}
-
 function expectCharacterChatRequest(
   request: Parameters<NonNullable<ProviderStep['inspect']>>[0]
 ): void {
@@ -708,10 +564,10 @@ test.describe('正式 Core 任务 UI', () => {
     test.setTimeout(120000);
     const nonce = `明确入口正文-${randomBytes(16).toString('hex')}`;
     const provider = await startProviderServer([
+      behaviorBindingsStep(),
       ...taskAuthorizationSteps(),
       { response: codingResponse([{ name: 'read', args: { path: 'note.txt' }, id: 'explicit-read' }]) },
       { response: request => { const messages = request.messages as Array<{ tool_call_id?: string; content: string }>; expect(messages.find(message => message.tool_call_id === 'explicit-read')?.content).toContain(nonce); return codingResponse(nonce); } },
-      taskReactionStep(),
       ...characterChatSteps('普通聊天仍然可用', {}, {inspect: expectCharacterChatRequest})
     ]);
     let fixture: AppFixture | undefined;
@@ -742,14 +598,13 @@ test.describe('正式 Core 任务 UI', () => {
     test.setTimeout(120000);
     const nonce = `循环正文-${randomBytes(16).toString('hex')}`;
     const provider = await startProviderServer([
+      behaviorBindingsStep(),
       ...taskAuthorizationSteps(),
       ...Array.from({ length: 4 }, (_, index) => ({ response: codingResponse([{ name: 'read', args: { path: 'note.txt' }, id: `ui-loop-${index}` }]) })),
-      activityMatchStep(),
       ...taskAuthorizationSteps(),
       { response: codingResponse([{ name: 'write', args: { path: 'note.txt', content: '禁止覆盖' }, id: 'ui-rejected' }]) },
       { response: codingResponse([{ name: 'read', args: { path: 'note.txt' }, id: 'ui-after-reject' }]), inspectRaw: request => { expect(JSON.stringify(request.messages)).toContain('rejected'); } },
-      { response: request => { expect(JSON.stringify(request.messages)).toContain(nonce); return codingResponse('普通拒绝后继续读取成功'); } },
-      taskReactionStep()
+      { response: request => { expect(JSON.stringify(request.messages)).toContain(nonce); return codingResponse('普通拒绝后继续读取成功'); } }
     ]);
     let fixture: AppFixture | undefined;
     try {
@@ -796,12 +651,10 @@ test.describe('正式 Core 任务 UI', () => {
     const nonce = `读取正文-${randomBytes(16).toString('hex')}`;
     const coreGate = createProviderResponseGate();
     const provider = await startProviderServer([
-      ...taskAuthorizationSteps({ expressionPlan: { states: [{ stateId: 'state-6', score: 1, activity: 'taskRunning',
-        actions: [{ actionId: 'state-6-action', score: 1 }] }] } }),
+      behaviorBindingsStep({ taskRunning: { stateId: 'state-6', actionId: 'state-6-action' }, success: { stateId: 'state-8', actionId: 'state-8-action' } }),
+      ...taskAuthorizationSteps(),
       { response: codingResponse([{ name: 'read', args: { path: 'note.txt' }, id: 'ui-read' }]), gate: coreGate },
-      { response: request => { const messages = request.messages as Array<{ role: string; tool_call_id?: string; content: string }>; const result = messages.find(message => message.tool_call_id === 'ui-read'); expect(result?.content).toContain(nonce); return codingResponse(nonce); } },
-      taskReactionStep({ moodUpdate: { summary: '读取成功', strength: 0.8 }, expressionPlan: { states: [{ stateId: 'state-8', score: 1, activity: null,
-        actions: [{ actionId: 'state-8-action', score: 1 }] }] } })
+      { response: request => { const messages = request.messages as Array<{ role: string; tool_call_id?: string; content: string }>; const result = messages.find(message => message.tool_call_id === 'ui-read'); expect(result?.content).toContain(nonce); return codingResponse(nonce); } }
     ]);
     let fixture: AppFixture | undefined;
     try {
@@ -815,8 +668,8 @@ test.describe('正式 Core 任务 UI', () => {
       const scope = chat.getByRole('article', { name: '本地任务授权' });
       await expect(scope).toContainText('coding-e2e-model');
       await expect(scope).toContainText(await realpath(fixture.authorizedRootDirectory));
-      await expect.poll(() => provider.requests.length).toBe(2);
-      expect(provider.requests.map(request => request.toolCount).sort()).toEqual([0, 1]);
+      await expect.poll(() => provider.requests.length).toBe(3);
+      expect(provider.requests.map(request => request.toolCount).sort()).toEqual([0, 0, 1]);
       expect(coreRequestCount(provider)).toBe(0);
       await approveCodingScope(chat);
       await expect.poll(() => coreGate.isWaiting()).toBe(true);
@@ -842,16 +695,16 @@ test.describe('正式 Core 任务 UI', () => {
     const nonce = `回收站正文-${randomBytes(16).toString('hex')}`;
     const finalText = `删除完成-${randomBytes(16).toString('hex')}`;
     const provider = await startProviderServer([
+      behaviorBindingsStep(),
       ...taskAuthorizationSteps(),
       { response: codingResponse([{ name: 'apply_patch', args: { patchText: '*** Begin Patch\n*** Delete File: target.txt\n*** End Patch' }, id: 'ui-delete' }]) },
-      { response: request => { const messages = request.messages as Array<{ tool_call_id?: string; content: string }>; expect(messages.find(message => message.tool_call_id === 'ui-delete')?.content).toContain('target.txt'); return codingResponse(finalText); } },
-      taskReactionStep()
+      { response: request => { const messages = request.messages as Array<{ tool_call_id?: string; content: string }>; expect(messages.find(message => message.tool_call_id === 'ui-delete')?.content).toContain('target.txt'); return codingResponse(finalText); } }
     ]);
     let fixture: AppFixture | undefined;
     try {
       fixture = await (await loadElectronFixtureModule()).createElectronAppFixture({ workspaceRoot: resolve(process.cwd()), apiKey: provider.apiKey, logSentinels: [nonce, finalText],
         prepareUserData: async ({ userDataDirectory }) => {
-          // 删除验收隔离自主移动调度，保留正式表现及终态请求的严格计数。
+          // 删除验收隔离自主移动调度，终态由 Main 事件表达，不再发起 Provider 请求。
           await new SettingsStore(join(userDataDirectory, 'settings.json')).saveMovementMode(0);
         } });
       const target = join(fixture.authorizedRootDirectory, 'target.txt');
@@ -897,8 +750,10 @@ test.describe('正式 Core 任务 UI', () => {
     test(`具体许可等待中${mode}使旧 ID 失效且保留文件`, async () => {
       test.setTimeout(120000);
       const provider = await startProviderServer([
+      behaviorBindingsStep(),
       ...taskAuthorizationSteps(),
         { response: codingResponse([{ name: 'write', args: { path: 'existing.txt', content: '不应覆盖' } }]) },
+        behaviorBindingsStep(),
         ...characterChatSteps('新的普通聊天正常', {}, {inspect: expectCharacterChatRequest})
       ]);
       let fixture: AppFixture | undefined;
@@ -927,10 +782,10 @@ test.describe('正式 Core 任务 UI', () => {
     test.setTimeout(120000);
     const gate = createProviderResponseGate();
     const provider = await startProviderServer([
+      behaviorBindingsStep(),
       ...taskAuthorizationSteps(),
       { response: codingResponse([{ name: 'read', args: { path: 'note.txt' } }]) },
       { response: codingResponse('迟到正文不应显示'), gate },
-      activityMatchStep(),
       ...characterChatSteps('取消后普通聊天正常', {}, {inspect: expectCharacterChatRequest})
     ]);
     let fixture: AppFixture | undefined;
@@ -4295,11 +4150,10 @@ test.describe('真实角色工作室闭环', () => {
       }
 
       characterProvider = await startProviderServer([
+      behaviorBindingsStep(),
         ...characterChatSteps('我会原地陪伴你。', {}, {inspect: expectCharacterChatRequest}),
         ...characterChatSteps('听到你的好消息，我也很开心。', {
-            moodUpdate: { summary: '轻快而安心', strength: 0.8 },
-            expressionPlan: null,
-            backgroundSelection: { stateId: authoredState.id, actions: [{ actionId: moodActionId, score: 1 }] }
+            kind: 'background', choice: { stateId: authoredState.id, actionId: moodActionId }
           }, { inspect: expectCharacterChatRequest }, request => {
             const system = request.messages.filter(message => message.role === 'system')
               .map(message => message.content).join('\n');
@@ -4696,31 +4550,31 @@ test.describe('自主行为最小闭环', () => {
   const b7MovementCases = [
     {
       prompt: '向左一点', reply: '已向左移动', axis: 'horizontal', sign: -1,
-      movementControl: { kind: 'move_once', target: 'left', distance: 'near' }
+      selection: { mode: 'once', target: 'left', distance: 'near' }
     },
     {
       prompt: '向上远一点', reply: '已向上移动', axis: 'vertical', sign: -1,
-      movementControl: { kind: 'move_once', target: 'top', distance: 'far' }
+      selection: { mode: 'once', target: 'top', distance: 'far' }
     },
     {
       prompt: '向右一点', reply: '已向右移动', axis: 'horizontal', sign: 1,
-      movementControl: { kind: 'move_once', target: 'right', distance: 'near' },
+      selection: { mode: 'once', target: 'right', distance: 'near' },
       precondition: {
         prompt: '向左一点', reply: '右移前置已向左移动',
-        movementControl: { kind: 'move_once', target: 'left', distance: 'near' }
+        selection: { mode: 'once', target: 'left', distance: 'near' }
       }
     },
     {
       prompt: '向下一点', reply: '已向下移动', axis: 'vertical', sign: 1,
-      movementControl: { kind: 'move_once', target: 'bottom', distance: 'near' },
+      selection: { mode: 'once', target: 'bottom', distance: 'near' },
       precondition: {
         prompt: '向上远一点', reply: '下移前置已向上移动',
-        movementControl: { kind: 'move_once', target: 'top', distance: 'far' }
+        selection: { mode: 'once', target: 'top', distance: 'far' }
       }
     },
     {
       prompt: '去左上角', reply: '已移动到左上区域', axis: 'region', sign: -1,
-      movementControl: { kind: 'move_once', target: 'top_left', distance: 'far' }
+      selection: { mode: 'once', target: 'top_left', distance: 'far' }
     }
   ] as const;
 
@@ -4729,14 +4583,14 @@ test.describe('自主行为最小闭环', () => {
       test.setTimeout(60_000);
       const fixtureModule = await loadElectronFixtureModule();
       // 位移只能借用 Provider 明确选中的合法 moving 活动，动作名称不授予移动能力。
-      const expressionPlan = { states: [{ stateId: 'moving', score: 1, activity: 'moving',
-        actions: [{ actionId: 'safe-move-action', score: 1 }] }] };
+      const movingChoice = { stateId: 'moving', actionId: 'safe-move-action' };
       const provider = await startProviderServer([
+      behaviorBindingsStep({ moving: movingChoice }),
         ...('precondition' in movement ? [...characterChatSteps(movement.precondition.reply, {
-            movementControl: movement.precondition.movementControl, expressionPlan
-          }, {inspect: expectCharacterChatRequest})] : []),
+            kind: 'movement', choice: movingChoice, ...movement.precondition.selection
+          }, {inspect: expectCharacterChatRequest}), behaviorBindingsStep({ moving: movingChoice }), behaviorBindingsStep({ moving: movingChoice })] : []),
         ...characterChatSteps(movement.reply, {
-            movementControl: movement.movementControl, expressionPlan
+            kind: 'movement', choice: movingChoice, ...movement.selection
           }, {inspect: expectCharacterChatRequest})
       ]);
       const fixture = await fixtureModule.createElectronAppFixture({
@@ -4812,6 +4666,8 @@ test.describe('自主行为最小闭环', () => {
             await window.myself.getCharacterMotionSnapshot()
           ).moving)).toBe(false);
           await fixture.restart();
+          // 启动先绑定一次；恢复 Provider 配置使生命周期再次失效，下一轮再绑定一次。
+          await provider.waitForCompletedResponses(4);
           const restartedPet = await waitForRendererPage(fixture, 'pet', 15_000);
           await expect.poll(() => fixture.getCharacterBehaviorProbe(), { timeout: 15_000 })
             .toMatchObject({
@@ -4865,17 +4721,18 @@ test.describe('自主行为最小闭环', () => {
     test.setTimeout(120_000);
     const fixtureModule = await loadElectronFixtureModule();
     const provider = await startProviderServer([
+      behaviorBindingsStep(),
       ...characterChatSteps('缺失动作请求已安全处理', {}, {}),
       ...characterChatSteps('停止状态已保存', {
-          movementControl: { kind: 'set_mode', mode: 0 }
+          kind: 'movement', mode: 'still'
         }, {}),
+      behaviorBindingsStep({ moving: { stateId: 'moving', actionId: 'safe-move-action' } }),
+      behaviorBindingsStep({ moving: { stateId: 'moving', actionId: 'safe-move-action' } }),
       ...characterChatSteps('停止期间仍可挥手回应', {
-          requestKind: 'action', explicitPlayback: { stateId: 'custom-wave', actionId: 'safe-wave-action' }
+          kind: 'action', choice: { stateId: 'custom-wave', actionId: 'safe-wave-action' }
         }, {}),
       ...characterChatSteps('停止期间移动请求已处理', {
-          movementControl: { kind: 'move_once', target: 'left', distance: 'near' },
-          expressionPlan: { states: [{ stateId: 'moving', score: 1, activity: 'moving',
-            actions: [{ actionId: 'safe-move-action', score: 1 }] }] }
+          kind: 'movement', choice: { stateId: 'moving', actionId: 'safe-move-action' }, mode: 'once', target: 'left', distance: 'near'
         }, {})
     ]);
     const fixture = await fixtureModule.createElectronAppFixture({
@@ -4960,6 +4817,7 @@ test.describe('自主行为最小闭环', () => {
       await submitChatMessage(chat, '停止不动');
       await expect(chat.getByText('停止状态已保存')).toBeVisible();
       await fixture.restart();
+      await provider.waitForCompletedResponses(6);
 
       pet = await waitForRendererPage(fixture, 'pet', 15_000);
       chat = await waitForRendererPage(fixture, 'chat', 15_000);
@@ -4994,183 +4852,6 @@ test.describe('自主行为最小闭环', () => {
       provider.assertComplete();
       expect(provider.inspectionErrors).toEqual([]);
     } finally {
-      await fixture.dispose();
-      await provider.close();
-    }
-  });
-
-  test('B7 长时：三档主动性、阻塞暂停与重启清理保持真实纵向边界', async () => {
-    test.skip(
-      process.env['AI_PET_LONG_BEHAVIOR_E2E'] !== '1',
-      '默认门禁不执行 9–12 分钟的真实墙钟主动行为链。'
-    );
-    test.setTimeout(13 * 60_000);
-    const blockerWindowMs = 62_000;
-    const localWindowMs = 75_000;
-    const fixtureModule = await loadElectronFixtureModule();
-    const chattingGate = createProviderResponseGate();
-    const provider = await startProviderServer([
-      ...characterChatSteps('聊天阻塞已释放并挥手', {}, {gate: chattingGate, inspect: request => {
-          expectCharacterChatRequest(request);
-          expect(request.toolChoiceWasExplicit).toBe(true);
-        }}),
-
-    ]);
-    const fixture = await fixtureModule.createElectronAppFixture({
-      workspaceRoot: resolve(process.cwd()),
-      apiKey: provider.apiKey,
-      launchTimeoutMs: 15_000,
-      enableSoftwareRasterizer: true
-    });
-
-    const observeBehaviorActions = async (pet: Page): Promise<void> => {
-      await pet.evaluate(() => {
-        const scope = globalThis as typeof globalThis & { __b7LongActions?: string[] };
-        scope.__b7LongActions = [];
-        window.myself.subscribeCharacterMotion(event => {
-          if (event.type === 'behavior-action') scope.__b7LongActions?.push(event.actionId);
-        });
-      });
-    };
-    const behaviorActions = (pet: Page): Promise<string[]> => pet.evaluate(() => (
-      (globalThis as typeof globalThis & { __b7LongActions?: string[] })
-        .__b7LongActions?.slice() ?? []
-    ));
-    const saveMode = async (
-      pet: Page,
-      mode: 'passive' | 'assistive' | 'autonomous'
-    ): Promise<void> => {
-      await pet.evaluate(async proactivityMode => {
-        await window.myself.savePrivacySettings({
-          dataCategories: { memory: false },
-          longTermMemory: false,
-          proactivityMode
-        });
-      }, mode);
-    };
-
-    try {
-      let pet = await waitForRendererPage(fixture, 'pet');
-      let chat = await waitForRendererPage(fixture, 'chat');
-      const imported = await pet.evaluate(async () => window.myself.importCharacterPackage());
-      expect(imported.kind).toBe('imported');
-      if (imported.kind !== 'imported') return;
-      await pet.evaluate(async ({ characterId, baseUrl, apiKey }) => {
-        await window.myself.activateCharacter(characterId);
-        await window.myself.saveProviderProfile({
-          profile: {
-            id: 'behavior-b7-long',
-            displayName: '行为导演 B7 长时 E2E',
-            mode: 'custom',
-            protocol: 'openai-compatible',
-            baseUrl,
-            modelId: 'behavior-b7-long-model',
-            additionalParameters: {},
-            capabilities: ['chat', 'tools']
-          },
-          secret: apiKey,
-          persistSecret: true
-        });
-        await window.myself.saveModelRoute({
-          primaryProfileId: 'behavior-b7-long',
-          chatProfileId: 'behavior-b7-long',
-          agentProfileId: 'behavior-b7-long',
-          visionProfileId: null,
-          fallbackProfileIds: [],
-          allowCrossProviderFallback: false
-        });
-        await window.myself.savePrivacySettings({
-          dataCategories: { memory: false },
-          longTermMemory: false,
-          proactivityMode: 'passive'
-        });
-        await window.myself.chooseAuthorizedRoot();
-        await window.myself.openChat();
-      }, {
-        characterId: imported.characterId,
-        baseUrl: provider.baseUrl,
-        apiKey: provider.apiKey
-      });
-      await expect.poll(() => fixture.getCharacterBehaviorProbe()).toMatchObject({
-        actionId: 'safe-idle-action',
-        playbackStatus: expect.stringMatching(/^(started|completed)$/u)
-      });
-      await expect.poll(() => chat.evaluate(() => document.visibilityState)).toBe('visible');
-      await observeBehaviorActions(pet);
-
-      // passive 超过本地计时上限仍不产生主动动作或位移。
-      const passiveMotion = await fixture.getCharacterMotionDeltaProbe();
-      await pet.waitForTimeout(blockerWindowMs);
-      expect(await behaviorActions(pet)).toEqual([]);
-      expect(await fixture.getCharacterMotionDeltaProbe()).toEqual(passiveMotion);
-      expect(provider.requests).toEqual([]);
-
-      // chatting 持续超过本地计时上限，期间不得因计时发起自主动作或位移。
-      await saveMode(pet, 'assistive');
-      await submitChatMessage(chat, '请陪我聊一会再挥手');
-      await expect.poll(() => chattingGate.isWaiting()).toBe(true);
-      const chattingOffset = (await behaviorActions(pet)).length;
-      const chattingMotion = await fixture.getCharacterMotionDeltaProbe();
-      await pet.waitForTimeout(blockerWindowMs);
-      expect((await behaviorActions(pet)).slice(chattingOffset)).toEqual([]);
-      expect(await fixture.getCharacterMotionDeltaProbe()).toEqual(chattingMotion);
-      chattingGate.release();
-      await expect(chat.getByText('聊天阻塞已释放并挥手')).toBeVisible();
-
-      // assistive 恢复后只播放原地 idle，不产生位移。
-      const assistiveOffset = (await behaviorActions(pet)).length;
-      const assistiveMotion = await fixture.getCharacterMotionDeltaProbe();
-      await expect.poll(async () => (
-        (await behaviorActions(pet)).slice(assistiveOffset)
-      ), { timeout: localWindowMs }).toContain('safe-idle-action');
-      expect(await fixture.getCharacterMotionDeltaProbe()).toEqual(assistiveMotion);
-
-      // 原生拖拽 blocker 由 Main 事件 owner 与 Director 单元测试覆盖；本用例不伪造 Renderer 拖拽。
-      await saveMode(pet, 'autonomous');
-
-      // 文件确认卡使 Scheduler 继续暂停，取消后才恢复同一剩余时间。
-      await submitChatMessage(chat, '创建文件 b7-long-pending.txt');
-      const confirmation = chat.getByRole('article', { name: '本地任务授权' });
-      await expect(confirmation).toBeVisible();
-      await expect.poll(() => fixture.getConversationProbe()).toMatchObject({
-        phase: 'awaiting_confirmation',
-        fileConfirmationVisible: false
-      });
-      const confirmationOffset = (await behaviorActions(pet)).length;
-      const confirmationMotion = await fixture.getCharacterMotionDeltaProbe();
-      await pet.waitForTimeout(blockerWindowMs);
-      await expect(confirmation).toBeVisible();
-      expect((await behaviorActions(pet)).slice(confirmationOffset)).toEqual([]);
-      expect(await fixture.getCharacterMotionDeltaProbe()).toEqual(confirmationMotion);
-      await confirmation.getByRole('button', { name: '取消', exact: true }).click();
-      await expect(confirmation).toHaveCount(0);
-
-      // autonomous 解除阻塞后在 10–30 秒内发起当前单屏随机移动。
-      const autonomousOffset = (await behaviorActions(pet)).length;
-      const autonomousMotion = await fixture.getCharacterMotionDeltaProbe();
-      await expect.poll(async () => (
-        (await behaviorActions(pet)).slice(autonomousOffset)
-      ), { timeout: localWindowMs }).toContain('safe-move-action');
-      expect(await fixture.getCharacterMotionDeltaProbe()).not.toEqual(autonomousMotion);
-
-      // 重启后旧主动周期失效，新进程从 idle 建立基线。
-      await fixture.restart();
-      pet = await waitForRendererPage(fixture, 'pet', 15_000);
-      chat = await waitForRendererPage(fixture, 'chat', 15_000);
-      await expect.poll(() => fixture.getCharacterBehaviorProbe(), { timeout: 15_000 })
-        .toMatchObject({
-          actionId: 'safe-idle-action',
-          playbackStatus: expect.stringMatching(/^(started|completed)$/u)
-        });
-      await observeBehaviorActions(pet);
-      const restartedMotion = await fixture.getCharacterMotionDeltaProbe();
-      await pet.waitForTimeout(2_500);
-      expect(await behaviorActions(pet)).not.toContain('safe-wave-action');
-      expect(await fixture.getCharacterMotionDeltaProbe()).toEqual(restartedMotion);
-      provider.assertComplete();
-      expect(provider.inspectionErrors).toEqual([]);
-    } finally {
-      chattingGate.release();
       await fixture.dispose();
       await provider.close();
     }
@@ -5282,18 +4963,13 @@ test.describe('真实 Provider 业务闭环', () => {
       cloudReply,
       'body-canary-local-electron'
     ];
-    // 关闭本地模型释放待确认状态后，默认运动模式先向恢复的云路由请求一次活动匹配。
-    const activity = activityMatchStep();
-    const cloud = await startProviderServer([{ ...activity, inspect: request => {
-      activity.inspect?.(request);
-      expect(request.messages.at(-1)?.content).toBe('根据公开描述匹配适合真实移动的状态和动作。');
-      const schemaMessage = request.messages.find(message => message.role === 'system'
-        && message.content.startsWith('完整输出JSON Schema：'));
-      const schema = JSON.parse(schemaMessage?.content.slice('完整输出JSON Schema：'.length) ?? 'null');
-      expect(schema).toMatchObject({ type: 'object', additionalProperties: false,
-        required: ['moodUpdate', 'expressionPlan', 'backgroundSelection'] });
-      expect(Object.keys(schema.properties).sort()).toEqual(['backgroundSelection', 'expressionPlan', 'moodUpdate']);
-    } }, ...characterChatSteps(cloudReply, {}, {inspect: request => {
+    // 模型生命周期切回云路由后先重新绑定公开用途，不发送聊天或私有任务正文。
+    const cloud = await startProviderServer([behaviorBindingsStep({}, request => {
+      const schemaMessage = request.messages.find(message => message.role === 'system' && message.content.startsWith('完整输出 JSON Schema：'));
+      const schema = JSON.parse(schemaMessage!.content.slice('完整输出 JSON Schema：'.length));
+      expect(schema.required.sort()).toEqual([...characterBehaviorRoles].sort());
+      expect(Object.keys(schema.properties).sort()).toEqual([...characterBehaviorRoles].sort());
+    }), ...characterChatSteps(cloudReply, {}, {inspect: request => {
         expectCharacterChatRequest(request);
         if (request.messages.at(-1)?.content !== cloudPrompt) {
           throw new Error('关闭本地模型后没有恢复持久化云路由');
@@ -5563,12 +5239,13 @@ test.describe('真实 Provider 业务闭环', () => {
     const provider = await startProviderServer([
       { response: { type: 'text', text: connectionReplies[0] } },
       { response: { type: 'text', text: connectionReplies[1] } },
+      behaviorBindingsStep(),
       ...chatSteps,
       ...taskAuthorizationSteps(),
+      behaviorBindingsStep(),
       ...taskAuthorizationSteps(),
       { response: codingResponse([{ name: 'read', args: { path: '.' } }]) },
-      { response: codingResponse(fileReply), inspectRaw: request => { expect(JSON.stringify(request.messages)).toContain('docs'); } },
-      taskReactionStep()
+      { response: codingResponse(fileReply), inspectRaw: request => { expect(JSON.stringify(request.messages)).toContain('docs'); } }
     ]);
     let fixture: Awaited<ReturnType<ElectronFixtureModule['createElectronAppFixture']>>;
     try {
@@ -5687,7 +5364,7 @@ test.describe('真实 Provider 业务闭环', () => {
 
       await submitChatMessage(chat, fileRequestBeforeAuthorization);
       await expect(chat.getByRole('button', { name: '打开设置' })).toBeVisible();
-      await expect.poll(() => provider.requests.length).toBe(20);
+      await expect.poll(() => provider.requests.length).toBe(21);
       await chat.getByRole('button', { name: '打开设置' }).click();
       await expect.poll(() => Boolean(pageFor('settings'))).toBe(true);
       settings = pageFor('settings')!;
@@ -5708,10 +5385,10 @@ test.describe('真实 Provider 业务闭环', () => {
         fileConfirmationVisible: false
       });
 
-      await expect.poll(() => provider.requests.length).toBe(25);
+      await expect.poll(() => provider.requests.length).toBe(26);
       provider.assertComplete();
       expect(provider.inspectionErrors).toEqual([]);
-      expect(provider.requests.slice(2, 18).map(request => request.toolCount)).toEqual(Array.from({ length: 8 }, () => [1, 0]).flat());
+      expect(provider.requests.slice(3, 19).map(request => request.toolCount)).toEqual(Array.from({ length: 8 }, () => [1, 0]).flat());
       expect(Object.keys(provider.requests[0] ?? {}).sort()).toEqual([
         'messageRoleCounts', 'method', 'model', 'toolCount'
       ]);
@@ -5748,6 +5425,7 @@ test.describe('真实 Provider 业务闭环', () => {
     ] as const;
     const assistantMessages = ['第一轮回复', '第二轮回复', '第三轮回复'] as const;
     const provider = await startProviderServer([
+      behaviorBindingsStep(),
       ...characterChatSteps(assistantMessages[0], {}, {inspect: request => {
           const visible = request.messages.filter(message => message.role !== 'system');
           if (request.responseFormatWasJsonObject
@@ -5862,6 +5540,7 @@ test.describe('真实 Provider 业务闭环', () => {
     const privateLogSentinel = randomBytes(12).toString('hex');
     const fileName = `未授权-${privateLogSentinel}.txt`;
     const provider = await startProviderServer([
+      behaviorBindingsStep(),
       ...characterChatSteps('无法确定请求类型', {}, {inspect: request => {
           if (request.responseFormatWasJsonObject
             || request.tools.length !== 1
@@ -5931,7 +5610,7 @@ test.describe('真实 Provider 业务闭环', () => {
         fileConfirmationVisible: false
       });
       expect(await readdir(fixture.authorizedRootDirectory, { recursive: true })).toEqual(before);
-      await expect.poll(() => provider.requests.length).toBe(4);
+      await expect.poll(() => provider.requests.length).toBe(5);
       provider.assertComplete();
       expect(provider.inspectionErrors).toEqual([]);
 
@@ -5959,12 +5638,11 @@ test.describe('真实 Provider 业务闭环', () => {
     ] as const;
     const sourceReplies = ['来源服务回复一', '来源服务回复二'] as const;
     const sourceProvider = await startProviderServer([
+      behaviorBindingsStep(),
       ...characterChatSteps(sourceReplies[0], {}, {inspect: expectCharacterChatRequest}),
       ...taskAuthorizationSteps(),
-      taskReactionStep(),
       ...characterChatSteps(sourceReplies[1], {}, {inspect: expectCharacterChatRequest}),
-      ...taskAuthorizationSteps(),
-      taskReactionStep()
+      ...taskAuthorizationSteps()
     ]);
     const targetProvider = await startProviderServer([
       { response: codingResponse('仅当前文件任务已结束'), inspectRaw: request => {
@@ -6139,7 +5817,9 @@ test.describe('真实 Provider 业务闭环', () => {
     const oldText = `旧会话正文-${randomBytes(12).toString('hex')}`;
     const newText = `新会话正文-${randomBytes(12).toString('hex')}`;
     const provider = await startProviderServer([
+      behaviorBindingsStep(),
       ...characterChatSteps('不得回流的旧回复', {}, { gate: oldGate, inspect: expectCharacterChatRequest }),
+      behaviorBindingsStep(),
       ...characterChatSteps('新会话回复', {}, {inspect: request => {
           const visible = request.messages.filter(message => message.role !== 'system');
           if (request.tools.length !== 1
@@ -6193,7 +5873,7 @@ test.describe('真实 Provider 业务闭环', () => {
 
       await submitChatMessage(chat, oldText);
       await expect.poll(() => oldGate.isWaiting()).toBe(true);
-      await expect.poll(() => provider.requests.length).toBe(2);
+      await expect.poll(() => provider.requests.length).toBe(3);
       await expect.poll(() => fixture.getConversationProbe()).toMatchObject({
         phase: 'thinking',
         visibleMessageCount: 1,
@@ -6247,6 +5927,7 @@ test.describe('真实 Provider 业务闭环', () => {
     test.setTimeout(120_000);
     const fixtureModule = await loadElectronFixtureModule();
     const provider = await startProviderServer([
+      behaviorBindingsStep(),
       ...characterChatSteps('你好呀，我在。', {}, {inspect: request => {
           if (request.responseFormatWasJsonObject || request.tools.length !== 1) {
             throw new Error('普通聊天只允许无副作用的范围申请');
@@ -6255,7 +5936,7 @@ test.describe('真实 Provider 业务闭环', () => {
       ...taskAuthorizationSteps(),
       { response: codingResponse([{ name: 'read', args: { path: '.' } }]) },
       { response: codingResponse('只读目录已列出。'), inspectRaw: request => { expect(JSON.stringify(request.messages)).toContain('docs'); } },
-      taskReactionStep()
+      behaviorBindingsStep()
     ]);
     let restartCount = 0;
     let baselineSettingsBuffer: Buffer | undefined;
@@ -6370,15 +6051,14 @@ test.describe('真实 Provider 业务闭环', () => {
       await expect.poll(() => chatPage.evaluate(() => document.visibilityState)).toBe('visible');
 
       await submitChatMessage(chatPage, '你好呀');
-      await expect.poll(() => provider.requests.length).toBe(2);
+      await expect.poll(() => provider.requests.length).toBe(3);
       expect(provider.inspectionErrors).toEqual([]);
       await expect(chatPage.getByText('你好呀，我在。', { exact: true })).toBeVisible();
       await submitChatMessage(chatPage, '列出当前目录');
       await approveCodingScope(chatPage);
       await expect(chatPage.getByText('只读目录已列出。', { exact: true })).toBeVisible();
 
-      await expect.poll(() => provider.remainingSteps()).toBe(0);
-      provider.assertComplete();
+      await expect.poll(() => provider.remainingSteps()).toBe(1);
       expect(provider.inspectionErrors).toEqual([]);
       const secondPetClosed = restartedPetPage.waitForEvent('close');
       await restartedPetPage.evaluate(() => {
@@ -6387,6 +6067,9 @@ test.describe('真实 Provider 业务闭环', () => {
       await secondPetClosed;
       await fixture.restart();
       expect(restartCount).toBe(2);
+      await expect.poll(() => provider.remainingSteps()).toBe(0);
+      provider.assertComplete();
+      expect(provider.inspectionErrors).toEqual([]);
     } finally {
       try {
         await fixture.dispose();

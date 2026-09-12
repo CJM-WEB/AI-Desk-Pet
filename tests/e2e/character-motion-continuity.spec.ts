@@ -1,9 +1,10 @@
 import { readFile, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
-import { expect, test, type Page } from '@playwright/test';
+import { expect, test, type Browser, type Page } from '@playwright/test';
+import { characterBehaviorRoles } from '../../apps/desktop/src/main/characters/character-behavior-bindings';
 import { SettingsStore } from '../../apps/desktop/src/main/storage/settings-store';
 import { createElectronAppFixture, type ElectronAppFixture } from '../fixtures/electron-app';
-import { startProviderServer, type ProviderStep } from '../fixtures/provider-server';
+import { createProviderResponseGate, startProviderServer, type ProviderStep } from '../fixtures/provider-server';
 
 type Observation = {
   at: number;
@@ -16,12 +17,12 @@ type Observation = {
   targetY?: number;
   contentWidth?: number;
   contentHeight?: number;
-  canvasWidth?: number;
-  canvasHeight?: number;
+  canvasWidth?: number | undefined;
+  canvasHeight?: number | undefined;
   nativeX?: number;
   nativeY?: number;
-  hostOffsetX?: number;
-  hostOffsetY?: number;
+  hostOffsetX?: number | undefined;
+  hostOffsetY?: number | undefined;
 };
 type ObservationScope = typeof globalThis & { __motionContinuity?: Observation[] };
 
@@ -37,10 +38,8 @@ function movementSteps(mode: 0 | 1 | 2): ProviderStep[] {
     },
     {
       response: { type: 'structured', structured_output: {
-        moodUpdate: null, requestKind: 'ambient', explicitPlayback: null,
-        backgroundSelection: null, movementControl: { kind: 'set_mode', mode },
-        expressionPlan: { states: [{ stateId: 'state', score: 1, activity: 'moving',
-          actions: [{ actionId: 'state-action', score: 1 }] }] }
+        kind: 'movement', choice: null,
+        mode: mode === 0 ? 'still' : mode === 1 ? 'continuous' : 'intermittent', target: null, distance: null
       } },
       concurrent: { group, match: request => request.tools.length === 0
         && request.responseFormatWasJsonObject
@@ -56,7 +55,7 @@ function movementSteps(mode: 0 | 1 | 2): ProviderStep[] {
 }
 
 async function renderer(fixture: ElectronAppFixture, view: string): Promise<Page> {
-  const find = () => fixture.browser.contexts().flatMap(context => context.pages())
+  const find = () => (fixture.browser as Browser).contexts().flatMap(context => context.pages())
     .find(page => !page.isClosed() && new URL(page.url()).searchParams.get('view') === view);
   await expect.poll(() => Boolean(find()), { timeout: 30_000 }).toBe(true);
   return find()!;
@@ -128,7 +127,12 @@ function arrivalContinuations(events: Observation[]): number {
 
 test('默认跑步有限动画在真实三档运动中持续接续、静止停止、间歇按时再动', async ({}, testInfo) => {
   test.setTimeout(120_000);
+  const startup = createProviderResponseGate();
   const provider = await startProviderServer([
+    { response: { type: 'structured', structured_output: Object.fromEntries(characterBehaviorRoles.map(role => [role,
+      role === 'moving' ? { stateId: 'state', actionId: 'state-action' } : null])) }, gate: startup,
+      inspect: request => { expect(request.tools).toEqual([]); expect(request.toolChoice).toBe('none');
+        expect(request.messages.some(message => message.role === 'user' && message.content.includes('authorStates'))).toBe(true); } },
     ...movementSteps(1), ...movementSteps(0), ...movementSteps(2)
   ]);
   let fixture: ElectronAppFixture | undefined;
@@ -138,14 +142,13 @@ test('默认跑步有限动画在真实三档运动中持续接续、静止停�
       workspaceRoot: resolve(process.cwd()), apiKey: provider.apiKey,
       launchTimeoutMs: 30_000, enableSoftwareRasterizer: true,
       prepareUserData: async ({ userDataDirectory }) => {
-        const settings = new SettingsStore(join(userDataDirectory, 'settings.json'));
+        const settings = new SettingsStore(join(userDataDirectory, 'settings.json'), async () => false);
         await settings.saveMovementMode(0);
         await settings.savePrivacySettings({ dataCategories: { memory: false },
           longTermMemory: false, autonomousMoodEnabled: false, proactivityMode: 'passive' });
       }
     });
     pet = await renderer(fixture, 'pet');
-    const chat = await renderer(fixture, 'chat');
     await expect.poll(() => fixture!.getCharacterBehaviorProbe(), { timeout: 15_000 })
       .toMatchObject({ actionId: 'idle-action', playbackStatus: 'started' });
     await pet.evaluate(async ({ baseUrl, apiKey }) => {
@@ -153,10 +156,21 @@ test('默认跑步有限动画在真实三档运动中持续接续、静止停�
         id: 'motion-continuity', displayName: '运动连续性验证', mode: 'custom',
         protocol: 'openai-compatible', baseUrl, modelId: 'motion-continuity',
         additionalParameters: {}, capabilities: ['chat', 'tools']
-      }, secret: apiKey, persistSecret: false });
+      }, secret: apiKey, persistSecret: true });
       await window.myself.saveModelRoute({ primaryProfileId: 'motion-continuity',
         chatProfileId: 'motion-continuity', agentProfileId: 'motion-continuity',
         visionProfileId: null, fallbackProfileIds: [], allowCrossProviderFallback: false });
+    }, { baseUrl: provider.baseUrl, apiKey: provider.apiKey });
+    // 已配置模型的正式冷启动只匹配一次用途，逐轮运动控制复用 Main 保存的移动配对。
+    expect(provider.requests).toHaveLength(0);
+    await fixture.restart();
+    pet = await renderer(fixture, 'pet');
+    const chat = await renderer(fixture, 'chat');
+    await expect.poll(() => startup.isWaiting()).toBe(true);
+    startup.release(); await provider.waitForCompletedResponses(1);
+    await expect.poll(() => fixture!.getCharacterBehaviorProbe(), { timeout: 15_000 })
+      .toMatchObject({ actionId: 'idle-action', playbackStatus: 'started' });
+    await pet.evaluate(async () => {
       const baseline = (await window.myself.getCharacterMotionSnapshot()).position;
       const scope = globalThis as ObservationScope;
       scope.__motionContinuity = [];
@@ -189,7 +203,7 @@ test('默认跑步有限动画在真实三档运动中持续接续、静止停�
         });
       });
       await window.myself.openChat();
-    }, { baseUrl: provider.baseUrl, apiKey: provider.apiKey });
+    });
     const mode = async () => (JSON.parse(await readFile(join(fixture!.userDataDirectory,
       'settings.json'), 'utf8')) as { movementMode: number }).movementMode;
 
@@ -245,16 +259,21 @@ test('默认跑步有限动画在真实三档运动中持续接续、静止停�
       && event.kind === 'position' && event.moving === false)!;
     expect(pathLength((await observations(pet)).filter(event => event.at >= intermittentStart.at
       && event.at <= intermittentStop.at))).toBeGreaterThan(2);
-    await pet.waitForTimeout(3_000);
-    expect(pathLength((await observations(pet)).filter(event => event.at > intermittentStop.at + 200))).toBe(0);
-    expect((await observations(pet)).filter(event => event.at > intermittentStop.at + 200 && event.kind === 'action')
-      .every(event => event.actionId !== 'state-action')).toBe(true);
+    // 证据回传可能晚于实际停下；只检查完整三秒停顿窗口，不能把十秒后的合法下一轮算入。
+    const pauseEnd = intermittentStop.at + 3_200;
+    await pet.waitForTimeout(Math.max(0, pauseEnd - Date.now()));
+    const pause = (await observations(pet)).filter(event => event.at > intermittentStop.at + 200 && event.at <= pauseEnd);
+    expect(pause.filter(event => event.kind === 'position').length).toBeGreaterThan(30);
+    expect(pathLength(pause)).toBe(0);
+    expect(pause.filter(event => event.kind === 'action').every(event => event.actionId !== 'state-action')).toBe(true);
     assertStableViewport((await observations(pet)).filter(event => event.at >= runningStart));
     assertForwardWindowMotion((await observations(pet)).filter(event => event.at >= runningStart));
     provider.assertComplete();
+    expect(provider.requests).toHaveLength(7);
     expect(provider.inspectionErrors).toEqual([]);
     expect(fixture.logs.join('\n')).not.toContain('CHARACTER_PLAYBACK_UNAUTHORIZED');
   } finally {
+    startup.release();
     try {
       if (pet && !pet.isClosed()) {
         const evidence = testInfo.outputPath('motion-observations.json');

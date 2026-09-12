@@ -1,6 +1,6 @@
 import { describe, expect, test, vi } from 'vitest';
 import type { ModelRequest, ToolDefinition } from '@myself/agent-core';
-import { characterExpressionSelectionJsonSchema, characterExpressionSelectionSchema } from '@myself/character-runtime';
+import { characterExpressionResponseContract } from '../src/main/conversation/character-expression-adapter';
 import {
   OpenAICompatibleProvider,
   ProviderError
@@ -39,6 +39,9 @@ const request: ModelRequest = {
   toolChoice: 'auto',
   reasoningMode: 'provider_default'
 };
+
+// 所有表现夹具复用正式扁平协议，测试仍独立验证各 Provider 的传输与权限边界。
+const emptyExpression = { kind: 'none', choice: null, mode: 'keep', target: null, distance: null };
 
 function jsonResponse(value: unknown, status = 200): Response {
   return new Response(JSON.stringify(value), {
@@ -138,7 +141,7 @@ describe('OpenAICompatibleProvider', () => {
     const fetchMock = vi.fn<FetchLike>(async () => jsonResponse({
       choices: [{
         message: {
-          content: JSON.stringify({"moodUpdate":null,"expressionPlan":null,"requestKind":"ambient","explicitPlayback":null,"movementControl":{"kind":"keep"}}),
+          content: JSON.stringify(emptyExpression),
           metadata: {
             behaviorIntent: {
               stateIntent: { semantic: 'move' },
@@ -157,14 +160,9 @@ describe('OpenAICompatibleProvider', () => {
       tools: [],
       toolChoice: 'none',
       reasoningMode: 'provider_default',
-      responseContract: {
-        type: 'json_object',
-        name: 'character_expression',
-        jsonSchema: characterExpressionSelectionJsonSchema,
-        validateStructuredOutput: value => characterExpressionSelectionSchema.safeParse(value).success
-      }
+      responseContract: characterExpressionResponseContract
     }, new AbortController().signal)).resolves.toEqual({
-      type: 'structured', structured_output: {"moodUpdate":null,"expressionPlan":null,"requestKind":"ambient","explicitPlayback":null,"movementControl":{"kind":"keep"}}
+      type: 'structured', structured_output: emptyExpression
     });
   });
 
@@ -175,7 +173,7 @@ describe('OpenAICompatibleProvider', () => {
     const fetchMock = vi.fn<FetchLike>(async () => jsonResponse({
       choices: [{
         message: {
-          content: JSON.stringify({"moodUpdate":null,"expressionPlan":null,"requestKind":"ambient","explicitPlayback":null,"movementControl":{"kind":"keep"}}),
+          content: JSON.stringify(emptyExpression),
           metadata: { emotion: metadataEmotion }
         }
       }]
@@ -187,14 +185,9 @@ describe('OpenAICompatibleProvider', () => {
       tools: [],
       toolChoice: 'none',
       reasoningMode: 'provider_default',
-      responseContract: {
-        type: 'json_object',
-        name: 'character_expression',
-        jsonSchema: characterExpressionSelectionJsonSchema,
-        validateStructuredOutput: value => characterExpressionSelectionSchema.safeParse(value).success
-      }
+      responseContract: characterExpressionResponseContract
     }, new AbortController().signal)).resolves.toEqual({
-      type: 'structured', structured_output: {"moodUpdate":null,"expressionPlan":null,"requestKind":"ambient","explicitPlayback":null,"movementControl":{"kind":"keep"}}
+      type: 'structured', structured_output: emptyExpression
     });
   });
 

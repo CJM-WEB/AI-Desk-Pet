@@ -31,6 +31,8 @@ import type { CodingSessionEvent } from '@myself/coding-task-core';
 import { fileURLToPath } from 'node:url';
 import { resolveCodingTaskResources } from '../src/main/agent/coding-task-resources';
 import { LocalModelProvider } from '../src/main/providers/local-model-provider';
+import { characterBehaviorRoles, type CharacterBehaviorBindings } from '../src/main/characters/character-behavior-bindings';
+import type { CharacterActivityInput } from '../src/main/conversation/conversation-chat-adapter';
 
 function behaviorDouble(): ConversationBehaviorPort {
   return {
@@ -98,7 +100,7 @@ function localStatus(phase: typeof localReadinessCases[number][0]) {
 
 function providerWith(response: ModelResponse | Promise<ModelResponse>): ModelProvider {
   return {
-    respond: vi.fn(async (request: ModelRequest) => request.responseContract ? { type: 'structured' as const, structured_output: { moodUpdate: null, expressionPlan: null, requestKind: 'ambient', explicitPlayback: null, movementControl: { kind: 'keep' } } } : response)
+    respond: vi.fn(async (request: ModelRequest) => request.responseContract ? { type: 'structured' as const, structured_output: { kind: 'none', choice: null, mode: 'keep', target: null, distance: null } } : response)
   };
 }
 
@@ -208,8 +210,7 @@ function localDecisionHarness(content: string | Promise<string>) {
     const main = Boolean(body.response_format?.schema.anyOf);
     (main ? mainRequests : expressionRequests).push(init!);
     return new Response(JSON.stringify({ choices: [{ message: { content: main ? await content : JSON.stringify({
-      moodUpdate: null, expressionPlan: null, backgroundSelection: null, requestKind: 'ambient',
-      explicitPlayback: null, movementControl: { kind: 'keep' }
+      kind: 'none', choice: null, mode: 'keep', target: null, distance: null
     }) } }] }), { status: 200, headers: { 'content-type': 'application/json' } });
   });
   const provider = new LocalModelProvider({ getReadyConnection: () => ({ generation: 'local-1',
@@ -228,6 +229,42 @@ function assertLocalRequestBoundaries(harness: ReturnType<typeof localDecisionHa
 }
 
 describe('Main 会话组合模块', () => {
+  test('独立用途请求仅接纳到当前用途表，不触发心情、正文或文件任务', async () => {
+    const harness = baseOptions();
+    const bindings = Object.fromEntries(characterBehaviorRoles.map(role => [role, null])) as CharacterBehaviorBindings;
+    const applied: unknown[] = [];
+    const context = { contextRevision: 0, moodRevision: 0, instance: Symbol('用途上下文') };
+    const behavior = { ...harness.behavior, captureExpressionContext: () => context };
+    const composition = createMainConversationComposition({ ...harness.options, behavior: behavior as never,
+      autonomy: { getBehaviorLifecycleGeneration: () => 3, getActivityBlockers: () => ({ closed: false, chatting: false, capabilityTask: false, awaitingConfirmation: false, dragging: false }),
+        applyBehaviorBindings: (input: unknown) => applied.push(input), applyAutonomousDecision: () => { throw new Error('用途响应不得用作心情'); } } as never,
+      createChatAdapter: () => ({ respondBindings: async (input: CharacterActivityInput) => input.beforeProviderCall() ? bindings : null, respondAutonomous: async () => null }) as never
+    });
+    try {
+      await composition.requestAutonomousDecision({ purpose: 'bindings', idleForMs: 0, signal: new AbortController().signal, beforeProviderCall: () => true });
+      expect(applied).toEqual([{ bindings, context: behavior.captureExpressionContext(), lifecycle: 3 }]);
+      expect(harness.events).toEqual([]); expect(harness.factoryInputs).toEqual([]);
+    } finally { await composition.close(); await harness.composition.close(); }
+  });
+
+  test.each(['signal', 'lifecycle'] as const)('用途准备期间%s变化，迟到用途表不能接纳', async invalidation => {
+    const harness = baseOptions(); const pause = deferred(); const started = deferred(); let generation = 0;
+    const applied: unknown[] = [];
+    const controller = new AbortController();
+    const composition = createMainConversationComposition({ ...harness.options,
+      behavior: { ...harness.behavior, captureExpressionContext: () => ({ contextRevision: 0, moodRevision: 0, instance: Symbol('用途上下文') }) },
+      autonomy: { getBehaviorLifecycleGeneration: () => generation, getActivityBlockers: () => ({ closed: false, chatting: false, capabilityTask: false, awaitingConfirmation: false, dragging: false }),
+        applyBehaviorBindings: (input: unknown) => applied.push(input), applyAutonomousDecision: () => undefined } as never,
+      createChatAdapter: () => ({ respondBindings: async (input: CharacterActivityInput) => { if (!input.beforeProviderCall()) return null; started.resolve(); await pause.promise; return Object.fromEntries(characterBehaviorRoles.map(role => [role, null])); }, respondAutonomous: async () => null }) as never
+    });
+    try {
+      const request = composition.requestAutonomousDecision({ purpose: 'bindings', idleForMs: 0, signal: controller.signal, beforeProviderCall: () => true });
+      await started.promise;
+      if (invalidation === 'signal') controller.abort(); else generation++;
+      pause.resolve(); await request; expect(applied).toEqual([]);
+    } finally { await composition.close(); await harness.composition.close(); }
+  });
+
   test.each(['confirm', 'cancel'] as const)('Qwen 判别只申请范围，%s 决定是否创建执行服务', async resolution => {
     const harness = localDecisionHarness('{"kind":"task","text":""}');
     try {
@@ -373,6 +410,8 @@ describe('Main 会话组合模块', () => {
     expect(harness.factoryInputs).toHaveLength(0);
     expect(harness.behavior.prepareUserPrompt).toHaveBeenCalledExactlyOnceWith('你好');
     expect(harness.behavior.getChatContext).toHaveBeenCalledOnce();
+    // 正文与表现独立交付，正文结束不代表无工具表现回调已经到达。
+    await expect.poll(() => vi.mocked(harness.behavior.completeUserPrompt).mock.calls.length).toBe(1);
     expect(harness.behavior.completeUserPrompt).toHaveBeenCalledExactlyOnceWith({
       generation: expect.any(String), signal: expect.any(AbortSignal),
       explicitDirective: null,

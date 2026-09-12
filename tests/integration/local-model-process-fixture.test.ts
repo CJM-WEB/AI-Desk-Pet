@@ -1,16 +1,29 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import { once } from 'node:events';
+import { readFileSync } from 'node:fs';
 import { mkdtemp, rmdir, unlink, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { afterAll, beforeAll, describe, expect, test, vi } from 'vitest';
+import { characterManifestV3Schema, createPublicBehaviorCatalog } from '../../packages/character-runtime/src/index';
+import type { ModelRequest } from '@myself/agent-core';
 import {
+  CharacterExpressionAdapter,
   characterAutonomyResponseContract,
   characterExpressionResponseContract
 } from '../../apps/desktop/src/main/conversation/character-expression-adapter';
 import { conversationTaskInstructions } from '../../apps/desktop/src/main/conversation/conversation-chat-adapter';
 import { LocalModelProvider } from '../../apps/desktop/src/main/providers/local-model-provider';
+import { characterBehaviorRoles } from '../../apps/desktop/src/main/characters/character-behavior-bindings';
+
+const manifest = characterManifestV3Schema.parse(JSON.parse(readFileSync(
+  resolve('apps/desktop/resources/characters/default/compiled/manifest.json'), 'utf8')));
+const behaviorContext = { character: createPublicBehaviorCatalog(manifest, manifest.defaultSkinId),
+  runtime: { chatting: false, taskRunning: false, awaitingConfirmation: false, moving: false, dragging: false,
+    carrying: false, movementMode: 0 as const }, proactivityMode: 'autonomous' as const, recentActions: [] };
+const emptyBindings = Object.fromEntries(characterBehaviorRoles.map(role => [role, null]));
+const emptyExpression = { kind: 'none', choice: null, mode: 'keep', target: null, distance: null };
 
 const decisionSchema = { anyOf: [
   { type: 'object', additionalProperties: false, properties: {
@@ -109,24 +122,73 @@ describe('本地模型进程夹具协议', () => {
     expect(JSON.parse(message.content!)).toEqual(expected);
   });
 
-  test('独立角色表现仍返回其完整原协议', async () => {
+  test('真实用途匹配入口通过 LocalModelProvider 与 HTTP 交付九项独立绑定', async () => {
+    const provider = new LocalModelProvider({ getReadyConnection: () => ({
+      generation: 'fixture-bindings-generation', baseUrl: `${baseUrl}/v1`, token, modelId: 'ai-pet-local'
+    }) });
+    const requests = vi.spyOn(provider, 'respond');
+    await expect(new CharacterExpressionAdapter(provider).respondBindings({
+      behaviorContext, signal: new AbortController().signal
+    })).resolves.toEqual(emptyBindings);
+    expect(requests).toHaveBeenCalledTimes(1);
+    expect(requests.mock.calls[0]![0]).toMatchObject({ tools: [], toolChoice: 'none', reasoningMode: 'disabled' });
+  });
+
+  test('独立角色表现返回正式扁平协议', async () => {
     const message = await request('本地模型窗口生命周期问候', characterExpressionResponseContract.jsonSchema);
     const output = JSON.parse(message.content!);
     expect(characterExpressionResponseContract.validateStructuredOutput(output)).toBe(true);
-    expect(output).toEqual({ moodUpdate: null, expressionPlan: null, backgroundSelection: null, requestKind: 'ambient',
-      explicitPlayback: null, movementControl: { kind: 'keep' } });
+    expect(output).toEqual(emptyExpression);
   });
 
   test('自主表现只返回自主协议字段', async () => {
     const message = await request('准备移动', characterAutonomyResponseContract.jsonSchema);
     const output = JSON.parse(message.content!);
     expect(characterAutonomyResponseContract.validateStructuredOutput(output)).toBe(true);
-    expect(output).toEqual({ moodUpdate: null, expressionPlan: null, backgroundSelection: null });
+    expect(output).toEqual(emptyExpression);
+  });
+
+  test('扁平表现的嵌套配对与自主控制 Schema 不得放宽', async () => {
+    const expression = characterExpressionResponseContract.jsonSchema;
+    const autonomy = characterAutonomyResponseContract.jsonSchema;
+    for (const schema of [
+      { ...expression, additionalProperties: true },
+      { ...expression, required: expression.required.filter(field => field !== 'mode') },
+      { ...expression, properties: { ...expression.properties, choice: { type: 'object' } } },
+      { ...autonomy, properties: { ...autonomy.properties, mode: expression.properties.mode } }
+    ]) {
+      const response = await post('不能放宽表现协议', schema);
+      expect(response.status).toBe(400);
+      expect(await response.json()).toEqual({ error: { message: 'LOCAL_MODEL_E2E_SCHEMA_UNSUPPORTED' } });
+    }
+  });
+
+  test('用途匹配的完整角色与合法配对约束不得放宽', async () => {
+    let captured: ModelRequest | undefined;
+    // 从正式适配器捕获动态作者配对 Schema，避免测试自己复制一份合法协议。
+    await new CharacterExpressionAdapter({ respond: async request => {
+      captured = request; return { type: 'structured', structured_output: emptyBindings };
+    } }).respondBindings({ behaviorContext, signal: new AbortController().signal });
+    const schema = captured!.responseContract!.jsonSchema as {
+      required: string[]; properties: Record<string, unknown>; $defs: Record<string, unknown>
+    };
+    for (const invalid of [
+      { ...schema, additionalProperties: true },
+      { ...schema, required: schema.required.filter(role => role !== 'moving') },
+      { ...schema, properties: { ...schema.properties, moving: { type: 'object' } } },
+      { ...schema, $defs: { choice: { anyOf: [{ type: 'object' }, { type: 'null' }] } } }
+    ]) {
+      const response = await post('不能放宽用途协议', invalid);
+      expect(response.status).toBe(400);
+      expect(await response.json()).toEqual({ error: { message: 'LOCAL_MODEL_E2E_SCHEMA_UNSUPPORTED' } });
+    }
   });
 
   test.each([
     undefined,
     { type: 'object', properties: { unrelated: { type: 'string' } } },
+    { type: 'object', additionalProperties: false, required: ['moodUpdate', 'expressionPlan', 'backgroundSelection'],
+      properties: { moodUpdate: { type: 'null' }, expressionPlan: { type: 'null' }, backgroundSelection: { type: 'null' } } },
     { anyOf: [{ type: 'object', properties: { kind: { enum: ['chat'] } } }] },
     { ...decisionSchema, anyOf: decisionSchema.anyOf.map(branch => ({ ...branch, additionalProperties: true })) }
   ])('缺失、无关及放宽后的 Schema 明确失败，不能回退旧混合协议：%j', async schema => {

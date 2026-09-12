@@ -1,11 +1,12 @@
 import { z } from 'zod';
 import type { CapabilityControlPlan, ModelMessage, ModelProvider, ModelRequest } from '@myself/agent-core';
 import { projectCharacterIdentity, type CharacterBackgroundSelection, type CharacterMoodUpdate, type CharacterExpressionPlanInput,
-  type CharacterExplicitPlayback, type MovementControlPlan, type CharacterExpressionSelection } from '@myself/character-runtime';
+  type CharacterExplicitPlayback, type MovementControlPlan, type CharacterExpressionSelectionDecision } from '@myself/character-runtime';
 import { ProviderResponseError } from '../providers/provider-response-error';
 import { providerResponseCorrelationId } from '../providers/diagnosed-provider';
 import type { ConversationBehaviorContext } from '../characters/character-behavior-director';
 import { CharacterExpressionAdapter, CHARACTER_CHAT_INPUT_UTF8_BYTE_BUDGET, requestBytes, throwIfCancelled } from './character-expression-adapter';
+import type { CharacterBehaviorBindings } from '../characters/character-behavior-bindings';
 export { CHARACTER_CHAT_INPUT_UTF8_BYTE_BUDGET, characterAutonomyResponseContract } from './character-expression-adapter';
 
 export interface ConversationChatInput {
@@ -20,13 +21,12 @@ export type ConversationChatReply = Readonly<{
   text: string; moodUpdate?: CharacterMoodUpdate; expressionPlan?: CharacterExpressionPlanInput;
   backgroundSelection?: CharacterBackgroundSelection;
   explicitPlayback?: CharacterExplicitPlayback; movementControl?: MovementControlPlan; capabilityPlan?: CapabilityControlPlan;
-  expressionStatus?: 'ready' | 'no_match' | 'failed'; requestKind?: CharacterExpressionSelection['requestKind'];
+  expressionStatus?: 'ready' | 'no_match' | 'failed'; requestKind?: CharacterExpressionSelectionDecision['requestKind'];
 }>;
 export type ConversationExpressionReply = Omit<ConversationChatReply, 'text' | 'capabilityPlan'>;
 export type CharacterAutonomousReply = Pick<ConversationChatReply, 'moodUpdate' | 'expressionPlan' | 'backgroundSelection'>;
 export type CharacterAutonomousInput = Readonly<{
   behaviorContext: ConversationBehaviorContext; idleForMs: number; signal: AbortSignal; beforeProviderCall(): boolean;
-  taskEvent?: 'success' | 'error' | 'cancelled';
 }>;
 export type CharacterActivityInput = Omit<CharacterAutonomousInput, 'idleForMs'> & Readonly<{ text?: string }>;
 const authorizationRequest = z.object({ requestId: z.string().trim().min(1), toolName: z.literal('request_task_authorization'),
@@ -47,21 +47,19 @@ export class ConversationChatAdapter {
   private readonly expression: CharacterExpressionAdapter;
   constructor(private readonly provider: ModelProvider,
     private readonly reportResponseError: (error: ProviderResponseError, correlationId?: string) => void = () => undefined,
-    private readonly options: { inputByteBudget?: number; expressionFirst?: boolean } = {}) {
+    private readonly options: { inputByteBudget?: number; singleSlot?: boolean } = {}) {
     this.expression = new CharacterExpressionAdapter(provider, options.inputByteBudget, (error, correlationId) => this.report(error, correlationId));
   }
-  get expressionFirst(): boolean { return this.options.expressionFirst === true; }
+  get singleSlot(): boolean { return this.options.singleSlot === true; }
   async respondAutonomous(input: CharacterAutonomousInput): Promise<CharacterAutonomousReply | null> {
     if (input.signal.aborted) return null;
-    const reply = await this.expression.respond(input, input.taskEvent ? 'task-event' : 'autonomous');
+    const reply = await this.expression.respond(input, 'autonomous');
     return reply && { ...(reply.moodUpdate ? { moodUpdate: reply.moodUpdate } : {}),
       ...(reply.backgroundSelection ? { backgroundSelection: reply.backgroundSelection } : {}),
       ...(reply.expressionPlan ? { expressionPlan: reply.expressionPlan } : {}) };
   }
-  async respondActivity(input: CharacterActivityInput): Promise<Pick<ConversationChatReply, 'expressionPlan'> | null> {
-    if (input.signal.aborted) return null;
-    const reply = await this.expression.respond(input, 'activity');
-    return reply && { ...(reply.expressionPlan ? { expressionPlan: reply.expressionPlan } : {}) };
+  async respondBindings(input: CharacterActivityInput): Promise<CharacterBehaviorBindings | null> {
+    return this.expression.respondBindings(input);
   }
   async respond(input: ConversationChatInput): Promise<ConversationChatReply> {
     throwIfCancelled(input.signal);
@@ -88,10 +86,7 @@ export class ConversationChatAdapter {
     let expression: Promise<ConversationExpressionReply | undefined> | undefined;
     try {
       let response;
-      if (this.options.expressionFirst) {
-        expression = decide();
-        await expression;
-        throwIfCancelled(input.signal);
+      if (this.options.singleSlot) {
         response = await this.provider.respond(this.buildRequest(input), input.signal);
       } else {
         const main = this.provider.respond(this.buildRequest(input), input.signal);
@@ -108,6 +103,11 @@ export class ConversationChatAdapter {
         const error = new ProviderResponseError('RESPONSE_FORMAT_UNSUPPORTED', 'chat_control');
         this.report(error, providerResponseCorrelationId(response)); throw error;
       }
+      // 思考与任务用途已经由 Main 准备。单槽正文完成后再解释本轮反应，任务申请不再启动会争用 Core 的附加请求。
+      if (this.options.singleSlot) {
+        if (result.capabilityPlan?.kind === 'chat') expression = decide();
+        else cleanup();
+      }
       // 有回调时由 Main 接纳独立表现；无回调的直接调用仍拿到完整结果。
       if (input.onExpression) return result;
       const decision = await expression;
@@ -120,30 +120,10 @@ export class ConversationChatAdapter {
   }
   private async respondExpression(input: ConversationChatInput, signal: AbortSignal): Promise<ConversationExpressionReply> {
     try {
-      let expression = await this.expression.respond({ text: input.text, behaviorContext: input.behaviorContext,
+      const expression = await this.expression.respond({ text: input.text, behaviorContext: input.behaviorContext,
         signal, ...(input.movementControlHandled === undefined ? {} : { movementControlHandled: input.movementControlHandled }) }, 'chat');
       throwIfCancelled(signal);
       const movementRequested = input.movementIntentRequested === true || requestsMovement(expression?.movementControl);
-      // Qwen 偶尔先给出非零模式却漏掉 moving 候选；把原句交给唯一的活动契约补匹配，失败则撤销该控制，避免原地跑动或误改持久模式。
-      if (movementRequested && !hasMovingPlan(expression?.expressionPlan)) {
-        try {
-          const activity = await this.expression.respond({
-            text: input.text,
-            behaviorContext: { ...input.behaviorContext, runtime: { ...input.behaviorContext.runtime, pendingMovement: true } },
-            signal
-          }, 'activity');
-          if (expression && activity?.expressionPlan?.states.length) {
-            expression = { ...expression, expressionPlan: { states: [
-              ...(expression?.expressionPlan?.states ?? []), ...activity.expressionPlan.states
-            ] } };
-          } else {
-            expression = expression && { ...expression, movementControl: { kind: 'keep' } };
-          }
-        } catch (error) {
-          throwIfCancelled(signal);
-          expression = expression && { ...expression, movementControl: { kind: 'keep' } };
-        }
-      }
       const matched = movementRequested
         ? hasMovingPlan(expression?.expressionPlan)
         : expression?.requestKind === 'state' || expression?.requestKind === 'action'

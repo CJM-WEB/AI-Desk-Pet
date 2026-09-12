@@ -1065,7 +1065,7 @@ async function createApplicationWindows(
         correlationId
       ),
       { inputByteBudget: isBuiltinLocalProviderProfile(profile) ? 19_200 : 64 * 1024,
-        expressionFirst: isBuiltinLocalProviderProfile(profile) }
+        singleSlot: isBuiltinLocalProviderProfile(profile) }
     ),
     createCodingTaskService: ({ snapshot, primaryProfile, emit, emitTrustedToolResult }) => new CodingTaskService({
       sessionOptions: async () => {

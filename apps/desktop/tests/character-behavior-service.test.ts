@@ -294,6 +294,9 @@ async function movementFixture(mode: 0 | 1 | 2 = 0, matched = true) {
   const manifest = createManifest();
   manifest.actions.forEach(action => { action.loopPolicy = 'until-interrupted'; });
   f.store.getActiveManifestV3.mockResolvedValue(manifest); await f.service.initialize();
+  // 后续用例验证已显示角色的运动首帧；冷加载另由真实 CharacterPlayer 组合覆盖。
+  const initial = f.service.snapshot()!.schedule.current!;
+  f.service.applyPlaybackFeedback({ playbackToken: initial.playbackToken, actionId: initial.actionId, status: 'started', occurredAtMs: 0 });
   f.service.applyDecision({ context: f.service.context()!, eventId: '能力', source: 'chat',
     moodUpdate: { summary: '开心', strength: .8, fadeInMs: 0 }, expressionPlan: { states: [
       { stateId: 'celebrate-state', score: 1, minStrength: 0, maxStrength: 1, lifetime: 'episode', actions: [] },
@@ -455,7 +458,7 @@ test('真实运动快照导致活动token失效时立即停止，不能等下一
 });
 
 
-test('已有普通聊天表现不阻挡更高优先级活动准备', async () => {
+test('普通聊天单次表现先完成，再恢复自动活动准备', async () => {
   const f = await movementFixture(1); await f.director.prepareUserPrompt('你好'); f.time(3000);
   await f.director.completeUserPrompt({ generation: 'real', eventId: '普通', context: f.director.captureExpressionContext(),
     explicitDirective: null, expressionStatus: 'ready', requestKind: 'ambient', expressionPlan: { states: [
@@ -463,6 +466,8 @@ test('已有普通聊天表现不阻挡更高优先级活动准备', async () =>
     ] } });
   expect(f.service.snapshot()?.stateId).toBe('think-state');
   f.director.requestPersistentMovement();
+  expect(f.service.snapshot()?.stateId).toBe('think-state');
+  f.feedback(); f.time(6000); f.director.advance(); f.director.requestPersistentMovement();
   expect(f.service.snapshot()?.stateId).toBe('move-state');
   expect(f.motion.requestIntent).not.toHaveBeenCalled(); f.feedback();
   expect(f.motion.requestIntent).toHaveBeenCalledTimes(1); await f.director.close();

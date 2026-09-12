@@ -13,7 +13,6 @@ import {
 import { ConversationDisclosureAdapter } from '../src/main/conversation/conversation-disclosure-adapter';
 import { ConversationHistory } from '../src/main/conversation/conversation-history';
 import { ConversationChatAdapter } from '../src/main/conversation/conversation-chat-adapter';
-import { characterTaskEventResponseContract } from '../src/main/conversation/character-expression-adapter';
 import type { ConversationBehaviorPort } from
   '../src/main/characters/character-behavior-director';
 import type {
@@ -198,9 +197,14 @@ function 完整聊天控制(overrides: Record<string, unknown> = {}): Record<str
 }
 
 function 表现选择(control: Record<string, unknown> = {}): Record<string, unknown> {
-  return { moodUpdate: null, expressionPlan: control.expressionPlan ?? null,
-    requestKind: control.requestKind ?? 'ambient', explicitPlayback: control.explicitPlayback ?? null,
-    backgroundSelection: control.backgroundSelection ?? null, movementControl: control.movementControl ?? { kind: 'keep' } };
+  const movement = control.movementControl as { kind?: string; mode?: number; target?: string; distance?: string } | undefined;
+  const state = (control.expressionPlan as { states?: Array<{ stateId: string; actions: Array<{ actionId: string }> }> } | undefined)?.states?.[0];
+  const mode = movement?.kind === 'set_mode' ? ['still', 'continuous', 'intermittent'][movement.mode ?? 0]
+    : movement?.kind === 'move_once' ? 'once' : 'keep';
+  const moving = control.requestKind === 'movement' || mode !== 'keep';
+  return { kind: moving ? 'movement' : control.requestKind === 'state' || control.requestKind === 'action' ? control.requestKind : 'none',
+    choice: control.explicitPlayback ?? (state ? { stateId: state.stateId, actionId: state.actions[0]?.actionId } : null),
+    mode, target: mode === 'once' ? movement?.target : null, distance: mode === 'once' ? movement?.distance : null };
 }
 
 function 申请任务(): ModelResponse {
@@ -251,7 +255,7 @@ function createHarness(scripts: Array<{
   providerName: string;
   script: ProviderScript;
 }>, options: {
-  expressionFirst?: boolean;
+  singleSlot?: boolean;
   factoryError?: Error;
   fileTasks?: CapturingCapabilityTasks;
   behavior?: ConversationBehaviorPort;
@@ -284,7 +288,7 @@ function createHarness(scripts: Array<{
       const item = scripts[factoryIndex++];
       if (!item) throw new Error('UNEXPECTED_FACTORY_CALL');
       return {
-        adapter: new ConversationChatAdapter(item.script.provider, undefined, { expressionFirst: options.expressionFirst === true }),
+        adapter: new ConversationChatAdapter(item.script.provider, undefined, { singleSlot: options.singleSlot === true }),
         profileId: item.profileId,
         providerIdentity: item.providerIdentity,
         providerName: item.providerName
@@ -423,7 +427,7 @@ describe('ConversationCoordinator', () => {
     const harness = createHarness([{ profileId: 'chat', providerIdentity: 'openai', providerName: 'Chat', script }]);
     await harness.coordinator.submit('你好');
     expect(harness.events).toContainEqual({ type: 'message', role: 'assistant', text: '有效正文' });
-    expect(harness.behavior.completeUserPrompt).toHaveBeenCalledWith(expect.objectContaining({ expressionStatus: 'failed' }));
+    await vi.waitFor(() => expect(harness.behavior.completeUserPrompt).toHaveBeenCalledWith(expect.objectContaining({ expressionStatus: 'failed' })));
     expect(harness.fileTasks.submissions).toHaveLength(0);
   });
 
@@ -463,7 +467,7 @@ describe('ConversationCoordinator', () => {
     expect(script.requests).toHaveLength(2);
     expect(script.requests[0]!.responseContract).toBeUndefined();
     expect(script.requests[1]).toMatchObject({ tools: [], toolChoice: 'none' });
-    expect(behavior.completeUserPrompt).toHaveBeenCalledWith(expect.objectContaining({ expressionStatus: 'no_match', movementControl: { kind: 'keep' } }));
+    await vi.waitFor(() => expect(behavior.completeUserPrompt).toHaveBeenCalledWith(expect.objectContaining({ expressionStatus: 'no_match', movementControl: { kind: 'keep' } })));
     expect(harness.events).toContainEqual({ type: 'message', role: 'assistant', text: '继续陪你。' });
     expect(harness.fileTasks.submissions).toEqual([]);
   });
@@ -702,11 +706,11 @@ describe('ConversationCoordinator', () => {
       '"movementMode":2'
     );
     expect(behavior.getChatContext).toHaveBeenCalledTimes(2);
-    expect(behavior.completeUserPrompt).toHaveBeenLastCalledWith(expect.objectContaining({
+    await vi.waitFor(() => expect(behavior.completeUserPrompt).toHaveBeenLastCalledWith(expect.objectContaining({
       generation: 'generation-current',
       explicitDirective: null,
       movementControl: { kind: 'move_once', target: 'right', distance: 'near' }
-    }));
+    })));
   });
 
   test.each(['你好', '你好呀', '聊天呀', '我想和你聊天', '帮我整理一下'])(
@@ -798,7 +802,7 @@ describe('ConversationCoordinator', () => {
     await harness.coordinator.submit('你好呀');
     expect(harness.events.filter(event => event.type === 'message' && event.role === 'assistant')).toEqual([{ type: 'message', role: 'assistant', text: '你好' }]);
     expect(harness.history.turns()).toEqual([{ userText: '你好呀', assistantText: '你好', providerIdentity: 'openai' }]);
-    expect(behavior.completeUserPrompt).toHaveBeenCalledWith(expect.objectContaining({ expressionStatus: 'no_match', requestKind: 'ambient' }));
+    await vi.waitFor(() => expect(behavior.completeUserPrompt).toHaveBeenCalledWith(expect.objectContaining({ expressionStatus: 'no_match', requestKind: 'ambient' })));
   });
 
   test('取消后丢弃不服从 AbortSignal 的迟到增量与 commit', async () => {
@@ -1770,7 +1774,7 @@ test('可选任务表现异常不能阻止已授权 Core 提交', async () => {
   const presentation = vi.fn(async () => { throw new Error('播放模块发布失败'); });
   const reportFailure = vi.fn();
   const releasePreparation = vi.fn();
-  const harness = createHarness([任务模型()], { expressionFirst: true, behavior: behaviorPortDouble({
+  const harness = createHarness([任务模型()], { singleSlot: true, behavior: behaviorPortDouble({
     prepareTaskPresentation: presentation, reportTaskPresentationFailure: reportFailure, cancelTaskPreparation: releasePreparation
   }) });
   await harness.coordinator.submit('检查文件');
@@ -1785,7 +1789,7 @@ test('可选任务表现异常不能阻止已授权 Core 提交', async () => {
 
 test('文件历史披露不应丢失本轮 Qwen 首帧准备所有权', async () => {
   const presentation = vi.fn(async () => {});
-  const harness = createHarness([任务模型()], { expressionFirst: true, behavior: behaviorPortDouble({ prepareTaskPresentation: presentation }) });
+  const harness = createHarness([任务模型()], { singleSlot: true, behavior: behaviorPortDouble({ prepareTaskPresentation: presentation }) });
   harness.fileTasks.target = Object.freeze({ ...harness.fileTasks.target, providerIdentity: 'anthropic', profileId: 'other-agent' });
   harness.history.append({ userText: '先前输入', assistantText: '先前回复', providerIdentity: 'openai' });
   await harness.coordinator.submit('检查文件');
@@ -1829,14 +1833,8 @@ test('角色生命周期变化撤销独立表现，普通活动通知不撤销�
   expect(unsubscribe).toHaveBeenCalledTimes(1);
 });
 
-test('终态反应等提交结算后发起，携带新owner信号与真实情境', async () => {
+test('终态通过真实事件用途表现，提交结算后不再发起第二次推理', async () => {
   const script = scriptedProvider(申请任务());
-  const respond = script.provider.respond.bind(script.provider);
-  script.provider.respond = async (request, signal) => {
-    const response = await respond(request, signal);
-    return request.responseContract?.jsonSchema === characterTaskEventResponseContract.jsonSchema
-      ? { type: 'structured', structured_output: { moodUpdate: null, expressionPlan: null, backgroundSelection: null } } : response;
-  };
   const barrier = deferredVoid();
   const fileTasks = new CapturingCapabilityTasks();
   fileTasks.submit = async () => { await barrier.promise; return { kind: 'completed', acted: false }; };
@@ -1850,16 +1848,11 @@ test('终态反应等提交结算后发起，携带新owner信号与真实情境
   fileTasks.publish({ type: 'phase', phase: 'success' }, 'generation-current');
   expect(script.requests.filter(request => request.responseContract)).toHaveLength(1);
   barrier.resolve();
-  await vi.waitFor(() => expect(script.requests.filter(request => request.responseContract)).toHaveLength(2));
-  await vi.waitFor(() => expect(accepted).toHaveBeenCalledTimes(2));
-  const requestText = JSON.stringify(script.requests.at(-1)?.messages);
+  await vi.waitFor(() => expect(harness.events).toContainEqual({ type: 'phase', phase: 'success' }));
+  expect(script.requests.filter(request => request.responseContract)).toHaveLength(1);
   await harness.coordinator.close();
-  expect(requestText).toContain('task-event');
-  expect(requestText).toContain('success');
   expect(accepted.mock.calls[0]?.[0].signal).toBeInstanceOf(AbortSignal);
-  expect(accepted.mock.calls[1]?.[0].eventId).toMatch(/^task-reaction-/u);
-  expect(accepted.mock.calls[1]?.[0].signal).toBeInstanceOf(AbortSignal);
-  expect(accepted.mock.calls[1]?.[0].signal).not.toBe(accepted.mock.calls[0]?.[0].signal);
+  expect(accepted).toHaveBeenCalledTimes(1);
 });
 
 test('终态后提交结算前角色变化撤销待启动反应，不能复活已失效owner', async () => {

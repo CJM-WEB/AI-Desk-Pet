@@ -1,5 +1,5 @@
 import { expect, test, vi } from 'vitest';
-import type { ModelProvider, ModelRequest, ModelResponse } from '@myself/agent-core';
+import type { ModelProvider, ModelResponse } from '@myself/agent-core';
 import { ConversationChatAdapter } from '../src/main/conversation/conversation-chat-adapter';
 const input = {
   text: '你好', history: [], signal: new AbortController().signal,
@@ -9,7 +9,7 @@ const input = {
   }, states: [] }, runtime: { chatting: false, taskRunning: false, awaitingConfirmation: false, moving: false, dragging: false, carrying: false, movementMode: 0 as const },
   proactivityMode: 'assistive' as const, recentActions: [] }
 };
-const selection = { moodUpdate: null, expressionPlan: null, requestKind: 'ambient', explicitPlayback: null, movementControl: { kind: 'keep' } };
+const selection = { kind: 'none', choice: null, mode: 'keep', target: null, distance: null };
 function provider(...responses: ModelResponse[]): ModelProvider {
   return { respond: vi.fn(async () => responses.shift()!) };
 }
@@ -87,75 +87,42 @@ test('主请求格式失败不因并行表现而被改写为成功', async () =>
   expect(vi.mocked(p.respond).mock.calls.filter(([request]) => !request.responseContract)).toHaveLength(1);
 });
 
-test('非零运动控制缺少移动动作时，使用原用户短句补一次活动匹配', async () => {
-  const movementContext = {
-    ...input.behaviorContext,
-    character: {
-      ...input.behaviorContext.character,
-      states: [{ stateId: 'run', name: '跑动', agentInferable: true, tags: [], actions: [{ actionId: 'run-action', name: '跑步', tags: [] }] }]
-    }
-  };
-  const movement = { ...selection, requestKind: 'movement' as const, expressionPlan: null,
-    movementControl: { kind: 'set_mode' as const, mode: 1 as const }, backgroundSelection: null };
-  const activity = { moodUpdate: null, expressionPlan: { states: [{ stateId: 'run', score: 1,
-    activity: 'moving' as const, actions: [{ actionId: 'run-action', score: 1 }] }] }, backgroundSelection: null };
-  const p: ModelProvider = { respond: vi.fn(async request => {
-    if (!request.responseContract) return { type: 'text' as const, text: '好的' };
-    const schema = request.responseContract.jsonSchema as any;
-    const isActivity = schema.properties?.expressionPlan?.anyOf?.[0]?.properties?.states?.items?.properties?.activity?.const === 'moving';
-    return { type: 'structured' as const, structured_output: isActivity ? activity : movement };
-  }) };
-
+// 聊天只消费提前验证的用途绑定，不再通过额外模型调用补活动候选。
+const movingChoice = { stateId: 'run', actionId: 'run-action' };
+const movementContext = {
+  ...input.behaviorContext,
+  character: { ...input.behaviorContext.character, states: [{ stateId: 'run', name: '跑动',
+    agentInferable: true, tags: [], actions: [{ actionId: 'run-action', name: '跑步', tags: [] }] }] },
+  bindings: { chatting: null, taskRunning: null, awaitingConfirmation: null, moving: movingChoice,
+    success: null, error: null, praise: null, boredom: null, rest: null }
+};
+test('非零运动控制缺少本轮动作时复用已验证绑定，不增加活动补请求', async () => {
+  const p = provider({ type: 'text', text: '好的' }, { type: 'structured',
+    structured_output: { ...selection, kind: 'movement', mode: 'continuous' } });
   const reply = await new ConversationChatAdapter(p).respond({ ...input, text: '请一直跑起来', behaviorContext: movementContext });
-
   expect(reply).toMatchObject({ movementControl: { kind: 'set_mode', mode: 1 }, expressionStatus: 'ready',
-    expressionPlan: { states: [{ stateId: 'run', when: { moving: true } }] } });
-  const activityRequest = vi.mocked(p.respond).mock.calls.at(-1)?.[0];
-  expect(activityRequest?.responseContract?.jsonSchema).toMatchObject({ properties: {
-    expressionPlan: { anyOf: [expect.objectContaining({ properties: { states: expect.any(Object) } }), { type: 'null' }] }
-  } });
-  expect(activityRequest?.messages.at(-1)?.content).toBe('请一直跑起来');
+    expressionPlan: { states: [{ stateId: 'run', when: { moving: true }, lifetime: 'condition' }] } });
+  expect(p.respond).toHaveBeenCalledTimes(2);
+  const expression = vi.mocked(p.respond).mock.calls[1]![0];
+  expect(expression).toMatchObject({ tools: [], toolChoice: 'none' });
+  expect(expression.messages.at(-1)?.content).toBe('请一直跑起来');
 });
-
-test('没有合法移动动作时，非零控制不改变持久模式并返回无匹配', async () => {
-  const movement = { ...selection, requestKind: 'movement' as const, expressionPlan: null,
-    movementControl: { kind: 'set_mode' as const, mode: 2 as const }, backgroundSelection: null };
-  const emptyActivity = { moodUpdate: null, expressionPlan: null, backgroundSelection: null };
-  const p: ModelProvider = { respond: vi.fn(async request => {
-    if (!request.responseContract) return { type: 'text' as const, text: '好的' };
-    const schema = request.responseContract.jsonSchema as any;
-    const isActivity = schema.properties?.expressionPlan?.anyOf?.[0]?.properties?.states?.items?.properties?.activity?.const === 'moving';
-    return { type: 'structured' as const, structured_output: isActivity ? emptyActivity : movement };
-  }) };
-
+test('没有合法移动绑定或动作时不改变持久模式并返回无匹配', async () => {
+  const p = provider({ type: 'text', text: '好的' }, { type: 'structured',
+    structured_output: { ...selection, kind: 'movement', mode: 'intermittent' } });
   const reply = await new ConversationChatAdapter(p).respond({ ...input, text: '偶尔走动一下' });
-
-  expect(reply).toMatchObject({ movementControl: { kind: 'keep' }, expressionStatus: 'no_match' });
-  expect(p.respond).toHaveBeenCalledTimes(3);
+  expect(reply).toMatchObject({ movementControl: { kind: 'keep' }, expressionStatus: 'no_match',
+    expressionPlan: { states: [] } });
+  expect(p.respond).toHaveBeenCalledTimes(2);
+  expect(vi.mocked(p.respond).mock.calls[1]![0]).toMatchObject({ tools: [], toolChoice: 'none' });
 });
-
-test('显式移动意图即使表现首响应为keep，也会复用原句匹配moving动作', async () => {
-  const movementContext = {
-    ...input.behaviorContext,
-    character: {
-      ...input.behaviorContext.character,
-      states: [{ stateId: 'run', name: '跑动', agentInferable: true, tags: [], actions: [{ actionId: 'run-action', name: '跑步', tags: [] }] }]
-    }
-  };
-  const idleExpression = { ...selection, movementControl: { kind: 'keep' as const }, expressionPlan: null };
-  const activity = { moodUpdate: null, expressionPlan: { states: [{ stateId: 'run', score: 1,
-    activity: 'moving' as const, actions: [{ actionId: 'run-action', score: 1 }] }] }, backgroundSelection: null };
-  const p: ModelProvider = { respond: vi.fn(async request => {
-    if (!request.responseContract) return { type: 'text' as const, text: '好的' };
-    const schema = request.responseContract.jsonSchema as any;
-    const isActivity = schema.properties?.expressionPlan?.anyOf?.[0]?.properties?.states?.items?.properties?.activity?.const === 'moving';
-    return { type: 'structured' as const, structured_output: isActivity ? activity : idleExpression };
-  }) };
-
-  const reply = await new ConversationChatAdapter(p).respond({ ...input, text: '去走一圈', behaviorContext: movementContext,
-    movementIntentRequested: true });
-
+test('Main已经处理移动时保留绑定表现且不重复提交控制或补请求', async () => {
+  const p = provider({ type: 'text', text: '好的' }, { type: 'structured',
+    structured_output: { ...selection, kind: 'movement' } });
+  const reply = await new ConversationChatAdapter(p).respond({ ...input, text: '去走一圈',
+    behaviorContext: movementContext, movementControlHandled: true });
   expect(reply).toMatchObject({ movementControl: { kind: 'keep' }, expressionStatus: 'ready',
     expressionPlan: { states: [{ stateId: 'run', when: { moving: true } }] } });
-  expect(vi.mocked(p.respond).mock.calls.at(-1)?.[0].messages.at(-1)?.content).toBe('去走一圈');
+  expect(p.respond).toHaveBeenCalledTimes(2);
+  expect(vi.mocked(p.respond).mock.calls[1]![0].messages.at(-1)?.content).toBe('去走一圈');
 });

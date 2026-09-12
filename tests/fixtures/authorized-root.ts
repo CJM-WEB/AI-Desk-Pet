@@ -38,7 +38,7 @@ export async function createCodingConversation(steps: ProviderScript, options: {
     readPrivacySettings: async () => ({ dataCategories: { memory: false } }),
     // 主申请是无执行 handler 的脚本模型；下方 HTTP server 只计正式 Core 的请求和流式结果。
     createChatAdapter: () => new ConversationChatAdapter({ respond: async request => {
-      if (request.responseContract) return { type: 'structured', structured_output: { moodUpdate: null, expressionPlan: null, requestKind: 'ambient', explicitPlayback: null, movementControl: { kind: 'keep' } } };
+      if (request.responseContract) return { type: 'structured', structured_output: { kind: 'none', choice: null, mode: 'keep', target: null, distance: null } };
       if (options.chatResponses?.length) return options.chatResponses.shift()!;
       if (request.purpose !== 'conversation' || request.tools.length !== 1
         || request.tools[0]?.function.name !== 'request_task_authorization') throw new Error('夹具未经过正式主申请');

@@ -6,7 +6,7 @@ import {
   type LocalModelConnectionPort
 } from '../src/main/providers/local-model-provider';
 import { ProviderError } from '../src/main/providers/openai-provider';
-import { characterExpressionSelectionSchema, characterExpressionSelectionJsonSchema } from '@myself/character-runtime';
+import { characterExpressionResponseContract } from '../src/main/conversation/character-expression-adapter';
 import { ConversationChatAdapter } from '../src/main/conversation/conversation-chat-adapter';
 
 type FetchLike = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
@@ -60,12 +60,7 @@ const structuredRequest: ModelRequest = {
   tools: [],
   toolChoice: 'none',
   reasoningMode: 'provider_default',
-  responseContract: {
-    type: 'json_object',
-    name: 'character_expression',
-    jsonSchema: characterExpressionSelectionJsonSchema,
-    validateStructuredOutput: value => characterExpressionSelectionSchema.safeParse(value).success
-  }
+  responseContract: characterExpressionResponseContract
 };
 
 function jsonResponse(value: unknown, status = 200): Response {
@@ -87,8 +82,7 @@ const decisionJsonSchema = { anyOf: [
     kind: { type: 'string', enum: ['chat'] }, text: { type: 'string', minLength: 1, maxLength: 4000 }
   }, required: ['kind', 'text'] }
 ] };
-const emptyExpression = { moodUpdate: null, expressionPlan: null, backgroundSelection: null, requestKind: 'ambient',
-  explicitPlayback: null, movementControl: { kind: 'keep' } };
+const emptyExpression = { kind: 'none', choice: null, mode: 'keep', target: null, distance: null };
 
 /** HTTP 夹具按正式 Schema 区分主判别与零工具表现，不依赖两条请求的先后顺序。 */
 function conversationFetch(content: string) {
@@ -102,7 +96,7 @@ function conversationFetch(content: string) {
 function assertSingleMainAndExpression(fetchClient: ReturnType<typeof conversationFetch>): void {
   const bodies = fetchClient.mock.calls.map(([, init]) => JSON.parse(String(init?.body)));
   expect(bodies.filter(body => body.response_format?.schema.anyOf)).toHaveLength(1);
-  const expression = bodies.filter(body => body.response_format?.schema.properties?.expressionPlan);
+  const expression = bodies.filter(body => body.response_format?.schema.properties?.choice);
   expect(expression).toHaveLength(1);
   expect(expression[0]).toMatchObject({ tools: [], tool_choice: 'none' });
   expect(bodies).toHaveLength(2);
@@ -123,7 +117,7 @@ async function officialConversationRequest(): Promise<ModelRequest> {
 }
 
 describe('LocalModelProvider', () => {
-  test('正式主聊天使用单次严格判别并保留人设历史正文，独立表现保持原协议', async () => {
+  test('正式主聊天使用单次严格判别并保留人设历史正文，独立表现使用正式扁平协议', async () => {
     const requests: ModelRequest[] = [];
     const fetchClient = vi.fn<FetchLike>(async (_url, init) => {
       const body = JSON.parse(String(init?.body));
@@ -488,7 +482,7 @@ describe('LocalModelProvider', () => {
     const fetchClient = vi.fn<FetchLike>(async () => jsonResponse({
       choices: [{
         message: {
-          content: JSON.stringify({"moodUpdate":null,"expressionPlan":null,"requestKind":"ambient","explicitPlayback":null,"movementControl":{"kind":"keep"}})
+          content: JSON.stringify(emptyExpression)
         }
       }]
     }));
@@ -498,13 +492,13 @@ describe('LocalModelProvider', () => {
       structuredRequest,
       new AbortController().signal
     )).resolves.toMatchObject({
-      type: 'structured', structured_output: {"moodUpdate":null,"expressionPlan":null,"requestKind":"ambient","explicitPlayback":null,"movementControl":{"kind":"keep"}}
+      type: 'structured', structured_output: emptyExpression
     });
 
     const body = JSON.parse(String(fetchClient.mock.calls[0]?.[1]?.body));
     expect(body.response_format).toEqual({
       type: 'json_object',
-      schema: characterExpressionSelectionJsonSchema
+      schema: characterExpressionResponseContract.jsonSchema
     });
   });
 
