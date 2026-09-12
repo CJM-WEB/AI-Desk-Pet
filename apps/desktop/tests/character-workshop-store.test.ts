@@ -536,10 +536,12 @@ describe('角色工作室 Zustand 状态层', () => {
     });
     const dependencies: CharacterWorkshopDependencies = {
       compileAction: async input => ({
-        assetId: input.atlasAssetId,
-        fileName: `${input.atlasAssetId}.png`,
-        sha256: '7'.repeat(64),
-        bytes: new Uint8Array([9]),
+        pages: [{
+          assetId: input.atlasAssetId,
+          fileName: `${input.atlasAssetId}.png`,
+          sha256: '7'.repeat(64),
+          bytes: new Uint8Array([9]),
+        }],
         geometry: TEST_COMPILED_GEOMETRY,
         frames: [{ assetId: input.atlasAssetId, x: 0, y: 0, width: 1, height: 1 }]
       })
@@ -1380,10 +1382,12 @@ describe('角色工作室 Zustand 状态层', () => {
       ]))
     });
     const compileAction = vi.fn<NonNullable<CharacterWorkshopDependencies['compileAction']>>(async input => ({
-      assetId: input.atlasAssetId,
-      fileName: `${input.atlasAssetId}.png`,
-      sha256: input.atlasAssetId.endsWith('-1') ? 'a'.repeat(64) : 'b'.repeat(64),
-      bytes: new Uint8Array([9]),
+      pages: [{
+        assetId: input.atlasAssetId,
+        fileName: `${input.atlasAssetId}.png`,
+        sha256: input.atlasAssetId.endsWith('-1') ? 'a'.repeat(64) : 'b'.repeat(64),
+        bytes: new Uint8Array([9]),
+      }],
       geometry: {
         visualBounds: { x: 0.25, y: 0.1, width: 0.5, height: 0.9 },
         groundAnchor: { x: 0.5, y: 1 }
@@ -1463,10 +1467,12 @@ describe('角色工作室 Zustand 状态层', () => {
     const compileAction = vi.fn<NonNullable<
       CharacterWorkshopDependencies['compileAction']
     >>(async input => ({
-      assetId: input.atlasAssetId,
-      fileName: `${input.atlasAssetId}.png`,
-      sha256: 'd'.repeat(64),
-      bytes: new Uint8Array([7]),
+      pages: [{
+        assetId: input.atlasAssetId,
+        fileName: `${input.atlasAssetId}.png`,
+        sha256: 'd'.repeat(64),
+        bytes: new Uint8Array([7]),
+      }],
       geometry: {
         visualBounds: { x: 0, y: 0, width: 1, height: 1 },
         groundAnchor: input.groundAnchor
@@ -1492,6 +1498,52 @@ describe('角色工作室 Zustand 状态层', () => {
     expect(input.manifest.skins.map(skin => (
       skin.presentations[0]!.geometry?.groundAnchor
     ))).toEqual(grounds);
+  });
+
+  test('跨页编译按页摘要去重且一次发布所有帧和几何修订', async () => {
+    const loadedDraft = playableDraft('default', '大序列');
+    loadedDraft.skins[1]!.presentations = structuredClone(loadedDraft.skins[0]!.presentations);
+    loadedDraft.skins[1]!.presentations[0]!.anchors.ground = { x: 0.4, y: 1 };
+    for (const skin of loadedDraft.skins) {
+      const frame = skin.presentations[0]!.frames[0]!;
+      skin.presentations[0]!.frames = Array.from({ length: 17 }, (_, i) => ({
+        ...frame, id: `frame-${i}`, x: i * 1024, width: 1024, height: 1024
+      }));
+    }
+    const publishCharacter = vi.fn<CharacterWorkshopApi['publishCharacter']>(async () => undefined);
+    const { api } = apiDouble({
+      getCharacterDraft: vi.fn(async () => loadedDraft), publishCharacter,
+      readCharacterSource: vi.fn(async () => new Uint8Array([0x89, 0x50, 0x4e, 0x47]))
+    });
+    const compileAction = vi.fn(async (input: Parameters<NonNullable<CharacterWorkshopDependencies['compileAction']>>[0]) => ({
+      pages: ['a', 'b'].map((hash, index) => ({
+        assetId: `${input.atlasAssetId}-page-${index + 1}`,
+        fileName: `${input.atlasAssetId}-page-${index + 1}.png`,
+        sha256: hash.repeat(64), bytes: new Uint8Array([index + 1])
+      })),
+      geometry: { ...TEST_COMPILED_GEOMETRY, groundAnchor: input.groundAnchor },
+      frames: input.frames.map((frame, index) => ({
+        id: frame.frameId, assetId: `${input.atlasAssetId}-page-${index < 16 ? 1 : 2}`,
+        x: index < 16 ? index % 4 * 1024 : 0,
+        y: index < 16 ? Math.floor(index / 4) * 1024 : 0,
+        width: 1024, height: 1024
+      }))
+    }));
+    const store = createCharacterWorkshopStore(api, { compileAction });
+    await store.getState().load();
+    await store.getState().compileAndPublish();
+    expect(compileAction).toHaveBeenCalledTimes(2);
+    expect(publishCharacter).toHaveBeenCalledOnce();
+    const published = publishCharacter.mock.calls[0]![0];
+    expect(published.resources.map(resource => resource.assetId)).toEqual(['atlas-1-1-page-1', 'atlas-1-1-page-2']);
+    expect(published.manifest.resources).toHaveLength(2);
+    for (const skin of published.manifest.skins) {
+      const presentation = skin.presentations[0]!;
+      expect(presentation.frames).toHaveLength(17);
+      expect(presentation.frames[0]!.assetId).toBe('atlas-1-1-page-1');
+      expect(presentation.frames[16]!.assetId).toBe('atlas-1-1-page-2');
+      expect(presentation.geometry.resourceRevision).toBe(`${'a'.repeat(64)}.${'b'.repeat(64)}`);
+    }
   });
 
   test('默认皮肤的默认状态回退链不可播放时以稳定码阻止发布', async () => {
@@ -1562,10 +1614,12 @@ describe('角色工作室 Zustand 状态层', () => {
     });
     const store = createCharacterWorkshopStore(api, {
       compileAction: async input => ({
-        assetId: input.atlasAssetId,
-        fileName: `${input.atlasAssetId}.png`,
-        sha256: 'd'.repeat(64),
-        bytes: new Uint8Array([5]),
+        pages: [{
+          assetId: input.atlasAssetId,
+          fileName: `${input.atlasAssetId}.png`,
+          sha256: 'd'.repeat(64),
+          bytes: new Uint8Array([5]),
+        }],
         geometry: TEST_COMPILED_GEOMETRY,
         frames: [{ assetId: input.atlasAssetId, x: 0, y: 0, width: 1, height: 1 }]
       })
@@ -1652,10 +1706,12 @@ describe('角色工作室 Zustand 状态层', () => {
     });
     const store = createCharacterWorkshopStore(api, {
       compileAction: async input => ({
-        assetId: input.atlasAssetId,
-        fileName: `${input.atlasAssetId}.png`,
-        sha256: 'b'.repeat(64),
-        bytes: new Uint8Array([9]),
+        pages: [{
+          assetId: input.atlasAssetId,
+          fileName: `${input.atlasAssetId}.png`,
+          sha256: 'b'.repeat(64),
+          bytes: new Uint8Array([9]),
+        }],
         geometry: TEST_COMPILED_GEOMETRY,
         frames: input.frames.map(frame => ({
           assetId: input.atlasAssetId,
@@ -1701,10 +1757,12 @@ describe('角色工作室 Zustand 状态层', () => {
     const { api } = apiDouble({ readCharacterSource });
     const store = createCharacterWorkshopStore(api, {
       compileAction: async input => ({
-        assetId: input.atlasAssetId,
-        fileName: `${input.atlasAssetId}.png`,
-        sha256: 'b'.repeat(64),
-        bytes: new Uint8Array([9]),
+        pages: [{
+          assetId: input.atlasAssetId,
+          fileName: `${input.atlasAssetId}.png`,
+          sha256: 'b'.repeat(64),
+          bytes: new Uint8Array([9]),
+        }],
         geometry: TEST_COMPILED_GEOMETRY,
         frames: input.frames.map(frame => ({
           assetId: input.atlasAssetId,
@@ -1744,10 +1802,12 @@ describe('角色工作室 Zustand 状态层', () => {
   test('编译等待草稿保存时切换角色会静默取消旧任务', async () => {
     const saving = deferred<void>();
     const compileAction = vi.fn<NonNullable<CharacterWorkshopDependencies['compileAction']>>(async input => ({
-      assetId: input.atlasAssetId,
-      fileName: `${input.atlasAssetId}.png`,
-      sha256: '3'.repeat(64),
-      bytes: new Uint8Array([9]),
+      pages: [{
+        assetId: input.atlasAssetId,
+        fileName: `${input.atlasAssetId}.png`,
+        sha256: '3'.repeat(64),
+        bytes: new Uint8Array([9]),
+      }],
       geometry: TEST_COMPILED_GEOMETRY,
       frames: [{ assetId: input.atlasAssetId, x: 0, y: 0, width: 1, height: 1 }]
     }));
@@ -1802,14 +1862,7 @@ describe('角色工作室 Zustand 状态层', () => {
   });
 
   test('图集编译等待期间修改草稿会静默取消过期发布', async () => {
-    const compilation = deferred<{
-      assetId: string;
-      fileName: string;
-      sha256: string;
-      bytes: Uint8Array;
-      geometry: typeof TEST_COMPILED_GEOMETRY;
-      frames: CharacterDraftV3['skins'][number]['presentations'][number]['frames'];
-    }>();
+    const compilation = deferred<Awaited<ReturnType<NonNullable<CharacterWorkshopDependencies['compileAction']>>>>();
     const publishCharacter = vi.fn<CharacterWorkshopApi['publishCharacter']>(async () => undefined);
     const { api } = apiDouble({
       getCharacterDraft: vi.fn(async () => playableDraft('default', '默认角色')),
@@ -1824,10 +1877,12 @@ describe('角色工作室 Zustand 状态层', () => {
     await vi.waitFor(() => expect(compileAction).toHaveBeenCalledOnce());
     store.getState().updateIdentity({ description: '编译期间的新修改' });
     compilation.resolve({
-      assetId: 'atlas-1-1',
-      fileName: 'atlas-1-1.png',
-      sha256: 'e'.repeat(64),
-      bytes: new Uint8Array([9]),
+      pages: [{
+        assetId: 'atlas-1-1',
+        fileName: 'atlas-1-1.png',
+        sha256: 'e'.repeat(64),
+        bytes: new Uint8Array([9]),
+      }],
       geometry: TEST_COMPILED_GEOMETRY,
       frames: [{ assetId: 'atlas-1-1', x: 0, y: 0, width: 1, height: 1 }]
     });
@@ -1843,14 +1898,7 @@ describe('角色工作室 Zustand 状态层', () => {
   });
 
   test('并发编译请求共享同一任务且只发布一次', async () => {
-    const compilation = deferred<{
-      assetId: string;
-      fileName: string;
-      sha256: string;
-      bytes: Uint8Array;
-      geometry: typeof TEST_COMPILED_GEOMETRY;
-      frames: CharacterDraftV3['skins'][number]['presentations'][number]['frames'];
-    }>();
+    const compilation = deferred<Awaited<ReturnType<NonNullable<CharacterWorkshopDependencies['compileAction']>>>>();
     const publishCharacter = vi.fn<CharacterWorkshopApi['publishCharacter']>(async () => undefined);
     const { api } = apiDouble({
       getCharacterDraft: vi.fn(async () => playableDraft('default', '默认角色')),
@@ -1865,10 +1913,12 @@ describe('角色工作室 Zustand 状态层', () => {
     const second = store.getState().compileAndPublish();
     await settle();
     compilation.resolve({
-      assetId: 'atlas-1-1',
-      fileName: 'atlas-1-1.png',
-      sha256: 'f'.repeat(64),
-      bytes: new Uint8Array([9]),
+      pages: [{
+        assetId: 'atlas-1-1',
+        fileName: 'atlas-1-1.png',
+        sha256: 'f'.repeat(64),
+        bytes: new Uint8Array([9]),
+      }],
       geometry: TEST_COMPILED_GEOMETRY,
       frames: [{ assetId: 'atlas-1-1', x: 0, y: 0, width: 1, height: 1 }]
     });
@@ -1894,10 +1944,12 @@ describe('角色工作室 Zustand 状态层', () => {
     });
     const store = createCharacterWorkshopStore(api, {
       compileAction: async input => ({
-        assetId: input.atlasAssetId,
-        fileName: `${input.atlasAssetId}.png`,
-        sha256: '4'.repeat(64),
-        bytes: new Uint8Array([9]),
+        pages: [{
+          assetId: input.atlasAssetId,
+          fileName: `${input.atlasAssetId}.png`,
+          sha256: '4'.repeat(64),
+          bytes: new Uint8Array([9]),
+        }],
         geometry: TEST_COMPILED_GEOMETRY,
         frames: [{ assetId: input.atlasAssetId, x: 0, y: 0, width: 1, height: 1 }]
       })
@@ -1955,10 +2007,12 @@ describe('角色工作室 Zustand 状态层', () => {
     });
     const store = createCharacterWorkshopStore(api, {
       compileAction: async input => ({
-        assetId: input.atlasAssetId,
-        fileName: `${input.atlasAssetId}.png`,
-        sha256: '5'.repeat(64),
-        bytes: new Uint8Array([9]),
+        pages: [{
+          assetId: input.atlasAssetId,
+          fileName: `${input.atlasAssetId}.png`,
+          sha256: '5'.repeat(64),
+          bytes: new Uint8Array([9]),
+        }],
         geometry: TEST_COMPILED_GEOMETRY,
         frames: [{ assetId: input.atlasAssetId, x: 0, y: 0, width: 1, height: 1 }]
       })
@@ -1998,10 +2052,12 @@ describe('角色工作室 Zustand 状态层', () => {
     });
     const store = createCharacterWorkshopStore(api, {
       compileAction: async input => ({
-        assetId: input.atlasAssetId,
-        fileName: `${input.atlasAssetId}.png`,
-        sha256: '6'.repeat(64),
-        bytes: new Uint8Array([9]),
+        pages: [{
+          assetId: input.atlasAssetId,
+          fileName: `${input.atlasAssetId}.png`,
+          sha256: '6'.repeat(64),
+          bytes: new Uint8Array([9]),
+        }],
         geometry: TEST_COMPILED_GEOMETRY,
         frames: [{ assetId: input.atlasAssetId, x: 0, y: 0, width: 1, height: 1 }]
       })
@@ -2052,10 +2108,12 @@ describe('角色工作室 Zustand 状态层', () => {
     });
     const store = createCharacterWorkshopStore(api, {
       compileAction: async input => ({
-        assetId: input.atlasAssetId,
-        fileName: `${input.atlasAssetId}.png`,
-        sha256: '1'.repeat(64),
-        bytes: new Uint8Array([9]),
+        pages: [{
+          assetId: input.atlasAssetId,
+          fileName: `${input.atlasAssetId}.png`,
+          sha256: '1'.repeat(64),
+          bytes: new Uint8Array([9]),
+        }],
         geometry: TEST_COMPILED_GEOMETRY,
         frames: [{ assetId: input.atlasAssetId, x: 0, y: 0, width: 1, height: 1 }]
       })
@@ -2077,10 +2135,12 @@ describe('角色工作室 Zustand 状态层', () => {
       loadedDraft.skins[0]!.presentations
     );
     const compileAction = vi.fn<NonNullable<CharacterWorkshopDependencies['compileAction']>>(async input => ({
-      assetId: input.atlasAssetId,
-      fileName: `${input.atlasAssetId}.png`,
-      sha256: '2'.repeat(64),
-      bytes: new Uint8Array([9]),
+      pages: [{
+        assetId: input.atlasAssetId,
+        fileName: `${input.atlasAssetId}.png`,
+        sha256: '2'.repeat(64),
+        bytes: new Uint8Array([9]),
+      }],
       geometry: TEST_COMPILED_GEOMETRY,
       frames: [{ assetId: input.atlasAssetId, x: 0, y: 0, width: 1, height: 1 }]
     }));
@@ -2108,7 +2168,22 @@ describe('角色工作室 Zustand 状态层', () => {
     expect(store.getState().draft!.states.at(-1)).toMatchObject({
       id: 'state',
       name: '挥手',
+      agentInferable: true,
     });
+  });
+  test('新建状态默认允许自主选择且不改写作者已关闭的状态', async () => {
+    const loadedDraft = draft('demo', '演示角色');
+    loadedDraft.states[0]!.agentInferable = false;
+    const { api } = apiDouble({ getCharacterDraft: vi.fn(async () => loadedDraft) });
+    const store = createCharacterWorkshopStore(api);
+    await store.getState().selectCharacter('demo');
+
+    store.getState().addState({ name: '安静陪伴' });
+
+    expect(store.getState().draft!.states).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'idle', agentInferable: false }),
+      expect.objectContaining({ id: 'state', agentInferable: true })
+    ]));
   });
   test('加载后选择启用角色、idle 状态和默认动作', async () => {
     const { api } = apiDouble();

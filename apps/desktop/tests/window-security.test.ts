@@ -4,6 +4,7 @@ import {
   chatWindowOptions,
   bindPetWindowInteractionLifecycle,
   petWindowOptions,
+  setPetWindowPosition,
   secureWebPreferences,
   settingsWindowOptions
 } from '../src/main/windows/window-manager';
@@ -24,6 +25,22 @@ describe('secureWebPreferences', () => {
 });
 
 describe('窗口安全配置', () => {
+  it('连续定位不回灌系统膨胀宽高，每次只提交一次固定尺寸', () => {
+    const submissions: Array<{ x: number; y: number; width: number; height: number }> = [];
+    const window = {
+      getBounds: () => { throw new Error('移动不能回读尺寸'); },
+      setBounds: (bounds: typeof submissions[number]) => submissions.push(bounds)
+    };
+    for (let step = 0; step < 80; step++) {
+      // 模拟传入 OS 实际 bounds；即使带有增长宽高，定位也只能消费坐标。
+      const position = { x: step, y: -step, width: 181 + step, height: 221 + step };
+      setPetWindowPosition(window, position);
+    }
+    expect(submissions).toHaveLength(80);
+    expect(submissions.every(bounds => bounds.width === 180 && bounds.height === 220)).toBe(true);
+    expect(submissions.at(-1)).toEqual({ x: 79, y: -79, width: 180, height: 220 });
+  });
+
   it('创建透明、普通层级且不进入任务栏的固定尺寸桌宠窗口', () => {
     expect(petWindowOptions('preload.js')).toMatchObject({
       width: 180,

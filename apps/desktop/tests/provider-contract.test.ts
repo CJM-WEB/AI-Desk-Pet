@@ -2106,12 +2106,23 @@ capabilityPlan: { kind: 'chat' }}
     // JSON 模式仅保证 JSON；服务端实际收到的消息必须包含完整嵌套输出约定。
     expect(second.messages).toContainEqual({ role: 'system', content: '完整输出JSON Schema：' + JSON.stringify(characterExpressionSelectionJsonSchema) });
   });
-  test.each([['空 content', null, 'RESPONSE_SHAPE_INVALID'], ['全空白 content', ' \n\t'.repeat(18), 'RESPONSE_FORMAT_UNSUPPORTED']] as const)('DeepSeek自然聊天%s只失败一次且不请求表现', async (_name, content, code) => {
+  test.each([['空 content', null, 'RESPONSE_SHAPE_INVALID'], ['全空白 content', ' \n\t'.repeat(18), 'RESPONSE_FORMAT_UNSUPPORTED']] as const)('DeepSeek自然聊天%s只失败一次，独立零工具表现不改变主请求拒绝', async (_name, content, code) => {
     const profile: ProviderProfileV2 = { id: 'deepseek-empty-chat-profile', displayName: 'DeepSeek', mode: 'preset', providerId: 'deepseek', modelId: 'deepseek-v4-flash', hasStoredSecret: true };
-    const fetchClient = vi.fn<FetchLike>(async () => jsonResponse({ choices: [{ message: { content, tool_calls: [] } }] }));
+    const fetchClient = vi.fn<FetchLike>(async (_url, init) => {
+      const body = JSON.parse(String(init?.body));
+      return jsonResponse({ choices: [{ message: { content: body.response_format ? JSON.stringify({
+        moodUpdate: null, expressionPlan: null, backgroundSelection: null, requestKind: 'ambient',
+        explicitPlayback: null, movementControl: { kind: 'keep' }
+      }) : content, tool_calls: [] } }] });
+    });
     const adapter = new ConversationChatAdapter(new ProviderRegistry(providerCatalog).create(profile, async () => 'deepseek-secret', fetchClient));
     await expect(adapter.respond({ history: [], text: '你好', behaviorContext: providerBehaviorContext, signal: new AbortController().signal })).rejects.toMatchObject({ code, retryable: false });
-    expect(fetchClient).toHaveBeenCalledOnce();
+    const bodies = fetchClient.mock.calls.map(([, init]) => JSON.parse(String(init?.body)));
+    expect(bodies.filter(body => !body.response_format)).toHaveLength(1);
+    const expression = bodies.filter(body => body.response_format);
+    expect(expression).toHaveLength(1);
+    expect(expression[0]).toMatchObject({ tools: [], tool_choice: 'none' });
+    expect(fetchClient).toHaveBeenCalledTimes(2);
   });
   test('拒绝未知预置提供商', () => {
     const profile: ProviderProfileV2 = {

@@ -88,7 +88,7 @@ import {
 } from './lifecycle/main-lifecycle';
 import { prepareCharacterStartup } from './characters/character-startup';
 import { createE2eCharacterDialogAdapter } from './characters/e2e-character-dialogs';
-import { ensureOfficialDefaultCharacter } from './characters/official-default-character';
+import { ensureOfficialDefaultCharacter, ensureOfficialDefaultCharacterInstalled } from './characters/official-default-character';
 import { decodeNativeImageAlpha } from './characters/native-image-alpha-decoder';
 import {
   createConservativePetGeometrySnapshot,
@@ -121,7 +121,8 @@ import {
   createCharacterWorkshopWindow,
   createChatWindow,
   createPetWindow,
-  createSettingsWindow
+  createSettingsWindow,
+  setPetWindowPosition
 } from './windows/window-manager';
 import { PetWindowInteractionController } from
   './windows/pet-window-interaction-controller';
@@ -404,6 +405,8 @@ async function createApplicationWindows(
     }
   };
   const characterStore = new CharacterStore(charactersDirectory, { geometryMigration });
+  // 先恢复可能中断的内置安装，其他角色写入必须在旧事务恢复后才能开放。
+  await characterStore.installOfficialDefaultCharacter();
   const characterAssetService = new CharacterAssetService(charactersDirectory);
   const characterPackageService = new CharacterPackageService(charactersDirectory, {
     store: characterStore,
@@ -424,6 +427,12 @@ async function createApplicationWindows(
   const defaultResources = app.isPackaged
     ? join(app.getAppPath(), 'resources/characters/default')
     : join(__dirname, '../../resources/characters/default');
+  try {
+    await ensureOfficialDefaultCharacterInstalled(characterStore, defaultResources);
+  } catch {
+    // 默认升级失败仍允许当前健康角色启动，失败材料由安装恢复模块保留。
+    console.warn('默认角色升级未完成，保留当前可用角色。', 'CHARACTER_DEFAULT_UPGRADE_FAILED');
+  }
   const characterStartup = await prepareCharacterStartup({
     indexRecovered: recoveredCorruptCharacterIndex.recovered,
     packageRecoveryReport
@@ -539,6 +548,7 @@ async function createApplicationWindows(
     applyCharacterBehaviorSettings: snapshot => characterBehaviorDirector.applyBehaviorSettings(snapshot),
     applyAutonomousMoodEnabled: enabled => {
       characterProactivityRuntime.noteUserInteraction();
+      characterBehaviorDirector.noteUserInteraction('control');
       characterProactivityRuntime.setAutonomousMoodEnabled(enabled);
     }
   });
@@ -547,7 +557,7 @@ async function createApplicationWindows(
   const startupPlacement = await settingsStore.getPetPlacementState(activeGeometryManifest.id);
   if (startupPlacement.kind === 'pending-legacy') {
     // pending 只在 Main 私下恢复旧窗口左上角；首次真实 viewport 成功后才 CAS 清除。
-    pet.setPosition(startupPlacement.windowPosition.x, startupPlacement.windowPosition.y);
+    setPetWindowPosition(pet, startupPlacement.windowPosition);
   }
   const petGeometryAuthority = new PetVisualGeometryAuthority(activeGeometryManifest.id);
   const getPetGeometrySnapshot = () => {
@@ -569,7 +579,10 @@ async function createApplicationWindows(
     }
   };
   const characterMotion = new CharacterMotionService({
-    window: pet,
+    window: {
+      getBounds: () => pet.getBounds(),
+      setPosition: (x, y) => setPetWindowPosition(pet, { x, y })
+    },
     getDisplays: () => screen.getAllDisplays().map(display => ({
       id: String(display.id),
       workAreaDip: display.workArea
@@ -594,6 +607,10 @@ async function createApplicationWindows(
     now: characterRuntimeClock.now,
     reportError: reportCharacterBehaviorError
   });
+  // 窗口先完成加载以接收播放事件；首次输入等待角色目录就绪，避免大素材启动时拿到空候选。
+  let finishCharacterInitialization!: () => void;
+  const characterInitialized = new Promise<void>(resolve => { finishCharacterInitialization = resolve; });
+  startupCleanup.add(() => finishCharacterInitialization());
   const petGeometry = new PetGeometryCoordinator({
     window: pet,
     authority: petGeometryAuthority,
@@ -688,6 +705,7 @@ async function createApplicationWindows(
   });
   let publishCharacterBehaviorNotice = (_notice: CharacterBehaviorNotice): void => undefined;
   const characterBehaviorDirector = new CharacterBehaviorDirector({
+    ready: characterInitialized,
     now: characterRuntimeClock.now,
     behavior: characterBehavior,
     motion: characterMotion,
@@ -721,6 +739,7 @@ async function createApplicationWindows(
   });
   characterActions.activateCharacter = (characterId, confirmIncomplete) => {
     characterProactivityRuntime.noteUserInteraction();
+    characterBehaviorDirector.noteUserInteraction('control');
     return characterSwitching.activate(characterId, confirmIncomplete);
   };
   let refreshTray = async (): Promise<void> => undefined;
@@ -767,14 +786,18 @@ async function createApplicationWindows(
     }
   }, pet.webContents);
   const releaseMotionEvents = characterMotion.subscribe(snapshot => {
-    characterBehavior.handleMovement(snapshot);
+    // 到达先让持续模式接续真实目标，避免中间的 moving=false 先把同一行走动画撤成待机。
+    // 续行可能同步发布更新快照；后续表现和广播一律读取 Motion 的最新事实。
+    if (!snapshot.moving) characterBehaviorDirector.handleMotionSnapshot(snapshot);
+    const current = characterMotion.getSnapshot();
+    characterBehavior.handleMovement(current);
     // 方向可能在 moving 布尔不变时改变；几何 binding 仍须进入 Main FIFO。
     void petGeometry.refreshBinding().catch(() => undefined);
-    characterBehaviorDirector.handleMotionSnapshot(snapshot);
+    if (current.moving) characterBehaviorDirector.handleMotionSnapshot(current);
     if (!pet.isDestroyed() && !pet.webContents.isDestroyed()) {
       pet.webContents.send(ipcChannels.characterMotionEvent, {
         type: 'snapshot',
-        snapshot
+        snapshot: current
       });
     }
   });
@@ -794,7 +817,8 @@ async function createApplicationWindows(
     },
     poll: () => characterProactivityRuntime.poll(),
     isDestroyed: () => pet.isDestroyed(),
-    tickIntervalMs: 50,
+    // 真实窗口统一按绘制级节拍推进，连续积分只在原生边界取整。
+    tickIntervalMs: 1_000 / 60,
     idleIntervalMs: 500,
     reportError: reportCharacterMotionTimerError
   });
@@ -1040,7 +1064,8 @@ async function createApplicationWindows(
         error,
         correlationId
       ),
-      { inputByteBudget: isBuiltinLocalProviderProfile(profile) ? 19_200 : 64 * 1024 }
+      { inputByteBudget: isBuiltinLocalProviderProfile(profile) ? 19_200 : 64 * 1024,
+        expressionFirst: isBuiltinLocalProviderProfile(profile) }
     ),
     createCodingTaskService: ({ snapshot, primaryProfile, emit, emitTrustedToolResult }) => new CodingTaskService({
       sessionOptions: async () => {
@@ -1085,9 +1110,14 @@ async function createApplicationWindows(
       && typeof error.code === 'string'
       && error.code === reportedSubmitErrorCode
     ),
-    cancelActive: () => { characterProactivityRuntime.noteUserInteraction(); return conversationCoordinator.cancelActive(); },
+    cancelActive: () => {
+      characterProactivityRuntime.noteUserInteraction();
+      characterBehaviorDirector.noteUserInteraction('control');
+      return conversationCoordinator.cancelActive();
+    },
     resolveFileAction: (actionId: string, decision: 'confirm' | 'cancel') => {
       characterProactivityRuntime.noteUserInteraction();
+      characterBehaviorDirector.noteUserInteraction('control');
       return conversationCoordinator.resolveFileAction(actionId, decision);
     },
     resolveHistoryDisclosure: (
@@ -1095,6 +1125,7 @@ async function createApplicationWindows(
       decision: 'share_once' | 'current_message_only'
     ) => {
       characterProactivityRuntime.noteUserInteraction();
+      characterBehaviorDirector.noteUserInteraction('control');
       return conversationCoordinator.resolveHistoryDisclosure(requestId, decision);
     },
     resolveCapabilityAuthorization: (
@@ -1102,10 +1133,12 @@ async function createApplicationWindows(
       decision: 'confirm' | 'cancel'
     ) => {
       characterProactivityRuntime.noteUserInteraction();
+      characterBehaviorDirector.noteUserInteraction('control');
       return conversationCoordinator.resolveCapabilityAuthorization(requestId, decision);
     },
     resetConversation: () => {
       characterProactivityRuntime.noteUserInteraction();
+      characterBehaviorDirector.noteUserInteraction('control');
       characterProactivityRuntime.invalidate();
       return conversationCoordinator.resetConversation();
     }
@@ -1183,6 +1216,7 @@ async function createApplicationWindows(
     console.error('内置本地模型后台启动失败。', code);
   });
   await characterBehavior.initialize();
+  finishCharacterInitialization();
   await petGeometry.initialize();
   characterProactivityRuntime.start();
   await explorerComposition.start();

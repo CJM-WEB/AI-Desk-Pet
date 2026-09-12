@@ -1,164 +1,24 @@
-import { createHash } from 'node:crypto';
-import { readFile } from 'node:fs/promises';
-import { join } from 'node:path';
-import type {
-  CharacterDraftV3,
-  PreparedCharacterManifestV3,
-  CoreCharacterState
-} from '@myself/character-runtime';
-
 import type { CharacterStore } from './character-store';
-import {
-  finalizeCharacterManifestMigration,
-  requirePublishedCharacterMigration,
-  prepareCharacterManifestMigration,
-  type CharacterGeometryMigrationDependencies
-} from './character-migrations';
+import type { CharacterGeometryMigrationDependencies } from './character-migrations';
+import { readOfficialDefaultBundle } from './official-default-character-installation';
 
-const DEFAULT_CHARACTER_ID = 'builtin-default';
-const DEFAULT_STATES: readonly CoreCharacterState[] = [
-  'idle',
-  'listening',
-  'thinking',
-  'moving',
-  'acting',
-  'carrying',
-  'success',
-  'error'
-];
-
-function sha256(bytes: Uint8Array): string {
-  return createHash('sha256').update(bytes).digest('hex');
+/** 启动升级与激活分开，正常升级不能切换用户选择的其他角色。 */
+export async function ensureOfficialDefaultCharacterInstalled(
+  store: CharacterStore,
+  resourceDirectory: string
+): Promise<void> {
+  // 先恢复上次中断；本次随包文件损坏也不能留下半安装的草稿与源图。
+  await store.installOfficialDefaultCharacter();
+  const bundle = await readOfficialDefaultBundle(resourceDirectory);
+  await store.installOfficialDefaultCharacter(bundle);
 }
 
-function presentation(state: CoreCharacterState, assetId: string) {
-  return {
-    actionId: `${state}-main`,
-    fps: 8,
-    // 第三帧是搬运循环的中段稳定姿势，避开起手首帧和收势末帧。
-    ...(state === 'carrying' ? { commitFrameId: 'carrying-frame-3' } : {}),
-    anchors: {
-      ground: { x: 0.5, y: 1 },
-      ...(state === 'carrying' ? { carry: { x: 0.7, y: 0.45 } } : {})
-    },
-    frames: [0, 1, 2, 3].map(index => ({
-      id: `${state}-frame-${index + 1}`,
-      assetId,
-      x: index * 256,
-      y: 0,
-      width: 256,
-      height: 256
-    }))
-  };
-}
-
-/**
- * 官方默认角色只读取随包固定资源；重复调用复用已校验运行版本。
- */
+/** 应急回退及用户明确启用默认时才改变活动角色；固定 V3 不再猜测帧或迁移几何。 */
 export async function ensureOfficialDefaultCharacter(
   store: CharacterStore,
   resourceDirectory: string,
-  geometryMigration: CharacterGeometryMigrationDependencies = {
-    decodeAlpha: async () => { throw new Error('CHARACTER_RESOURCE_GEOMETRY_FALLBACK'); }
-  }
+  _geometryMigration?: CharacterGeometryMigrationDependencies
 ): Promise<void> {
-  const existing = await store.list();
-  if (!existing.some(character => character.id === DEFAULT_CHARACTER_ID)) {
-    await store.create({
-      id: DEFAULT_CHARACTER_ID,
-      name: 'AI Pet 默认角色'
-    });
-  }
-
-  let runtimeReady = false;
-  try {
-    await store.getRuntimeManifest(DEFAULT_CHARACTER_ID);
-    runtimeReady = true;
-  } catch {
-    runtimeReady = false;
-  }
-
-  if (!runtimeReady) {
-    const loaded = await Promise.all(DEFAULT_STATES.map(async state => {
-      const bytes = await readFile(join(resourceDirectory, `${state}.png`));
-      return { state, bytes, assetId: `${state}-atlas` };
-    }));
-    const draft: CharacterDraftV3 = {
-      version: 3,
-      id: DEFAULT_CHARACTER_ID,
-      name: 'AI Pet 默认角色',
-      thumbnailAssetId: 'idle-atlas',
-      identity: {
-        description: 'AI Pet 官方默认桌宠角色。',
-        background: '随桌面应用一同安装的本地默认角色。',
-        traits: ['友好', '可靠'],
-        languageStyle: '简洁友好',
-        formsOfAddress: [],
-        likes: [],
-        dislikes: [],
-        behavioralTendencies: [],
-        boundaries: [],
-        exampleLines: []
-      },
-      defaultSkinId: 'default',
-      idleStateId: 'idle',
-      skins: [{
-        id: 'default',
-        name: '默认皮肤',
-        presentations: loaded.map(({ state, assetId }) => presentation(state, assetId))
-      }],
-      states: loaded.map(({ state, assetId }) => ({
-        id: state,
-        name: state,
-        tags: [],
-        intensity: 1,
-        enterConditions: [],
-        exitConditions: [],
-        agentInferable: false,
-        actionIds: [`${state}-main`]
-      })),
-      actions: [
-        ...loaded.map(({ state }) => ({
-          id: `${state}-main`,
-          name: state,
-          tags: [],
-          preference: 1,
-          cooldownMs: 0,
-          repeatSuppressionMs: 0,
-          loopPolicy: 'until-interrupted' as const,
-          interrupt: 'normal' as const,
-          direction: 'any' as const
-        }))
-      ]
-    };
-    const manifest: PreparedCharacterManifestV3 = {
-      ...draft,
-      idleStateId: 'idle',
-      thumbnailAssetId: 'idle-atlas',
-      compilerVersion: 'official-default-v3',
-      resources: loaded.map(({ state, assetId, bytes }) => ({
-        assetId,
-        fileName: `${state}.png`,
-        sha256: sha256(bytes),
-        byteLength: bytes.byteLength
-      }))
-    };
-    await store.saveDraft(DEFAULT_CHARACTER_ID, draft);
-    const assets = Object.fromEntries(loaded.map(({ state, bytes }) => [
-      `${state}.png`,
-      bytes
-    ]));
-    const finalized = await finalizeCharacterManifestMigration(
-      prepareCharacterManifestMigration(manifest),
-      assets,
-      geometryMigration
-    );
-    await store.publishCompiled(
-      DEFAULT_CHARACTER_ID,
-      requirePublishedCharacterMigration(finalized),
-      assets
-    );
-  }
-
-  await store.setActive(DEFAULT_CHARACTER_ID);
+  await ensureOfficialDefaultCharacterInstalled(store, resourceDirectory);
+  await store.setActive('builtin-default');
 }

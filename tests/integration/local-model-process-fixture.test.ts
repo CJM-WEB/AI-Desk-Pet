@@ -113,7 +113,7 @@ describe('本地模型进程夹具协议', () => {
     const message = await request('本地模型窗口生命周期问候', characterExpressionResponseContract.jsonSchema);
     const output = JSON.parse(message.content!);
     expect(characterExpressionResponseContract.validateStructuredOutput(output)).toBe(true);
-    expect(output).toEqual({ moodUpdate: null, expressionPlan: null, requestKind: 'ambient',
+    expect(output).toEqual({ moodUpdate: null, expressionPlan: null, backgroundSelection: null, requestKind: 'ambient',
       explicitPlayback: null, movementControl: { kind: 'keep' } });
   });
 
@@ -121,7 +121,7 @@ describe('本地模型进程夹具协议', () => {
     const message = await request('准备移动', characterAutonomyResponseContract.jsonSchema);
     const output = JSON.parse(message.content!);
     expect(characterAutonomyResponseContract.validateStructuredOutput(output)).toBe(true);
-    expect(output).toEqual({ moodUpdate: null, expressionPlan: null });
+    expect(output).toEqual({ moodUpdate: null, expressionPlan: null, backgroundSelection: null });
   });
 
   test.each([

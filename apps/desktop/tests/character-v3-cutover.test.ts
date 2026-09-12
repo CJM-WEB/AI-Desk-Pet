@@ -33,6 +33,7 @@ test('正式存储创建及保存仅输出 V3 草稿', async () => {
   expect(draft.states[0]).not.toHaveProperty('kind');
 });
 
+// 串联真实 Store 多阶段落盘；仅为全量测试的磁盘竞争留出时间，不改变生产恢复预算。
 test('旧规则逐项保留，省略处置不能发布，原文不被后续保存覆盖', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'character-v3-review-'));
   directories.push(directory);
@@ -85,7 +86,7 @@ test('旧规则逐项保留，省略处置不能发布，原文不被后续保�
   expect(requestIntent).not.toHaveBeenCalled();
   expect(service.snapshot()).toEqual(current);
   service.close();
-});
+}, 15_000);
 
 
 

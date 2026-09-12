@@ -6,7 +6,7 @@ import {
   type MovementControlPlan
 } from './character-behavior-plan';
 import { MIN_ACTIVE_MOOD_STRENGTH, type CharacterMoodUpdate } from './character-mood';
-import { characterExplicitPlaybackSchema, type CharacterExplicitPlayback, type CharacterExpressionPlanInput } from './character-expression-plan';
+import { characterBackgroundSelectionSchema, characterExplicitPlaybackSchema, type CharacterBackgroundSelection, type CharacterExplicitPlayback, type CharacterExpressionPlanInput } from './character-expression-plan';
 import { safeIdentifierSchema } from './character-v2-schema';
 
 const scoreSchema = z.number().finite().min(0).max(1);
@@ -39,6 +39,7 @@ const selectionPlanSchema = z.object({
 export const characterExpressionSelectionShape = {
   moodUpdate: selectionMoodSchema.nullable(),
   expressionPlan: selectionPlanSchema.nullable(),
+  backgroundSelection: characterBackgroundSelectionSchema.nullable().default(null),
   requestKind: z.enum(['ambient', 'state', 'action', 'movement']),
   explicitPlayback: characterExplicitPlaybackSchema.nullable(),
   movementControl: movementControlPlanSchema
@@ -59,7 +60,7 @@ const scoreJsonSchema = { type: 'number', minimum: 0, maximum: 1 } as const;
 export const characterExpressionSelectionJsonSchema = {
   type: 'object',
   additionalProperties: false,
-  required: ['moodUpdate', 'expressionPlan', 'requestKind', 'explicitPlayback', 'movementControl'],
+  required: ['moodUpdate', 'expressionPlan', 'backgroundSelection', 'requestKind', 'explicitPlayback', 'movementControl'],
   properties: {
     moodUpdate: { anyOf: [
       { type: 'object', additionalProperties: false, required: ['summary', 'strength'], properties: {
@@ -82,6 +83,16 @@ export const characterExpressionSelectionJsonSchema = {
       } },
       { type: 'null' }
     ] },
+    backgroundSelection: { anyOf: [
+      { type: 'object', additionalProperties: false, required: ['stateId', 'actions'], properties: {
+        stateId: identifierJsonSchema,
+        actions: { type: 'array', maxItems: 32, items: {
+          type: 'object', additionalProperties: false, required: ['actionId', 'score'],
+          properties: { actionId: identifierJsonSchema, score: scoreJsonSchema }
+        } }
+      } },
+      { type: 'null' }
+    ] },
     requestKind: { enum: ['ambient', 'state', 'action', 'movement'] },
     explicitPlayback: { anyOf: [
       { type: 'object', additionalProperties: false, required: ['stateId'], properties: {
@@ -96,6 +107,7 @@ export const characterExpressionSelectionJsonSchema = {
 export type CharacterExpressionSelectionDecision = Readonly<{
   moodUpdate?: CharacterMoodUpdate;
   expressionPlan?: CharacterExpressionPlanInput;
+  backgroundSelection?: CharacterBackgroundSelection;
   explicitPlayback?: CharacterExplicitPlayback;
   movementControl: MovementControlPlan;
   requestKind: CharacterExpressionSelection['requestKind'];
@@ -124,6 +136,7 @@ export function toCharacterExpressionDecision(
   return {
     ...(moodUpdate === undefined ? {} : { moodUpdate }),
     expressionPlan,
+    ...(selection.backgroundSelection == null ? {} : { backgroundSelection: selection.backgroundSelection }),
     ...(source === 'chat' && (selection.requestKind === 'state' || selection.requestKind === 'action')
       && selection.explicitPlayback !== null
       && (selection.requestKind !== 'action' || selection.explicitPlayback.actionId !== undefined)

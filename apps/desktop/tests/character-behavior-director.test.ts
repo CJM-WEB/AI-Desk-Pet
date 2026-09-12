@@ -26,6 +26,87 @@ import {
 let completionSequence = 0;
 const NONE: CharacterBehaviorAuthorization = { kind: 'none' };
 
+test('任务首帧只接受服务核验后的同 token 和动作，错误回报不能放行', async () => {
+  const fixture = createFixture();
+  const current = { playbackToken: 'prepared-move', actionId: 'move-action', startedAtMs: null as number | null };
+  fixture.behavior.snapshot.mockImplementation(() => ({ schedule: { current } }) as never);
+  const done = vi.fn();
+  const pending = fixture.director.prepareTaskPresentation(new AbortController().signal).then(done);
+  fixture.director.applyPlaybackFeedback({ playbackToken: current.playbackToken, actionId: 'wrong-action', status: 'started', occurredAtMs: 1 });
+  await Promise.resolve();
+  await Promise.resolve();
+  await Promise.resolve();
+  expect(done).not.toHaveBeenCalled();
+  current.startedAtMs = 2;
+  fixture.director.applyPlaybackFeedback({ playbackToken: current.playbackToken, actionId: current.actionId, status: 'started', occurredAtMs: 2 });
+  await pending;
+  expect(done).toHaveBeenCalledOnce();
+  expect(fixture.director.getChatContext().runtime.taskRunning).toBe(false);
+});
+
+test('任务表现准备异常提示只描述表现，不改变真实任务结果', () => {
+  const fixture = createFixture();
+  fixture.director.reportTaskPresentationFailure();
+  expect(fixture.notices).toEqual([{ code: 'CHARACTER_EXPRESSION_NOT_EXECUTED', message: '任务表现未能开始，继续执行已授权任务。' }]);
+  expect(fixture.director.getChatContext().situation?.lastTask).toBeNull();
+});
+
+test('已撤销表现不能提交动作或开始持久模式变更', async () => {
+  const fixture = createFixture();
+  const controller = new AbortController();
+  controller.abort();
+  await fixture.director.completeUserPrompt({ generation: 'generation-1', eventId: 'aborted-expression', context: null,
+    explicitDirective: null, movementControl: { kind: 'set_mode', mode: 1 }, signal: controller.signal });
+  expect(fixture.saveMovementMode).not.toHaveBeenCalled();
+  expect(fixture.behavior.applyDecision).not.toHaveBeenCalled();
+});
+
+test('首次角色加载期间等待候选，取消后加载完成不执行旧明确指令', async () => {
+  let release!: () => void;
+  const ready = new Promise<void>(resolve => { release = resolve; });
+  const fixture = createFixture(undefined, ready);
+  const prepared = fixture.director.prepareUserPrompt('向右一点');
+  expect(fixture.behavior.prepareActivity).not.toHaveBeenCalled();
+  fixture.director.cancelActive();
+  release();
+  await prepared;
+  expect(fixture.behavior.prepareActivity).not.toHaveBeenCalled();
+  expect(fixture.motion.requestIntent).not.toHaveBeenCalled();
+  await fixture.director.prepareUserPrompt('向右一点');
+  expect(fixture.behavior.prepareActivity).toHaveBeenCalledOnce();
+});
+
+test('主聊天先成功时，随后接纳的同轮模型位移仍等待首帧并且只执行一次', async () => {
+  const fixture = createFixture({ movementMode: 0, proactivityMode: 'passive' });
+  await fixture.director.prepareUserPrompt('换个地方陪我');
+  fixture.director.handleTaskEvent({ type: 'phase', phase: 'thinking' });
+  fixture.director.handleTaskEvent({ type: 'phase', phase: 'success' });
+  const current = { playbackToken: 'prepared-move', actionId: 'move-action', startedAtMs: null as number | null };
+  fixture.behavior.snapshot.mockImplementation(() => ({ schedule: { current } }) as never);
+  await fixture.director.completeUserPrompt({ generation: 'generation-1', eventId: 'late-movement', context: null,
+    explicitDirective: null, requestKind: 'movement', movementControl: { kind: 'move_once', target: 'left', distance: 'near' } });
+  expect(fixture.behavior.prepareActivity).toHaveBeenCalledOnce();
+  expect(fixture.motion.requestIntent).not.toHaveBeenCalled();
+  current.startedAtMs = 1;
+  fixture.director.applyPlaybackFeedback({ playbackToken: current.playbackToken, actionId: current.actionId, status: 'started', occurredAtMs: 1 });
+  expect(fixture.motion.requestIntent).toHaveBeenCalledTimes(1);
+  fixture.director.handleTaskEvent({ type: 'phase', phase: 'success' });
+  expect(fixture.motion.requestIntent).toHaveBeenCalledTimes(1);
+});
+
+test('上一轮聊天成功不能提前放行下一轮模型位移', async () => {
+  const fixture = createFixture({ movementMode: 0, proactivityMode: 'passive' });
+  await fixture.director.prepareUserPrompt('你好');
+  fixture.director.handleTaskEvent({ type: 'phase', phase: 'success' });
+  await fixture.director.prepareUserPrompt('换个地方陪我');
+  fixture.director.handleTaskEvent({ type: 'phase', phase: 'thinking' });
+  await fixture.director.completeUserPrompt({ generation: 'generation-1', eventId: 'new-movement', context: null,
+    explicitDirective: null, requestKind: 'movement', movementControl: { kind: 'move_once', target: 'left', distance: 'near' } });
+  expect(fixture.motion.requestIntent).not.toHaveBeenCalled();
+  fixture.director.handleTaskEvent({ type: 'phase', phase: 'error' });
+  expect(fixture.motion.requestIntent).not.toHaveBeenCalled();
+});
+
 /** 构造只记录 Director 边界调用的同步行为服务端口。 */
 function createFixture(initialSettings: Readonly<{
   movementMode: 0 | 1 | 2;
@@ -33,7 +114,7 @@ function createFixture(initialSettings: Readonly<{
 }> = {
   movementMode: 2,
   proactivityMode: 'assistive' as const
-}) {
+}, ready?: Promise<void>) {
   let now = 0;
   let taskAuthorization: CharacterBehaviorAuthorization = NONE;
   let directedAuthorization: CharacterBehaviorAuthorization = NONE;
@@ -166,6 +247,7 @@ function createFixture(initialSettings: Readonly<{
     isCurrent?: () => boolean
   ) => Promise<void>>();
   const director = new CharacterBehaviorDirector({
+    ...(ready ? { ready } : {}),
     now: () => now,
     behavior,
     motion,
@@ -265,6 +347,38 @@ function play(name: string): CharacterBehaviorPlan {
     action: name
   };
 }
+
+test('可信文件任务阶段保持工作事实，普通聊天阶段不能制造任务结果', async () => {
+  const f = createFixture();
+  f.director.handleTaskEvent({ type: 'phase', phase: 'thinking' });
+  expect(f.director.getChatContext().runtime.taskRunning).toBe(false);
+  f.director.handleCapabilityTaskPhase('running');
+  f.director.handleTaskEvent({ type: 'phase', phase: 'thinking' });
+  expect(f.director.getChatContext().runtime).toMatchObject({ taskRunning: true, chatting: false });
+  f.setNow(10_000);
+  f.director.handleCapabilityTaskPhase('success');
+  f.director.handleTaskEvent({ type: 'phase', phase: 'success' });
+  expect(f.director.getChatContext().situation?.lastTask).toMatchObject({ outcome: 'success', durationMs: 10_000 });
+  f.director.handleTaskEvent({ type: 'phase', phase: 'error' });
+  expect(f.director.getChatContext().situation?.lastTask?.outcome).toBe('success');
+});
+
+test('任务首帧准备保持真实任务未开始，取消会释放准备且不发布成功', async () => {
+  const f = createFixture();
+  f.behavior.snapshot.mockReturnValue({ schedule: { current: {
+    stateId: 'work', actionId: 'work-action', playbackToken: 'prepared-move', startedAtMs: null
+  } } } as never);
+  const controller = new AbortController();
+  let completed = false;
+  const prepared = f.director.prepareTaskPresentation(controller.signal).then(() => { completed = true; });
+  await Promise.resolve();
+  expect(completed).toBe(false);
+  expect(f.director.getChatContext().runtime.taskRunning).toBe(false);
+  controller.abort();
+  await prepared;
+  expect(f.behavior.releasePreparedActivity).toHaveBeenCalled();
+  expect(f.notices).toEqual([]);
+});
 
 describe('Main 角色行为 Director', () => {
   test.each([
@@ -994,7 +1108,7 @@ describe('Main 角色行为 Director', () => {
     expect(fixture.motion.requestIntent).not.toHaveBeenCalled();
   });
 
-  test('模式 1 的无限链重采样失败后释放旧令牌并由 Scheduler 重新请求', async () => {
+  test('模式 1 的无限链重采样失败后释放旧令牌，后续时钟复查由 Scheduler 重新请求', async () => {
     const fixture = createFixture({ movementMode: 1, proactivityMode: 'assistive' });
     fixture.setMotionSnapshot({
       revision: 3, timestampMs: 20,
@@ -1019,7 +1133,9 @@ describe('Main 角色行为 Director', () => {
       const arrived = { ...fixture.motion.getSnapshot(), moving: false };
       fixture.setMotionSnapshot(arrived);
       fixture.director.handleMotionSnapshot(arrived);
-
+      expect(fixture.motion.requestIntent).toHaveBeenCalledTimes(4);
+      fixture.setMotionSnapshot({ ...arrived, revision: arrived.revision + 1 });
+      fixture.director.refreshActivityBlockers();
       expect(fixture.motion.requestIntent).toHaveBeenCalledTimes(5);
       expect(fixture.director.getDiagnosticSnapshot()).toMatchObject({
         movementMode: 1,
@@ -1554,12 +1670,14 @@ describe('Main 角色行为 Director', () => {
     expect(explicit.behavior.handleAgentIntent).not.toHaveBeenCalled();
   });
 
-  test('公开聊天上下文只包含清单、运行布尔、档位和公开近期动作', () => {
+  test('公开聊天上下文包含有界情境但没有私有路径或播放令牌', () => {
     const fixture = createFixture();
 
     expect(fixture.director.getChatContext()).toEqual({
       candidateSequence: 0,
-      expression: { stateId: null, actionId: 'move-action', mood: null },
+      expression: { stateId: null, actionId: 'move-action', backgroundStateId: null, mood: null },
+      situation: { idleForMs: 0, sessionForMs: 0, localHour: expect.any(Number), lastInteractionKind: null,
+        interactionCount: 0, stateForMs: 0, backgroundForMs: null, activities: { moving: 0 }, taskPhase: null, lastTask: null },
       character: { idleStateId: 'state-2241',
         identity: { formsOfAddress: [], dislikes: [], boundaries: [], exampleLines: [],
           name: '测试角色', description: '测试角色', background: '测试环境', traits: [],

@@ -79,7 +79,7 @@ async function writeTraversalArchive(destination: string): Promise<void> {
 }
 
 /**
- * 只把仓库内固定素材复制到本次 Electron fixture 的临时根，并生成两类角色包。
+ * 使用独立合成小图生成 Electron fixture，避免测试与正式桌宠资源耦合。
  */
 export async function materializeCharacterWorkshopFixtures(
   workspaceRoot: string,
@@ -88,13 +88,13 @@ export async function materializeCharacterWorkshopFixtures(
   packagesDirectory: string,
   exportsDirectory: string
 ): Promise<CharacterWorkshopFixturePaths> {
-  const sourceDirectory = resolve(
+  const sourceFile = resolve(
     workspaceRoot,
-    'apps/desktop/resources/characters/default'
+    'tests/fixtures/assets/character-workshop.png'
   );
   await Promise.all(SPRITE_NAMES.map(name => (
     copyFile(
-      join(sourceDirectory, `${name}.png`),
+      sourceFile,
       join(characterAssetsDirectory, `${name}.png`)
     )
   )));

@@ -19,7 +19,7 @@ import {
 } from '../player/pixi-character-player';
 import {
   DraftPreviewResourceCache,
-  type DraftPreviewBundle
+  type DraftFramePreviewBundle
 } from './draft-preview-resource-cache';
 import type { PreviewState } from './PreviewControls';
 
@@ -314,7 +314,7 @@ export function DraftCharacterPreview(props: DraftCharacterPreviewProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const sceneRef = useRef<PixiCharacterScene | null>(null);
   const cacheRef = useRef<DraftPreviewResourceCache | null>(null);
-  const activeBundleRef = useRef<DraftPreviewBundle | null>(null);
+  const activeBundleRef = useRef<DraftFramePreviewBundle | null>(null);
   const loadRevisionRef = useRef(0);
   const previewRef = useRef(props.preview);
   previewRef.current = props.preview;
@@ -489,14 +489,13 @@ export function DraftCharacterPreview(props: DraftCharacterPreviewProps) {
     }
 
     const action = target.action;
-    const assetIds = [...new Set(action.frames.map(frame => frame.assetId))];
     setLoadedKey(null);
     setStatus('loading');
     setMessage('正在加载预览素材');
 
-    void cache.load(
+    void cache.loadFrames(
       props.characterId,
-      assetIds,
+      action.frames,
       abort.signal
     ).then(async bundle => {
       if (revision !== loadRevisionRef.current) {
@@ -517,7 +516,7 @@ export function DraftCharacterPreview(props: DraftCharacterPreviewProps) {
       try {
         applied = applyPreviewToScene(
           scene,
-          action,
+          { ...action, frames: bundle.frames },
           resourceKey,
           previewRef.current,
           motionPausedRef.current,
@@ -554,7 +553,9 @@ export function DraftCharacterPreview(props: DraftCharacterPreviewProps) {
       setAppliedPreview(null);
       setLoadedKey(null);
       setStatus('error');
-      setMessage('预览素材读取失败');
+      setMessage(error instanceof Error && error.message === 'CHARACTER_FRAME_DIMENSION_EXCEEDED'
+        ? '单帧尺寸过大，请先用精灵图网格切帧'
+        : '预览素材读取失败');
       void scene.loadAssets(new Map()).catch(() => undefined);
     });
 
@@ -611,7 +612,7 @@ export function DraftCharacterPreview(props: DraftCharacterPreviewProps) {
     try {
       const nextApplied = applyPreviewToScene(
         scene,
-        action,
+        { ...action, frames: activeBundleRef.current?.frames ?? action.frames },
         resourceKey,
         props.preview,
         continuousMotionPaused,

@@ -56,6 +56,7 @@ test('每个 Desktop E2E spec 都由一个显式入口拥有且 verify:desktop �
   const testIntegration = requiredScript(scripts, 'test:integration');
 
   expect(desktopMatches).toEqual([
+    'character-motion-continuity.spec.ts',
     'desktop-settings-layout.spec.ts',
     'desktop.spec.ts'
   ]);

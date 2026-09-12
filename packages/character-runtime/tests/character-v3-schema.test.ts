@@ -49,3 +49,36 @@ test('拒绝悬空引用、重复 ID、回退循环和不受支持条件', () =>
     { mode: 'any', clauses: [{ kind: 'event', event: 'task-finished' }] }
   ] }] }).success).toBe(true);
 });
+
+test('多页大帧表现和重复裁片可发布，几何必须绑定所有使用的页', () => {
+  const manifest = structuredClone({ ...v3Fixture(), ...resourceFields });
+  const presentation = manifest.skins[0]!.presentations[0]!;
+  const first = manifest.resources[0]!;
+  const second = { ...first, assetId: 'atlas-page-2', fileName: 'atlas-page-2.png', sha256: 'b'.repeat(64) };
+  manifest.resources.push(second);
+  presentation.frames = Array.from({ length: 17 }, (_, index) => ({
+    ...presentation.frames[0]!, id: `frame-${index}`,
+    assetId: index < 16 ? first.assetId : second.assetId,
+    x: index < 16 ? index % 4 * 1024 : 0,
+    y: index < 16 ? Math.floor(index / 4) * 1024 : 0,
+    width: 1024, height: 1024
+  }));
+  presentation.geometry!.resourceRevision = [first.sha256, second.sha256].sort().join('.');
+  presentation.commitFrameId = 'frame-0';
+  expect(runtime.preparedCharacterManifestV3Schema.safeParse(manifest).success).toBe(true);
+  expect(runtime.characterManifestV3Schema.safeParse(manifest).success).toBe(true);
+  presentation.frames.push({ ...presentation.frames[0]!, id: 'repeated-frame' });
+  expect(runtime.characterManifestV3Schema.safeParse(manifest).success).toBe(true);
+  presentation.geometry!.resourceRevision = first.sha256;
+  expect(runtime.characterManifestV3Schema.safeParse(manifest).success).toBe(false);
+});
+
+test.each(['x', 'y'] as const)('发布帧 %s 坐标不得越过图集页边界，草稿保留源图坐标', axis => {
+  const manifest = structuredClone({ ...v3Fixture(), ...resourceFields });
+  manifest.skins[0]!.presentations[0]!.frames[0]![axis] = 4096;
+  expect(runtime.preparedCharacterManifestV3Schema.safeParse(manifest).success).toBe(false);
+  expect(runtime.characterManifestV3Schema.safeParse(manifest).success).toBe(false);
+  const draft = v3Fixture();
+  draft.skins[0]!.presentations[0]!.frames[0]![axis] = 8192;
+  expect(runtime.characterDraftV3Schema.safeParse(draft).success).toBe(true);
+});

@@ -86,12 +86,12 @@ const server = createServer(async (request, response) => {
     output = latestUser?.content === '请创建 switch-stale.txt'
       ? { kind: 'task', text: '' }
       : { kind: 'chat', text: '本地模型 fixture 回复' };
-  } else if (hasObjectSchemaFields(schema, ['moodUpdate', 'expressionPlan', 'requestKind', 'explicitPlayback', 'movementControl'])
+  } else if (hasObjectSchemaFields(schema, ['moodUpdate', 'expressionPlan', 'backgroundSelection', 'requestKind', 'explicitPlayback', 'movementControl'])
     && isDeepStrictEqual(schema.properties.requestKind, { enum: ['ambient', 'state', 'action', 'movement'] })) {
-    output = { moodUpdate: null, expressionPlan: null, requestKind: 'ambient',
+    output = { moodUpdate: null, expressionPlan: null, backgroundSelection: null, requestKind: 'ambient',
       explicitPlayback: null, movementControl: { kind: 'keep' } };
-  } else if (hasObjectSchemaFields(schema, ['moodUpdate', 'expressionPlan'])) {
-    output = { moodUpdate: null, expressionPlan: null };
+  } else if (hasObjectSchemaFields(schema, ['moodUpdate', 'expressionPlan', 'backgroundSelection'])) {
+    output = { moodUpdate: null, expressionPlan: null, backgroundSelection: null };
   } else {
     response.writeHead(400, { 'content-type': 'application/json' });
     response.end(JSON.stringify({ error: { message: 'LOCAL_MODEL_E2E_SCHEMA_UNSUPPORTED' } }));

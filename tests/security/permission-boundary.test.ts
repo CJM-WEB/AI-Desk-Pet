@@ -176,7 +176,7 @@ function securityBehaviorDouble(
           languageStyle: '简洁', formsOfAddress: [], likes: [], dislikes: [],
           behavioralTendencies: [], boundaries: [], exampleLines: []
         },
-        states: []
+       states: []
       },
       runtime: {
         moving: false, dragging: false, carrying: false, movementMode: 2
@@ -214,7 +214,8 @@ function movementLockDirector() {
         languageStyle: '简洁', formsOfAddress: [], likes: [], dislikes: [],
         behavioralTendencies: [], boundaries: [], exampleLines: []
       },
-      states: []
+       states: [{ stateId: 'moving-state', name: '移动', description: '会让桌宠在屏幕上移动', agentInferable: true,
+         tags: ['移动'], actions: [{ actionId: 'moving-action', name: '行走', description: '在屏幕上行走', tags: ['行走'] }] }]
     })),
     getRecentPublicActions: vi.fn(() => []),
     resolveBehaviorTarget: vi.fn(() => { throw new Error('CHARACTER_ACTION_UNAVAILABLE'); }),
@@ -593,7 +594,8 @@ describe('权限边界安全回归', () => {
         chatResponse: {
           type: 'text',
           text: '保留的普通回复',
-          structured_output: { movementControl }
+          structured_output: { movementControl, expressionPlan: { states: [{ stateId: 'moving-state', score: 1,
+            activity: 'moving', actions: [{ actionId: 'moving-action', score: 1 }] }] } }
         },
         behavior: chatLock.director
       });
@@ -619,7 +621,12 @@ describe('权限边界安全回归', () => {
     expect(harness.readPrivacySettings).toHaveBeenCalledOnce();
     expect(harness.createCodingTaskService).not.toHaveBeenCalled();
     expect(harness.createPathPolicy).not.toHaveBeenCalled();
-    expect(harness.modelRequests).toHaveLength(1);
+    expect(harness.modelRequests).toEqual([{
+      tools: [expect.objectContaining({ function: expect.objectContaining({ name: 'request_task_authorization' }) })],
+      toolChoice: 'auto', responseContract: undefined
+    }, {
+      tools: [], toolChoice: 'none', responseContract: expect.objectContaining({ name: 'character_expression' })
+    }]);
     expect(harness.events).toContainEqual(expect.objectContaining({
       type: 'error',
       code: 'FILE_AUTHORIZATION_REQUIRED'

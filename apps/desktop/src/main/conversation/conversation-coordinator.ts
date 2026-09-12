@@ -6,7 +6,7 @@ import type {
 } from '@myself/shared-types';
 import type { ConversationDisclosureAdapter } from './conversation-disclosure-adapter';
 import type { ConversationHistory } from './conversation-history';
-import type { ConversationChatAdapter } from './conversation-chat-adapter';
+import type { ConversationChatAdapter, ConversationExpressionReply } from './conversation-chat-adapter';
 import type {
   ConversationBehaviorPort,
   ExplicitBehaviorDirective
@@ -139,7 +139,10 @@ interface ActiveCapabilityTurn {
   assistantText: string | null;
   terminalPhase: 'success' | 'error' | 'cancelled' | null;
   outcomeReady: boolean;
+  terminalExpression: ExpressionTurn | null;
 }
+
+type ExpressionTurn = { context: TurnContext; controller: AbortController; adapter: ConversationChatAdapter };
 
 export class ConversationCoordinator {
   private assistantTurnSequence = 0;
@@ -148,17 +151,27 @@ export class ConversationCoordinator {
   private generation: string;
   private readonly unsubscribeCapabilityEvents: () => void;
   private readonly unsubscribeTrustedToolResults: () => void;
+  private readonly unsubscribeBehaviorLifecycle: () => void;
   private resultSummary: { operations: number; lastExit?: number; phase: 'success' | 'error' | 'cancelled' | null } | null = null;
   private backgroundTask: Promise<void> | null = null;
   private pendingDisclosure: PendingHistoryDisclosure | null = null;
   private activeCapabilityTurn: ActiveCapabilityTurn | null = null;
   private pendingCapabilityAuthorization: PendingCapabilityAuthorization | null = null;
   private closePromise: Promise<void> | null = null;
+  /** 表现可以跨同轮授权等待存活，但不能仅凭整段会话 generation 接纳迟到结果。 */
+  private expressionTurn: ExpressionTurn | null = null;
 
   constructor(private readonly options: ConversationCoordinatorOptions) {
     this.createId = options.createId ?? randomUUID;
     this.generation = this.createId();
     this.options.behavior.reset(this.generation);
+    let behaviorLifecycle = options.behavior.getBehaviorLifecycleGeneration?.();
+    this.unsubscribeBehaviorLifecycle = options.behavior.subscribeActivityBlockers?.(() => {
+      const current = options.behavior.getBehaviorLifecycleGeneration?.();
+      if (current === behaviorLifecycle) return;
+      behaviorLifecycle = current;
+      this.cancelExpression();
+    }) ?? (() => undefined);
     this.unsubscribeCapabilityEvents = options.capabilityTasks.onEvent((event, generation) => {
       this.handleCapabilityEvent(event, generation);
     });
@@ -199,6 +212,7 @@ export class ConversationCoordinator {
       generation: this.generation,
       controller: new AbortController()
     };
+    this.cancelExpression();
     this.state = {
       kind: 'running_chat',
       generation: context.generation,
@@ -266,6 +280,7 @@ export class ConversationCoordinator {
         return;
       }
       const normalizedError = publicError(error);
+      this.cancelExpression(context);
       this.pendingDisclosure = null;
       this.state = { kind: 'idle' };
       this.reportFailure(normalizedError);
@@ -274,10 +289,12 @@ export class ConversationCoordinator {
   }
 
   async cancelActive(): Promise<void> {
+    this.cancelExpression();
     if (this.state.kind !== 'idle' && this.state.kind !== 'resetting' && this.state.kind !== 'closed') {
       this.options.behavior.cancelActive();
     }
     if (this.state.kind === 'awaiting_capability_authorization') {
+      this.pendingCapabilityAuthorization?.context.controller.abort();
       this.pendingCapabilityAuthorization = null;
       await this.options.capabilityTasks.cancelActive();
       this.state = { kind: 'idle' };
@@ -333,6 +350,8 @@ export class ConversationCoordinator {
     }
     this.pendingCapabilityAuthorization = null;
     if (Date.now() >= pending.expiresAtMs) {
+      this.cancelExpression(pending.context);
+      pending.context.controller.abort();
       await this.options.capabilityTasks.cancelActive();
       this.state = { kind: 'idle' };
       const expired = publicErrorForCode('ACTION_EXPIRED');
@@ -340,6 +359,8 @@ export class ConversationCoordinator {
       throw expired;
     }
     if (decision === 'cancel') {
+      this.cancelExpression(pending.context);
+      pending.context.controller.abort();
       await this.options.capabilityTasks.cancelActive();
       this.options.emit({
         type: 'message', role: 'assistant', text: '已取消进入本地任务，未执行任何操作。'
@@ -365,6 +386,8 @@ export class ConversationCoordinator {
       void running.then(() => { if (this.backgroundTask === running) this.backgroundTask = null; }, () => { if (this.backgroundTask === running) this.backgroundTask = null; });
     } catch (error) {
       const normalized = publicFileError(error);
+      this.cancelExpression(pending.context);
+      pending.context.controller.abort();
       await this.options.capabilityTasks.cancelActive();
       this.state = { kind: 'idle' };
       this.reportFailure(normalized);
@@ -446,6 +469,7 @@ export class ConversationCoordinator {
         return;
       }
       const normalizedError = publicError(error);
+      this.cancelExpression(pending);
       this.pendingDisclosure = null;
       this.state = { kind: 'idle' };
       this.reportFailure(normalizedError);
@@ -456,6 +480,7 @@ export class ConversationCoordinator {
   async resetConversation(): Promise<void> {
     if (this.state.kind === 'closed') throw publicErrorForCode('CONVERSATION_CLOSED');
     if (this.state.kind === 'resetting') throw publicErrorForCode('TASK_ALREADY_ACTIVE');
+    this.cancelExpression();
 
     const controller = this.state.kind === 'running_chat'
       || this.state.kind === 'preparing_capability_task'
@@ -511,6 +536,7 @@ export class ConversationCoordinator {
   close(): Promise<void> {
     if (this.closePromise) return this.closePromise;
     if (this.state.kind === 'closed') return Promise.resolve();
+    this.cancelExpression();
     const controller = this.state.kind === 'running_chat'
       || this.state.kind === 'preparing_capability_task'
       ? this.state.controller
@@ -531,6 +557,7 @@ export class ConversationCoordinator {
       for (const cleanup of [
         () => this.unsubscribeCapabilityEvents(),
         () => this.unsubscribeTrustedToolResults(),
+        () => this.unsubscribeBehaviorLifecycle(),
         () => controller?.abort(),
         async () => {
           if (cancelCapabilityTask) await this.options.capabilityTasks.cancelActive();
@@ -572,13 +599,31 @@ export class ConversationCoordinator {
     // 同步捕获公开快照和宿主标记；后者绝不进入模型请求或 Renderer。
     const expressionContext = this.options.behavior.captureExpressionContext();
     const behaviorContext = this.options.behavior.getChatContext();
+    const owner = { context, controller: new AbortController(), adapter };
+    this.expressionTurn = owner;
+    const acceptExpression = async (reply: ConversationExpressionReply): Promise<void> => {
+      if (this.expressionTurn !== owner || owner.controller.signal.aborted || context.controller.signal.aborted
+        || context.generation !== this.generation || this.isClosed()) return;
+      await this.options.behavior.completeUserPrompt({
+        signal: owner.controller.signal,
+        generation: context.generation, context: expressionContext, eventId: turnId,
+        explicitDirective: context.explicitDirective,
+        ...(context.explicitPlaybackToken === undefined ? {} : { explicitPlaybackToken: context.explicitPlaybackToken }),
+        ...reply
+      });
+    };
     const reply = await adapter.respond({
       history: visibleHistory,
       text: context.text,
       behaviorContext,
       explicitPlaybackRequested: context.explicitDirective?.kind === 'play' && context.explicitPlaybackToken === undefined,
       movementControlHandled: context.explicitDirective !== null,
+      movementIntentRequested: context.explicitDirective?.kind === 'move'
+        || context.explicitDirective?.kind === 'continuous_movement'
+        || context.explicitDirective?.kind === 'resume_movement',
       signal: context.controller.signal,
+      expressionSignal: owner.controller.signal,
+      onExpression: acceptExpression,
       onTextDelta: delta => {
         if (delta.length === 0 || !this.isRunning(context)) return;
         bufferedDeltas.push(delta);
@@ -590,7 +635,7 @@ export class ConversationCoordinator {
       await this.prepareCapabilityTask(context, 'file');
       return;
     }
-    // 主模型申请只展示原范围卡；正文与表现均通过本轮校验后再交付。
+    // 正文与独立表现分别交付；等待授权和真实任务期间同轮 owner 仍可接纳表现。
     const streamStarted = bufferedDeltas.length > 0;
     if (streamStarted) {
       this.options.emit({ type: 'assistant_message_start', turnId });
@@ -599,20 +644,6 @@ export class ConversationCoordinator {
         this.options.emit({ type: 'assistant_message_delta', turnId, delta });
       }
     }
-    await this.options.behavior.completeUserPrompt({
-      generation: context.generation,
-      context: expressionContext,
-      eventId: turnId,
-      explicitDirective: context.explicitDirective,
-      movementControl: reply.movementControl ?? null,
-      ...(context.explicitPlaybackToken === undefined ? {} : { explicitPlaybackToken: context.explicitPlaybackToken }),
-      ...(reply.moodUpdate === undefined ? {} : { moodUpdate: reply.moodUpdate }),
-      ...(reply.expressionPlan === undefined ? {} : { expressionPlan: reply.expressionPlan }),
-      ...(reply.expressionStatus === undefined ? {} : { expressionStatus: reply.expressionStatus }),
-      ...(reply.requestKind === undefined ? {} : { requestKind: reply.requestKind }),
-      ...(reply.explicitPlayback === undefined ? {} : { explicitPlayback: reply.explicitPlayback })
-    });
-    if (!this.isRunning(context)) return;
     this.options.emit(streamStarted
       ? { type: 'assistant_message_commit', turnId, text: reply.text }
       : { type: 'message', role: 'assistant', text: reply.text });
@@ -627,6 +658,16 @@ export class ConversationCoordinator {
     if (!this.isRunning(context)) return;
     this.state = { kind: 'idle' };
     this.options.emit({ type: 'phase', phase: 'success' });
+  }
+
+  private cancelExpression(context?: TurnContext): void {
+    const owner = this.expressionTurn;
+    const pending = this.activeCapabilityTurn?.terminalExpression;
+    if (context && owner?.context.controller !== context.controller && pending?.context.controller !== context.controller) return;
+    this.expressionTurn = null;
+    if (this.activeCapabilityTurn) this.activeCapabilityTurn.terminalExpression = null;
+    owner?.controller.abort();
+    this.options.behavior.cancelTaskPreparation?.();
   }
 
   private isRunning(context: TurnContext): boolean {
@@ -709,7 +750,18 @@ export class ConversationCoordinator {
     target: PreparedCapabilityTarget,
     visibleHistory: readonly ModelMessage[]
   ): Promise<void> {
-    if (context.generation !== this.generation) return;
+    if (!this.isRunning(context) || context.controller.signal.aborted) return;
+    if (this.expressionTurn?.context.controller === context.controller && this.expressionTurn.adapter.expressionFirst) {
+      try { await this.options.behavior.prepareTaskPresentation?.(context.controller.signal); }
+      catch {
+        // 表现是可选反馈；其清理或提示异常也不能吞掉已授权的正式任务。
+        try { this.options.behavior.cancelTaskPreparation?.(); } catch { /* 尽力释放准备令牌。 */ }
+        if (this.isRunning(context) && !context.controller.signal.aborted) {
+          try { this.options.behavior.reportTaskPresentationFailure?.(); } catch { /* 可选提示失败仍继续任务。 */ }
+        }
+      }
+      if (!this.isRunning(context) || context.controller.signal.aborted) return;
+    }
     this.resultSummary = { operations: 0, phase: null };
     const active: ActiveCapabilityTurn = {
       generation: context.generation,
@@ -718,7 +770,8 @@ export class ConversationCoordinator {
       target,
       assistantText: null,
       terminalPhase: null,
-      outcomeReady: false
+      outcomeReady: false,
+      terminalExpression: null
     };
     this.activeCapabilityTurn = active;
     this.state = { kind: 'running_capability_task', generation: context.generation, taskKind };
@@ -728,6 +781,7 @@ export class ConversationCoordinator {
       if (active.terminalPhase !== null && this.activeCapabilityTurn === active) {
         this.activeCapabilityTurn = null;
         this.state = { kind: 'idle' };
+        this.finishCapabilityExpression(active.terminalPhase, active.terminalExpression);
         this.options.emit({ type: 'phase', phase: active.terminalPhase });
       }
     } catch (error) {
@@ -736,6 +790,8 @@ export class ConversationCoordinator {
       if (active.terminalPhase !== null || this.activeCapabilityTurn !== active) return;
       this.activeCapabilityTurn = null;
       this.state = { kind: 'idle' };
+      this.options.behavior.handleCapabilityTaskPhase?.('error');
+      this.finishCapabilityExpression('error');
       this.reportFailure(normalized);
     }
   }
@@ -745,6 +801,12 @@ export class ConversationCoordinator {
     if (this.state.kind === 'closed' || generation !== this.generation) return;
     const active = this.activeCapabilityTurn;
     if (active?.generation === generation) {
+      if (active.terminalPhase !== null) return;
+      if (event.type === 'phase') {
+        const phase = event.phase === 'success' || event.phase === 'error' || event.phase === 'cancelled'
+          ? event.phase : event.phase === 'awaiting_confirmation' ? 'waiting' : 'running';
+        this.options.behavior.handleCapabilityTaskPhase?.(phase);
+      } else if (event.type === 'task_permission_required') this.options.behavior.handleCapabilityTaskPhase?.('waiting');
       if (event.type === 'message' && event.role === 'assistant') {
         active.assistantText = event.text;
       }
@@ -767,15 +829,40 @@ export class ConversationCoordinator {
           });
         }
         active.terminalPhase = event.phase;
+        // 终态事实一到便撤销运行中响应，新的反应仍等待 Core 提交结算。
+        const previousExpression = this.expressionTurn;
+        this.cancelExpression();
+        active.terminalExpression = previousExpression;
         if (this.resultSummary) this.resultSummary.phase = event.phase;
         // 提交 Promise 结算后再释放协调器入口，避免终态事件内同步重入新任务。
         if (!active.outcomeReady) return;
         this.activeCapabilityTurn = null;
         this.state = { kind: 'idle' };
+        this.finishCapabilityExpression(event.phase, active.terminalExpression);
       }
 
     }
     this.options.emit(event);
+  }
+
+  /** 终态反应不携带任务正文，并拥有新的取消 owner；运行中的旧响应不能覆盖真实结果。 */
+  private finishCapabilityExpression(phase: 'success' | 'error' | 'cancelled', previous = this.expressionTurn): void {
+    this.cancelExpression();
+    if (!previous || phase === 'cancelled' || this.isClosed() || previous.context.generation !== this.generation) return;
+    const context = this.options.behavior.captureExpressionContext();
+    if (!context) return;
+    const owner = { context: previous.context, controller: new AbortController(), adapter: previous.adapter };
+    this.expressionTurn = owner;
+    const eventId = `task-reaction-${++this.assistantTurnSequence}`;
+    const current = () => this.expressionTurn === owner && !owner.controller.signal.aborted
+      && !this.isClosed() && owner.context.generation === this.generation;
+    const behaviorContext = this.options.behavior.getChatContext();
+    void owner.adapter.respondAutonomous({ behaviorContext, idleForMs: behaviorContext.situation?.idleForMs ?? 0, taskEvent: phase,
+      signal: owner.controller.signal, beforeProviderCall: current }).then(async reply => {
+      if (!reply || !current()) return;
+      await this.options.behavior.completeUserPrompt({ ...reply, signal: owner.controller.signal, generation: this.generation, context, eventId,
+        explicitDirective: null, requestKind: 'ambient' });
+    }).catch(() => { /* 可选终态反应失败不改写已经发生的任务结果。 */ });
   }
 
   private handleTrustedToolResult(

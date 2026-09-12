@@ -159,12 +159,32 @@ test.each(['completed', 'interrupted', 'failed'] as const)('Main先换片段后�
   for (const invalid of [
     { playbackToken: 'forged-token', actionId: old.actionId, status, occurredAtMs: 500.8 },
     { playbackToken: old.playbackToken, actionId: 'wrong-action', status, occurredAtMs: 500.8 },
-    { playbackToken: old.playbackToken, actionId: old.actionId, status: 'started' as const, occurredAtMs: 500.8 },
     { playbackToken: old.playbackToken, actionId: old.actionId, status, occurredAtMs: -1 },
     { playbackToken: old.playbackToken, actionId: old.actionId, status, occurredAtMs: 501 }
   ]) expect(() => f.service.applyPlaybackFeedback(invalid)).toThrow('CHARACTER_PLAYBACK_UNAUTHORIZED');
   f.service.cancelStateLifecycle();
-  expect(() => f.service.applyPlaybackFeedback({ playbackToken: old.playbackToken, actionId: old.actionId, status, occurredAtMs: 500.8 })).toThrow('CHARACTER_PLAYBACK_UNAUTHORIZED');
+  const resetSnapshot = f.service.snapshot(); const resetEvents = f.events.length; const resetRecent = f.service.getRecentPublicActions();
+  expect(() => f.service.applyPlaybackFeedback({ playbackToken: old.playbackToken, actionId: old.actionId, status, occurredAtMs: 500.8 })).not.toThrow();
+  expect(f.service.snapshot()).toEqual(resetSnapshot); expect(f.events).toHaveLength(resetEvents);
+  expect(f.service.getRecentPublicActions()).toEqual(resetRecent);
+  f.service.close();
+});
+
+test('Main先换片段后的已发布旧令牌迟到started仅忽略且无副作用', async () => {
+  const f = fixture(); await f.service.initialize(); const old = currentAction(f.events);
+  f.service.applyPlaybackFeedback({ playbackToken: old.playbackToken, actionId: old.actionId, status: 'started', occurredAtMs: 0 });
+  f.setNow(500); f.service.advance();
+  expect(currentAction(f.events).playbackToken).not.toBe(old.playbackToken);
+  f.setNow(500.8);
+  const before = f.service.snapshot(); const events = f.events.length; const recent = f.service.getRecentPublicActions();
+  expect(() => f.service.applyPlaybackFeedback({ playbackToken: old.playbackToken, actionId: old.actionId, status: 'started', occurredAtMs: 500.8 })).not.toThrow();
+  expect(f.service.snapshot()).toEqual(before); expect(f.events).toHaveLength(events);
+  expect(f.service.getRecentPublicActions()).toEqual(recent);
+  f.service.cancelStateLifecycle();
+  const resetSnapshot = f.service.snapshot(); const resetEvents = f.events.length; const resetRecent = f.service.getRecentPublicActions();
+  expect(() => f.service.applyPlaybackFeedback({ playbackToken: old.playbackToken, actionId: old.actionId, status: 'started', occurredAtMs: 500.8 })).not.toThrow();
+  expect(f.service.snapshot()).toEqual(resetSnapshot); expect(f.events).toHaveLength(resetEvents);
+  expect(f.service.getRecentPublicActions()).toEqual(resetRecent);
   f.service.close();
 });
 
@@ -186,6 +206,24 @@ test('几何绑定保留真实来源并随方向更新 generation', async () => 
   expect(service.getGeometryBinding()).toMatchObject({ direction: 'left', actionId: 'idle-action', skinId: 'default-skin' });
   expect(service.getGeometryBinding()!.generation).toBeGreaterThan(first.generation);
   service.close();
+});
+
+test('播放轮次保留实时 actionRevision 且复用几何，动作切换和角色重载仍更换 generation', async () => {
+  const f = fixture(); await f.service.initialize();
+  const first = f.service.getGeometryBinding()!;
+  f.service.requestDirectedBehavior({ kind: 'state_action', stateId: 'idle-state', actionId: 'idle-action' });
+  const repeated = f.service.getGeometryBinding()!;
+  expect(repeated.actionRevision).toBeGreaterThan(first.actionRevision);
+  expect(repeated.generation).toBe(first.generation);
+  f.service.requestDirectedBehavior({ kind: 'state_action', stateId: 'think-state', actionId: 'think-action' });
+  const changed = f.service.getGeometryBinding()!;
+  expect(changed.generation).toBeGreaterThan(repeated.generation);
+  expect(changed.actionRevision).toBeGreaterThan(repeated.actionRevision);
+  await f.service.handleActiveCharacterChanged();
+  const reloaded = f.service.getGeometryBinding()!;
+  await f.service.handleActiveCharacterChanged();
+  expect(f.service.getGeometryBinding()!.generation).toBeGreaterThan(reloaded.generation);
+  f.service.close();
 });
 
 test('明确动作覆盖作者循环并在真实周期结束，不依赖终态反馈', async () => {
@@ -291,6 +329,37 @@ test.each([0, 1, 2] as const)('首帧门控：模式%s有活动也必须等同to
   f.feedback('failed'); expect(f.stop).toHaveBeenCalled();
   expect(f.service.snapshot()?.mood?.summary).toBe('开心');
   await f.director.close();
+});
+
+test.each(['started', 'timeout', 'failed'] as const)('真实任务准备 %s 后有界结束，准备期间不生成 taskRunning', async status => {
+  vi.useFakeTimers();
+  const f = await movementFixture();
+  try {
+    f.time(60_000); f.director.advance();
+    f.service.applyDecision({ context: f.service.context()!, eventId: 'task-candidates', source: 'chat',
+      backgroundSelection: { stateId: 'idle-state', actions: [{ actionId: 'idle-action', score: 1 }] },
+      expressionPlan: { states: [{ stateId: 'think-state', score: 1, minStrength: 0, maxStrength: 1,
+        when: { taskRunning: true }, lifetime: 'condition', actions: [{ actionId: 'think-action', score: 1 }] }] } });
+    const ready = vi.fn();
+    const preparing = f.director.prepareTaskPresentation(new AbortController().signal).then(ready);
+    expect(f.service.snapshot()?.stateId).toBe('think-state');
+    expect(f.director.getChatContext().runtime.taskRunning).toBe(false);
+    expect(ready).not.toHaveBeenCalled();
+    if (status === 'timeout') await vi.advanceTimersByTimeAsync(1500);
+    else f.feedback(status);
+    await preparing;
+    expect(ready).toHaveBeenCalledOnce();
+    expect(f.director.getChatContext().situation?.lastTask).toBeNull();
+    f.director.handleCapabilityTaskPhase('running');
+    expect(f.director.getChatContext().runtime.taskRunning).toBe(true);
+    f.director.handleCapabilityTaskPhase('success');
+    expect(f.service.snapshot()?.stateId).toBe('idle-state');
+    expect(f.director.getChatContext().situation?.lastTask?.outcome).toBe('success');
+    expect(f.notices).toHaveBeenCalledTimes(status === 'started' ? 0 : 1);
+  } finally {
+    await f.director.close();
+    vi.useRealTimers();
+  }
 });
 
 test.each(['timeout', 'wrong', 'failed', 'reset', 'cancel'] as const)('首帧门控：%s不会产生位移', async cause => {

@@ -79,7 +79,8 @@ export class CharacterBehaviorService {
     const resolved = resolveCharacterPresentationV3(this.manifest, snapshot.skinId, current.stateId, current.actionId);
     if (!resolved) return null;
     const resourceRevision = resolved.presentation.geometry.resourceRevision;
-    const key = JSON.stringify([this.loadRevision, resolved.skinId, current.actionId, snapshot.schedule.revision, resourceRevision, this.direction]);
+    // 同动作续播只更新播放授权；几何来源未变时不重复布局落盘，避免阻塞运动 tick。
+    const key = JSON.stringify([this.loadRevision, resolved.skinId, current.actionId, resourceRevision, this.direction]);
     if (key !== this.geometryBindingKey) { this.geometryBindingKey = key; this.geometryBindingGeneration++; }
     return Object.freeze({ generation: this.geometryBindingGeneration, manifest: this.manifest,
       skinId: resolved.skinId, actionId: current.actionId, actionRevision: snapshot.schedule.revision, resourceRevision, direction: this.direction });
@@ -110,7 +111,7 @@ export class CharacterBehaviorService {
   handleTaskEvent(event: TaskEvent, _options: Readonly<{ allowPlayback?: boolean }> = {}): CharacterExpressionAuthorization {
     if (this.closed) return NONE;
     this.options.motion.applyTaskEvent(event);
-    // 来源区分将在普通聊天/文件任务接线补齐；此处不制造 task-finished 等边沿。
+    // 任务生命周期由 Director 接收可信 Core 事件；此处仅转交运动层。
     return NONE;
   }
   handleMovement(snapshot: CharacterMotionSnapshot): void {
@@ -131,12 +132,12 @@ export class CharacterBehaviorService {
     return !this.closed && !this.transitioning && !!this.engine && this.engine.hasEligibleExpressionFor(facts, requiredFact);
   }
   /** 活动准备只发布同一引擎令牌，不伪造真实移动事实；复用令牌也返回原授权。 */
-  prepareActivity(): CharacterExpressionAuthorization {
+  prepareActivity(fact: keyof CharacterRuntimeFacts = 'moving'): CharacterExpressionAuthorization {
     if (this.closed || this.transitioning || !this.engine) return NONE;
-    if (!this.engine.hasEligibleExpressionFor({ moving: true }, 'moving')) return NONE;
-    this.publish(this.engine.prepareActivity('moving'));
+    if (!this.engine.hasEligibleExpressionFor({ [fact]: true }, fact)) return NONE;
+    this.publish(this.engine.prepareActivity(fact));
     const current = this.engine.snapshot().schedule.current;
-    return current && this.engine.hasEligibleExpressionFor({ moving: true }, 'moving')
+    return current && this.engine.hasEligibleExpressionFor({ [fact]: true }, fact)
       ? { kind: 'play', stateId: current.stateId, actionId: current.actionId, playbackToken: current.playbackToken } : NONE;
   }
   releasePreparedActivity(): void {
@@ -159,7 +160,7 @@ export class CharacterBehaviorService {
   }
   snapshot() { return this.closed || this.transitioning ? null : this.engine?.snapshot() ?? null; }
   cancelStateLifecycle(): void {
-    this.publishedPlaybacks.clear();
+    // 同一角色的配置重置仍允许识别已发布片段的迟到回报；角色切换和关闭时再清空，避免旧生命周期穿透。
     if (this.engine) { this.publish(this.engine.reset()); this.publish(this.engine.updateRuntimeFacts(this.runtimeFacts)); }
   }
   advance(): readonly string[] {
@@ -172,10 +173,10 @@ export class CharacterBehaviorService {
     if (this.closed) return;
     const current = this.engine?.snapshot().schedule.current;
     const published = this.publishedPlaybacks.get(feedback.playbackToken);
-    // 旧片段只能无副作用地确认终态；不能再次 started，也不能进入 Engine 污染当前播放或近期动作。
+    // 旧片段的迟到回报只作无副作用丢弃，不能进入 Engine 污染当前播放或近期动作。
     if (!this.transitioning && this.engine && current?.playbackToken !== feedback.playbackToken
       && published?.actionId === feedback.actionId && characterPlaybackFeedbackSchema.safeParse(feedback).success
-      && feedback.status !== 'started' && feedback.occurredAtMs >= published.scheduledAtMs && feedback.occurredAtMs <= this.now()) return;
+      && feedback.occurredAtMs >= published.scheduledAtMs && feedback.occurredAtMs <= this.now()) return;
     if (this.transitioning || !this.engine || !current || current.playbackToken !== feedback.playbackToken
       || current.actionId !== feedback.actionId || feedback.occurredAtMs < current.scheduledAtMs || feedback.occurredAtMs > this.now()) {
       throw new Error('CHARACTER_PLAYBACK_UNAUTHORIZED');

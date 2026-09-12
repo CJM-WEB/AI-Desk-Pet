@@ -1651,14 +1651,13 @@ describe('CharacterStore', () => {
       }
     },
     {
-      name: '旧 V2 的累计帧面积超预算',
+      name: '旧 V2 的帧矩形超出图集页边界',
       create() {
         const runtime = createRuntimeV1();
         const manifest = convertCharacterManifestV1ToV2(runtime.manifest).document;
         const frame = manifest.skins[0]!.presentations[0]!.frames[0]!;
         manifest.skins[0]!.presentations[0]!.frames = [
-          { ...frame, width: 4096, height: 4096 },
-          { ...frame, width: 1, height: 1 }
+          { ...frame, x: 4096, width: 1, height: 1 }
         ];
         return { manifest, assets: runtime.assets };
       }

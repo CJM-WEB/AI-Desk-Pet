@@ -512,19 +512,28 @@ async function submitChatMessage(page: Page, text: string): Promise<void> {
   await send.click();
 }
 
-/** 主正文与表现显式排成两个真实 Provider 请求，任务申请只展示原范围卡。 */
+/** 主正文与表现使用独立 Provider 请求，范围卡继续由 Main 裁决。 */
 function characterChatSteps(
   text: string,
   selection: Readonly<Record<string, unknown>> = {},
   main: Omit<ProviderStep, 'response'> = {},
   inspectExpression?: ProviderStep['inspect']
 ): ProviderStep[] {
+  // 同轮两个请求允许到达顺序变化；Symbol 保证绝不跨轮借用响应。
+  const group = Symbol('character-chat-turn');
   return [
-    { response: { type: 'text', text }, ...main },
+    { response: { type: 'text', text }, ...main,
+      concurrent: { group, match: request => request.tools.length === 1
+        && request.tools[0]?.function.name === 'request_task_authorization'
+        && !request.responseFormatWasJsonObject } },
     { response: { type: 'structured', structured_output: {
       moodUpdate: null, expressionPlan: null, requestKind: 'ambient', explicitPlayback: null,
       movementControl: { kind: 'keep' }, ...selection
-    } }, inspect: request => {
+    } }, concurrent: { group, match: request => request.tools.length === 0
+      && request.responseFormatWasJsonObject
+      && request.messages.some(message => message.role === 'system'
+        && message.content.startsWith('Main公开情境与候选：')
+        && JSON.parse(message.content.slice('Main公开情境与候选：'.length)).trigger === 'chat') }, inspect: request => {
       expect(request.tools).toEqual([]);
       expect(request.toolChoice).toBe('none');
       expect(request.responseFormatWasJsonObject).toBe(true);
@@ -533,19 +542,114 @@ function characterChatSteps(
   ];
 }
 
-function taskAuthorizationStep(): ProviderStep {
-  return { response: { type: 'tool_request', request: {
+function taskAuthorizationSteps(selection: Readonly<Record<string, unknown>> = {}): ProviderStep[] {
+  const [main, expression] = characterChatSteps('', selection, { inspect: expectCharacterChatRequest });
+  return [{ ...main!, response: { type: 'tool_request', request: {
     requestId: 'request-scope', toolName: 'request_task_authorization', arguments: {}
-  } }, inspect: expectCharacterChatRequest };
+  } } }, expression!];
 }
+
+/** 正式任务终态使用独立零工具协议，不能消费下一轮聊天或 Core 响应。 */
+function taskReactionStep(selection: Readonly<Record<string, unknown>> = {}): ProviderStep {
+  return { response: { type: 'structured', structured_output: {
+    moodUpdate: null, expressionPlan: null, backgroundSelection: null, ...selection
+  } }, inspect: request => {
+    expect(request.tools).toEqual([]);
+    expect(request.toolChoice).toBe('none');
+    expect(request.responseFormatWasJsonObject).toBe(true);
+    const context = request.messages.find(message => message.role === 'system' && message.content.startsWith('Main公开情境与候选：'));
+    expect(JSON.parse(context!.content.slice('Main公开情境与候选：'.length))).toMatchObject({ trigger: 'task-event' });
+  } };
+}
+
+function coreRequestCount(provider: Awaited<ReturnType<typeof startProviderServer>>): number {
+  return provider.requests.filter(request => request.toolCount > 1).length;
+}
+
+test('新默认角色实际首帧先于慢正文，持续休息三十秒不插入待机且明确开心后恢复', async () => {
+  test.setTimeout(120_000);
+  const mainGate = createProviderResponseGate();
+  let seenCandidates: unknown;
+  const provider = await startProviderServer([
+    ...characterChatSteps('好，我会继续休息。', {
+      requestKind: 'state', explicitPlayback: { stateId: 'state-2', actionId: 'state-2-action' },
+      backgroundSelection: { stateId: 'state-2', actions: [{ actionId: 'state-2-action', score: 1 }] }
+    }, { gate: mainGate }, request => {
+      const encoded = request.messages.find(message => message.role === 'system' && message.content.startsWith('Main公开情境与候选：'))?.content;
+      seenCandidates = request.messages.filter(message => message.role === 'system').map(message => message.content.slice(0, 24));
+      const context = JSON.parse(encoded!.slice('Main公开情境与候选：'.length));
+      seenCandidates = context.character.states.map((state: { stateId: string; actions: { actionId: string }[] }) => ({ stateId: state.stateId, actions: state.actions.map(action => action.actionId) }));
+      expect(context.character.states).toContainEqual(expect.objectContaining({ stateId: 'state-2',
+        actions: expect.arrayContaining([expect.objectContaining({ actionId: 'state-2-action' })]) }));
+    }),
+    ...characterChatSteps('开心一下，然后继续休息。', {
+      requestKind: 'action', explicitPlayback: { stateId: 'state-8', actionId: 'state-8-action' }
+    })
+  ]);
+  const fixtureModule = await loadElectronFixtureModule();
+  const fixture = await fixtureModule.createElectronAppFixture({ workspaceRoot: resolve(process.cwd()),
+    apiKey: provider.apiKey, launchTimeoutMs: 30_000, enableSoftwareRasterizer: true,
+    prepareUserData: async ({ userDataDirectory }) => {
+      const settings = new SettingsStore(join(userDataDirectory, 'settings.json'));
+      await settings.saveMovementMode(0);
+    } });
+  try {
+    const pet = await waitForRendererPage(fixture, 'pet', 30_000);
+    const chat = await waitForRendererPage(fixture, 'chat');
+    await pet.evaluate(async ({ baseUrl, apiKey }) => {
+      await window.myself.saveProviderProfile({ profile: { id: 'continuity', displayName: '连续表现验证', mode: 'custom',
+        protocol: 'openai-compatible', baseUrl, modelId: 'continuity', additionalParameters: {}, capabilities: ['chat', 'tools'] },
+        secret: apiKey, persistSecret: true });
+      await window.myself.saveModelRoute({ primaryProfileId: 'continuity', chatProfileId: 'continuity', agentProfileId: 'continuity',
+        visionProfileId: null, fallbackProfileIds: [], allowCrossProviderFallback: false });
+      await window.myself.savePrivacySettings({ dataCategories: { memory: false }, longTermMemory: false, proactivityMode: 'passive' });
+      await window.myself.openChat();
+    }, { baseUrl: provider.baseUrl, apiKey: provider.apiKey });
+    await submitChatMessage(chat, '进入休息状态并一直保持');
+    await expect.poll(() => fixture.getCharacterBehaviorProbe(), { timeout: 15_000 }).toMatchObject({
+      stateId: 'state-2', actionId: 'state-2-action', playbackStatus: 'started'
+    });
+    expect(mainGate.isWaiting()).toBe(true);
+    await expect(chat.getByText('好，我会继续休息。')).toHaveCount(0);
+    mainGate.release();
+    await expect(chat.getByText('好，我会继续休息。')).toBeVisible();
+    await pet.evaluate(() => {
+      const scope = globalThis as typeof globalThis & { __continuityStates?: string[] };
+      scope.__continuityStates = [];
+      window.myself.subscribeCharacterMotion(event => {
+        if (event.type === 'behavior-action') scope.__continuityStates?.push(event.stateId);
+      });
+    });
+    // 实际经过多个动画循环；断言事件流，而非只看开始与结束两个快照。
+    await new Promise(resolveWait => setTimeout(resolveWait, 31_000));
+    const states = await pet.evaluate(() => (globalThis as typeof globalThis & { __continuityStates?: string[] }).__continuityStates ?? []);
+    expect(states.length).toBeGreaterThan(1);
+    expect(states.every(state => state === 'state-2')).toBe(true);
+    await submitChatMessage(chat, '播放一次开心动作');
+    await expect.poll(() => fixture.getCharacterBehaviorProbe()).toMatchObject({ actionId: 'state-8-action', playbackStatus: 'started' });
+    await expect.poll(() => fixture.getCharacterBehaviorProbe(), { timeout: 15_000 }).toMatchObject({ actionId: 'state-2-action', playbackStatus: 'started' });
+    provider.assertComplete();
+    expect(provider.inspectionErrors).toEqual([]);
+  } catch (error) {
+    console.log('连续表现诊断', JSON.stringify({ candidates: seenCandidates, requests: provider.requests, inspections: provider.inspectionErrors, logs: fixture.logs }));
+    throw error;
+  } finally {
+    mainGate.release();
+    await fixture.dispose();
+    await provider.close();
+  }
+});
 
 /** 默认间断模式在任务释放后会进行一次无工具活动匹配，脚本不得误消费下一轮正文。 */
 function activityMatchStep(): ProviderStep {
-  return { response: { type: 'structured', structured_output: { moodUpdate: null, expressionPlan: null } },
+  return { response: { type: 'structured', structured_output: { moodUpdate: null, expressionPlan: null, backgroundSelection: null } },
     inspect: request => {
       expect(request.tools).toEqual([]);
       expect(request.toolChoice).toBe('none');
       expect(request.responseFormatWasJsonObject).toBe(true);
+      const context = request.messages.find(message => message.role === 'system'
+        && message.content.startsWith('Main公开情境与候选：'));
+      expect(JSON.parse(context!.content.slice('Main公开情境与候选：'.length))).toMatchObject({ trigger: 'activity' });
     } };
 }
 
@@ -600,13 +704,14 @@ async function readCodingEvents(page: Page): Promise<TaskEvent[]> {
 }
 
 test.describe('正式 Core 任务 UI', () => {
-  test('单一发送读取随机正文，范围前只有申请请求且普通发送仍聊天', async () => {
+  test('单一发送读取随机正文，范围前只有申请与零工具表现且普通发送仍聊天', async () => {
     test.setTimeout(120000);
     const nonce = `明确入口正文-${randomBytes(16).toString('hex')}`;
     const provider = await startProviderServer([
-      taskAuthorizationStep(),
+      ...taskAuthorizationSteps(),
       { response: codingResponse([{ name: 'read', args: { path: 'note.txt' }, id: 'explicit-read' }]) },
       { response: request => { const messages = request.messages as Array<{ tool_call_id?: string; content: string }>; expect(messages.find(message => message.tool_call_id === 'explicit-read')?.content).toContain(nonce); return codingResponse(nonce); } },
+      taskReactionStep(),
       ...characterChatSteps('普通聊天仍然可用', {}, {inspect: expectCharacterChatRequest})
     ]);
     let fixture: AppFixture | undefined;
@@ -619,10 +724,11 @@ test.describe('正式 Core 任务 UI', () => {
       const scope = chat.getByRole('article', { name: '本地任务授权' });
       await expect(scope).toContainText('coding-e2e-model');
       await expect(scope).toContainText(await realpath(fixture.authorizedRootDirectory));
-      expect(provider.requests).toHaveLength(1);
+      expect(coreRequestCount(provider)).toBe(0);
       await approveCodingScope(chat);
       await expect(chat.getByText(nonce, { exact: true })).toBeVisible();
       await expect(chat.locator('.phase-pill')).toHaveClass(/phase-success/u);
+      await expect.poll(() => provider.remainingSteps()).toBe(2);
       await submitChatMessage(chat, '你好');
       await expect(chat.getByText('普通聊天仍然可用', { exact: true })).toBeVisible();
       await expect(scope).toHaveCount(0);
@@ -636,13 +742,14 @@ test.describe('正式 Core 任务 UI', () => {
     test.setTimeout(120000);
     const nonce = `循环正文-${randomBytes(16).toString('hex')}`;
     const provider = await startProviderServer([
-      taskAuthorizationStep(),
+      ...taskAuthorizationSteps(),
       ...Array.from({ length: 4 }, (_, index) => ({ response: codingResponse([{ name: 'read', args: { path: 'note.txt' }, id: `ui-loop-${index}` }]) })),
       activityMatchStep(),
-      taskAuthorizationStep(),
+      ...taskAuthorizationSteps(),
       { response: codingResponse([{ name: 'write', args: { path: 'note.txt', content: '禁止覆盖' }, id: 'ui-rejected' }]) },
       { response: codingResponse([{ name: 'read', args: { path: 'note.txt' }, id: 'ui-after-reject' }]), inspectRaw: request => { expect(JSON.stringify(request.messages)).toContain('rejected'); } },
-      { response: request => { expect(JSON.stringify(request.messages)).toContain(nonce); return codingResponse('普通拒绝后继续读取成功'); } }
+      { response: request => { expect(JSON.stringify(request.messages)).toContain(nonce); return codingResponse('普通拒绝后继续读取成功'); } },
+      taskReactionStep()
     ]);
     let fixture: AppFixture | undefined;
     try {
@@ -652,24 +759,24 @@ test.describe('正式 Core 任务 UI', () => {
       await recordCodingEvents(chat);
       await submitChatMessage(chat, '读取 note.txt 文件');
       await expect(chat.getByRole('article', { name: '本地任务授权' })).toBeVisible();
-      expect(provider.requests).toHaveLength(1);
+      expect(coreRequestCount(provider)).toBe(0);
       await approveCodingScope(chat);
       const permission = chat.getByRole('region', { name: '具体操作许可' });
       await expect(permission).toContainText('重复操作保护');
       await expect(permission).toContainText('连续 3 次');
       await expect(permission).toContainText('read');
-      expect(provider.requests).toHaveLength(4);
+      expect(coreRequestCount(provider)).toBe(3);
       const third = (await readCodingEvents(chat)).find(event => event.type === 'task_permission_required');
       if (third?.type !== 'task_permission_required') throw new Error('缺少循环许可');
       expect(third.request).toEqual({ action: 'doom_loop', tool: 'read', repeatCount: 3 });
       await permission.getByRole('button', { name: '仅继续这一次' }).click();
       await expect(permission).toContainText('连续 4 次');
-      expect(provider.requests).toHaveLength(5);
+      expect(coreRequestCount(provider)).toBe(4);
       await expect(chat.evaluate(id => window.myself.confirmAction(id), third.actionId)).rejects.toThrow();
       await permission.getByRole('button', { name: '结束当前任务' }).click();
       await expect(chat.locator('.phase-pill')).toHaveClass(/phase-cancelled/u);
       await expect(permission).toHaveCount(0);
-      await expect.poll(() => provider.requests.length).toBe(6);
+      await expect.poll(() => provider.requests.length).toBe(7);
       expect(await readFile(join(fixture.authorizedRootDirectory, 'note.txt'), 'utf8')).toBe(nonce);
       await submitChatMessage(chat, '修改 note.txt 文件');
       await approveCodingScope(chat);
@@ -678,6 +785,7 @@ test.describe('正式 Core 任务 UI', () => {
       await expect(chat.getByText('普通拒绝后继续读取成功', { exact: true })).toBeVisible();
       await expect(chat.locator('.phase-pill')).toHaveClass(/phase-success/u);
       expect(await readFile(join(fixture.authorizedRootDirectory, 'note.txt'), 'utf8')).toBe(nonce);
+      await expect.poll(() => provider.remainingSteps()).toBe(0);
       provider.assertComplete();
       expect(provider.inspectionErrors).toEqual([]);
       expect(fixture.capturedLogEvidence).toEqual({ apiKey: false, authorizedRoot: false, authorizationHeader: false, sentinels: [false] });
@@ -686,29 +794,47 @@ test.describe('正式 Core 任务 UI', () => {
   test('自然读取随机正文经真实工具回注显示在聊天并结束', async () => {
     test.setTimeout(120000);
     const nonce = `读取正文-${randomBytes(16).toString('hex')}`;
+    const coreGate = createProviderResponseGate();
     const provider = await startProviderServer([
-      taskAuthorizationStep(),
-      { response: codingResponse([{ name: 'read', args: { path: 'note.txt' }, id: 'ui-read' }]) },
-      { response: request => { const messages = request.messages as Array<{ role: string; tool_call_id?: string; content: string }>; const result = messages.find(message => message.tool_call_id === 'ui-read'); expect(result?.content).toContain(nonce); return codingResponse(nonce); } }
+      ...taskAuthorizationSteps({ expressionPlan: { states: [{ stateId: 'state-6', score: 1, activity: 'taskRunning',
+        actions: [{ actionId: 'state-6-action', score: 1 }] }] } }),
+      { response: codingResponse([{ name: 'read', args: { path: 'note.txt' }, id: 'ui-read' }]), gate: coreGate },
+      { response: request => { const messages = request.messages as Array<{ role: string; tool_call_id?: string; content: string }>; const result = messages.find(message => message.tool_call_id === 'ui-read'); expect(result?.content).toContain(nonce); return codingResponse(nonce); } },
+      taskReactionStep({ moodUpdate: { summary: '读取成功', strength: 0.8 }, expressionPlan: { states: [{ stateId: 'state-8', score: 1, activity: null,
+        actions: [{ actionId: 'state-8-action', score: 1 }] }] } })
     ]);
     let fixture: AppFixture | undefined;
     try {
-      fixture = await (await loadElectronFixtureModule()).createElectronAppFixture({ workspaceRoot: resolve(process.cwd()), apiKey: provider.apiKey, logSentinels: [nonce] });
+      fixture = await (await loadElectronFixtureModule()).createElectronAppFixture({ workspaceRoot: resolve(process.cwd()), apiKey: provider.apiKey, logSentinels: [nonce],
+        enableSoftwareRasterizer: true, prepareUserData: async ({ userDataDirectory }) => {
+          await new SettingsStore(join(userDataDirectory, 'settings.json')).saveMovementMode(0);
+        } });
       await writeFile(join(fixture.authorizedRootDirectory, 'note.txt'), nonce);
       const { chat } = await configureCodingApp(fixture, provider);
       await submitChatMessage(chat, '请读取 note.txt 并告诉我里面的内容');
       const scope = chat.getByRole('article', { name: '本地任务授权' });
       await expect(scope).toContainText('coding-e2e-model');
       await expect(scope).toContainText(await realpath(fixture.authorizedRootDirectory));
-      expect(provider.requests).toHaveLength(1);
-      expect(provider.requests[0]?.toolCount).toBe(1);
+      await expect.poll(() => provider.requests.length).toBe(2);
+      expect(provider.requests.map(request => request.toolCount).sort()).toEqual([0, 1]);
+      expect(coreRequestCount(provider)).toBe(0);
       await approveCodingScope(chat);
+      await expect.poll(() => coreGate.isWaiting()).toBe(true);
+      await expect.poll(() => fixture!.getCharacterBehaviorProbe(), { timeout: 15_000 }).toMatchObject({
+        stateId: 'state-6', actionId: 'state-6-action', playbackStatus: 'started'
+      });
+      await expect(chat.getByText(nonce, { exact: true })).toHaveCount(0);
+      coreGate.release();
       await expect(chat.getByText(nonce, { exact: true })).toBeVisible();
       await expect(chat.locator('.phase-pill')).toHaveClass(/phase-success/u);
+      await expect.poll(() => fixture!.getCharacterBehaviorProbe(), { timeout: 15_000 }).toMatchObject({
+        stateId: 'state-8', actionId: 'state-8-action', playbackStatus: 'started'
+      });
+      await expect.poll(() => provider.remainingSteps()).toBe(0);
       provider.assertComplete();
       expect(provider.inspectionErrors).toEqual([]);
       expect(fixture.capturedLogEvidence).toEqual({ apiKey: false, authorizedRoot: false, authorizationHeader: false, sentinels: [false] });
-    } finally { try { await fixture?.dispose(); } finally { await provider.close(); } }
+    } finally { coreGate.release(); try { await fixture?.dispose(); } finally { await provider.close(); } }
   });
 
   test('scope 后具体删除许可可点击并经真实回收站与工具回注结束', async () => {
@@ -716,13 +842,18 @@ test.describe('正式 Core 任务 UI', () => {
     const nonce = `回收站正文-${randomBytes(16).toString('hex')}`;
     const finalText = `删除完成-${randomBytes(16).toString('hex')}`;
     const provider = await startProviderServer([
-      taskAuthorizationStep(),
+      ...taskAuthorizationSteps(),
       { response: codingResponse([{ name: 'apply_patch', args: { patchText: '*** Begin Patch\n*** Delete File: target.txt\n*** End Patch' }, id: 'ui-delete' }]) },
-      { response: request => { const messages = request.messages as Array<{ tool_call_id?: string; content: string }>; expect(messages.find(message => message.tool_call_id === 'ui-delete')?.content).toContain('target.txt'); return codingResponse(finalText); } }
+      { response: request => { const messages = request.messages as Array<{ tool_call_id?: string; content: string }>; expect(messages.find(message => message.tool_call_id === 'ui-delete')?.content).toContain('target.txt'); return codingResponse(finalText); } },
+      taskReactionStep()
     ]);
     let fixture: AppFixture | undefined;
     try {
-      fixture = await (await loadElectronFixtureModule()).createElectronAppFixture({ workspaceRoot: resolve(process.cwd()), apiKey: provider.apiKey, logSentinels: [nonce, finalText] });
+      fixture = await (await loadElectronFixtureModule()).createElectronAppFixture({ workspaceRoot: resolve(process.cwd()), apiKey: provider.apiKey, logSentinels: [nonce, finalText],
+        prepareUserData: async ({ userDataDirectory }) => {
+          // 删除验收隔离自主移动调度，保留正式表现及终态请求的严格计数。
+          await new SettingsStore(join(userDataDirectory, 'settings.json')).saveMovementMode(0);
+        } });
       const target = join(fixture.authorizedRootDirectory, 'target.txt');
       await writeFile(target, nonce);
       const { chat, pet } = await configureCodingApp(fixture, provider);
@@ -733,7 +864,7 @@ test.describe('正式 Core 任务 UI', () => {
       for (const page of [pet, chat, settings, characters]) await recordCodingEvents(page);
       await submitChatMessage(chat, '删除 target.txt 文件');
       await expect(chat.getByRole('article', { name: '本地任务授权' })).toBeVisible();
-      expect(provider.requests).toHaveLength(1);
+      expect(coreRequestCount(provider)).toBe(0);
       expect(await pathExistsForAssertion(target)).toBe(true);
       await approveCodingScope(chat);
       const permission = chat.getByRole('region', { name: '具体操作许可' });
@@ -756,6 +887,7 @@ test.describe('正式 Core 任务 UI', () => {
       for (const event of petEvents) expect(Object.keys(event).sort()).toEqual(['phase', 'type']);
       expect(await readCodingEvents(settings)).toEqual([]);
       expect(await readCodingEvents(characters)).toEqual([]);
+      await expect.poll(() => provider.remainingSteps()).toBe(0);
       provider.assertComplete();
       expect(provider.inspectionErrors).toEqual([]);
       expect(fixture.capturedLogEvidence).toEqual({ apiKey: false, authorizedRoot: false, authorizationHeader: false, sentinels: [false, false] });
@@ -765,7 +897,7 @@ test.describe('正式 Core 任务 UI', () => {
     test(`具体许可等待中${mode}使旧 ID 失效且保留文件`, async () => {
       test.setTimeout(120000);
       const provider = await startProviderServer([
-      taskAuthorizationStep(),
+      ...taskAuthorizationSteps(),
         { response: codingResponse([{ name: 'write', args: { path: 'existing.txt', content: '不应覆盖' } }]) },
         ...characterChatSteps('新的普通聊天正常', {}, {inspect: expectCharacterChatRequest})
       ]);
@@ -795,7 +927,7 @@ test.describe('正式 Core 任务 UI', () => {
     test.setTimeout(120000);
     const gate = createProviderResponseGate();
     const provider = await startProviderServer([
-      taskAuthorizationStep(),
+      ...taskAuthorizationSteps(),
       { response: codingResponse([{ name: 'read', args: { path: 'note.txt' } }]) },
       { response: codingResponse('迟到正文不应显示'), gate },
       activityMatchStep(),
@@ -812,7 +944,7 @@ test.describe('正式 Core 任务 UI', () => {
       await chat.getByRole('button', { name: '停止当前任务' }).click();
       await expect(chat.locator('.phase-pill')).toHaveClass(/phase-cancelled/u);
       await expect.poll(() => gate.isWaiting()).toBe(false);
-      await expect.poll(() => provider.requests.length).toBe(4);
+      await expect.poll(() => provider.requests.length).toBe(5);
       await submitChatMessage(chat, '现在聊聊天');
       await expect(chat.getByText('取消后普通聊天正常', { exact: true })).toBeVisible();
       await expect(chat.getByText('迟到正文不应显示', { exact: true })).toHaveCount(0);
@@ -842,9 +974,9 @@ async function renderedFootMatchesPlacement(
       window.myself.getCharacterBehaviorProbe?.()
     ]);
     const actionId = input.expectedActionId ?? behavior?.actionId;
-    const action = runtime?.manifest.states
-      .flatMap(state => state.actions)
-      .find(candidate => candidate.id === actionId);
+    // 正式运行视图已解析当前皮肤表现，不再从旧 V2 状态内读取动作。
+    const action = runtime?.manifest.presentations
+      .find(candidate => candidate.actionId === actionId)?.presentation;
     const canvas = document.querySelector<HTMLCanvasElement>(
       '.character-player-host canvas'
     );
@@ -3335,8 +3467,10 @@ test.describe('角色工作台双皮肤包兼容', () => {
     const pet = await waitForRendererPage(fixture, 'pet', 15_000);
     await expect.poll(async () => pet.evaluate(async () => {
       const snapshot = await window.myself.getCharacterRuntimeSnapshot();
-      const idleAction = snapshot?.manifest.states
-        .find(state => state.id === 'idle')?.actions[0];
+      // 正式 IPC 返回 V3 播放视图，按已解析的 idle 动作查找表现。
+      const view = snapshot?.manifest;
+      const idleAction = view?.presentations
+        .find(item => item.actionId === view.idle.actionId)?.presentation;
       return {
         activeCharacterId: snapshot?.activeCharacterId ?? null,
         playbackRate: idleAction?.playbackRate ?? null,
@@ -4164,8 +4298,8 @@ test.describe('真实角色工作室闭环', () => {
         ...characterChatSteps('我会原地陪伴你。', {}, {inspect: expectCharacterChatRequest}),
         ...characterChatSteps('听到你的好消息，我也很开心。', {
             moodUpdate: { summary: '轻快而安心', strength: 0.8 },
-            expressionPlan: { states: [{ stateId: authoredState.id, score: 1,
-              activity: null, actions: [{ actionId: moodActionId, score: 1 }] }] }
+            expressionPlan: null,
+            backgroundSelection: { stateId: authoredState.id, actions: [{ actionId: moodActionId, score: 1 }] }
           }, { inspect: expectCharacterChatRequest }, request => {
             const system = request.messages.filter(message => message.role === 'system')
               .map(message => message.content).join('\n');
@@ -4594,21 +4728,28 @@ test.describe('自主行为最小闭环', () => {
     test(`B7 快速移动：JSON Output“${movement.prompt}”只通过累计 delta 证明真实方向`, async () => {
       test.setTimeout(60_000);
       const fixtureModule = await loadElectronFixtureModule();
+      // 位移只能借用 Provider 明确选中的合法 moving 活动，动作名称不授予移动能力。
+      const expressionPlan = { states: [{ stateId: 'moving', score: 1, activity: 'moving',
+        actions: [{ actionId: 'safe-move-action', score: 1 }] }] };
       const provider = await startProviderServer([
         ...('precondition' in movement ? [...characterChatSteps(movement.precondition.reply, {
-            movementControl: movement.precondition.movementControl
+            movementControl: movement.precondition.movementControl, expressionPlan
           }, {inspect: expectCharacterChatRequest})] : []),
         ...characterChatSteps(movement.reply, {
-            movementControl: movement.movementControl
+            movementControl: movement.movementControl, expressionPlan
           }, {inspect: expectCharacterChatRequest})
       ]);
       const fixture = await fixtureModule.createElectronAppFixture({
         workspaceRoot: resolve(process.cwd()),
         apiKey: provider.apiKey,
         launchTimeoutMs: 15_000,
-        enableSoftwareRasterizer: true
+        enableSoftwareRasterizer: true,
+        prepareUserData: async ({ userDataDirectory }) => {
+          // 纯方向测试隔离自主移动；明确位移命令仍须给出真实方向证据。
+          await new SettingsStore(join(userDataDirectory, 'settings.json')).saveMovementMode(0);
+        }
       });
-
+      let movementBefore: unknown;
       try {
         const pet = await waitForRendererPage(fixture, 'pet');
         let chat = await waitForRendererPage(fixture, 'chat');
@@ -4651,9 +4792,22 @@ test.describe('自主行为最小闭环', () => {
           apiKey: provider.apiKey
         });
         await expect.poll(() => chat.evaluate(() => document.visibilityState)).toBe('visible');
+        // 换角色首帧与几何提交完成后才采集基线，避免把窗口重排当成指令位移。
+        await expect.poll(() => fixture.getCharacterBehaviorProbe(), { timeout: 15_000 }).toMatchObject({
+          actionId: 'safe-idle-action', playbackStatus: 'started'
+        });
+        movementBefore = { motion: await pet.evaluate(() => window.myself.getCharacterMotionSnapshot()),
+          delta: await fixture.getCharacterMotionDeltaProbe(), bounds: (await fixture.getMainE2eState()).petWindowBoundsDip };
         if ('precondition' in movement) {
+          const beforePrecondition = await fixture.getCharacterMotionDeltaProbe();
           await submitChatMessage(chat, movement.precondition.prompt);
           await expect(chat.getByText(movement.precondition.reply)).toBeVisible();
+          await expect.poll(async () => {
+            const after = await fixture.getCharacterMotionDeltaProbe();
+            return movement.axis === 'horizontal'
+              ? Math.sign(after.horizontal - beforePrecondition.horizontal)
+              : Math.sign(after.vertical - beforePrecondition.vertical);
+          }).toBe(-1);
           await expect.poll(() => pet.evaluate(async () => (
             await window.myself.getCharacterMotionSnapshot()
           ).moving)).toBe(false);
@@ -4693,6 +4847,13 @@ test.describe('自主行为最小闭环', () => {
         }).toBe(movement.axis === 'region' ? true : movement.sign);
         provider.assertComplete();
         expect(provider.inspectionErrors).toEqual([]);
+      } catch (error) {
+        const activePet = await waitForRendererPage(fixture, 'pet');
+        console.log('B7纯坐标诊断', JSON.stringify({ before: movementBefore,
+          after: { motion: await activePet.evaluate(() => window.myself.getCharacterMotionSnapshot()),
+            delta: await fixture.getCharacterMotionDeltaProbe(), bounds: (await fixture.getMainE2eState()).petWindowBoundsDip },
+          behavior: await fixture.getCharacterBehaviorProbe(), requests: provider.requests, inspections: provider.inspectionErrors }));
+        throw error;
       } finally {
         await fixture.dispose();
         await provider.close();
@@ -4708,16 +4869,23 @@ test.describe('自主行为最小闭环', () => {
       ...characterChatSteps('停止状态已保存', {
           movementControl: { kind: 'set_mode', mode: 0 }
         }, {}),
-      ...characterChatSteps('停止期间仍可挥手回应', {}, {}),
+      ...characterChatSteps('停止期间仍可挥手回应', {
+          requestKind: 'action', explicitPlayback: { stateId: 'custom-wave', actionId: 'safe-wave-action' }
+        }, {}),
       ...characterChatSteps('停止期间移动请求已处理', {
-          movementControl: { kind: 'move_once', target: 'left', distance: 'near' }
+          movementControl: { kind: 'move_once', target: 'left', distance: 'near' },
+          expressionPlan: { states: [{ stateId: 'moving', score: 1, activity: 'moving',
+            actions: [{ actionId: 'safe-move-action', score: 1 }] }] }
         }, {})
     ]);
     const fixture = await fixtureModule.createElectronAppFixture({
       workspaceRoot: resolve(process.cwd()),
       apiKey: provider.apiKey,
       launchTimeoutMs: 15_000,
-      enableSoftwareRasterizer: true
+      enableSoftwareRasterizer: true,
+      prepareUserData: async ({ userDataDirectory }) => {
+        await new SettingsStore(join(userDataDirectory, 'settings.json')).saveMovementMode(0);
+      }
     });
 
     /** 每次重启后重新注册只保留公开 actionId 的测试观察器。 */
@@ -4777,9 +4945,12 @@ test.describe('自主行为最小闭环', () => {
         apiKey: provider.apiKey
       });
       await expect.poll(() => chat.evaluate(() => document.visibilityState)).toBe('visible');
+      await expect.poll(() => fixture.getCharacterBehaviorProbe(), { timeout: 15_000 }).toMatchObject({
+        actionId: 'safe-idle-action', playbackStatus: 'started'
+      });
       const missingActionOffset = (await behaviorActions(pet)).length;
       await submitChatMessage(chat, '播放不存在动作');
-      await expect(chat.getByText('当前角色没有可播放的对应动作。')).toBeVisible();
+      await expect(chat.getByText('请先配置对应状态和动作。', { exact: true })).toBeVisible();
       await expect(chat.getByText('缺失动作请求已安全处理')).toBeVisible();
       // 留出完整 IPC 与动画调度观察窗，防止迟到的 idle 回退被下一步重启掩盖。
       await pet.waitForTimeout(2_000);
@@ -5017,7 +5188,7 @@ test.describe('自主行为最小闭环', () => {
     try {
       await expect.poll(() => fixture.getCharacterBehaviorProbe()).toMatchObject({
         stateId: 'idle',
-        actionId: 'idle-main',
+        actionId: 'idle-action',
         playbackStatus: expect.stringMatching(/^(started|completed)$/u)
       });
       const probe = await fixture.getCharacterBehaviorProbe();
@@ -5120,8 +5291,8 @@ test.describe('真实 Provider 业务闭环', () => {
         && message.content.startsWith('完整输出JSON Schema：'));
       const schema = JSON.parse(schemaMessage?.content.slice('完整输出JSON Schema：'.length) ?? 'null');
       expect(schema).toMatchObject({ type: 'object', additionalProperties: false,
-        required: ['moodUpdate', 'expressionPlan'] });
-      expect(Object.keys(schema.properties).sort()).toEqual(['expressionPlan', 'moodUpdate']);
+        required: ['moodUpdate', 'expressionPlan', 'backgroundSelection'] });
+      expect(Object.keys(schema.properties).sort()).toEqual(['backgroundSelection', 'expressionPlan', 'moodUpdate']);
     } }, ...characterChatSteps(cloudReply, {}, {inspect: request => {
         expectCharacterChatRequest(request);
         if (request.messages.at(-1)?.content !== cloudPrompt) {
@@ -5393,10 +5564,11 @@ test.describe('真实 Provider 业务闭环', () => {
       { response: { type: 'text', text: connectionReplies[0] } },
       { response: { type: 'text', text: connectionReplies[1] } },
       ...chatSteps,
-      taskAuthorizationStep(),
-      taskAuthorizationStep(),
+      ...taskAuthorizationSteps(),
+      ...taskAuthorizationSteps(),
       { response: codingResponse([{ name: 'read', args: { path: '.' } }]) },
-      { response: codingResponse(fileReply), inspectRaw: request => { expect(JSON.stringify(request.messages)).toContain('docs'); } }
+      { response: codingResponse(fileReply), inspectRaw: request => { expect(JSON.stringify(request.messages)).toContain('docs'); } },
+      taskReactionStep()
     ]);
     let fixture: Awaited<ReturnType<ElectronFixtureModule['createElectronAppFixture']>>;
     try {
@@ -5404,7 +5576,11 @@ test.describe('真实 Provider 业务闭环', () => {
         workspaceRoot: resolve(process.cwd()),
         apiKey: provider.apiKey,
         logSentinels: logTextSentinels,
-        launchTimeoutMs: 15_000
+        launchTimeoutMs: 15_000,
+        prepareUserData: async ({ userDataDirectory }) => {
+          // 设置与聊天验收不消费独立自主活动响应。
+          await new SettingsStore(join(userDataDirectory, 'settings.json')).saveMovementMode(0);
+        }
       });
     } catch (error) {
       // Electron 创建失败时也必须关闭已启动的本地 Provider。
@@ -5511,7 +5687,7 @@ test.describe('真实 Provider 业务闭环', () => {
 
       await submitChatMessage(chat, fileRequestBeforeAuthorization);
       await expect(chat.getByRole('button', { name: '打开设置' })).toBeVisible();
-      expect(provider.requests).toHaveLength(19);
+      await expect.poll(() => provider.requests.length).toBe(20);
       await chat.getByRole('button', { name: '打开设置' }).click();
       await expect.poll(() => Boolean(pageFor('settings'))).toBe(true);
       settings = pageFor('settings')!;
@@ -5532,9 +5708,9 @@ test.describe('真实 Provider 业务闭环', () => {
         fileConfirmationVisible: false
       });
 
+      await expect.poll(() => provider.requests.length).toBe(25);
       provider.assertComplete();
       expect(provider.inspectionErrors).toEqual([]);
-      expect(provider.requests).toHaveLength(22);
       expect(provider.requests.slice(2, 18).map(request => request.toolCount)).toEqual(Array.from({ length: 8 }, () => [1, 0]).flat());
       expect(Object.keys(provider.requests[0] ?? {}).sort()).toEqual([
         'messageRoleCounts', 'method', 'model', 'toolCount'
@@ -5613,7 +5789,10 @@ test.describe('真实 Provider 业务闭环', () => {
     const fixture = await fixtureModule.createElectronAppFixture({
       workspaceRoot: resolve(process.cwd()),
       apiKey: provider.apiKey,
-      launchTimeoutMs: 15_000
+      launchTimeoutMs: 15_000,
+      prepareUserData: async ({ userDataDirectory }) => {
+        await new SettingsStore(join(userDataDirectory, 'settings.json')).saveMovementMode(0);
+      }
     });
     try {
       await expect.poll(() => Boolean(
@@ -5690,12 +5869,15 @@ test.describe('真实 Provider 业务闭环', () => {
             throw new Error('模糊请求未走正式主请求');
           }
         }}),
-      taskAuthorizationStep()
+      ...taskAuthorizationSteps()
     ]);
     const fixture = await fixtureModule.createElectronAppFixture({
       workspaceRoot: resolve(process.cwd()),
       apiKey: provider.apiKey,
-      launchTimeoutMs: 15_000
+      launchTimeoutMs: 15_000,
+      prepareUserData: async ({ userDataDirectory }) => {
+        await new SettingsStore(join(userDataDirectory, 'settings.json')).saveMovementMode(0);
+      }
     });
     try {
       await expect.poll(() => Boolean(
@@ -5749,7 +5931,7 @@ test.describe('真实 Provider 业务闭环', () => {
         fileConfirmationVisible: false
       });
       expect(await readdir(fixture.authorizedRootDirectory, { recursive: true })).toEqual(before);
-      expect(provider.requests).toHaveLength(3);
+      await expect.poll(() => provider.requests.length).toBe(4);
       provider.assertComplete();
       expect(provider.inspectionErrors).toEqual([]);
 
@@ -5778,9 +5960,11 @@ test.describe('真实 Provider 业务闭环', () => {
     const sourceReplies = ['来源服务回复一', '来源服务回复二'] as const;
     const sourceProvider = await startProviderServer([
       ...characterChatSteps(sourceReplies[0], {}, {inspect: expectCharacterChatRequest}),
-      taskAuthorizationStep(),
+      ...taskAuthorizationSteps(),
+      taskReactionStep(),
       ...characterChatSteps(sourceReplies[1], {}, {inspect: expectCharacterChatRequest}),
-      taskAuthorizationStep()
+      ...taskAuthorizationSteps(),
+      taskReactionStep()
     ]);
     const targetProvider = await startProviderServer([
       { response: codingResponse('仅当前文件任务已结束'), inspectRaw: request => {
@@ -5924,7 +6108,7 @@ test.describe('真实 Provider 业务闭环', () => {
         historyDisclosureVisible: true
       });
 
-      expect(sourceProvider.requests).toHaveLength(6);
+      await expect.poll(() => sourceProvider.requests.length).toBe(10);
       // 两种披露决定各只启动获准后的正式 Core 请求。
       expect(targetProvider.requests).toHaveLength(2);
 
@@ -5955,7 +6139,7 @@ test.describe('真实 Provider 业务闭环', () => {
     const oldText = `旧会话正文-${randomBytes(12).toString('hex')}`;
     const newText = `新会话正文-${randomBytes(12).toString('hex')}`;
     const provider = await startProviderServer([
-      { response: { type: 'text', text: '不得回流的旧回复' }, gate: oldGate },
+      ...characterChatSteps('不得回流的旧回复', {}, { gate: oldGate, inspect: expectCharacterChatRequest }),
       ...characterChatSteps('新会话回复', {}, {inspect: request => {
           const visible = request.messages.filter(message => message.role !== 'system');
           if (request.tools.length !== 1
@@ -5968,7 +6152,10 @@ test.describe('真实 Provider 业务闭环', () => {
     const fixture = await fixtureModule.createElectronAppFixture({
       workspaceRoot: resolve(process.cwd()),
       apiKey: provider.apiKey,
-      launchTimeoutMs: 15_000
+      launchTimeoutMs: 15_000,
+      prepareUserData: async ({ userDataDirectory }) => {
+        await new SettingsStore(join(userDataDirectory, 'settings.json')).saveMovementMode(0);
+      }
     });
     try {
       await expect.poll(() => Boolean(
@@ -6006,6 +6193,7 @@ test.describe('真实 Provider 业务闭环', () => {
 
       await submitChatMessage(chat, oldText);
       await expect.poll(() => oldGate.isWaiting()).toBe(true);
+      await expect.poll(() => provider.requests.length).toBe(2);
       await expect.poll(() => fixture.getConversationProbe()).toMatchObject({
         phase: 'thinking',
         visibleMessageCount: 1,
@@ -6064,9 +6252,10 @@ test.describe('真实 Provider 业务闭环', () => {
             throw new Error('普通聊天只允许无副作用的范围申请');
           }
         }}),
-      taskAuthorizationStep(),
+      ...taskAuthorizationSteps(),
       { response: codingResponse([{ name: 'read', args: { path: '.' } }]) },
-      { response: codingResponse('只读目录已列出。'), inspectRaw: request => { expect(JSON.stringify(request.messages)).toContain('docs'); } }
+      { response: codingResponse('只读目录已列出。'), inspectRaw: request => { expect(JSON.stringify(request.messages)).toContain('docs'); } },
+      taskReactionStep()
     ]);
     let restartCount = 0;
     let baselineSettingsBuffer: Buffer | undefined;
@@ -6077,6 +6266,10 @@ test.describe('真实 Provider 业务闭环', () => {
         workspaceRoot: resolve(process.cwd()),
         apiKey: provider.apiKey,
         launchTimeoutMs: 15_000,
+        prepareUserData: async ({ userDataDirectory }) => {
+          // MCP 字节保留验收固定运动模式，避免重启后的活动调度消费正文脚本。
+          await new SettingsStore(join(userDataDirectory, 'settings.json')).saveMovementMode(0);
+        },
         beforeRestart: async directories => {
           restartCount += 1;
           const settingsFile = join(directories.userDataDirectory, 'settings.json');
@@ -6184,6 +6377,7 @@ test.describe('真实 Provider 业务闭环', () => {
       await approveCodingScope(chatPage);
       await expect(chatPage.getByText('只读目录已列出。', { exact: true })).toBeVisible();
 
+      await expect.poll(() => provider.remainingSteps()).toBe(0);
       provider.assertComplete();
       expect(provider.inspectionErrors).toEqual([]);
       const secondPetClosed = restartedPetPage.waitForEvent('close');

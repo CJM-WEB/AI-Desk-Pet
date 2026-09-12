@@ -200,15 +200,31 @@ function baseOptions(input: {
 
 // 通过真实本地 Provider 和 ChatAdapter 进入 Main，模型决定不能跳过范围授权。
 function localDecisionHarness(content: string | Promise<string>) {
-  const fetchClient = vi.fn(async () => new Response(JSON.stringify({ choices: [{ message: { content: await content } }] }), {
-    status: 200, headers: { 'content-type': 'application/json' }
-  }));
+  // 延迟和非法载荷仅注入主判别，独立表现不能误消费主请求的等待屏障。
+  const mainRequests: RequestInit[] = [];
+  const expressionRequests: RequestInit[] = [];
+  const fetchClient = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+    const body = JSON.parse(String(init?.body));
+    const main = Boolean(body.response_format?.schema.anyOf);
+    (main ? mainRequests : expressionRequests).push(init!);
+    return new Response(JSON.stringify({ choices: [{ message: { content: main ? await content : JSON.stringify({
+      moodUpdate: null, expressionPlan: null, backgroundSelection: null, requestKind: 'ambient',
+      explicitPlayback: null, movementControl: { kind: 'keep' }
+    }) } }] }), { status: 200, headers: { 'content-type': 'application/json' } });
+  });
   const provider = new LocalModelProvider({ getReadyConnection: () => ({ generation: 'local-1',
     baseUrl: 'http://127.0.0.1:43123/v1', token: 'private-local-token', modelId: 'builtin-local' }) }, fetchClient);
   const harness = baseOptions({ chatProvider: provider, catalog: [BUILTIN_LOCAL_PROVIDER_CATALOG_ENTRY],
     assertProviderReady: value => assertProviderReady(value, { enabled: true, phase: 'ready', backend: 'cpu', reasonCode: null }) });
   harness.readProviderSettings.mockResolvedValue(createLocalModelRoutingSnapshot(harness.providerSettings, true));
-  return { ...harness, fetchClient };
+  return { ...harness, fetchClient, mainRequests, expressionRequests };
+}
+
+function assertLocalRequestBoundaries(harness: ReturnType<typeof localDecisionHarness>): void {
+  expect(harness.mainRequests).toHaveLength(1);
+  expect(harness.expressionRequests).toHaveLength(1);
+  expect(JSON.parse(String(harness.expressionRequests[0]?.body))).toMatchObject({ tools: [], tool_choice: 'none' });
+  expect(harness.fetchClient).toHaveBeenCalledTimes(2);
 }
 
 describe('Main 会话组合模块', () => {
@@ -219,7 +235,7 @@ describe('Main 会话组合模块', () => {
       const scope = harness.events.find(event => event.type === 'capability_authorization_required');
       expect(scope).toMatchObject({ directory: testRoot, modelId: 'builtin-local', actions: ['read', 'create', 'edit'] });
       expect(harness.factoryInputs).toHaveLength(0);
-      expect(harness.fetchClient).toHaveBeenCalledOnce();
+      assertLocalRequestBoundaries(harness);
       if (scope?.type !== 'capability_authorization_required') throw new Error('缺少范围授权');
       await harness.composition.coordinator.resolveCapabilityAuthorization(scope.requestId, resolution);
       if (resolution === 'confirm') {
@@ -234,7 +250,7 @@ describe('Main 会话组合模块', () => {
     const harness = localDecisionHarness(new Promise(resolve => { finish = resolve; }));
     const running = harness.composition.coordinator.submit('看吧，看看里面写了什么');
     try {
-      await vi.waitFor(() => expect(harness.fetchClient).toHaveBeenCalledOnce());
+      await vi.waitFor(() => expect(harness.mainRequests).toHaveLength(1));
       if (action === 'reset') await harness.composition.resetForConfigurationChange();
       else await harness.composition.coordinator.cancelActive();
       finish('{"kind":"task","text":""}');
@@ -246,11 +262,11 @@ describe('Main 会话组合模块', () => {
   });
 
   test.each(['{"kind":"task","text":"","path":"PRIVATE_PATH_CANARY","approved":true}',
-    '{"kind":"task","text":"PRIVATE_PATH_CANARY"}'])('非法 Qwen 判别不申请、不表现且不公开原文：%s', async content => {
+    '{"kind":"task","text":"PRIVATE_PATH_CANARY"}'])('非法 Qwen 判别不申请且不公开原文，零工具表现不提升权限：%s', async content => {
     const harness = localDecisionHarness(content);
     try {
       await expect(harness.composition.coordinator.submit('查看文件')).rejects.toMatchObject({ code: 'PROVIDER_MALFORMED_RESPONSE' });
-      expect(harness.fetchClient).toHaveBeenCalledOnce();
+      assertLocalRequestBoundaries(harness);
       expect(harness.events.some(event => event.type === 'capability_authorization_required')).toBe(false);
       expect(harness.factoryInputs).toHaveLength(0);
       expect(JSON.stringify(harness.events)).not.toContain('PRIVATE_PATH_CANARY');
@@ -358,7 +374,7 @@ describe('Main 会话组合模块', () => {
     expect(harness.behavior.prepareUserPrompt).toHaveBeenCalledExactlyOnceWith('你好');
     expect(harness.behavior.getChatContext).toHaveBeenCalledOnce();
     expect(harness.behavior.completeUserPrompt).toHaveBeenCalledExactlyOnceWith({
-      generation: expect.any(String),
+      generation: expect.any(String), signal: expect.any(AbortSignal),
       explicitDirective: null,
       eventId: expect.any(String), context: null, movementControl: { kind: 'keep' }, expressionPlan: { states: [] }, expressionStatus: 'no_match', requestKind: 'ambient'
     });

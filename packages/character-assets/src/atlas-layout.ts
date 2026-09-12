@@ -22,7 +22,7 @@ function isPositiveInteger(value: number): boolean {
   return Number.isSafeInteger(value) && value > 0;
 }
 
-export function planAtlas(input: AtlasPlanInput): AtlasPlan {
+export function planAtlas(input: AtlasPlanInput): AtlasPlan[] {
   const maxDimension = input.maxDimension
     ?? CHARACTER_RESOURCE_LIMITS.maxFrameDimension;
 
@@ -65,11 +65,11 @@ export function planAtlas(input: AtlasPlanInput): AtlasPlan {
     }
   }
 
-  const placements: AtlasPlan['placements'] = [];
+  let page: AtlasPlan = { width: 0, height: 0, placements: [] };
+  const pages = [page];
   let cursorX = 0;
   let cursorY = 0;
   let rowHeight = 0;
-  let atlasWidth = 0;
 
   for (const frame of input.frames) {
     if (frame.width > maxDimension || frame.height > maxDimension) {
@@ -83,11 +83,16 @@ export function planAtlas(input: AtlasPlanInput): AtlasPlan {
       rowHeight = 0;
     }
 
+    // 新行超出当前页时续到下一页，帧尺寸与原始顺序不变。
     if (cursorY + frame.height > maxDimension) {
-      throw new Error('CHARACTER_ATLAS_OVERFLOW');
+      page = { width: 0, height: 0, placements: [] };
+      pages.push(page);
+      cursorX = 0;
+      cursorY = 0;
+      rowHeight = 0;
     }
 
-    placements.push({
+    page.placements.push({
       frameId: frame.frameId,
       rect: {
         x: cursorX,
@@ -99,12 +104,9 @@ export function planAtlas(input: AtlasPlanInput): AtlasPlan {
 
     cursorX += frame.width;
     rowHeight = Math.max(rowHeight, frame.height);
-    atlasWidth = Math.max(atlasWidth, cursorX);
+    page.width = Math.max(page.width, cursorX);
+    page.height = cursorY + rowHeight;
   }
 
-  return {
-    width: atlasWidth,
-    height: cursorY + rowHeight,
-    placements
-  };
+  return pages;
 }

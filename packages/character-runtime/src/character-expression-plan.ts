@@ -1,6 +1,16 @@
 import { z } from 'zod';
 import { safeIdentifierSchema } from './character-v2-schema';
 const score = z.number().finite().min(0).max(1);
+/** 长期语义选择不携带模型时间、心情门槛或宿主活动事实。 */
+export const characterBackgroundSelectionSchema = z.object({
+  stateId: safeIdentifierSchema,
+  actions: z.array(z.object({ actionId: safeIdentifierSchema, score }).strict()).max(32)
+}).strict().superRefine((selection, context) => {
+  if (new Set(selection.actions.map(action => action.actionId)).size !== selection.actions.length) {
+    context.addIssue({ code: z.ZodIssueCode.custom, message: '长期选择的动作 ID 必须唯一。' });
+  }
+});
+export type CharacterBackgroundSelection = z.infer<typeof characterBackgroundSelectionSchema>;
 /** 条件只描述宿主事实，模型没有写入事实或扩展能力的入口。 */
 export const characterRuntimeFactsSchema = z.object({
   moving: z.boolean(), dragging: z.boolean(), carrying: z.boolean(),

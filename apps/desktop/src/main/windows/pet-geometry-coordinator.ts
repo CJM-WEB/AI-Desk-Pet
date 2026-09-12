@@ -16,7 +16,8 @@ import type {
 import { migrateLegacyPetPosition, restorePetPlacement } from './pet-position';
 import {
   clampIntegerWindowPositionToVisualWorkArea,
-  PET_WINDOW_SIZE
+  PET_WINDOW_SIZE,
+  setPetWindowPosition
 } from './window-manager';
 
 const DEFAULT_SCALE_TICK = 10;
@@ -815,11 +816,7 @@ export class PetGeometryCoordinator {
       y: bounds.y
     });
     try {
-      this.options.window.setBounds({
-        x: bounds.x,
-        y: bounds.y,
-        ...PET_WINDOW_SIZE
-      });
+      setPetWindowPosition(this.options.window, bounds);
     } catch (error) {
       cancelExpectation?.();
       throw error;

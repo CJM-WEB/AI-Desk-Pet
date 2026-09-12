@@ -1,12 +1,14 @@
 # OpenCode 文件工具执行闭环研究
 
+> 2026-09-10 适用范围纠正：本文是 2026-08-24 的研究记录，本地旧执行链对照已不代表当前实现。同一固定上游提交的产品会话入口仍经过 `packages/opencode` 的 `SessionPrompt` / `SessionProcessor`；不能因存在 V2 Core 就把前者视为仅供补充的旧适配层。当前桌宠嵌入的是有限 V2 Core，两条链的区别、来源核验和后续判断以[最新现状报告](2026-09-10-agent-execution-architecture-review.md)为准。下文源码摘析按其明确路径阅读，不作为迁移或验收结论。
+
 ## 目的与范围
 
 本报告只研究 OpenCode 官方仓库的本地文件工具闭环，并把其可验证事实与本仓库当前 `packages/agent-core`、`packages/file-tools`、桌面端 Main/Preload/Renderer 调用链逐段对照。它不是引入 OpenCode、MCP 或任意代码复制的建议。
 
 研究时点：2026-08-24。OpenCode `dev` 分支和 `HEAD` 均为提交 [`2a6be0a03b93a6734070e10a6c3b56863475f214`](https://github.com/anomalyco/opencode/tree/2a6be0a03b93a6734070e10a6c3b56863475f214)，提交时间 2026-08-24T12:50:53Z。许可证为 [MIT](https://github.com/anomalyco/opencode/blob/2a6be0a03b93a6734070e10a6c3b56863475f214/LICENSE)。下述 OpenCode 结论均来自该固定提交的官方源码。
 
-> 说明：该提交同时保留了较早的 `packages/opencode` 适配层，以及当前 `packages/core` 的 V2 工具/会话运行时。以下“当前闭环”以 `packages/core` 为准；后文提及前者只用于补充 Provider 适配细节，不应视为需要复制的实现。
+> 路径说明：该提交同时存在 `packages/opencode` 产品执行链和 `packages/core` V2 工具/会话运行时。以下优先分析 `packages/core` 是本文的研究取样范围，不代表它就是当时产品入口的完整执行链；两者不可混称。
 
 ## 当前 `packages/core` 闭环（优先依据）
 

@@ -249,11 +249,14 @@ function createRequestPolicy(
   conversationDecision: boolean
 ): OpenAIRequestPolicy {
   const responseSchema = conversationDecision ? conversationDecisionJsonSchema : request.responseContract?.jsonSchema;
+  // 表现是结构化控制选择，复用本地任务判别的确定性采样；普通正文与其他 Provider 不受影响。
+  const characterDecision = request.responseContract?.name === 'character_expression'
+    || request.responseContract?.name === 'character_autonomy';
   return {
     body: {
       ...localRequestBody,
       stream: false,
-      ...(conversationDecision || request.toolChoice === 'required' ? { temperature: 0 } : {}),
+      ...(conversationDecision || characterDecision || request.toolChoice === 'required' ? { temperature: 0 } : {}),
       // 锁定的 llama.cpp 支持在 json_object 中附带 Schema；只约束本地结构化回合。
       ...(responseSchema === undefined
         ? {}

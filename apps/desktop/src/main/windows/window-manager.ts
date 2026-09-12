@@ -11,6 +11,15 @@ export const PET_WINDOW_SIZE: Readonly<WindowSize> = Object.freeze({
   width: 180,
   height: 220
 });
+
+/** Electron setPosition 会回读 DPI 取整后的宽高；一次定位仅提交既定尺寸，切断移动中的尺寸累积。 */
+export function setPetWindowPosition(
+  window: Pick<BrowserWindow, 'setBounds'>,
+  position: Readonly<Point>
+): void {
+  window.setBounds({ x: position.x, y: position.y, ...PET_WINDOW_SIZE });
+}
+
 export type VisualAnchorConstraintInput = Readonly<{
   anchorDip: Point;
   visualBoundsFromAnchorDip: Rectangle;

@@ -22,7 +22,7 @@ export function StateInspector(props: StateInspectorProps) {
       <label>建议持续时间（毫秒）<input type="number" min={1} max={3600000} value={props.state.suggestedDurationMs ?? ''} disabled={props.disabled}
         onChange={event => { const value = event.currentTarget.value; const duration = Number(value); if (!value) props.onChange({ suggestedDurationMs: undefined }); else if (Number.isSafeInteger(duration) && duration > 0 && duration <= 3600000) props.onChange({ suggestedDurationMs: duration }); }} /></label>
     </div>
-    <label className="toggle-row"><span>允许智能体推断</span><input type="checkbox" checked={props.state.agentInferable} disabled={props.disabled}
+    <label className="toggle-row"><span>允许智能体推断<small>允许智能体根据情境自主选择；关闭后仍可由用户明确指定</small></span><input type="checkbox" checked={props.state.agentInferable} disabled={props.disabled}
       onChange={event => props.onChange({ agentInferable: event.currentTarget.checked })} /></label>
     {(['enterConditions', 'exitConditions'] as const).map(key => {
       const label = key === 'enterConditions' ? '进入' : '退出';

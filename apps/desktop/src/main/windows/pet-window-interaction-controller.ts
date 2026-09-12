@@ -3,7 +3,7 @@ import type {
   PetInteractionProbe
 } from '../../shared/pet-window-interaction';
 import type { Rectangle } from 'electron';
-import { PET_WINDOW_SIZE } from './window-manager';
+import { setPetWindowPosition } from './window-manager';
 
 type PetInteractionWindow = {
   setIgnoreMouseEvents(ignore: boolean, options?: { forward: boolean }): void;
@@ -73,11 +73,9 @@ export class PetWindowInteractionController {
     }
     try {
       const cursor = this.options.getCursorScreenPoint();
-      this.options.window.setBounds({
+      setPetWindowPosition(this.options.window, {
         x: drag.origin.x + cursor.x - drag.cursor.x,
-        y: drag.origin.y + cursor.y - drag.cursor.y,
-        width: PET_WINDOW_SIZE.width,
-        height: PET_WINDOW_SIZE.height
+        y: drag.origin.y + cursor.y - drag.cursor.y
       });
     } catch {
       try { this.endDrag(); } finally { this.restoreSafePassthrough(); }

@@ -762,7 +762,9 @@ describe('桌面会话分流纵向集成', () => {
     expect(behaviorFixture.motion.requestIntent).not.toHaveBeenCalled();
     now = 8000; behaviorFixture.director.advance();
     expect(behaviorFixture.motion.requestIntent).not.toHaveBeenCalled();
-    expect(behaviorFixture.notices).toContainEqual({ code: 'CHARACTER_ACTION_UNAVAILABLE', message: '请先配置对应状态和动作。' });
+    await expect.poll(() => behaviorFixture.notices).toEqual(expect.arrayContaining([
+      { code: 'CHARACTER_ACTION_UNAVAILABLE', message: '请先配置对应状态和动作。' }
+    ]));
     await fixture.composition.close();
   });
 
@@ -829,6 +831,9 @@ describe('桌面会话分流纵向集成', () => {
     });
 
     await fixture.composition.coordinator.submit('请陪我一直活动');
+    await vi.waitFor(() => expect(behaviorFixture.director.getActivityBlockers()).toMatchObject({
+      movementMode: 1, movementModeTransition: false
+    }));
     behaviorFixture.director.requestPersistentMovement();
     expect(behaviorFixture.motion.requestIntent).not.toHaveBeenCalled();
     acknowledgePreparedPlayback(behaviorFixture);
@@ -923,7 +928,7 @@ describe('桌面会话分流纵向集成', () => {
     await fixture.composition.close();
   });
 
-  test('真实 HTTP Provider 顺序发送正文与独立表现', async () => {
+  test('真实 HTTP Provider 并发发送正文与独立表现并分别接纳', async () => {
     const providerServer = await startProviderServer([
       { response: { type: 'text', text: 'fixture 独立正文' } },
       { response: { type: 'structured', structured_output: {
@@ -950,9 +955,9 @@ describe('桌面会话分流纵向集成', () => {
     expect(fixture.events).toContainEqual({
       type: 'message', role: 'assistant', text: 'fixture 独立正文'
     });
-    expect(behaviorFixture.behavior.snapshot()).toMatchObject({
+    await vi.waitFor(() => expect(behaviorFixture.behavior.snapshot()).toMatchObject({
       stateId: 'agent-focus', schedule: { current: { actionId: 'celebrate-action' } }
-    });
+    }));
     await fixture.composition.close();
   });
 });
@@ -1031,10 +1036,12 @@ describe('桌面 Agent 真实服务集成', () => {
       expect(behavior.snapshot()).toMatchObject({
         stateId: 'agent-focus', mood: { summary: '安心陪伴' }
       });
+      const beforeLateFeedback = behavior.snapshot();
       expect(() => behavior.applyPlaybackFeedback({
         playbackToken: initialIdle.playbackToken, actionId: initialIdle.actionId,
         status: 'started', occurredAtMs: now
-      })).toThrow('CHARACTER_PLAYBACK_UNAUTHORIZED');
+      })).not.toThrow();
+      expect(behavior.snapshot()).toEqual(beforeLateFeedback);
       const beforeLateCompletion = behavior.snapshot();
       expect(() => behavior.applyPlaybackFeedback({
         playbackToken: initialIdle.playbackToken, actionId: initialIdle.actionId,
@@ -1092,8 +1099,7 @@ describe('桌面 Agent 真实服务集成', () => {
 
       child.send({ type: 'release_decode' });
       await expect(compileResult).resolves.toMatchObject({
-        width: 2,
-        height: 2,
+        pages: [{ width: 2, height: 2 }],
         frameCount: 1
       });
     } finally {

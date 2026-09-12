@@ -17,10 +17,22 @@ const selection = {
 };
 
 describe('精简表现选择契约', () => {
+  it('长期选择独立转换，旧响应省略时保持空值，拒绝时间和重复动作', () => {
+    const backgroundSelection = { stateId: 'feeling-custom', actions: [{ actionId: 'smile-custom', score: 1 }] };
+    const parsed = characterExpressionSelectionSchema.safeParse({ ...selection, backgroundSelection });
+    expect(parsed.success).toBe(true);
+    if (!parsed.success) return;
+    expect(toCharacterExpressionDecision(parsed.data, 'autonomous').backgroundSelection).toEqual(backgroundSelection);
+    expect(characterExpressionSelectionSchema.parse(selection).backgroundSelection).toBeNull();
+    for (const invalid of [{ ...backgroundSelection, durationMs: 100 },
+      { ...backgroundSelection, actions: [backgroundSelection.actions[0], backgroundSelection.actions[0]] }]) {
+      expect(characterExpressionSelectionSchema.safeParse({ ...selection, backgroundSelection: invalid }).success).toBe(false);
+    }
+  });
   it('严格接收语义字段，并要求模型显式评估所有顶层字段', () => {
     expect(characterExpressionSelectionSchema.safeParse(selection).success).toBe(true);
     expect(characterExpressionSelectionJsonSchema.required).toEqual([
-      'moodUpdate', 'expressionPlan', 'requestKind', 'explicitPlayback', 'movementControl'
+      'moodUpdate', 'expressionPlan', 'backgroundSelection', 'requestKind', 'explicitPlayback', 'movementControl'
     ]);
   });
 

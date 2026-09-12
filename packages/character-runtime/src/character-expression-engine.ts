@@ -3,7 +3,7 @@ import { resolveCharacterPresentationV3 } from './character-playback-view';
 import { characterPlaybackFeedbackSchema, type CharacterPlaybackFeedback } from './behavior-contracts';
 import { reduceCharacterActionSchedule, type CharacterBehaviorSchedule, type CharacterScheduleEffect } from './behavior-scheduler';
 import { characterMoodUpdateSchema, sampleMood, type CharacterMood, type CharacterMoodSnapshot } from './character-mood';
-import { characterExpressionPlanSchema, characterExplicitPlaybackSchema, type CharacterExpressionPlan, type CharacterRuntimeFacts } from './character-expression-plan';
+import { characterBackgroundSelectionSchema, characterExpressionPlanSchema, characterExplicitPlaybackSchema, type CharacterExpressionPlan, type CharacterRuntimeFacts } from './character-expression-plan';
 
 export type CharacterExpressionContext = Readonly<{ contextRevision: number; moodRevision: number; instance: symbol }>;
 export type CharacterExpressionEffect = Exclude<CharacterScheduleEffect, { type: 'play' } | { type: 'none' }>
@@ -11,11 +11,14 @@ export type CharacterExpressionEffect = Exclude<CharacterScheduleEffect, { type:
 export type CharacterExpressionSnapshot = {
   stateId: string; skinId: string; mood: CharacterMoodSnapshot | null; contextRevision: number;
   moodRevision: number; schedule: CharacterBehaviorSchedule; nextEligibleAtMs: number | null;
+  background?: { stateId: string; enteredAtMs: number } | null;
+  stateEnteredAtMs?: number;
 };
 export type CharacterExpressionResult = { snapshot: CharacterExpressionSnapshot; effects: CharacterExpressionEffect[] };
 export type CharacterExpressionDecision = {
   context: CharacterExpressionContext; eventId: string; source: 'chat' | 'autonomous';
   moodUpdate?: unknown; expressionPlan?: unknown;
+  backgroundSelection?: unknown;
   explicitPlayback?: unknown;
   /** 仅宿主提供；同轮明确播放保留原 token 与截止时间，更新其后的心情计划。 */
   preserveExplicitPlaybackToken?: string;
@@ -28,7 +31,7 @@ let nextEngineId = 0;
 const emptyFacts = (): CharacterRuntimeFacts => ({ moving: false, dragging: false, carrying: false,
   chatting: false, taskRunning: false, awaitingConfirmation: false });
 type StateCandidate = CharacterExpressionPlan['states'][number];
-type CandidateOwner = 'activity' | 'mood';
+type CandidateOwner = 'activity' | 'mood' | 'background';
 type CandidateEntry = Readonly<{ candidate: StateCandidate; plan: CharacterExpressionPlan; owner: CandidateOwner }>;
 type ActiveCandidate = Readonly<{ entry: CandidateEntry; playbackToken: string }>;
 
@@ -38,6 +41,8 @@ export class CharacterExpressionEngine {
   private skinId: string;
   private stateId: string;
   private enteredAtMs: number;
+  /** 短时所有权独立计时；同一状态从长期背景接纳短时表现时不继承背景年龄。 */
+  private episodeEnteredAtMs: number | null = null;
   private mood: CharacterMood | null = null;
   private moodRevision = 0;
   private contextRevision = 0;
@@ -46,6 +51,8 @@ export class CharacterExpressionEngine {
   /** 活动与心情候选独立换代，但共享下面唯一的当前状态与动作调度器。 */
   private activityPlan: CharacterExpressionPlan | null = null;
   private moodPlan: CharacterExpressionPlan | null = null;
+  /** 背景独立持有选择与进入时间，临时计划换代不更改该所有权。 */
+  private background: { entry: CandidateEntry; enteredAtMs: number } | null = null;
   private activeCandidate: ActiveCandidate | null = null;
   private facts = emptyFacts();
   private preparedActivity: keyof CharacterRuntimeFacts | null = null;
@@ -83,6 +90,8 @@ export class CharacterExpressionEngine {
   snapshot(): CharacterExpressionSnapshot {
     return { stateId: this.stateId, skinId: this.skinId, mood: sampleMood(this.mood, this.now()),
       contextRevision: this.contextRevision, moodRevision: this.moodRevision,
+      background: this.background ? { stateId: this.background.entry.candidate.stateId, enteredAtMs: this.background.enteredAtMs } : null,
+      stateEnteredAtMs: this.enteredAtMs,
       schedule: structuredClone(this.schedule), nextEligibleAtMs: this.nextEligibleAtMs };
   }
   private result(effects: CharacterExpressionEffect[] = []): CharacterExpressionResult { return { snapshot: this.snapshot(), effects }; }
@@ -107,10 +116,12 @@ export class CharacterExpressionEngine {
   private entries(): CandidateEntry[] {
     return [
       ...(this.activityPlan?.states.map(candidate => ({ candidate, plan: this.activityPlan!, owner: 'activity' as const })) ?? []),
-      ...(this.moodPlan?.states.map(candidate => ({ candidate, plan: this.moodPlan!, owner: 'mood' as const })) ?? [])
+      ...(this.moodPlan?.states.map(candidate => ({ candidate, plan: this.moodPlan!, owner: 'mood' as const })) ?? []),
+      ...(this.background ? [this.background.entry] : [])
     ];
   }
   private owns(entry: CandidateEntry): boolean {
+    if (entry.owner === 'background') return entry === this.background?.entry;
     return entry.owner === 'activity' ? entry.plan === this.activityPlan : entry.plan === this.moodPlan;
   }
   private currentEntry(): CandidateEntry | null {
@@ -227,6 +238,20 @@ export class CharacterExpressionEngine {
       this.blockedPlanState = sameExplicit ? this.lastExplicit!.stateId : null;
       if (!sameExplicit) this.lastExplicit = null;
     }
+    const background = characterBackgroundSelectionSchema.safeParse(decision.backgroundSelection);
+    if (background.success) {
+      const state = this.manifest.states.find(state => state.id === background.data.stateId);
+      if (state?.agentInferable && background.data.actions.every(action => state.actionIds.includes(action.actionId))
+        && (state.id === this.stateId || this.conditionEvents(state) !== null)) {
+        const candidate = { ...background.data, score: 1, minStrength: 0, maxStrength: 1 };
+        const plan: CharacterExpressionPlan = { states: [candidate], validForMs: 1_200_000,
+          contextRevision: this.contextRevision, moodRevision: this.moodRevision, expiresAtMs: Infinity };
+        const entry: CandidateEntry = { candidate, plan, owner: 'background' };
+        if (this.actionCandidates(state.id, this.effectiveFacts(), undefined, false, entry).length) {
+          this.background = { entry, enteredAtMs: this.now() };
+        }
+      }
+    }
     if (preserveExplicit) return this.result();
     if (decision.explicitPlayback !== undefined) {
       const explicit = characterExplicitPlaybackSchema.safeParse(decision.explicitPlayback);
@@ -251,11 +276,11 @@ export class CharacterExpressionEngine {
     }
     return this.advance();
   }
-  private conditionEvents(state: CharacterStateDefinitionV3, exit = false): string[] | null {
+  private conditionEvents(state: CharacterStateDefinitionV3, exit = false, enteredAtMs = this.enteredAtMs): string[] | null {
     const conditions = exit ? state.exitConditions : state.enterConditions;
     if (!conditions.length) return exit ? null : [];
     const available = [...this.events.values()].filter(event => !this.consumed.has(event.id)
-      && this.now() - event.occurredAtMs < 120_000 && (!exit || event.occurredAtMs > this.enteredAtMs));
+      && this.now() - event.occurredAtMs < 120_000 && (!exit || event.occurredAtMs > enteredAtMs));
     const ids: string[] = [];
     for (const condition of conditions) {
       const matches = condition.clauses.map(clause => available.find(event => event.type === clause.event));
@@ -281,7 +306,7 @@ export class CharacterExpressionEngine {
       // 实际或准备移动时，其他活动不能凭高分抢占；无合格候选由原有待机与零位移守卫兜底。
       && (!facts.moving || this.actionCandidates(entry.candidate.stateId, facts, undefined, false, entry)
         .every(action => this.supportsFact(entry.candidate, action.id, 'moving')))
-      && this.actionCandidates(entry.candidate.stateId, facts, undefined, false, entry).some(action => action.due <= this.now()
+      && this.actionCandidates(entry.candidate.stateId, facts, undefined, false, entry).some(action => entry.owner === 'background' || action.due <= this.now()
         || entry.candidate.stateId === this.stateId && this.schedule.current?.actionId === action.id));
     const activities = eligible.filter(entry => entry.owner === 'activity');
     const currentEntry = this.currentEntry();
@@ -289,7 +314,8 @@ export class CharacterExpressionEngine {
       && this.eligibleState(currentEntry, facts, true)) {
       return { stateId: this.stateId, entry: currentEntry };
     }
-    const candidates = activities.length ? activities : eligible;
+    const temporary = eligible.filter(entry => entry.owner !== 'background');
+    const candidates = activities.length ? activities : temporary.length ? temporary : eligible;
     const activeOwner = currentEntry?.owner;
     const activityPreemptsMood = activities.length > 0 && activeOwner !== 'activity';
     const retained = candidates.find(entry => entry.candidate.stateId === this.stateId);
@@ -312,20 +338,21 @@ export class CharacterExpressionEngine {
     const { candidate, plan, owner } = entry;
     const strength = sampleMood(this.mood, this.now())?.strength ?? 0;
     const state = this.manifest.states.find(state => state.id === candidate.stateId);
-    const moodEligible = owner === 'activity' || detached
+    const moodEligible = owner !== 'mood' || detached
       || plan.moodRevision === this.moodRevision
         && (!this.mood || sampleMood(this.mood, this.now()) !== null)
         && strength >= candidate.minStrength && strength <= candidate.maxStrength;
     return this.now() < plan.expiresAtMs && moodEligible && !!state?.agentInferable
-      && candidate.stateId !== this.blockedPlanState && (this.restingUntil.get(candidate.stateId) ?? 0) <= this.now()
+      && (owner !== 'background' || this.owns(entry))
+      && (owner === 'background' || candidate.stateId !== this.blockedPlanState && (this.restingUntil.get(candidate.stateId) ?? 0) <= this.now())
       && candidate.score > 0
       && this.matchesFacts(candidate.when, facts)
-      && (candidate.stateId === this.stateId || this.conditionEvents(state) !== null);
+      && (owner === 'background' || candidate.stateId === this.stateId || this.conditionEvents(state) !== null);
   }
   private episodeDue(entry: CandidateEntry): boolean {
     const candidate = entry.candidate;
-    return !this.explicit && candidate.stateId === this.stateId && this.stateId !== this.manifest.idleStateId
-      && candidate.lifetime !== 'condition' && this.now() - this.enteredAtMs
+    return entry.owner !== 'background' && !this.explicit && candidate.stateId === this.stateId && this.stateId !== this.manifest.idleStateId
+      && candidate.lifetime !== 'condition' && this.episodeEnteredAtMs !== null && this.now() - this.episodeEnteredAtMs
         >= Math.max(2000, this.manifest.states.find(state => state.id === this.stateId)!.suggestedDurationMs ?? 3000);
   }
   /** 事实变化的强制撤销条件同时供预检与正式推进使用，避免两秒保持掩盖不适用动作。 */
@@ -381,6 +408,8 @@ export class CharacterExpressionEngine {
       startConfirmationTimeoutMs: 5_000, durationMs: duration, urgency: 0, systemForced: forced }, this.manifest.actions);
     if (result.schedule === this.schedule) return [];
     this.schedule = result.schedule;
+    this.episodeEnteredAtMs = entry?.owner === 'mood'
+      ? stateId !== this.stateId ? this.now() : this.episodeEnteredAtMs ?? this.now() : null;
     this.activeCandidate = entry && this.schedule.current
       ? { entry, playbackToken: this.schedule.current.playbackToken } : null;
     // 明确请求的寿命覆盖作者无限循环；反馈和 Main 时钟共用同一个有限时长。
@@ -413,6 +442,16 @@ export class CharacterExpressionEngine {
       this.moodPlan = null; force = true;
     }
     if (this.activityPlan && now >= this.activityPlan.expiresAtMs) { this.activityPlan = null; force = true; }
+    // 背景暂停时也检查退出边沿和素材；事实结束只解除临时覆盖，不撤销背景本身。
+    if (this.background) {
+      const state = this.manifest.states.find(state => state.id === this.background!.entry.candidate.stateId);
+      const exits = state ? this.conditionEvents(state, true, this.background.enteredAtMs) : null;
+      if (!state?.agentInferable || exits
+        || !this.actionCandidates(state.id, this.effectiveFacts(), undefined, false, this.background.entry).length) {
+        // 退出边沿由实际切态消费；背景不能提前吞掉同状态活动的退出依据。
+        this.background = null;
+      }
+    }
     if (!this.activityPlan && !this.moodPlan && !this.activeCandidate) {
       this.restingUntil.clear(); this.blockedPlanState = null;
     }
@@ -442,6 +481,7 @@ export class CharacterExpressionEngine {
       const reusable = this.actionCandidates(target.stateId, facts, undefined, false, target.entry)
         .some(action => action.id === this.schedule.current!.actionId);
       if (reusable) {
+        this.episodeEnteredAtMs = target.entry.owner === 'mood' ? this.episodeEnteredAtMs ?? now : null;
         this.activeCandidate = { entry: target.entry, playbackToken: this.schedule.current.playbackToken };
       } else force = true;
     }
@@ -457,8 +497,16 @@ export class CharacterExpressionEngine {
       ? this.chooseAction(target.stateId, fallbackActionId, false, target.entry, facts) : null;
     const actionId = fallback ?? this.chooseAction(target.stateId, undefined,
       this.explicit || target.stateId === this.manifest.idleStateId, target.entry, facts);
-    if (actionId) effects.push(...this.play(target.stateId, actionId, force || factsChanged, undefined, target.entry));
-    else {
+    // 冷却静态占位对应的动画已经完成；恢复动画不属于中断作者的在播动作。
+    if (actionId) effects.push(...this.play(target.stateId, actionId, force || factsChanged || staticDue, undefined, target.entry));
+    else if (target.entry?.owner === 'background') {
+      // 作者冷却约束新动画调度；静态呈现当前合法动作，不借道待机或重置冷却时间。
+      const actions = this.actionCandidates(target.stateId, facts, undefined, false, target.entry);
+      const still = actions.find(action => action.id === this.lastActionId) ?? actions[0];
+      if (still && (!this.schedule.current || this.stateId !== target.stateId)) {
+        effects.push(...this.play(target.stateId, still.id, force || factsChanged, 'static', target.entry));
+      }
+    } else {
       const idle = this.manifest.idleStateId;
       const idleAction = this.chooseAction(idle, undefined, true, null, facts);
       if (idleAction) effects.push(...this.play(idle, idleAction, force));
@@ -518,6 +566,8 @@ export class CharacterExpressionEngine {
     const effects = this.stop();
     this.contextRevision++; this.moodRevision++; this.mood = null;
     this.activityPlan = null; this.moodPlan = null; this.activeCandidate = null; this.explicit = false;
+    this.background = null;
+    this.episodeEnteredAtMs = null;
     this.explicitUntilMs = null; this.explicitDurationMs = 0; this.explicitSingleAction = false;
     this.facts = emptyFacts(); this.preparedActivity = null;
     this.restingUntil.clear(); this.lastExplicit = null; this.blockedPlanState = null;

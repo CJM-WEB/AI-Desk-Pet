@@ -26,7 +26,6 @@ import {
   type CharacterPlayerPort
 } from './pixi-character-player';
 import {
-  CharacterMotionController,
   resolveDesktopAnchor
 } from './character-motion-controller';
 import type {
@@ -444,7 +443,6 @@ export function CharacterPlayer({
       return;
     }
     let disposed = false;
-    let controller: CharacterMotionController | null = null;
     let latestMotionSnapshot: Awaited<
       ReturnType<MyselfApi['getCharacterMotionSnapshot']>
     > | null = null;
@@ -454,12 +452,7 @@ export function CharacterPlayer({
       snapshot: Awaited<ReturnType<MyselfApi['getCharacterMotionSnapshot']>>
     ): void => {
       if (disposed) return;
-      if (!controller) {
-        controller = new CharacterMotionController({
-          position: snapshot.position
-        });
-      }
-      if (controller.accept(snapshot)) {
+      if (!latestMotionSnapshot || snapshot.revision > latestMotionSnapshot.revision) {
         latestMotionSnapshot = snapshot;
         setRuntimeDirection(snapshot.direction);
         onMotionChange?.({
@@ -471,22 +464,18 @@ export function CharacterPlayer({
       }
     };
 
-    const renderMotion = (timestampMs: number): void => {
+    const renderMotion = (): void => {
       if (disposed) return;
       try {
         const snapshot = latestMotionSnapshot;
-        const visual = controller?.advance(timestampMs);
         const player = activePlayerRef.current;
         const host = hostRef.current;
-        if (!snapshot || !visual || !player || !host) return;
-        player.setDirection(visual.direction);
+        if (!snapshot || !player || !host) return;
+        player.setDirection(snapshot.direction);
         const frameBounds = player.getFrameBounds?.();
-        const residualX = visual.position.x - snapshot.position.x;
-        const residualY = visual.position.y - snapshot.position.y;
-        host.style.transform = `translate(${residualX}px, ${residualY}px)`;
         const hostBounds = host.getBoundingClientRect();
         const frame = {
-          // getBoundingClientRect 已包含 host transform，只再加 Main 窗口原点。
+          // 窗口已由 Main 移动；Renderer 只投影锚点，异步快照不能再次平移角色。
           x: snapshot.position.x + hostBounds.left + (frameBounds?.x ?? 0),
           y: snapshot.position.y + hostBounds.top + (frameBounds?.y ?? 0),
           width: frameBounds?.width ?? 0,
@@ -495,7 +484,7 @@ export function CharacterPlayer({
         const coordinate = (name: 'carry' | 'seat' | 'focus') => {
           const anchor = player.getAnchor(name);
           return anchor
-            ? resolveDesktopAnchor(anchor, frame, visual.direction)
+            ? resolveDesktopAnchor(anchor, frame, snapshot.direction)
             : null;
         };
         onDesktopAnchors?.({
@@ -621,7 +610,6 @@ export function CharacterPlayer({
     return () => {
       disposed = true;
       if (animationFrame !== null) cancelScheduledAnimationFrame(animationFrame);
-      if (hostRef.current) hostRef.current.style.transform = '';
       if (playbackActionConsumerRef.current === consumePlaybackAction) {
         playbackActionConsumerRef.current = null;
       }

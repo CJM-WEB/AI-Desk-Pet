@@ -692,6 +692,7 @@ describe('V2 结构化 Inspector', () => {
     expect(markup).toContain('状态详细描述');
     expect(markup).toContain('在用户工作时保持安静陪伴。');
     expect(markup).toContain('maxLength="2000"');
+    expect(markup).toContain('允许智能体根据情境自主选择；关闭后仍可由用户明确指定');
     expect(markup).not.toMatch(/关键词|情绪文本/u);
     expect(markup).not.toMatch(/系统 Prompt|JSON|脚本|自由执行/u);
   });
