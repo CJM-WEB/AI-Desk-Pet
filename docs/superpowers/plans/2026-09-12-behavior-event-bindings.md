@@ -12,6 +12,12 @@
 
 ## 精确验收对应
 
+2026-09-13 小范围续修依据上述规格的休息互斥补充：
+
+- [x] 在 `apps/desktop/tests/character-behavior-bindings.test.ts` 复现连续／间歇模式下长期休息被自动运动抢占，覆盖首帧准备、任务／拖拽恢复和明确重新移动；先确认失败。
+- [x] 仅修改 `apps/desktop/src/main/characters/character-behavior-director.ts`，复用用途、背景与运动停止入口，补齐暂停和释放条件，删除被替代的局部判断。
+- [x] 运行相关定向测试和桌面类型检查，检查差异；单独记录完整门禁的失败及额外失败复核结果，真实模型与视觉未执行。新增状态支持只读反馈，不建立新角色实验。
+
 | 步骤 | RED / GREEN 与完成标准 |
 | --- | --- |
 | 1 | `character-bindings-adapter.test.ts` 复现缺少用途入口、错配与 Qwen 背景运动；`character-expression-adapter.test.ts` 校验公开目录和预算；`packages/character-runtime/src/character-expression-selection.ts` 只保留内部类型，原专用模型 Schema 测试退役 |

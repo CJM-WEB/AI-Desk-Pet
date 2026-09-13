@@ -295,6 +295,84 @@ test('本轮反应不撤销用户明确位移的原首帧令牌', async () => {
   f.start(); expect(f.motion.requestIntent).toHaveBeenCalledOnce(); await f.director.close();
 });
 
+test.each([1, 2] as const)('长期休息在档位%s下跨循环、拖拽和任务恢复都不启动自动移动', async mode => {
+  vi.useFakeTimers();
+  const f = await fixture(); f.bind();
+  f.director.applyBehaviorSettings({ movementMode: mode, proactivityMode: 'passive' });
+  await f.director.completeUserPrompt({ generation: 'turn', eventId: 'hold-rest', context: f.director.captureExpressionContext(), explicitDirective: null,
+    backgroundSelection: { stateId: 'state-2', actions: [{ actionId: 'state-2-action', score: 1 }] } });
+  const scheduler = new CharacterProactivityScheduler({ director: f.director, random: () => 0, now: f.now });
+  scheduler.start();
+  try {
+    for (let time = 0; time <= 25_000; time += 500) {
+      f.time(time); await vi.advanceTimersByTimeAsync(500); f.start();
+      expect(f.service.snapshot()?.stateId).toBe('state-2');
+    }
+    f.director.setDragging(true); f.director.setDragging(false);
+    f.director.handleCapabilityTaskPhase('running');
+    expect(f.service.snapshot()?.stateId).toBe('state-6');
+    f.director.handleCapabilityTaskPhase('cancelled');
+    f.time(40_000); await vi.advanceTimersByTimeAsync(15_000); f.start();
+    expect(f.service.snapshot()?.stateId).toBe('state-2');
+    expect(f.motion.requestIntent).not.toHaveBeenCalled();
+    expect(f.director.getDiagnosticSnapshot().movementMode).toBe(mode);
+  } finally { await scheduler.close(); await f.director.close(); vi.useRealTimers(); }
+});
+
+test('休息背景接纳后撤销旧自动运动首帧准备，迟到started不能提交位移', async () => {
+  const f = await fixture(); f.bind(); f.director.applyBehaviorSettings({ movementMode: 1, proactivityMode: 'passive' });
+  f.director.requestPersistentMovement();
+  const pending = f.service.snapshot()!.schedule.current!;
+  expect(pending.stateId).toBe('state');
+  await f.director.completeUserPrompt({ generation: 'turn', eventId: 'rest-before-start', context: f.director.captureExpressionContext(), explicitDirective: null,
+    backgroundSelection: { stateId: 'state-2', actions: [{ actionId: 'state-2-action', score: 1 }] } });
+  expect(f.service.snapshot()?.stateId).toBe('state-2');
+  f.director.applyPlaybackFeedback({ playbackToken: pending.playbackToken, actionId: pending.actionId, status: 'started', occurredAtMs: f.now() });
+  expect(f.motion.requestIntent).not.toHaveBeenCalled();
+  await f.director.close();
+});
+
+test.each(['mode', 'move'] as const)('明确%s重新走动结束休息背景，静止命令则保留休息', async command => {
+  const f = await fixture(); f.bind();
+  await f.director.completeUserPrompt({ generation: 'turn', eventId: 'rest-before-command', context: f.director.captureExpressionContext(), explicitDirective: null,
+    backgroundSelection: { stateId: 'state-2', actions: [{ actionId: 'state-2-action', score: 1 }] } });
+  await f.director.applyMovementControl({ kind: 'set_mode', mode: 0 }, 'explicit');
+  expect(f.service.snapshot()?.background?.stateId).toBe('state-2');
+  if (command === 'mode') await f.director.applyMovementControl({ kind: 'set_mode', mode: 2 }, 'explicit');
+  else f.director.requestBehaviorPlan({ kind: 'move', direction: 'left', distance: 'near' }, 'explicit');
+  expect(f.service.snapshot()?.background).toBeNull();
+  await f.director.close();
+});
+
+test('自主进入休息会停止正在进行的自动移动，改成无聊背景后可以重新移动', async () => {
+  const f = await fixture(); f.bind(); f.director.applyBehaviorSettings({ movementMode: 1, proactivityMode: 'assistive' });
+  let snapshot = f.motion.getSnapshot();
+  vi.spyOn(f.motion, 'getSnapshot').mockImplementation(() => snapshot);
+  f.motion.requestIntent.mockImplementation(() => {
+    snapshot = { ...snapshot, revision: snapshot.revision + 1, moving: true };
+    f.service.handleMovement(snapshot); f.director.handleMotionSnapshot(snapshot); return snapshot;
+  });
+  vi.spyOn(f.motion, 'stop').mockImplementation(() => {
+    snapshot = { ...snapshot, revision: snapshot.revision + 1, moving: false };
+    f.director.handleMotionSnapshot(snapshot); f.service.handleMovement(snapshot);
+  });
+  const scheduler = new CharacterProactivityScheduler({ director: f.director, random: () => 0, now: f.now });
+  scheduler.start();
+  try {
+    f.start(); expect(snapshot.moving).toBe(true);
+    f.director.applyAutonomousDecision({ lifecycle: f.director.getBehaviorLifecycleGeneration(), context: f.director.captureExpressionContext()!, eventId: 'autonomous-rest',
+      backgroundSelection: { stateId: 'state-2', actions: [{ actionId: 'state-2-action', score: 1 }] } });
+    expect(snapshot.moving).toBe(false); expect(f.service.snapshot()?.stateId).toBe('state-2');
+    f.start(); f.time(30_000); f.start();
+    expect(snapshot.moving).toBe(false); expect(f.service.snapshot()?.stateId).toBe('state-2');
+    f.director.applyAutonomousDecision({ lifecycle: f.director.getBehaviorLifecycleGeneration(), context: f.director.captureExpressionContext()!, eventId: 'rest-ended',
+      backgroundSelection: { stateId: 'state-3', actions: [{ actionId: 'state-3-action', score: 1 }] } });
+    expect(f.service.snapshot()?.stateId).toBe('state');
+    expect(snapshot.moving).toBe(false);
+    f.start(); expect(snapshot.moving).toBe(true);
+  } finally { await scheduler.close(); await f.director.close(); }
+});
+
 test('新角色实例必须取得自己的合法首帧，旧实例反馈不能解锁自动运动', async () => {
   const f = await fixture();
   const old = f.service.snapshot()!.schedule.current!;

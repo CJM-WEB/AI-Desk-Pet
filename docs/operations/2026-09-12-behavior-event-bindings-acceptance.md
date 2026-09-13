@@ -4,6 +4,26 @@
 
 ## 修改范围
 
+### 2026-09-13 休息与自动运动互斥续修
+
+用户反馈长期休息仍被间歇运动打断。真实默认角色契约、Service、Director、Scheduler 的定向测试先复现五项失败：两档自动运动在休息中仍提交位移、旧移动首帧准备未撤销、两种明确重新移动入口保留旧休息。仅修改 Director，依据已验证 `rest` 用途和 Engine 当前长期背景暂停自动运动；复用原停止入口和同步重入保护，保留持久档位，明确重新移动才释放休息。
+
+新增六项回归还覆盖自主进入休息时停止已开始的位移、任务／拖拽恢复后仍休息，以及换成无聊背景后恢复自动运动并等待合法首帧。命令 `pnpm.cmd exec vitest run --project desktop apps/desktop/tests/character-behavior-bindings.test.ts apps/desktop/tests/character-behavior-director.test.ts apps/desktop/tests/character-proactivity-scheduler.test.ts apps/desktop/tests/character-proactivity-runtime.test.ts apps/desktop/tests/character-expression-adapter.test.ts`：五文件 **232／232 通过**。`pnpm.cmd --filter @myself/desktop typecheck` 通过。
+
+新增角色状态／动作仅按用户要求做代码核查，未创建角色实验、启动桌宠或请求真实模型：运行目录由当前已启用清单动态生成，模型按作者名称与描述选择合法配对，播放引擎没有默认角色 ID 限制；新建状态默认允许推断。九种用途每种只绑定一个配对，其他新动作仍可经逐轮选择；目录预算与模型语义判断使“支持新增”不等于“所有新动作都必定命中”。编辑后须编译发布并重新启用角色或重启，仅发布不会重载当前 Main 目录。
+
+本次互斥适用于模型已经匹配为 `rest` 的长期状态，不为其他未绑定的自定义状态推断新的互斥语义。未扩大权限、增加依赖或调整模型协议、角色素材及位移几何。实际视觉表现待用户人工确认。
+
+本轮完整门禁均实际运行并失败，不记为通过：
+
+- `pnpm.cmd verify:desktop`：全仓类型检查通过，Core 108 通过／1 跳过；单元 3107 通过／41 失败，包含同名旧基线 38 项和另外 3 项。日志 `.superpowers/rest-motion-verify-desktop.log`。
+- `pnpm.cmd verify:behavior`：runtime 230／230、agent-core 23／23、桌面类型检查通过；桌面单元 2603 通过／47 失败，包含同名旧基线 38 项和另外 9 项。日志 `.superpowers/rest-motion-verify-behavior.log`。
+- 两门禁额外失败合并为 10 项，均位于本轮未修改的素材／角色包／打包配置模块。保持原测试和超时，以单 worker 定向复核，结果 **8 通过／2 失败**：`character-package-service.test.ts` 的“活动角色位于稳定排序第 257 位时仍提升到首位”仍预期 256、实际 228；“同一存储根目录的并发导入严格串行且不会回滚活跃事务”仍超过 5000ms。没有证据把它们归为原 38 项或本轮休息修复的回归，保留未解决结果，不扩大本次业务改动。日志 `.superpowers/rest-motion-full-gate-recheck.log`。
+
+两门禁均止于单元阶段，后续安全／集成／Electron E2E 未进入；本轮没有启动桌宠或真实模型，没有把 2026-09-12 的运行验收算作本轮通过。最终差异检查与中文 UTF-8 校验通过；开发验收阶段未执行 Git 写操作，用户随后明确授权提交本次代码、测试与文档。
+
+### 2026-09-12 原修复范围
+
 模型先根据完整公开作者名称与描述，为九类情境选择合法状态动作配对；Main 保存当前实例的用途表。接收输入、授权等待、真实任务开始与终态直接驱动相应表现。逐轮模型只选择新反应、明确目标、长期背景或运动控制，不再生成活动条件、分数和调度时长。
 
 - 输入处理期间保持思考，主回复结束才释放；提前返回的普通夸赞反应排在正文之后，不抢占或提前消耗思考期间的动画时间。

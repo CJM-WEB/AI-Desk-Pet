@@ -87,6 +87,7 @@ export type CharacterActivityBlockers = Readonly<{
   movementModeTransition: boolean;
   pendingMovement?: boolean;
   singleEpisode?: boolean;
+  resting?: boolean;
   rendererUnready?: boolean;
   movementMode: CharacterMovementMode;
   closed: boolean;
@@ -331,6 +332,7 @@ export class CharacterBehaviorDirector {
     })) return false;
     this.behaviorBindings = { bindings: structuredClone(input.bindings), instance: input.context.instance };
     this.syncRuntimeFacts();
+    if (this.restingBackgroundState()) this.pauseAutomaticMotionForPresentation();
     this.publishActivityChanged();
     return true;
   }
@@ -366,7 +368,7 @@ export class CharacterBehaviorDirector {
     // 自主重选同一无聊背景仍属于未陪伴事件，只有真正换到其他背景才交接来源。
     if (backgroundSelection && this.options.behavior.snapshot()?.background?.stateId !== this.idleBackgroundStateId) this.idleBackgroundStateId = null;
     if (authorization.kind === 'play') this.active = { source: 'local-idle', playbackToken: authorization.playbackToken };
-    if (singleEpisode) this.pauseAutomaticMotionForReaction();
+    if (singleEpisode || this.restingBackgroundState()) this.pauseAutomaticMotionForPresentation();
     this.publishActivityChanged();
   }
   handleChatResponseFinished(): void {
@@ -495,6 +497,7 @@ export class CharacterBehaviorDirector {
       movementModeTransition: this.movementModeTransitionPending,
       pendingMovement: this.pendingMotion !== null || this.committingMotion,
       ...(this.options.behavior.hasActiveSingleEpisode() ? { singleEpisode: true } : {}),
+      ...(this.restingBackgroundState() ? { resting: true } : {}),
       ...(!this.options.behavior.hasStartedPlayback() ? { rendererUnready: true } : {}),
       movementMode: this.movementMode,
       closed: this.closed
@@ -564,7 +567,7 @@ export class CharacterBehaviorDirector {
         ...(input.explicitPlaybackToken === undefined ? {} : { preserveExplicitPlaybackToken: input.explicitPlaybackToken })
       });
       if (authorization.kind === 'play') this.active = { source: explicit ? 'explicit' : 'chat', playbackToken: authorization.playbackToken };
-      if (singleEpisode && !explicit) this.pauseAutomaticMotionForReaction();
+      if (singleEpisode && !explicit || this.restingBackgroundState()) this.pauseAutomaticMotionForPresentation();
       this.publishActivityChanged();
     }
     // 同份已验证回复的候选先同步接纳，避免自身模式落盘推进生命周期时丢失活动匹配。
@@ -585,6 +588,7 @@ export class CharacterBehaviorDirector {
     if (this.pendingMotion?.lifecycle === 'activity-ready') {
       if (!this.tryPrepareMotion()) { this.publishUnavailableNotice(); this.clearPendingChat(); }
     } else if (movementControl.kind === 'move_once' && !this.capabilityTask && !this.awaitingConfirmation && !this.dragging) {
+      this.releaseRestingBackground();
       this.pendingMotion = this.createPendingMotion({ mode: 'once', target: movementControl.target, distance: movementControl.distance }, 'chat', 'chat-success');
       // 主正文可以先结束；同轮成功事实已到达时立即进入原有首帧准备，不等待第二次成功事件。
       if (this.successfulChatTurn === turnEpoch && !this.tryPrepareMotion()) { this.publishUnavailableNotice(); this.clearPendingChat(); }
@@ -788,6 +792,7 @@ export class CharacterBehaviorDirector {
             && transitionRevision === this.movementModeTransitionRevision
         );
         if (!this.isTurnCurrent(turnEpoch) || transitionRevision !== this.movementModeTransitionRevision) return;
+        if (control.mode !== 0) this.releaseRestingBackground();
         // 同值持久化仍代表用户明确重试；成功后开启新生命周期，自动tick不能自行解锁。
         if (retrySameMode) { this.behaviorLifecycleGeneration += 1; this.lastContinuousAttemptRevision = -1; }
       } finally {
@@ -1028,8 +1033,17 @@ export class CharacterBehaviorDirector {
   private retireBoundReaction(): void {
     this.options.behavior.cancelSingleEpisode();
   }
-  /** 反应先进入唯一引擎，再释放自动移动；停止快照重入时已经能看到短时阻塞。 */
-  private pauseAutomaticMotionForReaction(): void {
+  /** 休息是否仍有效只读 Engine 背景与作者用途，不保存第二份状态或改写运动档位。 */
+  private restingBackgroundState(): string | null {
+    const rest = this.currentBindings()?.rest;
+    return rest && this.options.behavior.snapshot()?.background?.stateId === rest.stateId ? rest.stateId : null;
+  }
+  private releaseRestingBackground(): void {
+    const stateId = this.restingBackgroundState();
+    if (stateId) this.options.behavior.releaseBackgroundSelection(stateId);
+  }
+  /** 表现先进入唯一引擎，再释放自动移动；停止快照重入时已能看到短时或休息阻塞。 */
+  private pauseAutomaticMotionForPresentation(): void {
     const committing = this.committingMotion;
     this.committingMotion = true;
     try {
@@ -1045,7 +1059,7 @@ export class CharacterBehaviorDirector {
       singleEpisode: true,
       moodUpdate: { summary: role === 'success' ? '完成任务后的开心' : '任务失败后的沮丧', strength: 1, fadeInMs: 0 },
       expressionPlan: { states: [{ stateId: choice.stateId, score: 1, minStrength: 0, maxStrength: 1, lifetime: 'episode', actions: [{ actionId: choice.actionId, score: 1 }] }] } });
-    this.pauseAutomaticMotionForReaction();
+    this.pauseAutomaticMotionForPresentation();
   }
 
   private createPendingMotion(request: MotionRequest, source: BehaviorPlanSource, lifecycle: PendingMotion['lifecycle']): PendingMotion {
@@ -1056,6 +1070,7 @@ export class CharacterBehaviorDirector {
 
   private prepareExplicitMotion(request: MotionRequest): void {
     if (this.closed || this.dragging || this.capabilityTask || this.awaitingConfirmation) return;
+    this.releaseRestingBackground();
     this.automaticMovementFailureLifecycle = -1;
     this.clearContinuousMotion();
     this.options.behavior.releaseExplicitPlayback(); this.active = null;
@@ -1152,9 +1167,10 @@ export class CharacterBehaviorDirector {
   private requestMotion(plan: MotionRequest, source: BehaviorPlanSource, continuation = false): void {
     if (this.pendingMotion || this.committingMotion || this.closed || this.dragging || this.capabilityTask || this.awaitingConfirmation || this.movementModeTransitionPending) return;
     // 冷加载不能提前消耗自动运动的首帧期限；用途预热与明确请求仍独立运行。
-    if (source === 'local-idle' && (this.movementMode === 0 || !this.options.behavior.hasStartedPlayback())) return;
+    if (source === 'local-idle' && (this.movementMode === 0 || this.restingBackgroundState() || !this.options.behavior.hasStartedPlayback())) return;
     // 自动活动遵守短时反应边界；明确播放和可信任务继续拥有更高优先级。
     if (source !== 'explicit' && (this.active?.source === 'explicit' || this.trustedRuntimeBlocked)) return;
+    if (source !== 'local-idle') this.releaseRestingBackground();
     if (source === 'explicit') { this.options.behavior.releaseExplicitPlayback(); this.active = null; }
     if (!continuation) this.clearContinuousMotion();
     this.pendingMotion = { ...this.createPendingMotion(plan, source, 'activity-ready'), continuation };
@@ -1242,6 +1258,7 @@ export class CharacterBehaviorDirector {
       || this.capabilityTask
       || this.awaitingConfirmation
       || this.options.behavior.hasActiveSingleEpisode()
+      || this.restingBackgroundState() !== null
       || this.active?.source === 'explicit';
   }
 
@@ -1255,6 +1272,7 @@ export class CharacterBehaviorDirector {
       || this.capabilityTask
       || this.awaitingConfirmation
       || this.options.behavior.hasActiveSingleEpisode()
+      || this.restingBackgroundState() !== null
       || this.options.motion.getSnapshot().moving
       || this.active?.source === 'explicit';
   }
