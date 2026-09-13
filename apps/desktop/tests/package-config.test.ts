@@ -108,7 +108,8 @@ describe('electron-builder 配置', () => {
     expect(readScalarBlock(configText, 'artifactName')).toBe('AI-Pet-${version}-windows-${arch}.${ext}');
 
     const windowsConfig = readSection(configText, 'win');
-    expect(windowsConfig).toContain('signAndEditExecutable: false');
+    expect(windowsConfig).toContain('signExecutable: false');
+    expect(windowsConfig).not.toContain('signAndEditExecutable: false');
     expect(windowsConfig).toContain('icon: resources/icon.ico');
     expect(configText).not.toMatch(/^nsis:/mu);
 
@@ -135,6 +136,7 @@ describe('electron-builder 配置', () => {
 
     const extraResources = readSection(configText, 'extraResources');
     expect([...extraResources.matchAll(/^\s*- from:\s*(.+)$/gmu)].map(match => match[1]?.trim())).toEqual([
+      'resources/icon.ico',
       'resources/windows/explorer-space-bridge.ps1',
       'resources/windows/explorer-space-shell-tab-helper.cs',
       'resources/windows/explorer-space-integrity.json',

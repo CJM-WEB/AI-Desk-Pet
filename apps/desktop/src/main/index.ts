@@ -17,7 +17,6 @@ import {
   dialog,
   ipcMain,
   Menu,
-  nativeImage,
   powerMonitor,
   safeStorage,
   screen,
@@ -245,19 +244,15 @@ async function loadRenderer(
   await window.loadFile(join(__dirname, '../renderer/index.html'), { query: { view } });
 }
 
-function createTrayImage() {
-  const image = nativeImage.createFromDataURL(
-    'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9Z8ZkAAAAASUVORK5CYII='
-  );
-  return image.resize({ width: 16, height: 16 });
-}
-
 async function createApplicationWindows(
   startupCleanup: ReturnType<typeof createStartupCleanupStack>,
   applicationQuit: ReturnType<typeof createApplicationQuitCoordinator>
 ): Promise<void> {
   try {
   Menu.setApplicationMenu(null);
+  // 窗口与托盘共用多尺寸官方图标，开发和安装版均从固定应用资源读取。
+  const applicationIcon = join(app.isPackaged ? process.resourcesPath : join(__dirname, '../../resources'), 'icon.ico');
+  app.on('browser-window-created', (_event, window) => window.setIcon(applicationIcon));
   const preload = join(__dirname, '../preload/index.cjs');
   const pet = createPetWindow(BrowserWindow, preload, {
     enableE2eProbe: Boolean(e2eBoundary)
@@ -1106,7 +1101,7 @@ async function createApplicationWindows(
   };
   let contextMenu = await buildContextMenu();
 
-  tray = new Tray(createTrayImage());
+  tray = new Tray(applicationIcon);
   tray.setToolTip('AI Pet 桌宠');
   tray.setContextMenu(contextMenu);
   const trayRefreshController = createTrayRefreshController({
