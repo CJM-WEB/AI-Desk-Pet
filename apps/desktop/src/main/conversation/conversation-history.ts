@@ -17,7 +17,11 @@ export class ConversationHistory {
   private readonly entries: VisibleConversationTurn[] = [];
   private totalCharacters = 0;
 
-  constructor(options: { maxTurns?: number; maxCharacters?: number } = {}) {
+  constructor(private readonly options: {
+    maxTurns?: number;
+    maxCharacters?: number;
+    onChange?(): void;
+  } = {}) {
     const maxTurns = options.maxTurns ?? DEFAULT_MAX_TURNS;
     const maxCharacters = options.maxCharacters ?? DEFAULT_MAX_CHARACTERS;
     if (
@@ -45,6 +49,7 @@ export class ConversationHistory {
     this.entries.push(entry);
     this.totalCharacters += entryCharacters;
     this.trim();
+    this.options.onChange?.();
   }
 
   turns(): readonly VisibleConversationTurn[] {
@@ -74,6 +79,16 @@ export class ConversationHistory {
   clear(): void {
     this.entries.length = 0;
     this.totalCharacters = 0;
+    this.options.onChange?.();
+  }
+
+  /** 恢复仍经过原有完整回合校验和裁剪；无效数据不得留下半份上下文。 */
+  restore(turns: readonly VisibleConversationTurn[]): void {
+    const restored = new ConversationHistory({ maxTurns: this.maxTurns, maxCharacters: this.maxCharacters });
+    for (const turn of turns) restored.append(turn);
+    this.entries.splice(0, this.entries.length, ...restored.entries);
+    this.totalCharacters = restored.totalCharacters;
+    this.options.onChange?.();
   }
 
   private copyTurn(turn: VisibleConversationTurn): VisibleConversationTurn {

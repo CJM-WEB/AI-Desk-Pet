@@ -79,6 +79,31 @@ describe('preload 清除本地数据转发', () => {
 });
 
 describe('preload 公开 API', () => {
+  test('恢复当前对话只发送无参数命令，正文只通过独立事件交付', async () => {
+    invoke.mockResolvedValueOnce({ messages: ['不能作为调用结果返回'] });
+    expect(exposedApi?.restoreConversation).toBeTypeOf('function');
+    await expect(exposedApi!.restoreConversation()).resolves.toBeUndefined();
+    expect(invoke).toHaveBeenCalledExactlyOnceWith(ipcChannels.conversationRestore);
+  });
+
+  test('恢复正文事件严格校验快照并只移除自己的监听者', () => {
+    const listener = vi.fn();
+    expect(exposedApi?.onConversationSnapshot).toBeTypeOf('function');
+    const release = exposedApi!.onConversationSnapshot(listener);
+    const handler = on.mock.calls.filter(([channel]) => channel === ipcChannels.conversationSnapshot).at(-1)?.[1] as
+      (event: unknown, payload: unknown) => void;
+    expect(handler).toBeTypeOf('function');
+    const snapshot = { messages: [{ id: 'message-1', role: 'user', text: '恢复正文' }], activeAssistantStreamTurnId: null, nextMessageId: 1 };
+    handler({}, snapshot);
+    handler({}, { ...snapshot, permissions: ['不能恢复授权'] });
+    handler({}, { ...snapshot, activeAssistantStreamTurnId: 'missing' });
+    handler({}, { ...snapshot, messages: [{ ...snapshot.messages[0], role: 'tool' }] });
+    expect(listener).toHaveBeenCalledExactlyOnceWith(snapshot);
+    removeListener.mockClear();
+    release();
+    expect(removeListener).toHaveBeenCalledExactlyOnceWith(ipcChannels.conversationSnapshot, handler);
+  });
+
   test('自然文件问句与普通聊天均只传正文', async () => {
     await exposedApi!.submitMessage('note.txt 里面写了什么？');
     await exposedApi!.submitMessage('你好');
@@ -143,6 +168,8 @@ describe('preload 公开 API', () => {
       'confirmAction',
       'cancelAction',
       'resetConversation',
+      'restoreConversation',
+      'onConversationSnapshot',
       'resolveHistoryDisclosure',
       'resolveCapabilityAuthorization',
       'onTaskEvent',

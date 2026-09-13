@@ -144,7 +144,6 @@ interface ActiveCapabilityTurn {
 type ExpressionTurn = { context: TurnContext; controller: AbortController; adapter: ConversationChatAdapter };
 
 export class ConversationCoordinator {
-  private assistantTurnSequence = 0;
   private state: ConversationState = { kind: 'idle' };
   private readonly createId: () => string;
   private generation: string;
@@ -481,7 +480,7 @@ export class ConversationCoordinator {
     }
   }
 
-  async resetConversation(): Promise<void> {
+  async resetConversation(options: { preserveMessages?: boolean } = {}): Promise<void> {
     if (this.state.kind === 'closed') throw publicErrorForCode('CONVERSATION_CLOSED');
     if (this.state.kind === 'resetting') throw publicErrorForCode('TASK_ALREADY_ACTIVE');
     this.cancelExpression();
@@ -526,14 +525,15 @@ export class ConversationCoordinator {
       failures.push(error);
     }
     try {
-      this.options.history.clear();
+      if (!options.preserveMessages) this.options.history.clear();
     } catch (error) {
       failures.push(error);
     }
 
     if (failures.length > 0) throw publicError(failures[0]);
     if (this.state !== resettingState) return;
-    this.options.emit({ type: 'conversation_reset', generation: nextGeneration });
+    this.options.emit({ type: 'conversation_reset', generation: nextGeneration,
+      ...(options.preserveMessages ? { preserveMessages: true } : {}) });
     if (this.state === resettingState) this.state = { kind: 'idle' };
   }
 
@@ -619,7 +619,7 @@ export class ConversationCoordinator {
       }
       if (!this.isRunning(context) || context.controller.signal.aborted) return;
     }
-    const turnId = `assistant-${++this.assistantTurnSequence}`;
+    const turnId = `assistant-${randomUUID()}`;
     const bufferedDeltas: string[] = [];
     // 同步捕获公开快照和宿主标记；后者绝不进入模型请求或 Renderer。
     const expressionContext = this.options.behavior.captureExpressionContext();

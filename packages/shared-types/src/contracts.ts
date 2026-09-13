@@ -86,7 +86,9 @@ export type TaskPermissionRequiredEvent = z.infer<typeof taskPermissionRequiredE
 
 export const conversationResetEventSchema = z.object({
   type: z.literal('conversation_reset'),
-  generation: z.string().min(1).max(128)
+  generation: z.string().min(1).max(128),
+  // 配置失效撤销交互与旧授权，但只有明确新对话才清空正文。
+  preserveMessages: z.boolean().optional()
 }).strict();
 export type ConversationResetEvent = z.infer<typeof conversationResetEventSchema>;
 

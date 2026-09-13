@@ -1,7 +1,5 @@
 import { CHARACTER_TRANSIENT_DURATION_MS } from '@myself/character-runtime';
 import {
-  ASSISTANT_STREAM_TEXT_MAX_CHARACTERS,
-  ASSISTANT_STREAM_TURN_ID_MAX_CHARACTERS,
   type TaskPermissionRequiredEvent,
   type CapabilityAuthorizationRequiredEvent,
   type TaskEvent,
@@ -9,15 +7,15 @@ import {
 } from '@myself/shared-types';
 import { useStore } from 'zustand';
 import { createStore, type StoreApi } from 'zustand/vanilla';
-const MAX_MESSAGES = 100;
+import {
+  conversationTranscriptSnapshotSchema,
+  emptyConversationTranscript,
+  reduceConversationTranscript,
+  type ConversationTranscriptMessage,
+  type ConversationTranscriptSnapshot
+} from '../../../shared/conversation-transcript';
 
-export type TaskViewMessage = {
-  id: string;
-  role: 'user' | 'assistant' | 'error';
-  text: string;
-  code?: string;
-  nextAction?: string;
-};
+export type TaskViewMessage = ConversationTranscriptMessage;
 
 export type PendingHistoryDisclosure = Readonly<{
   requestId: string;
@@ -32,6 +30,7 @@ export interface TaskViewState {
   conversationRevision: number;
   phase: TaskPhase;
   messages: TaskViewMessage[];
+  persistenceError: ConversationTranscriptSnapshot['persistenceError'] | null;
   pendingPermissions: TaskPermissionRequiredEvent[];
   completeTaskPermission(actionId: string): void;
   pendingHistoryDisclosure: PendingHistoryDisclosure | null;
@@ -40,6 +39,7 @@ export interface TaskViewState {
   characterState: { stateId: string; source: 'main' };
   applyCharacterPlayback(stateId: string): void;
   apply(event: TaskEvent): void;
+  restoreTranscript(snapshot: ConversationTranscriptSnapshot): void;
   beginHistoryDisclosureResolution(requestId: string): boolean;
   releaseHistoryDisclosureResolution(requestId: string): void;
   completeHistoryDisclosure(requestId: string): void;
@@ -53,11 +53,8 @@ function terminalPhase(phase: TaskPhase): boolean {
 }
 
 export function createTaskStore(): StoreApi<TaskViewState> {
-  let nextMessageId = 0;
+  let transcript = emptyConversationTranscript();
   let transientTimer: ReturnType<typeof setTimeout> | null = null;
-  let activeAssistantStreamTurnId: string | null = null;
-
-  const streamMessageId = (turnId: string): string => `assistant-stream-${turnId}`;
 
   const clearTransientTimer = (): void => {
     if (transientTimer !== null) clearTimeout(transientTimer);
@@ -68,6 +65,7 @@ export function createTaskStore(): StoreApi<TaskViewState> {
     conversationRevision: 0,
     phase: 'idle',
     messages: [],
+    persistenceError: null,
     pendingPermissions: [],
     pendingHistoryDisclosure: null,
     pendingCapabilityAuthorization: null,
@@ -103,69 +101,16 @@ export function createTaskStore(): StoreApi<TaskViewState> {
         : state);
     },
     applyCharacterPlayback: stateId => set({ characterState: { stateId, source: 'main' } }),
+    restoreTranscript: snapshot => {
+      const { persistenceError, ...restored } = conversationTranscriptSnapshotSchema.parse(snapshot);
+      transcript = restored;
+      set({ messages: transcript.messages, persistenceError: persistenceError ?? null });
+    },
     apply: event => {
-      if (event.type === 'assistant_message_start') {
-        if (event.turnId.length > ASSISTANT_STREAM_TURN_ID_MAX_CHARACTERS) return;
-        const previousId = activeAssistantStreamTurnId === null
-          ? null
-          : streamMessageId(activeAssistantStreamTurnId);
-        activeAssistantStreamTurnId = event.turnId;
-        const message: TaskViewMessage = {
-          id: streamMessageId(event.turnId),
-          role: 'assistant',
-          text: ''
-        };
-        set(state => ({
-          messages: [
-            ...state.messages.filter(item => item.id !== previousId && item.id !== message.id),
-            message
-          ].slice(-MAX_MESSAGES)
-        }));
-        return;
-      }
-      if (event.type === 'assistant_message_delta') {
-        if (activeAssistantStreamTurnId !== event.turnId) return;
-        const id = streamMessageId(event.turnId);
-        const current = get().messages.find(message => message.id === id);
-        if (
-          current === undefined
-          || current.text.length + event.delta.length > ASSISTANT_STREAM_TEXT_MAX_CHARACTERS
-        ) {
-          activeAssistantStreamTurnId = null;
-          set(state => ({ messages: state.messages.filter(message => message.id !== id) }));
-          return;
-        }
-        set(state => ({
-          messages: state.messages.map(message => message.id === id
-            ? { ...message, text: `${message.text}${event.delta}` }
-            : message)
-        }));
-        return;
-      }
-      if (event.type === 'assistant_message_commit') {
-        if (activeAssistantStreamTurnId !== event.turnId) return;
-        activeAssistantStreamTurnId = null;
-        const id = streamMessageId(event.turnId);
-        if (event.text.length > ASSISTANT_STREAM_TEXT_MAX_CHARACTERS) {
-          set(state => ({ messages: state.messages.filter(message => message.id !== id) }));
-          return;
-        }
-        set(state => ({
-          messages: state.messages.map(message => message.id === id
-            ? { ...message, text: event.text }
-            : message)
-        }));
-        return;
-      }
-      if (event.type === 'message') {
-        const message: TaskViewMessage = {
-          id: `message-${++nextMessageId}`,
-          role: event.role,
-          text: event.text
-        };
-        set(state => ({ messages: [...state.messages, message].slice(-MAX_MESSAGES) }));
-        return;
-      }
+      const next = reduceConversationTranscript(transcript, event);
+      if (next !== transcript) { transcript = next; set({ messages: next.messages }); }
+      if (event.type === 'message' || event.type === 'assistant_message_start'
+        || event.type === 'assistant_message_delta' || event.type === 'assistant_message_commit') return;
       if (event.type === 'character_emotion') return;
       if (event.type === 'character_carrying') return;
       if (event.type === 'history_disclosure_required') {
@@ -199,13 +144,12 @@ export function createTaskStore(): StoreApi<TaskViewState> {
         return;
       }
       if (event.type === 'conversation_reset') {
-        // reset 事件是 Renderer 清空当前会话状态的唯一事实来源。
+        // 配置失效同样撤销交互 owner，但只有明确新对话清空已提交正文。
         clearTransientTimer();
-        activeAssistantStreamTurnId = null;
         set(state => ({
           conversationRevision: state.conversationRevision + 1,
           phase: 'idle',
-          messages: [],
+          ...(event.preserveMessages ? {} : { persistenceError: null }),
           pendingPermissions: [],
           pendingHistoryDisclosure: null,
           pendingCapabilityAuthorization: null,
@@ -215,22 +159,7 @@ export function createTaskStore(): StoreApi<TaskViewState> {
         return;
       }
       if (event.type === 'error') {
-        const activeStreamId = activeAssistantStreamTurnId === null
-          ? null
-          : streamMessageId(activeAssistantStreamTurnId);
-        activeAssistantStreamTurnId = null;
-        const message: TaskViewMessage = {
-          id: `message-${++nextMessageId}`,
-          role: 'error',
-          text: event.message,
-          code: event.code,
-          ...(event.nextAction ? { nextAction: event.nextAction } : {})
-        };
         set(state => ({
-          messages: [
-            ...state.messages.filter(item => item.id !== activeStreamId),
-            message
-          ].slice(-MAX_MESSAGES),
           pendingCapabilityAuthorization: null,
           ...(state.resolvingHistoryDisclosureRequestId
             && state.pendingHistoryDisclosure?.requestId
@@ -255,19 +184,12 @@ export function createTaskStore(): StoreApi<TaskViewState> {
       }
       clearTransientTimer();
       const phase = event.phase;
-      const activeStreamId = terminalPhase(phase) && activeAssistantStreamTurnId !== null
-        ? streamMessageId(activeAssistantStreamTurnId)
-        : null;
-      if (terminalPhase(phase)) activeAssistantStreamTurnId = null;
       const resolvingDisclosureFailed = phase === 'error'
         && get().resolvingHistoryDisclosureRequestId !== null
         && get().pendingHistoryDisclosure?.requestId
           === get().resolvingHistoryDisclosureRequestId;
       set({
         phase,
-        ...(activeStreamId === null
-          ? {}
-          : { messages: get().messages.filter(message => message.id !== activeStreamId) }),
         ...(resolvingDisclosureFailed
           ? {
               pendingHistoryDisclosure: null,
@@ -304,16 +226,30 @@ export function useTaskStore<T>(selector: (state: TaskViewState) => T): T {
 
 interface TaskEventApi {
   onTaskEvent(listener: (event: TaskEvent) => void): () => void;
+  onConversationSnapshot?(listener: (snapshot: ConversationTranscriptSnapshot) => void): () => void;
+  restoreConversation?(): Promise<void>;
 }
 
 export function createTaskEventSubscription(store: StoreApi<TaskViewState>) {
   let subscribers = 0;
   let release: (() => void) | null = null;
+  let releaseSnapshot: (() => void) | null = null;
+  let restoreSequence = 0;
 
   return {
-    mount(api: TaskEventApi): () => void {
+    mount(api: TaskEventApi, restoreConversation = false): () => void {
       subscribers += 1;
       if (!release) release = api.onTaskEvent(event => store.getState().apply(event));
+      if (restoreConversation && !releaseSnapshot && api.onConversationSnapshot && api.restoreConversation) {
+        // 先订阅再请求；Main 按事件发送顺序推送快照，invoke 的迟到确认不写视图。
+        const owner = ++restoreSequence;
+        const revision = store.getState().conversationRevision;
+        releaseSnapshot = api.onConversationSnapshot(snapshot => store.getState().restoreTranscript(snapshot));
+        void api.restoreConversation().catch(() => {
+          if (owner !== restoreSequence || revision !== store.getState().conversationRevision) return;
+          store.setState({ persistenceError: 'CONVERSATION_LOAD_FAILED' });
+        });
+      }
       let mounted = true;
       return () => {
         if (!mounted) return;
@@ -322,6 +258,9 @@ export function createTaskEventSubscription(store: StoreApi<TaskViewState>) {
         if (subscribers === 0 && release) {
           release();
           release = null;
+          releaseSnapshot?.();
+          releaseSnapshot = null;
+          restoreSequence += 1;
         }
       };
     }

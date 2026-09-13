@@ -138,8 +138,18 @@ describe('高级设置白名单 IPC', () => {
     const result = await handlers.get(ipcChannels.settingsProfileSave)?.({}, input);
 
     expect(service.saveProviderProfile).toHaveBeenCalledWith(input);
-    expect(lifecycle.onConfigurationChanged).toHaveBeenCalledOnce();
+    expect(lifecycle.onConfigurationChanged).not.toHaveBeenCalled();
     expect(JSON.stringify(result)).not.toContain('sk-private-value');
+  });
+
+  test('无痕变更等待旧运行与持久化生命周期完成才返回', async () => {
+    const { handlers, ipcMain } = createIpcMain(); const service = serviceDouble();
+    let release!: () => void; let settled = false;
+    const lifecycle = { onConfigurationChanged: vi.fn(async () => new Promise<void>(resolve => { release = resolve; })) };
+    registerAdvancedSettingsIpc(ipcMain, service, lifecycle);
+    const saving = Promise.resolve(handlers.get(ipcChannels.settingsIncognitoSet)?.({}, { incognito: true })).then(() => { settled = true; });
+    await vi.waitFor(() => expect(lifecycle.onConfigurationChanged).toHaveBeenCalledOnce());
+    expect(settled).toBe(false); release(); await saving;
   });
 
   test('未知字段在进入服务前被稳定拒绝', async () => {

@@ -6,6 +6,7 @@ import {
   type TaskEvent
 } from '@myself/shared-types';
 import { ipcChannels } from '../shared/ipc-channels';
+import { conversationTranscriptSnapshotSchema } from '../shared/conversation-transcript';
 import type {
   CharacterCreateInput,
   CharacterEvent,
@@ -149,6 +150,15 @@ const api: MyselfApi = {
     ipcRenderer.invoke(ipcChannels.actionCancel, { actionId })
   ),
   resetConversation: (): Promise<void> => ipcRenderer.invoke(ipcChannels.conversationReset),
+  restoreConversation: async (): Promise<void> => { await ipcRenderer.invoke(ipcChannels.conversationRestore); },
+  onConversationSnapshot: listener => {
+    const handler = (_event: Electron.IpcRendererEvent, payload: unknown): void => {
+      const parsed = conversationTranscriptSnapshotSchema.safeParse(payload);
+      if (parsed.success) listener(parsed.data);
+    };
+    ipcRenderer.on(ipcChannels.conversationSnapshot, handler);
+    return () => ipcRenderer.removeListener(ipcChannels.conversationSnapshot, handler);
+  },
   resolveHistoryDisclosure: (
     requestId: string,
     decision: HistoryDisclosureDecision

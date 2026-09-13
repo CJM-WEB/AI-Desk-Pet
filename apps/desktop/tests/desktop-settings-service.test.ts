@@ -9,6 +9,7 @@ import { CharacterExpressionEngine, characterManifestV3Schema } from '@myself/ch
 import { v3Fixture, resourceFields } from '../../../packages/character-runtime/tests/character-v3-fixture';
 import { registerAdvancedSettingsIpc } from '../src/main/ipc/register-ipc';
 import { ipcChannels } from '../src/shared/ipc-channels';
+import { ModelChangeCoordinator } from '../src/main/settings/model-change-coordinator';
 
 function providerSnapshot() {
   return {
@@ -109,6 +110,14 @@ function createFixture() {
     getStatus: vi.fn(() => localModelStatus),
     setEnabled: vi.fn(async () => undefined)
   };
+  const confirmModelChange = vi.fn(async () => true);
+  const invalidateConfiguration = vi.fn<() => Promise<void>>(async () => undefined);
+  const onModelChanged = vi.fn(async () => undefined);
+  const onIncognitoChanged = vi.fn<(enabled: boolean) => Promise<void>>(async () => undefined);
+  const modelChanges = new ModelChangeCoordinator({
+    readConfiguration: async () => ({ ...await settings.getProviderSettings(), localModelEnabled: localModel.getStatus().enabled }),
+    confirmModelChange, invalidateConfiguration, onModelChanged
+  });
   const options = {
     settings,
     secrets,
@@ -116,6 +125,8 @@ function createFixture() {
     privacySessions,
     sessionId: 'desktop-session',
     localModel,
+    modelChanges,
+    onIncognitoChanged,
     applyPetAlwaysOnTop,
     applyCharacterBehaviorSettings,
     applyAutonomousMoodEnabled
@@ -132,12 +143,51 @@ function createFixture() {
     applyPetAlwaysOnTop,
     applyCharacterBehaviorSettings,
     localModel,
+    confirmModelChange,
+    invalidateConfiguration,
+    onModelChanged,
+    onIncognitoChanged,
     readStoredPetAlwaysOnTop: () => storedPetAlwaysOnTop,
     setStoredPetAlwaysOnTop: (enabled: boolean) => { storedPetAlwaysOnTop = enabled; }
   };
 }
 
 describe('DesktopSettingsService', () => {
+  test('取消活动模型档案更新、删除和路由切换时保留设置密钥与旧对话', async () => {
+    const f = createFixture();
+    f.localModel.getStatus.mockReturnValue({ enabled: false, phase: 'disabled', backend: null, reasonCode: null });
+    f.confirmModelChange.mockResolvedValue(false);
+    await expect(f.service.saveProviderProfile({ profile: { ...providerSnapshot().profiles[0]!, modelId: 'new-model' }, secret: 'new-secret', persistSecret: true })).rejects.toMatchObject({ code: 'MODEL_CHANGE_CANCELLED' });
+    await expect(f.service.deleteProviderProfile('openai-main')).rejects.toMatchObject({ code: 'MODEL_CHANGE_CANCELLED' });
+    await expect(f.service.saveModelRoute({ ...providerSnapshot().route, primaryProfileId: null, agentProfileId: null })).rejects.toMatchObject({ code: 'MODEL_CHANGE_CANCELLED' });
+    expect(f.confirmModelChange).toHaveBeenCalledTimes(3);
+    expect(f.settings.saveProviderProfile).not.toHaveBeenCalled();
+    expect(f.settings.deleteProviderProfile).not.toHaveBeenCalled();
+    expect(f.settings.saveModelRoute).not.toHaveBeenCalled();
+    expect(f.secrets.save).not.toHaveBeenCalled(); expect(f.secrets.clear).not.toHaveBeenCalled();
+    expect(f.invalidateConfiguration).not.toHaveBeenCalled(); expect(f.onModelChanged).not.toHaveBeenCalled();
+  });
+
+  test('无痕开关先应用会话隐私并等待存储hook完成才返回', async () => {
+    const f = createFixture(); let release!: () => void; let settled = false;
+    f.onIncognitoChanged.mockImplementation(async () => {
+      expect(f.privacySessions.isLongTermMemoryAllowed('desktop-session')).toBe(false);
+      await new Promise<void>(resolve => { release = resolve; });
+    });
+    const changing = f.service.setIncognitoSession(true).then(() => { settled = true; });
+    await vi.waitFor(() => expect(f.onIncognitoChanged).toHaveBeenCalledWith(true));
+    expect(settled).toBe(false); release(); await changing;
+  });
+
+  test('Qwen覆盖期间保存云配置不确认不清空，但提交前等待旧运行失效', async () => {
+    const f = createFixture(); let release!: () => void;
+    f.invalidateConfiguration.mockImplementation(async () => new Promise<void>(resolve => { release = resolve; }));
+    const saved = f.service.saveModelRoute({ ...providerSnapshot().route, primaryProfileId: null });
+    await vi.waitFor(() => expect(f.invalidateConfiguration).toHaveBeenCalledOnce());
+    expect(f.settings.saveModelRoute).not.toHaveBeenCalled(); release(); await saved;
+    expect(f.settings.saveModelRoute).toHaveBeenCalledOnce();
+    expect(f.confirmModelChange).not.toHaveBeenCalled(); expect(f.onModelChanged).not.toHaveBeenCalled();
+  });
   test('同一隐私 IPC 关闭自主心情保留已有心情，既有隐私变化仍重置', async () => {
     const f = createFixture();
     const engine = new CharacterExpressionEngine({ manifest: characterManifestV3Schema.parse({ ...v3Fixture(), ...resourceFields }), now: () => 0 });

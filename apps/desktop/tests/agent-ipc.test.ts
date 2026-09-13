@@ -3,7 +3,7 @@ import type { IpcMain, WebContents } from 'electron';
 import { registerAgentIpc } from '../src/main/ipc/register-ipc';
 import { ipcChannels } from '../src/shared/ipc-channels';
 
-type Handler = (event: unknown, input?: unknown) => unknown;
+type Handler = (event: unknown, ...args: unknown[]) => unknown;
 
 function createIpcMain() {
   const handlers = new Map<string, Handler>();
@@ -22,12 +22,16 @@ function createService() {
     resolveFileAction: vi.fn(async () => undefined),
     resolveHistoryDisclosure: vi.fn(async () => undefined),
     resolveCapabilityAuthorization: vi.fn(async () => undefined),
-    resetConversation: vi.fn(async () => undefined)
+    resetConversation: vi.fn(async () => undefined),
+    getConversationSnapshot: vi.fn(() => ({
+      messages: [{ id: 'message-1', role: 'user' as const, text: '已保存正文' }],
+      activeAssistantStreamTurnId: null, nextMessageId: 1
+    }))
   };
 }
 
 function webContents(isDestroyed = false): WebContents {
-  return { isDestroyed: () => isDestroyed } as WebContents;
+  return { isDestroyed: () => isDestroyed, send: vi.fn() } as unknown as WebContents;
 }
 
 function createAgentIpcFixture() {
@@ -60,6 +64,55 @@ const agentMutatingInvocations = [
 ] as const;
 
 describe('Agent IPC', () => {
+  test('恢复正文同步发送至当前聊天窗口，调用结果不携带迟到快照', () => {
+    const fixture = createAgentIpcFixture();
+    const handler = fixture.handlers.get(ipcChannels.conversationRestore);
+    expect(handler).toBeTypeOf('function');
+    const result = handler!(fixture.currentEvent);
+    expect(result).toBeUndefined();
+    expect(fixture.currentChat.send).toHaveBeenCalledExactlyOnceWith(ipcChannels.conversationSnapshot, {
+      messages: [{ id: 'message-1', role: 'user', text: '已保存正文' }],
+      activeAssistantStreamTurnId: null, nextMessageId: 1
+    });
+  });
+
+  test.each([[], [undefined], [{}], [null], [{ history: ['伪造'] }], [undefined, {}]].map(args => ({ args })))('恢复通道只接纳完全无参数调用 %#', ({ args }) => {
+    const fixture = createAgentIpcFixture();
+    const handler = fixture.handlers.get(ipcChannels.conversationRestore);
+    expect(handler).toBeTypeOf('function');
+    if (args.length === 0) expect(handler!(fixture.currentEvent)).toBeUndefined();
+    else {
+      expect(() => handler!(fixture.currentEvent, ...args)).toThrow();
+      expect(fixture.service.getConversationSnapshot).not.toHaveBeenCalled();
+      expect(fixture.currentChat.send).not.toHaveBeenCalled();
+    }
+  });
+
+  test.each(['other', 'replaced', 'missing', 'destroyed'] as const)('恢复正文拒绝非当前聊天窗口：%s', kind => {
+    const fixture = createAgentIpcFixture();
+    const sender = kind === 'other' ? webContents() : kind === 'destroyed' ? webContents(true) : fixture.currentChat;
+    if (kind === 'replaced') fixture.replaceChat(webContents());
+    if (kind === 'missing') fixture.replaceChat(null);
+    if (kind === 'destroyed') fixture.replaceChat(sender);
+    const handler = fixture.handlers.get(ipcChannels.conversationRestore);
+    expect(handler).toBeTypeOf('function');
+    expect(() => handler!({ sender })).toThrow('AGENT_IPC_SENDER_INVALID');
+    expect(fixture.service.getConversationSnapshot).not.toHaveBeenCalled();
+    expect(sender.send).not.toHaveBeenCalled();
+  });
+
+  test.each([
+    { messages: [], activeAssistantStreamTurnId: null, nextMessageId: 0, permissions: ['私有许可'] },
+    { messages: [{ id: 'message-1', role: 'tool', text: '私有工具数据' }], activeAssistantStreamTurnId: null, nextMessageId: 1 }
+  ])('恢复正文拒绝非法服务输出，不向窗口发送内容 %#', snapshot => {
+    const fixture = createAgentIpcFixture();
+    fixture.service.getConversationSnapshot.mockReturnValue(snapshot as never);
+    const handler = fixture.handlers.get(ipcChannels.conversationRestore);
+    expect(handler).toBeTypeOf('function');
+    expect(() => handler!(fixture.currentEvent)).toThrow('CONVERSATION_SNAPSHOT_INVALID');
+    expect(fixture.currentChat.send).not.toHaveBeenCalled();
+  });
+
   test('单一发送只传规范化正文且仍校验当前聊天窗口', async () => {
     const fixture = createAgentIpcFixture();
     const handler = fixture.handlers.get(ipcChannels.chatSubmit)!;

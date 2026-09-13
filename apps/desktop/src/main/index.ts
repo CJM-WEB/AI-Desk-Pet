@@ -7,6 +7,7 @@ const __dirname = import.meta.dirname;
 import { ModelRouter } from '@myself/agent-core';
 import {
   providerCatalog,
+  taskEventSchema,
   type ProviderProfileV2,
   type TaskEvent
 } from '@myself/shared-types';
@@ -40,6 +41,8 @@ import { ConversationEventProjection } from
   './conversation/conversation-event-projection';
 import { createMainConversationComposition } from
   './conversation/main-conversation-composition';
+import { ConversationSessionStore } from './conversation/conversation-session-store';
+import { ModelChangeCoordinator, conversationModelIdentity, type ModelConfiguration } from './settings/model-change-coordinator';
 import {
   createCoalescedAsyncPublisher,
   createMainE2eExplorerBridge,
@@ -467,11 +470,23 @@ async function createApplicationWindows(
   if (characterRecoverySnapshot.fallbackErrorCode) {
     console.error(`角色启动恢复：${characterRecoverySnapshot.fallbackErrorCode}`);
   }
-  const secrets = new SecretStore(join(storageDirectory, 'provider-secret.bin'), {
+  const localEncryption = {
     isEncryptionAvailable: () => safeStorage.isEncryptionAvailable(),
-    encryptString: value => safeStorage.encryptStringAsync(value),
-    decryptString: async value => (await safeStorage.decryptStringAsync(value)).result
-  });
+    encryptString: (value: string) => safeStorage.encryptStringAsync(value),
+    decryptString: async (value: Buffer) => (await safeStorage.decryptStringAsync(value)).result
+  };
+  const secrets = new SecretStore(join(storageDirectory, 'provider-secret.bin'), localEncryption);
+  const conversationSession = new ConversationSessionStore(
+    join(storageDirectory, 'current-conversation.bin'), localEncryption, {
+      onPersistenceChanged: () => {
+        // 只更新聊天快照中的保存提示，不投递任务失败、不撤销确认卡，也不把错误再写入自身。
+        const target = getCurrentChatWebContents();
+        if (target && !target.isDestroyed()) {
+          target.send(ipcChannels.conversationSnapshot, conversationSession.snapshot());
+        }
+      }
+    }
+  );
   const settingsStore = new SettingsStore(
     join(storageDirectory, 'settings.json'),
     profileId => secrets.hasStoredSecret(profileId)
@@ -488,6 +503,34 @@ async function createApplicationWindows(
       };
   const localModelRuntime = new LocalModelRuntime(localModelRuntimeOptions);
   let resetLocalModelConversation: (() => Promise<void>) | null = null;
+  let startNewConversation: (() => Promise<void>) | null = null;
+  let newConversationPromise: Promise<void> | null = null;
+  let shuttingDown = false;
+  const readModelConfiguration = async (): Promise<ModelConfiguration> => ({
+    ...await settingsStore.getProviderSettings(),
+    localModelEnabled: localModelService.isEnabled()
+  });
+  const modelChanges = new ModelChangeCoordinator({
+    readConfiguration: readModelConfiguration,
+    confirmModelChange: async signal => {
+      if (shuttingDown) return false;
+      const result = await dialog.showMessageBox(await ensureSettingsWindow(), {
+        type: 'question', title: '切换模型', message: '确定切换模型吗？',
+        detail: '切换模型会开启新对话，当前聊天内容将被清空。',
+        buttons: ['取消', '切换模型'], defaultId: 0, cancelId: 0, noLink: true, signal
+      });
+      return !shuttingDown && result.response === 1;
+    },
+    invalidateConfiguration: async () => {
+      if (shuttingDown || !resetLocalModelConversation) throw new Error('CONVERSATION_CLOSED');
+      await newConversationPromise;
+      await resetLocalModelConversation();
+    },
+    onModelChanged: async () => {
+      if (!startNewConversation) throw new Error('CONVERSATION_NOT_READY');
+      await startNewConversation();
+    }
+  });
   let localModelStatus: LocalModelPublicStatus = localModelRuntime.getStatus();
   // 状态投影在 Main 完成严格校验；Renderer 永远不接触端口、令牌、路径、PID 或原始 stderr。
   const publishLocalModelStatus = (status: LocalModelPublicStatus): void => {
@@ -507,13 +550,12 @@ async function createApplicationWindows(
     runtime: localModelRuntime,
     readCloudProviderSettings: () => settingsStore.getProviderSettings(),
     saveEnabled: enabled => settingsStore.saveLocalModelEnabled(enabled),
-    resetForConfigurationChange: () => {
-      if (!resetLocalModelConversation) throw new Error('LOCAL_MODEL_CONVERSATION_NOT_READY');
-      return resetLocalModelConversation();
-    },
+    modelChanges,
     publishStatus: publishLocalModelStatus
   });
   startupCleanup.add(() => localModelService.close());
+  await conversationSession.initialize(conversationModelIdentity(await readModelConfiguration()));
+  startupCleanup.add(() => conversationSession.flush());
   const characterBehaviorSettings = await settingsStore.getCharacterBehaviorSettings();
   await restorePetLayerPreference({
     read: () => settingsStore.getPetAlwaysOnTop(),
@@ -540,6 +582,8 @@ async function createApplicationWindows(
     providers: providerRegistry,
     privacySessions,
     sessionId: 'desktop-session',
+    modelChanges,
+    onIncognitoChanged: enabled => conversationSession.setIncognito(enabled),
     localModel: {
       getStatus: () => localModelStatus,
       setEnabled: enabled => localModelService.setEnabled(enabled)
@@ -1039,7 +1083,10 @@ async function createApplicationWindows(
     )
   });
   const emitConversationEvent = (event: TaskEvent): void => {
-    const validated = conversationEventProjection.publish(event);
+    const validated = taskEventSchema.parse(event);
+    // Main 先接纳同一正式事件，再投递窗口；恢复快照与实时正文始终有单一顺序。
+    conversationSession.observe(validated);
+    conversationEventProjection.publish(validated);
     if (validated.type === 'error') reportedSubmitErrorCode = validated.code;
   };
   publishCharacterBehaviorNotice = notice => emitConversationEvent({
@@ -1052,7 +1099,13 @@ async function createApplicationWindows(
     catalog: mainProviderCatalog,
     privacySessions,
     sessionId,
-    readProviderSettings: () => localModelService.providerSettingsSnapshot(),
+    history: conversationSession.history,
+    readProviderSettings: () => {
+      if (modelChanges.isChanging() || newConversationPromise || shuttingDown) {
+        throw new Error('CONVERSATION_CLOSED');
+      }
+      return localModelService.providerSettingsSnapshot();
+    },
     assertProviderReady: profile => assertProviderReady(profile, localModelStatus),
     readAuthorizedRootPath: () => settingsStore.getAuthorizedRootPath(),
     readPrivacySettings: () => settingsStore.getPrivacySettings(),
@@ -1098,8 +1151,28 @@ async function createApplicationWindows(
     characterProactivityRuntime.setAutonomousMoodEnabled((await settingsStore.getPrivacySettings()).autonomousMoodEnabled);
     await conversationComposition.resetForConfigurationChange();
   };
+  startNewConversation = () => {
+    if (newConversationPromise) return newConversationPromise;
+    // 新对话清空与模型身份写入完成之前，不接纳下一轮，避免异步保存清掉新消息。
+    const operation = Promise.resolve().then(async () => {
+      characterProactivityRuntime.invalidate();
+      const identity = conversationModelIdentity(await readModelConfiguration());
+      await conversationCoordinator.resetConversation();
+      await conversationSession.reset(identity);
+    });
+    const tracked = operation.finally(() => { if (newConversationPromise === tracked) newConversationPromise = null; });
+    newConversationPromise = tracked;
+    return tracked;
+  };
+  const requestNewConversation = () => {
+    if (modelChanges.isChanging() || shuttingDown) throw new Error('CONVERSATION_TRANSITION_PENDING');
+    return startNewConversation!();
+  };
   const conversationIpcService = {
     submit: async (text: string): Promise<void> => {
+      if (modelChanges.isChanging() || newConversationPromise || shuttingDown) {
+        throw new Error('CONVERSATION_TRANSITION_PENDING');
+      }
       reportedSubmitErrorCode = null;
       characterProactivityRuntime.noteUserInteraction();
       await conversationCoordinator.submit(text);
@@ -1136,21 +1209,31 @@ async function createApplicationWindows(
       characterBehaviorDirector.noteUserInteraction('control');
       return conversationCoordinator.resolveCapabilityAuthorization(requestId, decision);
     },
+    getConversationSnapshot: () => conversationSession.snapshot(),
     resetConversation: () => {
       characterProactivityRuntime.noteUserInteraction();
       characterBehaviorDirector.noteUserInteraction('control');
-      characterProactivityRuntime.invalidate();
-      return conversationCoordinator.resetConversation();
+      return requestNewConversation();
     }
   };
   registerAgentIpc(ipcMain, conversationIpcService, getCurrentChatWebContents);
 
   const shutdownApplication = createMainShutdownTransaction({
     beforeExplorerClose: async () => {
+      shuttingDown = true;
       const failures: unknown[] = [];
-      // 会话必须最先封闭；失败时仍继续冲刷既有设置，避免阻断后续关闭事务。
+      // 待确认切换按取消关闭；已接纳提交先结算。Runtime 同时关闭，解除可能仍在等待的模型启动。
+      const modelResults = await Promise.allSettled([modelChanges.close(), localModelService.close()]);
+      for (const result of modelResults) if (result.status === 'rejected') failures.push(result.reason);
+      try { await newConversationPromise; } catch (error) { failures.push(error); }
+      // 切换收尾后封闭会话；失败时仍继续冲刷存储与设置，避免阻断后续关闭事务。
       try {
         await conversationComposition.close();
+      } catch (error) {
+        failures.push(error);
+      }
+      try {
+        await conversationSession.flush();
       } catch (error) {
         failures.push(error);
       }
@@ -1189,16 +1272,12 @@ async function createApplicationWindows(
       return result.canceled ? null : (result.filePaths[0] ?? null);
     }
   });
-  const resetForConfigurationChange = (): void => {
-    void resetLocalModelConversation?.().catch(error => {
-      const code = error instanceof Error && 'code' in error ? error.code : 'UNKNOWN';
-      console.error('配置变更后的会话清理失败。', code);
-    });
-  };
+  const resetForConfigurationChange = () => resetLocalModelConversation!();
   registerSettingsIpc(ipcMain, settingsStore, secrets, {
     onProviderChanged: resetForConfigurationChange,
-    onAuthorizedRootChanged: resetForConfigurationChange
-  }, settingsActions);
+    onAuthorizedRootChanged: resetForConfigurationChange,
+    onConversationCleared: requestNewConversation
+  }, settingsActions, modelChanges);
   registerAdvancedSettingsIpc(ipcMain, desktopSettingsService, {
     onConfigurationChanged: resetForConfigurationChange
   });

@@ -6218,3 +6218,167 @@ test.describe('真实桌宠位置重启恢复', () => {
     }
   });
 });
+
+/** 预植相同模型身份，启动后仅经正式 IPC 写入夹具密钥；不绕过任何真实切换确认。 */
+async function createConversationPersistenceFixture(provider: Awaited<ReturnType<typeof startProviderServer>>) {
+  const profile = {
+    id: 'conversation-persistence-e2e', displayName: '当前对话持久化验证',
+    mode: 'custom' as const, protocol: 'openai-compatible' as const,
+    baseUrl: provider.baseUrl, modelId: 'conversation-persistence-model',
+    additionalParameters: {}, capabilities: ['chat', 'tools'] as ('chat' | 'tools')[]
+  };
+  const fixture = await (await loadElectronFixtureModule()).createElectronAppFixture({
+    workspaceRoot: resolve(process.cwd()), apiKey: provider.apiKey, launchTimeoutMs: 30_000, operationTimeoutMs: 15_000,
+    prepareUserData: async ({ userDataDirectory }) => {
+      const settings = new SettingsStore(join(userDataDirectory, 'settings.json'));
+      await settings.saveProviderProfile({ ...profile, hasStoredSecret: false });
+      await settings.saveModelRoute({
+        primaryProfileId: profile.id, chatProfileId: profile.id, agentProfileId: profile.id,
+        visionProfileId: null, fallbackProfileIds: [], allowCrossProviderFallback: false
+      });
+      await settings.saveLocalModelEnabled(false);
+      await settings.saveMovementMode(0);
+      await settings.savePrivacySettings({
+        dataCategories: { memory: false }, longTermMemory: false,
+        proactivityMode: 'passive', autonomousMoodEnabled: false
+      });
+    }
+  });
+  try {
+    const pet = await waitForRendererPage(fixture, 'pet', 30_000);
+    await pet.evaluate(async ({ profile, apiKey }) => {
+      await window.myself.saveProviderProfile({ profile, secret: apiKey, persistSecret: true });
+      await window.myself.openChat();
+    }, { profile, apiKey: provider.apiKey });
+    return fixture;
+  } catch (error) {
+    await fixture.dispose();
+    throw error;
+  }
+}
+
+/** 正常退出明确等待 Main 写入清理完成，重启继续复用同一隔离目录。 */
+async function closeConversationFixture(fixture: AppFixture): Promise<void> {
+  const chat = await waitForRendererPage(fixture, 'chat');
+  await chat.evaluate(() => { void window.myself.quit(); });
+  await fixture.closeApplicationForInspection();
+}
+
+async function reopenConversationFixture(fixture: AppFixture): Promise<Page> {
+  await fixture.restart();
+  const pet = await waitForRendererPage(fixture, 'pet', 30_000);
+  await pet.evaluate(() => window.myself.openChat());
+  return waitForRendererPage(fixture, 'chat');
+}
+
+test.describe('当前对话持久化与无痕隔离', () => {
+  test('普通聊天重启后恢复可见正文与下一轮上下文，新对话重启后保持空白', async () => {
+    test.setTimeout(180_000);
+    const first = '我们聊聊橘色的晚霞。';
+    const second = '接着刚才的话题聊聊。';
+    const third = '我们开始一个新的话题。';
+    const reply = '橘色的晚霞很温柔。';
+    const provider = await startProviderServer([
+      behaviorBindingsStep(), ...characterChatSteps(reply),
+      behaviorBindingsStep(), ...characterChatSteps('我还记得刚才的晚霞。', {}, { inspect: request => {
+        const dialogue = request.messages.filter(message => message.role !== 'system');
+        expect(dialogue.map(message => [message.role, message.content])).toEqual([
+          ['user', first], ['assistant', reply], ['user', second]
+        ]);
+      } }),
+      behaviorBindingsStep(), ...characterChatSteps('好的，我们聊一个新话题。', {}, { inspect: request => {
+        const dialogue = request.messages.filter(message => message.role !== 'system');
+        expect(dialogue.map(message => [message.role, message.content])).toEqual([['user', third]]);
+      } })
+    ]);
+    let fixture: AppFixture | undefined;
+    try {
+      fixture = await createConversationPersistenceFixture(provider);
+      let chat = await waitForRendererPage(fixture, 'chat');
+      await submitChatMessage(chat, first);
+      await expect(chat.getByText(reply, { exact: true })).toBeVisible();
+      await closeConversationFixture(fixture);
+      const saved = await readFile(join(fixture.userDataDirectory, 'current-conversation.bin'), 'utf8');
+      expect(saved).not.toContain(first);
+      expect(saved).not.toContain(reply);
+
+      chat = await reopenConversationFixture(fixture);
+      await expect(chat.getByText(first, { exact: true })).toBeVisible();
+      await expect(chat.getByText(reply, { exact: true })).toBeVisible();
+      await expect(chat.locator('.messages article.message')).toHaveCount(2);
+      await submitChatMessage(chat, second);
+      await expect(chat.getByText('我还记得刚才的晚霞。', { exact: true })).toBeVisible();
+
+      await chat.getByRole('button', { name: '新对话', exact: true }).click();
+      await expect(chat.locator('.messages article.message')).toHaveCount(0);
+      await closeConversationFixture(fixture);
+      chat = await reopenConversationFixture(fixture);
+      await expect(chat.locator('.messages article.message')).toHaveCount(0);
+      await submitChatMessage(chat, third);
+      await expect(chat.getByText('好的，我们聊一个新话题。', { exact: true })).toBeVisible();
+      provider.assertComplete();
+      expect(provider.inspectionErrors).toEqual([]);
+      expect(fixture.capturedLogEvidence.apiKey).toBe(false);
+    } catch (error) {
+      await test.info().attach('conversation-persistence-diagnostics', {
+        body: JSON.stringify({ requests: provider.requests, inspections: provider.inspectionErrors, logs: fixture?.logs ?? [] }),
+        contentType: 'application/json'
+      });
+      throw error;
+    } finally {
+      try { await fixture?.dispose(); } finally { await provider.close(); }
+    }
+  });
+
+  test('无痕期间和退出无痕后的同一对话不改磁盘，重启恢复此前普通聊天', async () => {
+    test.setTimeout(180_000);
+    const ordinary = '这是需要保留的普通话题。';
+    const ordinaryReply = '我会接着这个话题陪你聊。';
+    const privateText = '这是本次无痕窗口内的话题。';
+    const afterIncognito = '关闭无痕后仍继续这一次话题。';
+    const provider = await startProviderServer([
+      behaviorBindingsStep(), ...characterChatSteps(ordinaryReply),
+      behaviorBindingsStep(), ...characterChatSteps('这句话只留在本次对话。'),
+      behaviorBindingsStep(), ...characterChatSteps('后续这句话也只留在本次对话。')
+    ]);
+    let fixture: AppFixture | undefined;
+    try {
+      fixture = await createConversationPersistenceFixture(provider);
+      let chat = await waitForRendererPage(fixture, 'chat');
+      await submitChatMessage(chat, ordinary);
+      await expect(chat.getByText(ordinaryReply, { exact: true })).toBeVisible();
+      await closeConversationFixture(fixture);
+      const file = join(fixture.userDataDirectory, 'current-conversation.bin');
+      const ordinarySnapshot = await readFile(file);
+
+      chat = await reopenConversationFixture(fixture);
+      await expect(chat.getByText(ordinaryReply, { exact: true })).toBeVisible();
+      await chat.evaluate(() => window.myself.setIncognitoSession(true));
+      await submitChatMessage(chat, privateText);
+      await expect(chat.getByText('这句话只留在本次对话。', { exact: true })).toBeVisible();
+      await chat.evaluate(() => window.myself.setIncognitoSession(false));
+      await submitChatMessage(chat, afterIncognito);
+      await expect(chat.getByText('后续这句话也只留在本次对话。', { exact: true })).toBeVisible();
+      await closeConversationFixture(fixture);
+      expect(await readFile(file)).toEqual(ordinarySnapshot);
+
+      chat = await reopenConversationFixture(fixture);
+      await expect(chat.getByText(ordinary, { exact: true })).toBeVisible();
+      await expect(chat.getByText(ordinaryReply, { exact: true })).toBeVisible();
+      await expect(chat.locator('.messages article.message')).toHaveCount(2);
+      await expect(chat.getByText(privateText, { exact: true })).toHaveCount(0);
+      await expect(chat.getByText(afterIncognito, { exact: true })).toHaveCount(0);
+      provider.assertComplete();
+      expect(provider.inspectionErrors).toEqual([]);
+      expect(fixture.capturedLogEvidence.apiKey).toBe(false);
+    } catch (error) {
+      await test.info().attach('conversation-persistence-diagnostics', {
+        body: JSON.stringify({ requests: provider.requests, inspections: provider.inspectionErrors, logs: fixture?.logs ?? [] }),
+        contentType: 'application/json'
+      });
+      throw error;
+    } finally {
+      try { await fixture?.dispose(); } finally { await provider.close(); }
+    }
+  });
+});

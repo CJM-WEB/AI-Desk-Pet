@@ -10,6 +10,73 @@ afterEach(() => {
 });
 
 describe('Renderer 任务视图状态', () => {
+  test('持久化故障提示与正文恢复不撤销仍有效的交互卡或流式回复', () => {
+    const store = createTaskStore();
+    store.getState().apply({ type: 'history_disclosure_required', requestId: 'pending', targetProviderName: '测试', messageCount: 2, characterCount: 10 });
+    store.getState().restoreTranscript({
+      messages: [{ id: 'assistant-stream-live', role: 'assistant', text: '正在回复' }],
+      nextMessageId: 0, activeAssistantStreamTurnId: 'live', persistenceError: 'CONVERSATION_SAVE_FAILED'
+    });
+    expect(store.getState().persistenceError).toBe('CONVERSATION_SAVE_FAILED');
+    expect(store.getState().pendingHistoryDisclosure?.requestId).toBe('pending');
+    store.getState().apply({ type: 'assistant_message_commit', turnId: 'live', text: '完整回复' });
+    expect(store.getState().messages.map(message => message.text)).toEqual(['完整回复']);
+  });
+
+  test.each(['新对话', '卸载'] as const)('恢复失败晚于%s时不污染后续视图', async boundary => {
+    const store = createTaskStore();
+    let rejectRestore!: (error: Error) => void;
+    const pending = new Promise<void>((_resolve, reject) => { rejectRestore = reject; });
+    const release = createTaskEventSubscription(store).mount({
+      onTaskEvent: () => () => undefined,
+      onConversationSnapshot: () => () => undefined,
+      restoreConversation: () => pending
+    }, true);
+    if (boundary === '新对话') store.getState().apply({ type: 'conversation_reset', generation: 'new' });
+    else release();
+    rejectRestore(new Error('晚到失败'));
+    await pending.catch(() => undefined);
+    expect(store.getState().messages).toEqual([]);
+    release();
+  });
+
+  test('聊天订阅按Main投递顺序恢复，迟到的恢复确认不会覆盖新对话', async () => {
+    const store = createTaskStore();
+    const subscription = createTaskEventSubscription(store);
+    let emit!: (event: TaskEvent) => void;
+    let snapshot!: (value: { messages: Array<{ id: string; role: 'user'; text: string }>; nextMessageId: number; activeAssistantStreamTurnId: null }) => void;
+    let acknowledge!: () => void;
+    const ack = new Promise<void>(resolve => { acknowledge = resolve; });
+    const api = {
+      onTaskEvent: (listener: typeof emit) => { emit = listener; return () => undefined; },
+      onConversationSnapshot: (listener: typeof snapshot) => { snapshot = listener; return () => undefined; },
+      restoreConversation: () => {
+        snapshot({ messages: [{ id: 'message-1', role: 'user', text: '之前保存的聊天' }], nextMessageId: 1, activeAssistantStreamTurnId: null });
+        return ack;
+      }
+    };
+    const release = subscription.mount(api, true);
+    expect(store.getState().messages.map(message => message.text)).toEqual(['之前保存的聊天']);
+    emit({ type: 'conversation_reset', generation: 'new' });
+    emit({ type: 'message', role: 'user', text: '新对话里的文字' });
+    acknowledge();
+    await ack;
+    expect(store.getState().messages.map(message => message.text)).toEqual(['新对话里的文字']);
+    release();
+  });
+
+  test('配置失效只清旧交互卡和运行态，保留用户及助手文字', () => {
+    const store = createTaskStore();
+    store.getState().apply({ type: 'message', role: 'user', text: '保留我的话' });
+    store.getState().apply({ type: 'message', role: 'assistant', text: '保留这句回复' });
+    store.getState().apply({ type: 'history_disclosure_required', requestId: 'old', targetProviderName: '模型', messageCount: 2, characterCount: 10 });
+    store.getState().apply({ type: 'conversation_reset', generation: 'next', preserveMessages: true });
+    expect(store.getState().messages.map(message => message.text)).toEqual(['保留我的话', '保留这句回复']);
+    expect(store.getState().pendingHistoryDisclosure).toBeNull();
+    expect(store.getState().conversationRevision).toBe(1);
+    expect(store.getState().phase).toBe('idle');
+  });
+
   test('披露事件保存不可变展示摘要且不覆盖待处理请求', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     const store = createTaskStore();
@@ -149,15 +216,15 @@ describe('Renderer 任务视图状态', () => {
     });
   });
 
-  test('消息历史只保留最近 100 条', () => {
+  test('完整消息历史不再按原有百条上限裁剪', () => {
     const store = createTaskStore();
 
     for (let index = 0; index < 105; index += 1) {
       store.getState().apply({ type: 'message', role: 'user', text: `消息 ${index}` });
     }
 
-    expect(store.getState().messages).toHaveLength(100);
-    expect(store.getState().messages[0]?.text).toBe('消息 5');
+    expect(store.getState().messages).toHaveLength(105);
+    expect(store.getState().messages[0]?.text).toBe('消息 0');
     expect(store.getState().messages.at(-1)?.text).toBe('消息 104');
   });
 

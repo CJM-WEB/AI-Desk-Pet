@@ -35,6 +35,7 @@ import type {
 import type { PetGeometryRenderView } from './character-motion-ipc';
 import type { LocalModelPublicStatus } from './local-model-ipc';
 import type { WorkshopLayoutSettings } from './workshop-layout-ipc';
+import type { ConversationTranscriptSnapshot } from './conversation-transcript';
 
 export type LocalDataScope = 'conversation' | 'audit' | 'secret' | 'all';
 export type CharacterWorkshopCloseReason = 'window_close' | 'app_quit';
@@ -111,6 +112,8 @@ export interface MyselfApi extends PetWindowInteractionApi {
   confirmAction(actionId: string): Promise<void>;
   cancelAction(actionId: string): Promise<void>;
   resetConversation(): Promise<void>;
+  restoreConversation(): Promise<void>;
+  onConversationSnapshot(listener: (snapshot: ConversationTranscriptSnapshot) => void): () => void;
   resolveHistoryDisclosure(
     requestId: string,
     decision: HistoryDisclosureDecision

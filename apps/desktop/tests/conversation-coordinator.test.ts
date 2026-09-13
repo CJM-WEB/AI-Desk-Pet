@@ -1,4 +1,7 @@
 import type { ModelProvider, ModelRequest, ModelResponse } from '@myself/agent-core';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import type { TaskEvent } from '@myself/shared-types';
 import { describe, expect, test, vi } from 'vitest';
 import {
@@ -12,6 +15,7 @@ import {
 } from '../src/main/conversation/conversation-coordinator';
 import { ConversationDisclosureAdapter } from '../src/main/conversation/conversation-disclosure-adapter';
 import { ConversationHistory } from '../src/main/conversation/conversation-history';
+import { ConversationSessionStore } from '../src/main/conversation/conversation-session-store';
 import { ConversationChatAdapter } from '../src/main/conversation/conversation-chat-adapter';
 import type { ConversationBehaviorPort } from
   '../src/main/characters/character-behavior-director';
@@ -259,9 +263,10 @@ function createHarness(scripts: Array<{
   factoryError?: Error;
   fileTasks?: CapturingCapabilityTasks;
   behavior?: ConversationBehaviorPort;
+  history?: ConversationHistory;
   onEmit?: (event: TaskEvent, coordinator: ConversationCoordinator) => void;
 } = {}) {
-  const history = new ConversationHistory();
+  const history = options.history ?? new ConversationHistory();
   const events: TaskEvent[] = [];
   const fileTasks = options.fileTasks ?? new CapturingCapabilityTasks();
   const privacySessions = new PrivacySessionRegistry();
@@ -378,7 +383,7 @@ describe('ConversationCoordinator', () => {
     expect(harness.fileTasks.submissions).toEqual([]);
     release({ type: 'structured', structured_output: 表现选择() });
     await submitted;
-    await vi.waitFor(() => expect(accepted).toEqual(['assistant-1']));
+    await vi.waitFor(() => expect(accepted).toEqual([expect.stringMatching(/^assistant-.+/u)]));
     await harness.coordinator.close();
   });
 
@@ -516,7 +521,7 @@ describe('ConversationCoordinator', () => {
     captureExpressionContext.mockReturnValue({ ...original, contextRevision: 2 });
     script.resolve({ type: 'text', text: '你好', structured_output: { movementControl: { kind: 'keep' }, capabilityPlan: { kind: 'chat' } } });
     await pending;
-    expect(behavior.completeUserPrompt).toHaveBeenCalledWith(expect.objectContaining({ context: original, eventId: 'assistant-1' }));
+    expect(behavior.completeUserPrompt).toHaveBeenCalledWith(expect.objectContaining({ context: original, eventId: expect.stringMatching(/^assistant-.+/u) }));
     expect(captureExpressionContext).toHaveBeenCalledOnce();
     expect(handleChatResponseFinished).toHaveBeenCalledOnce();
     expect(JSON.stringify(script.requests)).not.toContain('contextRevision');
@@ -803,6 +808,61 @@ describe('ConversationCoordinator', () => {
     expect(harness.events.filter(event => event.type === 'message' && event.role === 'assistant')).toEqual([{ type: 'message', role: 'assistant', text: '你好' }]);
     expect(harness.history.turns()).toEqual([{ userText: '你好呀', assistantText: '你好', providerIdentity: 'openai' }]);
     await vi.waitFor(() => expect(behavior.completeUserPrompt).toHaveBeenCalledWith(expect.objectContaining({ expressionStatus: 'no_match', requestKind: 'ambient' })));
+  });
+
+  test('持久化流式回复后重建协调器继续聊天，旧新回复与上下文均保留', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'ai-pet-conversation-restart-'));
+    const file = join(directory, 'conversation.json');
+    const encryption = {
+      isEncryptionAvailable: () => true,
+      encryptString: async (value: string) => Buffer.from(value, 'utf8').reverse(),
+      decryptString: async (value: Buffer) => Buffer.from(value).reverse().toString('utf8')
+    };
+    const actualRespond = ConversationChatAdapter.prototype.respond;
+    // 当前 Adapter 未向 Provider 转发增量；仅模拟其流式回调，正文与历史仍经过真实 Adapter。
+    const streamedReply = vi.spyOn(ConversationChatAdapter.prototype, 'respond').mockImplementation(function (
+      this: ConversationChatAdapter,
+      input
+    ) {
+      input.onTextDelta?.('待提交片段');
+      return actualRespond.call(this, input);
+    });
+    try {
+      const before = new ConversationSessionStore(file, encryption);
+      await before.initialize('model:a');
+      const first = createHarness([{ profileId: 'chat', providerIdentity: 'openai', providerName: '聊天',
+        script: scriptedProvider({ type: 'text', text: '重启前的完整回复' }) }], {
+        history: before.history,
+        onEmit: event => before.observe(event)
+      });
+      await first.coordinator.submit('重启前的问题');
+      expect(first.events.some(event => event.type === 'assistant_message_commit')).toBe(true);
+      await first.coordinator.close();
+      await before.flush();
+
+      const after = new ConversationSessionStore(file, encryption);
+      await after.initialize('model:a');
+      const nextScript = scriptedProvider({ type: 'text', text: '重启后的完整回复' });
+      const second = createHarness([{ profileId: 'chat', providerIdentity: 'openai', providerName: '聊天', script: nextScript }], {
+        history: after.history,
+        onEmit: event => after.observe(event)
+      });
+      await second.coordinator.submit('接着上一轮聊');
+      await second.coordinator.close();
+      await after.flush();
+      const restored = new ConversationSessionStore(file, encryption);
+      await restored.initialize('model:a');
+      expect(restored.snapshot().messages.map(message => [message.role, message.text])).toEqual([
+        ['user', '重启前的问题'], ['assistant', '重启前的完整回复'],
+        ['user', '接着上一轮聊'], ['assistant', '重启后的完整回复']
+      ]);
+      expect(nextScript.requests.find(request => !request.responseContract)?.messages.slice(-3).map(message => message.content)).toEqual([
+        '重启前的问题', '重启前的完整回复', '接着上一轮聊'
+      ]);
+    } finally {
+      streamedReply.mockRestore();
+      await rm(directory, { recursive: true, force: true });
+    }
   });
 
   test('取消后丢弃不服从 AbortSignal 的迟到增量与 commit', async () => {
@@ -1631,6 +1691,23 @@ describe('ConversationCoordinator', () => {
     }]);
     await expect(harness.coordinator.resolveHistoryDisclosure('request-2', decision)).rejects
       .toSatisfy(error => errorCode(error) === 'DISCLOSURE_REQUEST_EXPIRED');
+  });
+
+  test('配置失效保留已完成上下文，同时取消请求并隔离迟到回复', async () => {
+    const oldProvider = deferredProvider();
+    const harness = createHarness([{ profileId: 'profile-openai', providerIdentity: 'openai', providerName: 'OpenAI', script: oldProvider }]);
+    harness.history.append({ userText: '需要保留的问题', assistantText: '需要保留的回答', providerIdentity: 'openai' });
+    const running = harness.coordinator.submit('正在处理的问题');
+    await vi.waitFor(() => expect(oldProvider.requests.some(request => !request.responseContract)).toBe(true));
+    await harness.coordinator.resetConversation({ preserveMessages: true });
+    oldProvider.resolve({ type: 'text', text: '迟到正文不能接纳' });
+    await running;
+    expect(harness.history.turns()).toEqual([{ userText: '需要保留的问题', assistantText: '需要保留的回答', providerIdentity: 'openai' }]);
+    expect(oldProvider.signals[0]?.aborted).toBe(true);
+    expect(harness.fileTasks.resetCalls).toBe(1);
+    expect(harness.events).toContainEqual({ type: 'conversation_reset', generation: 'request-2', preserveMessages: true });
+    expect(harness.events.some(event => event.type === 'message' && event.text === '迟到正文不能接纳')).toBe(false);
+    await harness.coordinator.close();
   });
 
   test('重置先更换 generation，再按顺序清理并隔离旧 Provider 迟到回复', async () => {

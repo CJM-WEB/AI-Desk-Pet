@@ -65,7 +65,13 @@ describe('Main 通用生命周期', () => {
     expect(source).toMatch(
       /initialEnabled:\s*e2eBoundary\s*\?\s*e2eBoundary\.localModelFixture !== undefined\s*:\s*localModelSettings\.enabled/u
     );
-    expect(source).toContain('readProviderSettings: () => localModelService.providerSettingsSnapshot()');
+    expect(source).toMatch(/readProviderSettings:\s*\(\) => \{[\s\S]*?return localModelService\.providerSettingsSnapshot\(\)/u);
+    const shutdown = source.slice(source.indexOf('beforeExplorerClose: async'));
+    const modelClosing = shutdown.indexOf('Promise.allSettled([modelChanges.close(), localModelService.close()])');
+    const conversationClosing = shutdown.indexOf('await conversationComposition.close()');
+    expect(modelClosing).toBeGreaterThanOrEqual(0);
+    expect(conversationClosing).toBeGreaterThan(modelClosing);
+    expect(shutdown.indexOf('await conversationSession.flush()')).toBeGreaterThan(conversationClosing);
     expect(source).toContain('assertProviderReady: profile => assertProviderReady(');
     expect(windowsReady).toBeGreaterThan(-1);
     expect(backgroundStart).toBeGreaterThan(windowsReady);

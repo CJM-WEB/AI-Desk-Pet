@@ -86,7 +86,7 @@ export function PrivacySettings(props: PrivacySettingsProps) {
             />
           </label>
           <label className="permission-row">
-            <span><strong>无痕会话</strong><small>关闭会话后不保留对话和记忆。</small></span>
+            <span><strong>无痕会话</strong><small>普通对话会加密保存在本机。开启后，后续内容不保存；关闭无痕后，从下一次新对话恢复保存。</small></span>
             <input
               type="checkbox"
               checked={props.incognito}

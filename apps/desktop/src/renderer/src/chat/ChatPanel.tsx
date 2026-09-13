@@ -53,6 +53,7 @@ export function ChatPanel({ api = window.myself }: { api?: MyselfApi }) {
   const conversationRevision = useTaskStore(state => state.conversationRevision);
   const phase = useTaskStore(state => state.phase);
   const messages = useTaskStore(state => state.messages);
+  const persistenceError = useTaskStore(state => state.persistenceError);
   const pendingAction = useTaskStore(state => state.pendingPermissions[0]);
   const pendingHistoryDisclosure = useTaskStore(state => state.pendingHistoryDisclosure);
   const pendingCapabilityAuthorization = useTaskStore(
@@ -319,6 +320,11 @@ export function ChatPanel({ api = window.myself }: { api?: MyselfApi }) {
       </header>
 
       <section className="messages" aria-live="polite" aria-label="对话消息">
+        {persistenceError ? <p className="interaction-error" role="status">
+          {persistenceError === 'CONVERSATION_LOAD_FAILED'
+            ? '无法恢复聊天记录，原记录已保留。点击“新对话”可重新开始保存。'
+            : '聊天记录保存失败，本次新增内容可能无法在重启后恢复。'}
+        </p> : null}
         {messages.length === 0 ? (
           <div className="welcome-card">
             <span aria-hidden="true">☀</span>

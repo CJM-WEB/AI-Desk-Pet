@@ -26,6 +26,7 @@ import { LocalModelProvider } from '../src/main/providers/local-model-provider';
 import { ProviderRegistry } from '../src/main/providers/provider-registry';
 import { assertProviderReady } from '../src/main/settings/session-preflight';
 import type { ProviderSettingsSnapshot } from '../src/main/storage/settings-store';
+import { ModelChangeCoordinator } from '../src/main/settings/model-change-coordinator';
 
 type Backend = 'cpu' | 'vulkan';
 
@@ -552,9 +553,14 @@ export async function runLocalModelAcceptance(input: AcceptanceInput, progress?:
   let cloudSecretCalls = 0;
   let enabled = true;
   const cloudSettings = cloudProviderSettings();
-  const local = new LocalModelService({ initialEnabled: true, runtime,
+  let local!: LocalModelService;
+  const modelChanges = new ModelChangeCoordinator({
+    readConfiguration: async () => ({ ...cloudSettings, localModelEnabled: local.isEnabled() }),
+    confirmModelChange: async () => true, invalidateConfiguration: async () => undefined, onModelChanged: async () => undefined
+  });
+  local = new LocalModelService({ initialEnabled: true, runtime,
     readCloudProviderSettings: async () => structuredClone(cloudSettings), saveEnabled: async value => { enabled = value; },
-    resetForConfigurationChange: async () => undefined, publishStatus: () => undefined
+    modelChanges, publishStatus: () => undefined
   });
   const createProvider = (profile: ProviderProfileV2) => registry.create(profile,
     async () => { cloudSecretCalls++; return 'acceptance-cloud-secret'; },

@@ -53,6 +53,7 @@ export interface MainConversationCodingTaskFactoryInput<TPrivacy> {
 }
 
 export interface MainConversationCompositionOptions<TPrivacy> {
+  history?: ConversationHistory;
   catalog: readonly ProviderCatalogEntry[];
   privacySessions: PrivacySessionRegistry;
   sessionId: string;
@@ -244,7 +245,7 @@ export function createMainConversationComposition<TPrivacy>(
     createCodingTaskTarget
   });
   const coordinator = new ConversationCoordinator({
-    history: new ConversationHistory(),
+    history: options.history ?? new ConversationHistory(),
     chatTurnFactory: { create: createChatTurn },
     disclosureAdapter: new ConversationDisclosureAdapter({
       sessionId: options.sessionId,
@@ -296,7 +297,7 @@ export function createMainConversationComposition<TPrivacy>(
       preparedCodingTaskSnapshot = null;
       preparedCodingTaskTarget = null;
       activeCodingTaskRootPath = null;
-      await coordinator.resetConversation();
+      await coordinator.resetConversation({ preserveMessages: true });
     },
     close(): Promise<void> {
       if (closePromise) return closePromise;

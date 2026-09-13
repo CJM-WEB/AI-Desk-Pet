@@ -255,7 +255,13 @@ describe('preload 白名单', () => {
     expect(main).toContain(
       'const conversationEventProjection = new ConversationEventProjection({'
     );
-    expect(main).toContain('const validated = conversationEventProjection.publish(event);');
+    // 持久化先接纳已验证事件；所有 taskEvent 窗口投递仍只由投影器完成。
+    const validated = main.indexOf('const validated = taskEventSchema.parse(event);');
+    const persisted = main.indexOf('conversationSession.observe(validated);');
+    const projected = main.indexOf('conversationEventProjection.publish(validated);');
+    expect(validated).toBeGreaterThanOrEqual(0);
+    expect(persisted).toBeGreaterThan(validated);
+    expect(projected).toBeGreaterThan(persisted);
     expect(main).toContain('behavior: characterBehaviorDirector');
     expect(main).not.toContain('characterBehavior.handleTaskEvent(event)');
     expect(main).not.toContain(

@@ -14,14 +14,14 @@ export function currentView(): ViewName {
   return 'pet';
 }
 
-export function mountTaskEventsIfAvailable(api: MyselfApi | undefined) {
+export function mountTaskEventsIfAvailable(api: MyselfApi | undefined, restoreConversation = false) {
   if (!api) return undefined;
-  return taskEventSubscription.mount(api);
+  return taskEventSubscription.mount(api, restoreConversation);
 }
 
 export function App() {
-  useEffect(() => mountTaskEventsIfAvailable(window.myself), []);
   const view = currentView();
+  useEffect(() => mountTaskEventsIfAvailable(window.myself, view === 'chat'), [view]);
   if (view === 'chat') return <ChatPanel />;
   if (view === 'settings') return <SettingsView />;
   if (view === 'characters') return <CharacterWorkshopView api={window.myself} />;

@@ -10,6 +10,7 @@ import {
   type SecretEncryptionAdapter
 } from '../src/main/storage/secret-store';
 import { ipcChannels } from '../src/shared/ipc-channels';
+import { ModelChangeCoordinator } from '../src/main/settings/model-change-coordinator';
 
 const temporaryDirectories: string[] = [];
 
@@ -196,7 +197,13 @@ describe('密钥 IPC 边界', () => {
       clear: vi.fn(async () => undefined),
       clearAll: vi.fn(async () => undefined)
     };
-    registerSettingsIpc(ipcMain, settings, secrets);
+    registerSettingsIpc(ipcMain, settings, secrets, undefined, undefined, new ModelChangeCoordinator({
+      readConfiguration: async () => ({ localModelEnabled: true, profiles: [], route: {
+        primaryProfileId: null, chatProfileId: null, agentProfileId: null, visionProfileId: null,
+        fallbackProfileIds: [], allowCrossProviderFallback: false
+      } }), confirmModelChange: async () => true,
+      invalidateConfiguration: async () => undefined, onModelChanged: async () => undefined
+    }));
 
     const result = await handlers.get(ipcChannels.settingsSaveProvider)?.({}, {
       profileId: 'alpha',

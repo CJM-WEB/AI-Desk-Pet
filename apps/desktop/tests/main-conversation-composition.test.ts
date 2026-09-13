@@ -10,6 +10,7 @@ import { describe, expect, test, vi } from 'vitest';
 import { PrivacySessionRegistry } from '../src/main/agent/disclosure-policy';
 import { ConversationChatAdapter } from
   '../src/main/conversation/conversation-chat-adapter';
+import { ConversationHistory } from '../src/main/conversation/conversation-history';
 import {
   createMainConversationComposition,
   type MainConversationCodingTaskFactoryInput
@@ -457,6 +458,35 @@ describe('Main 会话组合模块', () => {
     expect(harness.factoryInputs[0]?.snapshot.taskKind).toBe('powershell');
     expect(harness.factoryInputs[0]?.generation).toBe('generation-shell');
     await harness.composition.close();
+  });
+
+  test('新运行实例使用恢复的有界上下文，不重建任何文件任务', async () => {
+    const chatProvider = providerWith({ type: 'text', text: '能够接上之前的话' });
+    const harness = baseOptions({ chatProvider });
+    await harness.composition.close();
+    const history = new ConversationHistory();
+    history.append({ userText: '上次退出前的问题', assistantText: '上次保存的回复', providerIdentity: 'custom:openai-compatible:https://same.example/v1' });
+    const restored = createMainConversationComposition({ ...harness.options, history });
+    try {
+      await restored.coordinator.submit('继续上次聊天');
+      const request = vi.mocked(chatProvider.respond).mock.calls.map(call => call[0]).find(item => !item.responseContract)!;
+      expect(request.messages).toContainEqual({ role: 'user', content: '上次退出前的问题' });
+      expect(request.messages).toContainEqual({ role: 'assistant', content: '上次保存的回复' });
+      expect(harness.factoryInputs).toEqual([]);
+    } finally { await restored.close(); }
+  });
+
+  test('普通配置失效后下一轮仍取得原对话上下文', async () => {
+    const chatProvider = providerWith({ type: 'text', text: '记得之前的话' });
+    const harness = baseOptions({ chatProvider });
+    try {
+      await harness.composition.coordinator.submit('请记住这句普通聊天');
+      await harness.composition.resetForConfigurationChange();
+      await harness.composition.coordinator.submit('我刚才说了什么');
+      const request = vi.mocked(chatProvider.respond).mock.calls.map(call => call[0]).filter(item => !item.responseContract).at(-1)!;
+      expect(request.messages).toContainEqual({ role: 'user', content: '请记住这句普通聊天' });
+      expect(request.messages).toContainEqual({ role: 'assistant', content: '记得之前的话' });
+    } finally { await harness.composition.close(); }
   });
 
   test('配置重置撤销旧目标并允许从新授权快照重新创建', async () => {
