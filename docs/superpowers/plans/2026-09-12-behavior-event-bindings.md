@@ -12,6 +12,12 @@
 
 ## 精确验收对应
 
+2026-09-13 长期状态退出续修：
+
+- [x] `packages/character-runtime/tests/character-expression-engine.test.ts`、桌面 `character-expression-adapter.test.ts` 与 `character-behavior-bindings.test.ts` 先复现明确退出被忽略、旧明确令牌和旧背景候选回流；同时保留有限动作恢复、迟到与自主空结果边界。
+- [x] 在 `character-expression-selection.ts`、`conversation-chat-adapter.ts`、`character-behavior-director.ts` 透传明确 null；`character-expression-adapter.ts` 复用原协议区分退出与临时表现；`character-expression-engine.ts` 原子退出背景，回归原有替换行为，不改变文件执行或运动几何。
+- [x] 默认角色真实 Qwen／DeepSeek 各四个语义样本，相关测试、类型检查和必要门禁；更新独立结果，不将已知全量失败写成通过，不自动提交 Git。
+
 2026-09-13 小范围续修依据上述规格的休息互斥补充：
 
 - [x] 在 `apps/desktop/tests/character-behavior-bindings.test.ts` 复现连续／间歇模式下长期休息被自动运动抢占，覆盖首帧准备、任务／拖拽恢复和明确重新移动；先确认失败。

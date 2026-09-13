@@ -6,7 +6,7 @@ import type { CharacterBackgroundSelection, CharacterExplicitPlayback, Character
 export type CharacterExpressionSelectionDecision = Readonly<{
   moodUpdate?: CharacterMoodUpdate;
   expressionPlan?: CharacterExpressionPlanInput;
-  backgroundSelection?: CharacterBackgroundSelection;
+  backgroundSelection?: CharacterBackgroundSelection | null;
   explicitPlayback?: CharacterExplicitPlayback;
   movementControl: MovementControlPlan;
   requestKind: 'ambient' | 'state' | 'action' | 'movement';

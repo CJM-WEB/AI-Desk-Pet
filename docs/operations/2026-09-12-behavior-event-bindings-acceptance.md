@@ -4,6 +4,32 @@
 
 ## 修改范围
 
+### 2026-09-13 叫醒与长期状态退出续修
+
+用户反馈叫醒后短暂站起又恢复休息。根因是 `state/action` 仅表示有限播放，旧长期背景没有明确退出语义，播放结束后仍会恢复；其他长期状态也具有同一问题。复用原五字段协议，以聊天 `background/choice=null` 表示明确结束，内部透传 `backgroundSelection:null`；省略字段与 `none` 继续保持背景。Engine 在同次仲裁中撤销旧背景和旧明确播放，过时的保留令牌不能将其恢复；有效思考／工作继续复用原播放令牌，活动结束后不再回到已退出的状态。
+
+自主空配对、失效上下文和无效配对不能清空背景。临时动作仍恢复有效背景，原有背景替换只增加回归覆盖，不描述为本轮新增修复。没有硬编码默认状态 ID、增加协议字段、另建状态机或改变文件权限及移动几何。
+
+Engine／Adapter 首次定向测试 **5 失败／93 通过**，复现明确退出被忽略、保留令牌阻止退出、活动下旧背景残留、退出被当作无匹配及自主空配对被接纳。只读复核另发现退出强制重发有效工作令牌，补充令牌连续性断言后先失败，再删除无条件强制刷新转绿。默认角色组合测试覆盖休息与无聊退出、本地明确状态入口、聊天活动保持和退出后自动运动恢复；通用 Engine 同时使用非默认状态 ID 检查其他长期状态。
+
+修正提示前，八个相关文件 **367／367** 通过，桌面及 runtime 类型检查通过。最后提示修正和令牌连续性修复后，命令 `pnpm.cmd exec vitest run --project character-runtime packages/character-runtime/tests/character-expression-engine.test.ts --project desktop apps/desktop/tests/character-expression-adapter.test.ts apps/desktop/tests/character-behavior-bindings.test.ts`：三文件 **137／137 通过**。
+
+真实模型使用 **AI Pet默认角色** 的正式 manifest、正式 Adapter 与 Director／Service／Engine；仅启动无窗口隔离进程，不操作桌宠。每模型固定四句各请求一次：叫醒、切换待机、临时表演待机后继续休息、结束无聊。用途表使用合法固定配对，本轮没有再次请求模型匹配用途。
+
+- DeepSeek 首轮 **4／4 通过**，三个退出请求结束旧背景，临时表演保留休息。
+- Qwen 首轮 **2／4 通过**：叫醒误选长期思考，临时表演返回格式失败。正式提示增加明确退出的完整 JSON 示例，并澄清退出无需新动作且不能转为长期思考／工作；两句失败输入分别复核一次，**2／2 通过**，结果分别为退出背景与临时待机保留休息。
+- 保留首次失败，没有重复请求直到成功；最后提示修正后未重跑先前已通过样本，不能记为最终版本完整八句通过。首轮 Qwen 探针结束阶段后来补齐正常成功事件，不影响首轮模型输入与原始错误结论。安全报告和结果位于忽略目录 `.superpowers/sdd/2026-09-12-character-behavior-continuity/provider-validation/wake-background-report.md`。
+
+最终完整门禁均实际运行，结果为失败：
+
+- `pnpm.cmd verify:desktop`：全仓类型检查通过；Core **108 通过／1 跳过**；单元 **3117 通过／41 失败**。其中 38 项与此前原基线同名，另外三项为角色包 V1 转换、复杂旧包和并发导入测试超时。日志 `.superpowers/wake-background-verify-desktop.log`。
+- `pnpm.cmd verify:behavior`：runtime **235／235**、agent-core **23／23**、桌面类型检查通过；桌面单元 **2614 通过／41 失败**。同名原基线 38 项之外，为角色包创建 ID 冲突、稳定排序第 257 位、并发导入三项。日志 `.superpowers/wake-background-verify-behavior.log`。
+- 两次额外失败合并为五项，均在未修改的 `character-package-service.test.ts`。使用单 worker、原测试和原时限定向复核：**5 通过／69 按过滤跳过**。命令 `node.exe node_modules/vitest/vitest.mjs run --project desktop apps/desktop/tests/character-package-service.test.ts --maxWorkers 1 --minWorkers 1 -t 'V1 角色包在 staging|复杂旧包保留原规则|同一存储根目录的并发导入|创建 ID 发生一次并发冲突|活动角色位于稳定排序第 257 位'`，日志 `.superpowers/wake-background-gate-recheck.log`。保留完整门禁失败事实，不以复核改写全套结果，也未修改角色包逻辑或放宽超时。
+
+两门禁均止于单元测试，后续安全／集成／Electron E2E 未进入。四份文档中文 UTF-8、本地链接及 `git diff --check` 通过。开发验收阶段未执行 Git 写操作；用户随后明确授权提交本次源码、测试与文档。
+
+上述证据为定向自动化与少量真实模型样本，不保证所有措辞或自定义角色的语义命中。未启动播放窗口，实际视觉表现待用户人工确认。
+
 ### 2026-09-13 休息与自动运动互斥续修
 
 用户反馈长期休息仍被间歇运动打断。真实默认角色契约、Service、Director、Scheduler 的定向测试先复现五项失败：两档自动运动在休息中仍提交位移、旧移动首帧准备未撤销、两种明确重新移动入口保留旧休息。仅修改 Director，依据已验证 `rest` 用途和 Engine 当前长期背景暂停自动运动；复用原停止入口和同步重入保护，保留持久档位，明确重新移动才释放休息。

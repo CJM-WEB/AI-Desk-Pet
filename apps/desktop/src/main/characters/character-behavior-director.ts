@@ -98,7 +98,7 @@ export type CompletedCharacterPrompt = Readonly<{
   generation: string; eventId: string; context: CharacterExpressionContext | null;
   explicitDirective: ExplicitBehaviorDirective | null; explicitPlaybackToken?: string;
   moodUpdate?: CharacterMoodUpdate; expressionPlan?: CharacterExpressionPlanInput; explicitPlayback?: CharacterExplicitPlayback;
-  backgroundSelection?: CharacterBackgroundSelection;
+  backgroundSelection?: CharacterBackgroundSelection | null;
   movementControl?: MovementControlPlan | null;
   expressionStatus?: 'ready' | 'no_match' | 'failed';
   requestKind?: 'ambient' | 'state' | 'action' | 'movement';
@@ -554,7 +554,7 @@ export class CharacterBehaviorDirector {
           : input.explicitPlayback.actionId !== undefined ? input.explicitPlayback : undefined;
       }
       if (explicit) { this.clearPendingChat(); this.clearContinuousMotion(); }
-      if (input.backgroundSelection) this.idleBackgroundStateId = null;
+      if (input.backgroundSelection !== undefined) this.idleBackgroundStateId = null;
       const expressionPlan = this.preserveBoundActivities(input.expressionPlan);
       const singleEpisode = !!expressionPlan?.states.some(state => state.lifetime !== 'condition');
       const authorization = this.options.behavior.applyDecision({

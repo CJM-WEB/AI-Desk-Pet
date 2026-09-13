@@ -19,12 +19,12 @@ export interface ConversationChatInput {
 }
 export type ConversationChatReply = Readonly<{
   text: string; moodUpdate?: CharacterMoodUpdate; expressionPlan?: CharacterExpressionPlanInput;
-  backgroundSelection?: CharacterBackgroundSelection;
+  backgroundSelection?: CharacterBackgroundSelection | null;
   explicitPlayback?: CharacterExplicitPlayback; movementControl?: MovementControlPlan; capabilityPlan?: CapabilityControlPlan;
   expressionStatus?: 'ready' | 'no_match' | 'failed'; requestKind?: CharacterExpressionSelectionDecision['requestKind'];
 }>;
 export type ConversationExpressionReply = Omit<ConversationChatReply, 'text' | 'capabilityPlan'>;
-export type CharacterAutonomousReply = Pick<ConversationChatReply, 'moodUpdate' | 'expressionPlan' | 'backgroundSelection'>;
+export type CharacterAutonomousReply = Pick<ConversationChatReply, 'moodUpdate' | 'expressionPlan'> & Readonly<{ backgroundSelection?: CharacterBackgroundSelection }>;
 export type CharacterAutonomousInput = Readonly<{
   behaviorContext: ConversationBehaviorContext; idleForMs: number; signal: AbortSignal; beforeProviderCall(): boolean;
 }>;
@@ -124,11 +124,11 @@ export class ConversationChatAdapter {
         signal, ...(input.movementControlHandled === undefined ? {} : { movementControlHandled: input.movementControlHandled }) }, 'chat');
       throwIfCancelled(signal);
       const movementRequested = input.movementIntentRequested === true || requestsMovement(expression?.movementControl);
-      const matched = movementRequested
+      const matched = expression?.backgroundSelection === null || (movementRequested
         ? hasMovingPlan(expression?.expressionPlan)
         : expression?.requestKind === 'state' || expression?.requestKind === 'action'
           ? !!expression.explicitPlayback
-          : !!(expression?.explicitPlayback || expression?.expressionPlan?.states.length || expression?.backgroundSelection);
+          : !!(expression?.explicitPlayback || expression?.expressionPlan?.states.length || expression?.backgroundSelection));
       return { ...expression, expressionStatus: matched ? 'ready' : 'no_match' };
     } catch {
       throwIfCancelled(signal);

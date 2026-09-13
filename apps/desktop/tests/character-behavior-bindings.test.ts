@@ -390,3 +390,37 @@ test('新角色实例必须取得自己的合法首帧，旧实例反馈不能�
   expect(f.motion.requestIntent).not.toHaveBeenCalled();
   f.start(); expect(f.motion.requestIntent).toHaveBeenCalledOnce(); await f.director.close();
 });
+
+test.each(['state-2', 'state-3'])('明确退出默认角色%s后不回旧状态，聊天结束后解除休息运动阻塞', async stateId => {
+  const f = await fixture(); f.bind();
+  await f.director.completeUserPrompt({ generation: 'turn', eventId: 'hold', context: f.director.captureExpressionContext(), explicitDirective: null,
+    backgroundSelection: { stateId, actions: [{ actionId: `${stateId}-action`, score: 1 }] },
+    requestKind: 'state', explicitPlayback: { stateId } });
+  f.start();
+  await f.director.prepareUserPrompt('起来吧，结束刚才的状态');
+  f.director.handleTaskEvent({ type: 'phase', phase: 'thinking' });
+  await f.director.completeUserPrompt({ generation: 'turn', eventId: 'leave', context: f.director.captureExpressionContext(), explicitDirective: null,
+    backgroundSelection: null, requestKind: 'state', expressionStatus: 'ready' });
+  expect(f.service.snapshot()?.background).toBeNull();
+  expect(f.service.snapshot()?.stateId).toBe('state-7');
+  f.director.handleChatResponseFinished();
+  f.director.handleTaskEvent({ type: 'phase', phase: 'success' });
+  for (let time = 0; time <= 30_000; time += 500) { f.time(time); f.start(); expect(f.service.snapshot()?.stateId).toBe('idle'); }
+  f.director.applyBehaviorSettings({ movementMode: 2, proactivityMode: 'passive' });
+  f.director.requestIntermittentMovement();
+  expect(f.service.snapshot()?.stateId).toBe('state');
+  await f.director.close();
+});
+
+test('本地待机明确播放的保留令牌不能阻止模型随后结束旧休息背景', async () => {
+  const f = await fixture(); f.bind();
+  await f.director.completeUserPrompt({ generation: 'turn', eventId: 'hold', context: f.director.captureExpressionContext(), explicitDirective: null,
+    backgroundSelection: { stateId: 'state-2', actions: [{ actionId: 'state-2-action', score: 1 }] } });
+  const prepared = await f.director.prepareUserPrompt('切换到作者自定义0状态');
+  expect(prepared.explicitPlaybackToken).toBeDefined();
+  await f.director.completeUserPrompt({ ...prepared, generation: 'turn', eventId: 'leave', context: f.director.captureExpressionContext(),
+    backgroundSelection: null, requestKind: 'state', expressionStatus: 'ready' });
+  f.start(); f.time(30_000); f.start();
+  expect(f.service.snapshot()).toMatchObject({ stateId: 'idle', background: null });
+  await f.director.close();
+});

@@ -23,6 +23,18 @@ function fixture(output: Record<string, unknown>) {
 const input = { text: '表现得开心一点', history: [], behaviorContext, signal: new AbortController().signal };
 const expressionRequest = (requests: ModelRequest[]) => requests.find(request => request.responseContract)!;
 
+test('明确结束长期状态保留null并作为成功控制交付，不误报无匹配', async () => {
+  const { adapter } = fixture({ ...selection, kind: 'background', choice: null });
+  const reply = await adapter.respond({ ...input, text: '起来吧，不要再休息了' });
+  expect(reply).toMatchObject({ backgroundSelection: null, expressionStatus: 'ready', movementControl: { kind: 'keep' } });
+  expect(reply).not.toHaveProperty('explicitPlayback');
+});
+
+test('自主空背景配对不能被解释为用户要求结束长期状态', async () => {
+  const { expression } = fixture({ ...selection, kind: 'background', choice: null });
+  await expect(expression.respond(input, 'autonomous')).rejects.toMatchObject({ code: 'CONTROL_SCHEMA_INVALID' });
+});
+
 test('自然运动请求保留三档位移、原地表现与零工具边界', async () => {
   const { adapter, requests } = fixture(selection);
   await adapter.respond({ ...input, text: '之后你隔一会儿动一下就好' });

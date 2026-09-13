@@ -289,7 +289,16 @@ export class CharacterExpressionEngine {
         }
       }
     }
-    if (preserveExplicit) return this.result();
+    // 省略保持、明确 null 退出；在一次仲裁内退休旧播放，不能让临时保留令牌复活已结束的背景。
+    const clearBackground = decision.source === 'chat' && decision.backgroundSelection === null;
+    if (clearBackground) {
+      const wasBackground = this.currentEntry()?.owner === 'background';
+      this.background = null;
+      if (this.explicit || wasBackground) effects.push(...this.stop());
+      this.explicit = false; this.explicitUntilMs = null; this.lastExplicit = null;
+      this.blockedPlanState = null;
+    }
+    if (preserveExplicit && !clearBackground) return this.result();
     if (decision.explicitPlayback !== undefined) {
       const explicit = characterExplicitPlaybackSchema.safeParse(decision.explicitPlayback);
       if (explicit.success) {
