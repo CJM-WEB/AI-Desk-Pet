@@ -24,6 +24,7 @@ import type {
   CodingTaskToolResult
 } from '../src/main/agent/coding-task-service';
 import { ProviderResponseError } from '../src/main/providers/provider-response-error';
+import { emptyConversationTranscript, reduceConversationTranscript } from '../src/shared/conversation-transcript';
 
 const behaviorContext = {
   character: { idleStateId: 'state-1355',
@@ -557,7 +558,7 @@ describe('ConversationCoordinator', () => {
     expect(harness.factoryCallCount()).toBe(2);
     expect(harness.fileTasks.submissions).toHaveLength(1);
   });
-  test('原生申请发布独立任务授权且确认前不激活 Agent', async () => {
+  test('原生申请撤销未提交正文，发布独立任务授权且确认前不激活 Agent', async () => {
     const requests: ModelRequest[] = [];
     const script: ProviderScript = {
       requests,
@@ -572,9 +573,10 @@ describe('ConversationCoordinator', () => {
         }
       }
     };
+    let transcript = emptyConversationTranscript();
     const harness = createHarness([{
       profileId: 'chat-profile', providerIdentity: 'openai', providerName: 'Chat', script
-    }]);
+    }], { onEmit: event => { transcript = reduceConversationTranscript(transcript, event); } });
 
     await harness.coordinator.submit('请整理当前目录并生成说明');
 
@@ -589,8 +591,10 @@ describe('ConversationCoordinator', () => {
     });
     expect(harness.fileTasks.activationCalls).toBe(0);
     expect(harness.fileTasks.submissions).toHaveLength(0);
-    expect(harness.events.filter(event => event.type.startsWith('assistant_message_'))).toEqual([]);
-    expect(JSON.stringify(harness.events)).not.toContain('文件已经创建完成');
+    expect(harness.events.some(event => event.type === 'assistant_message_commit')).toBe(false);
+    expect(transcript.messages.map(message => [message.role, message.text])).toEqual([['user', '请整理当前目录并生成说明']]);
+    expect(transcript.activeAssistantStreamTurnId).toBeNull();
+    expect(harness.history.turns()).toEqual([]);
 
     await harness.coordinator.resolveCapabilityAuthorization(scopeId(harness), 'confirm');
     expect(harness.fileTasks.activationCalls).toBe(1);
@@ -810,6 +814,35 @@ describe('ConversationCoordinator', () => {
     await vi.waitFor(() => expect(behavior.completeUserPrompt).toHaveBeenCalledWith(expect.objectContaining({ expressionStatus: 'no_match', requestKind: 'ambient' })));
   });
 
+  test('完整响应尚未结束时逐段发布正文，最终才提交历史', async () => {
+    const script = deferredProvider();
+    const { coordinator, events, history } = createHarness([{
+      profileId: 'chat', providerIdentity: 'deepseek', providerName: 'DeepSeek', script
+    }]);
+    let settled = false;
+    const pending = coordinator.submit('你好').finally(() => { settled = true; });
+    try {
+      await vi.waitFor(() => expect(script.requests.some(request => request.purpose === 'conversation')).toBe(true));
+      const request = script.requests.find(request => request.purpose === 'conversation')!;
+      request.onTextDelta?.('你');
+      expect(events).toContainEqual({ type: 'assistant_message_delta', turnId: expect.any(String), delta: '你' });
+      expect(settled).toBe(false);
+      expect(history.turns()).toEqual([]);
+      request.onTextDelta?.('好');
+      expect(events.filter(event => event.type === 'assistant_message_delta').map(event => event.delta)).toEqual(['你', '好']);
+      expect(events.some(event => event.type === 'assistant_message_commit')).toBe(false);
+      script.resolve({ type: 'text', text: '你好' });
+      await pending;
+      expect(events.filter(event => event.type === 'assistant_message_start')).toHaveLength(1);
+      expect(events).toContainEqual({ type: 'assistant_message_commit', turnId: expect.any(String), text: '你好' });
+      expect(history.turns()).toEqual([{ userText: '你好', assistantText: '你好', providerIdentity: 'deepseek' }]);
+    } finally {
+      script.resolve({ type: 'text', text: '你好' });
+      await pending;
+      await coordinator.close();
+    }
+  });
+
   test('持久化流式回复后重建协调器继续聊天，旧新回复与上下文均保留', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'ai-pet-conversation-restart-'));
     const file = join(directory, 'conversation.json');
@@ -818,20 +851,21 @@ describe('ConversationCoordinator', () => {
       encryptString: async (value: string) => Buffer.from(value, 'utf8').reverse(),
       decryptString: async (value: Buffer) => Buffer.from(value).reverse().toString('utf8')
     };
-    const actualRespond = ConversationChatAdapter.prototype.respond;
-    // 当前 Adapter 未向 Provider 转发增量；仅模拟其流式回调，正文与历史仍经过真实 Adapter。
-    const streamedReply = vi.spyOn(ConversationChatAdapter.prototype, 'respond').mockImplementation(function (
-      this: ConversationChatAdapter,
-      input
-    ) {
-      input.onTextDelta?.('待提交片段');
-      return actualRespond.call(this, input);
-    });
+    // 只控制 Provider 的增量源；适配器、协调器及持久化均经过真实链路。
+    const streamingScript = (text: string) => {
+      const script = scriptedProvider({ type: 'text', text });
+      const respond = script.provider.respond.bind(script.provider);
+      script.provider.respond = (request, signal) => {
+        request.onTextDelta?.(text.slice(0, 3));
+        return respond(request, signal);
+      };
+      return script;
+    };
     try {
       const before = new ConversationSessionStore(file, encryption);
       await before.initialize('model:a');
       const first = createHarness([{ profileId: 'chat', providerIdentity: 'openai', providerName: '聊天',
-        script: scriptedProvider({ type: 'text', text: '重启前的完整回复' }) }], {
+        script: streamingScript('重启前的完整回复') }], {
         history: before.history,
         onEmit: event => before.observe(event)
       });
@@ -842,7 +876,7 @@ describe('ConversationCoordinator', () => {
 
       const after = new ConversationSessionStore(file, encryption);
       await after.initialize('model:a');
-      const nextScript = scriptedProvider({ type: 'text', text: '重启后的完整回复' });
+      const nextScript = streamingScript('重启后的完整回复');
       const second = createHarness([{ profileId: 'chat', providerIdentity: 'openai', providerName: '聊天', script: nextScript }], {
         history: after.history,
         onEmit: event => after.observe(event)
@@ -860,7 +894,6 @@ describe('ConversationCoordinator', () => {
         '重启前的问题', '重启前的完整回复', '接着上一轮聊'
       ]);
     } finally {
-      streamedReply.mockRestore();
       await rm(directory, { recursive: true, force: true });
     }
   });
@@ -884,6 +917,10 @@ describe('ConversationCoordinator', () => {
     }]);
     const pending = coordinator.submit('取消流式');
     await vi.waitFor(() => expect(emitLateDelta).toBeTypeOf('function'));
+    expect(events.filter(event => event.type === 'assistant_message_delta')).toEqual([
+      { type: 'assistant_message_delta', turnId: expect.any(String), delta: '草稿' }
+    ]);
+    const streamedBeforeCancel = events.filter(event => event.type.startsWith('assistant_message_'));
 
     coordinator.cancelActive();
     emitLateDelta?.();
@@ -892,7 +929,7 @@ describe('ConversationCoordinator', () => {
     });
     await pending;
 
-    expect(events.filter(event => event.type.startsWith('assistant_message_'))).toEqual([]);
+    expect(events.filter(event => event.type.startsWith('assistant_message_'))).toEqual(streamedBeforeCancel);
     expect(JSON.stringify(events)).not.toContain('迟到');
     expect(events).not.toContainEqual(expect.objectContaining({
       type: 'assistant_message_commit'

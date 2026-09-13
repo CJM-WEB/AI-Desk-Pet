@@ -1,4 +1,5 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { Send, Square } from 'lucide-react';
 import type { HistoryDisclosureDecision, TaskPhase } from '@myself/shared-types';
 import type { MyselfApi } from '../../../shared/myself-api';
 import type { LocalModelPublicStatus } from '../../../shared/local-model-ipc';
@@ -7,6 +8,10 @@ import { ConfirmationCard } from './ConfirmationCard';
 import { HistoryDisclosureCard } from './HistoryDisclosureCard';
 import { CapabilityAuthorizationCard } from './CapabilityAuthorizationCard';
 import { taskStore, useTaskStore } from '../stores/task-store';
+import { ChatIsland } from './ChatIsland';
+import { presentCapabilityAuthorization, presentHistoryDisclosure, presentTaskPermission } from './confirmation-presentation';
+import { useChatPresentation } from './use-chat-presentation';
+import './chat-presentation.css';
 
 const phaseLabels: Record<TaskPhase, string> = {
   idle: '陪着你',
@@ -35,19 +40,6 @@ type DisclosureOwner = RevisionOwner & Readonly<{
   requestId: string;
   decision: HistoryDisclosureDecision;
 }>;
-
-/** 聊天关闭按钮始终调用 preload 暴露的正式窗口命令。 */
-export function ChatCloseButton() {
-  return (
-    <button
-      type="button"
-      aria-label="关闭聊天气泡"
-      onClick={() => void window.myself.hideChat()}
-    >
-      关闭
-    </button>
-  );
-}
 
 export function ChatPanel({ api = window.myself }: { api?: MyselfApi }) {
   const conversationRevision = useTaskStore(state => state.conversationRevision);
@@ -298,138 +290,89 @@ export function ChatPanel({ api = window.myself }: { api?: MyselfApi }) {
     }
   };
 
-  return (
-    <main className="chat-shell">
-      <header className="chat-header">
-        <div>
-          <span className="companion-kicker">AI PET</span>
-          <strong>晚上好，我在这里</strong>
-        </div>
-        <div className="header-actions">
-          <span className={`phase-pill phase-${phase}`}>{phaseLabels[phase]}</span>
-          <button
-            type="button"
-            disabled={anyInteractionBusy}
-            onClick={() => void resetConversation()}
-          >
-            {resetBusy ? '正在新建…' : '新对话'}
-          </button>
-          <button type="button" onClick={() => void api.openSettings()}>设置</button>
-          <ChatCloseButton />
-        </div>
-      </header>
+  const confirmation = useMemo(() => pendingHistoryDisclosure
+    ? presentHistoryDisclosure(pendingHistoryDisclosure, anyInteractionBusy, interactionError ?? undefined)
+    : pendingCapabilityAuthorization
+      ? presentCapabilityAuthorization(pendingCapabilityAuthorization, anyInteractionBusy, interactionError ?? undefined)
+      : pendingAction ? presentTaskPermission(pendingAction, anyInteractionBusy, interactionError ?? undefined) : null,
+  [pendingHistoryDisclosure, pendingCapabilityAuthorization, pendingAction, anyInteractionBusy, interactionError]);
+  // 这里只选择已有按钮处理器；确认身份、忙碌 owner 和业务决定仍由上方原函数承接。
+  const presentation = useChatPresentation({
+    api, conversationRevision, confirmation, readCurrentRevision: currentRevision,
+    onConfirm: () => {
+      if (pendingHistoryDisclosure) void resolveDisclosure('share_once');
+      else if (pendingCapabilityAuthorization) void resolveCapabilityAuthorization('confirm');
+      else void confirmAction();
+    },
+    onReject: () => {
+      if (pendingHistoryDisclosure) void resolveDisclosure('current_message_only');
+      else if (pendingCapabilityAuthorization) void resolveCapabilityAuthorization('cancel');
+      else void cancelAction();
+    }
+  });
+  const notices = <>
+    {persistenceError ? <p role="status">{persistenceError === 'CONVERSATION_LOAD_FAILED'
+      ? '无法恢复聊天记录，原记录已保留。点击“新对话”可重新开始保存。'
+      : '聊天记录保存失败，本次新增内容可能无法在重启后恢复。'}</p> : null}
+    {interactionError ? <p role="alert">{interactionError}</p> : null}
+    {localModelStatus.enabled && localModelStatus.phase !== 'ready' ? (
+      localModelStatus.phase === 'faulted' ? <div role="alert">
+        <p>本地模型暂不可用：{localModelReasonText(localModelStatus.reasonCode)}。</p><p>视觉暂不可用。</p>
+        <button className="quiet-button" type="button" onClick={() => void api.openSettings()}>打开模型设置</button>
+      </div> : <p role="status">{localModelStatus.phase === 'stopping' ? '本地模型正在停止' : '本地模型加载中'}，暂时不能发送消息。</p>
+    ) : null}
+    {localModelStatus.enabled && localModelStatus.phase === 'ready' && localModelStatus.backend === 'cpu'
+      ? <p role="status">CPU 兼容模式</p> : null}
+    {!presentation.pointerAvailable ? <p role="status">桌面点击观察暂不可用，可点击输入框下方三角收起聊天。</p> : null}
+    {!presentation.materialAvailable ? <p role="status">当前系统无法启用背景模糊，历史将使用半透明底色。</p> : null}
+    {presentation.fallback && api.chatPresentation ? <p>头顶气泡暂不可用，请在这里继续。</p> : null}
+    {presentation.fallback && pendingHistoryDisclosure ? <HistoryDisclosureCard
+      disclosure={pendingHistoryDisclosure}
+      busyDecision={disclosureBusy?.requestId === pendingHistoryDisclosure.requestId ? disclosureBusy.decision : null}
+      disabled={resetBusy || actionBusy}
+      onShareOnce={() => void resolveDisclosure('share_once')}
+      onCurrentMessageOnly={() => void resolveDisclosure('current_message_only')} /> : null}
+    {presentation.fallback && !pendingHistoryDisclosure && pendingCapabilityAuthorization ? <CapabilityAuthorizationCard
+      authorization={pendingCapabilityAuthorization} busy={anyInteractionBusy}
+      onConfirm={() => void resolveCapabilityAuthorization('confirm')}
+      onCancel={() => void resolveCapabilityAuthorization('cancel')} /> : null}
+    {presentation.fallback && !pendingHistoryDisclosure && !pendingCapabilityAuthorization && pendingAction ? <ConfirmationCard
+      action={pendingAction} busy={anyInteractionBusy}
+      onConfirm={() => void confirmAction()} onCancel={() => void cancelAction()} /> : null}
+  </>;
+  const hasNotice = Boolean(persistenceError || interactionError || localModelStatus.enabled && (localModelStatus.phase !== 'ready' || localModelStatus.backend === 'cpu')
+    || !presentation.pointerAvailable || !presentation.materialAvailable || presentation.fallback && (api.chatPresentation || confirmation));
 
-      <section className="messages" aria-live="polite" aria-label="对话消息">
-        {persistenceError ? <p className="interaction-error" role="status">
-          {persistenceError === 'CONVERSATION_LOAD_FAILED'
-            ? '无法恢复聊天记录，原记录已保留。点击“新对话”可重新开始保存。'
-            : '聊天记录保存失败，本次新增内容可能无法在重启后恢复。'}
-        </p> : null}
-        {messages.length === 0 ? (
-          <div className="welcome-card">
-            <span aria-hidden="true">☀</span>
-            <p>今天想聊点什么？如果你愿意，我也可以帮你整理已经授权的工作目录。</p>
-          </div>
-        ) : messages.map(message => (
-          <article key={message.id} className={`message message-${message.role}`}>
+  return <form onSubmit={event => { event.preventDefault(); void submit(); }}>
+    <ChatIsland api={api.chatPresentation} busy={anyInteractionBusy}
+      attentionKey={api.chatPresentation && presentation.fallback && (confirmation || presentation.reply)
+        ? `${conversationRevision}:${confirmation?.id ?? presentation.reply?.id}` : undefined}
+      onNewConversation={() => void resetConversation()} onSettings={() => void api.openSettings()}
+      notice={hasNotice ? notices : undefined}
+      history={<section className="messages" aria-live="polite" aria-label="对话消息">
+        {messages.length === 0 ? <div className="history-empty"><span>AI PET</span><p>今天想聊点什么？</p></div>
+          : messages.map(message => <article key={message.id} className={`message message-${message.role}`}>
             <span>{message.role === 'user' ? '你' : message.role === 'error' ? '一起看看' : 'AI Pet'}</span>
             <p>{message.text}</p>
             {message.nextAction ? <small>下一步：{message.nextAction}</small> : null}
-            {message.code === 'FILE_AUTHORIZATION_REQUIRED' ? (
-              <button className="quiet-button" type="button" onClick={() => void api.openSettings()}>
-                打开设置
-              </button>
-            ) : null}
-          </article>
-        ))}
-        {interactionError ? (
-          <p className="message message-error" role="alert" aria-live="assertive">
-            {interactionError}
-          </p>
-        ) : null}
-        {localModelStatus.enabled && localModelStatus.phase !== 'ready' ? (
-          localModelStatus.phase === 'faulted' ? (
-            <div className="local-model-chat-notice local-model-chat-fault" role="alert">
-              <p>本地模型暂不可用：{localModelReasonText(localModelStatus.reasonCode)}。</p>
-              <p>视觉暂不可用。</p>
-              <button className="quiet-button" type="button" onClick={() => void api.openSettings()}>
-                打开模型设置
-              </button>
-            </div>
-          ) : (
-            <p className="local-model-chat-notice" role="status" aria-live="polite">
-              {localModelStatus.phase === 'stopping' ? '本地模型正在停止' : '本地模型加载中'}，暂时不能发送消息。
-            </p>
-          )
-        ) : null}
-        {localModelStatus.enabled && localModelStatus.phase === 'ready'
-          && localModelStatus.backend === 'cpu' ? (
-            <p className="local-model-chat-notice" role="status">CPU 兼容模式</p>
-          ) : null}
-        {pendingHistoryDisclosure ? (
-          <HistoryDisclosureCard
-            disclosure={pendingHistoryDisclosure}
-            busyDecision={disclosureBusy?.requestId === pendingHistoryDisclosure.requestId
-              ? disclosureBusy.decision
-              : null}
-            disabled={resetBusy || actionBusy}
-            onShareOnce={() => void resolveDisclosure('share_once')}
-            onCurrentMessageOnly={() => void resolveDisclosure('current_message_only')}
-          />
-        ) : null}
-        {pendingCapabilityAuthorization ? (
-          <CapabilityAuthorizationCard
-            authorization={pendingCapabilityAuthorization}
-            busy={anyInteractionBusy}
-            onConfirm={() => void resolveCapabilityAuthorization('confirm')}
-            onCancel={() => void resolveCapabilityAuthorization('cancel')}
-          />
-        ) : null}
-        {pendingAction ? (
-          <ConfirmationCard
-            action={pendingAction}
-            busy={anyInteractionBusy}
-            onConfirm={() => void confirmAction()}
-            onCancel={() => void cancelAction()}
-          />
-        ) : null}
-      </section>
-
-      <form className="composer" onSubmit={event => { event.preventDefault(); void submit(); }}>
-        <label htmlFor="message-input">和我说点什么</label>
-        <textarea
-          id="message-input"
-          value={text}
-          maxLength={4_000}
-          rows={2}
-          placeholder="比如：陪我看看这个文件夹里有什么"
-          disabled={resetBusy}
-          onChange={event => setText(event.target.value)}
+            {message.code === 'FILE_AUTHORIZATION_REQUIRED' ? <button className="quiet-button" type="button"
+              onClick={() => void api.openSettings()}>打开设置</button> : null}
+          </article>)}
+      </section>}
+      input={<>
+        <label className="chat-visually-hidden" htmlFor="message-input">和我说点什么</label>
+        <textarea id="message-input" value={text} maxLength={4_000} rows={2} placeholder="和我说点什么…"
+          disabled={resetBusy} onChange={event => setText(event.target.value)}
           onKeyDown={event => {
             if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) {
-              event.preventDefault();
-              void submit();
+              event.preventDefault(); void submit();
             }
-          }}
-        />
-        <div className="composer-footer">
-          <span>{text.length}/4000</span>
-          {canStop(phase) ? (
-            <button
-              className="stop-button"
-              type="button"
-              disabled={Boolean(pendingHistoryDisclosure) || anyInteractionBusy}
-              onClick={() => void api.cancelTask()}
-            >
-              停止当前任务
-            </button>
-          ) : (
-            <button className="primary-button" type="submit" disabled={!text.trim() || submitDisabled}>
-              发送给 AI Pet
-            </button>
-          )}
-        </div>
-      </form>
-    </main>
-  );
+          }} />
+        <span className={`island-status phase-pill phase-${phase}`}>{text.length > 3000 ? `${text.length}/4000 · ` : ''}{phaseLabels[phase]}</span>
+      </>}
+      send={canStop(phase) ? <button type="button" aria-label="停止当前任务" title="停止当前任务"
+        disabled={Boolean(pendingHistoryDisclosure) || anyInteractionBusy} onClick={() => void api.cancelTask()}><Square size={18} fill="currentColor" /></button>
+        : <button type="submit" aria-label="发送给 AI Pet" title="发送给 AI Pet" disabled={!text.trim() || submitDisabled}><Send size={20} /></button>}
+    />
+  </form>;
 }

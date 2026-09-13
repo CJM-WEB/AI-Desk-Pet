@@ -149,7 +149,8 @@ export class ConversationChatAdapter {
           ...history, { role: 'user', content: input.text }],
         tools: [{ type: 'function', function: { name: 'request_task_authorization', description: '发起正式任务范围申请，仅用于用户已要求实际查阅、修改或执行命令；不能代替普通聊天征求同意。询问是否需要整理、提及文件名或路径本身不调用；直接查询文件内容或明确同意查看才申请。Main展示范围卡，确认前不执行。',
           parameters: { type: 'object', additionalProperties: false, properties: {}, required: [] } } }],
-        toolChoice: 'auto', reasoningMode: 'disabled'
+        toolChoice: 'auto', reasoningMode: 'disabled',
+        ...(input.onTextDelta ? { onTextDelta: input.onTextDelta } : {})
       };
       if (requestBytes(request) <= budget) return request;
       if (history.length) {

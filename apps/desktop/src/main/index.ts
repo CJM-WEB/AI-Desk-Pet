@@ -123,10 +123,15 @@ import {
   bindPetWindowInteractionLifecycle,
   createCharacterWorkshopWindow,
   createChatWindow,
+  createBubbleWindow,
+  createHistoryBackdropWindow,
   createPetWindow,
   createSettingsWindow,
   setPetWindowPosition
 } from './windows/window-manager';
+import { ChatPresentationBridge, registerChatPresentationIpc } from './windows/chat-presentation-bridge';
+import { ChatPresentationWindowController } from './windows/chat-presentation-windows';
+import { createChatPointerObserver } from './windows/chat-native-pointer';
 import { PetWindowInteractionController } from
   './windows/pet-window-interaction-controller';
 import {
@@ -218,7 +223,7 @@ async function moveToE2eRecycleBin(absolutePath: string): Promise<void> {
   );
 }
 
-type RendererView = 'pet' | 'chat' | 'settings' | 'characters';
+type RendererView = 'pet' | 'chat' | 'bubble' | 'settings' | 'characters';
 
 function rendererUrl(view: RendererView): string | null {
   const developmentUrl = process.env['ELECTRON_RENDERER_URL'];
@@ -247,22 +252,6 @@ function createTrayImage() {
   return image.resize({ width: 16, height: 16 });
 }
 
-function positionChatNearPet(pet: BrowserWindow, chat: BrowserWindow): void {
-  const petBounds = pet.getBounds();
-  const chatBounds = chat.getBounds();
-  const display = screen.getDisplayNearestPoint({ x: petBounds.x, y: petBounds.y });
-  const workArea = display.workArea;
-  const gap = 8;
-  const left = petBounds.x - chatBounds.width - gap;
-  const right = petBounds.x + petBounds.width + gap;
-  const x = left >= workArea.x ? left : Math.min(right, workArea.x + workArea.width - chatBounds.width);
-  const y = Math.min(
-    Math.max(petBounds.y, workArea.y),
-    workArea.y + workArea.height - chatBounds.height
-  );
-  chat.setPosition(x, y);
-}
-
 async function createApplicationWindows(
   startupCleanup: ReturnType<typeof createStartupCleanupStack>,
   applicationQuit: ReturnType<typeof createApplicationQuitCoordinator>
@@ -283,11 +272,69 @@ async function createApplicationWindows(
     if (primaryPetWindow === pet) primaryPetWindow = null;
   });
   let chat = createChatWindow(BrowserWindow, preload);
+  startupCleanup.add(() => { if (!chat.isDestroyed()) chat.destroy(); });
   let settings = createSettingsWindow(BrowserWindow, preload);
+  startupCleanup.add(() => { if (!settings.isDestroyed()) settings.destroy(); });
   const getCurrentChatWebContents = (): WebContents | null => {
     if (chat.isDestroyed() || chat.webContents.isDestroyed()) return null;
     return chat.webContents;
   };
+
+  // 原聊天仍是唯一业务 owner；气泡仅展示，历史背景连 preload 都不加载。
+  let bubble = createBubbleWindow(BrowserWindow, preload);
+  // 每个原生资源创建后立即登记，后续构造/IPC注册失败也不会遗留窗口。
+  startupCleanup.add(() => { if (!bubble.isDestroyed()) bubble.destroy(); });
+  const historyBackdrop = createHistoryBackdropWindow(BrowserWindow);
+  startupCleanup.add(() => { if (!historyBackdrop.isDestroyed()) historyBackdrop.destroy(); });
+  let historyReady = false;
+  let materialAvailable = false;
+  let presentation!: ChatPresentationWindowController;
+  let presentationTimer: ReturnType<typeof setInterval> | undefined;
+  let presentationClosing = false;
+  let presentationClose: Promise<void> | null = null;
+  const presentationReleases: (() => void)[] = [];
+  const presentationBridge = new ChatPresentationBridge({
+    getChat: getCurrentChatWebContents,
+    getBubble: () => bubble.isDestroyed() || bubble.webContents.isDestroyed() ? null : bubble.webContents,
+    onReady: surface => {
+      presentation.markReady(surface);
+      if (surface === 'island') presentationBridge.sendCommand({ type: 'material-availability', available: materialAvailable });
+    },
+    onLayout: layout => presentation.setLayout(layout)
+  });
+  const pointerObserver = createChatPointerObserver({
+    resourceRoot: app.isPackaged ? process.resourcesPath : join(__dirname, '../../resources'),
+    onPointerDown: point => presentation.onPointerDown(point),
+    onFailure: () => presentation.onPointerFailure()
+  });
+  presentation = new ChatPresentationWindowController({
+    getChat: () => chat,
+    getBubble: () => bubble,
+    getHistory: () => historyReady ? historyBackdrop : null,
+    getPetVisible: () => !pet.isDestroyed() && pet.isVisible(),
+    getCursorScreenPoint: () => screen.getCursorScreenPoint(),
+    getDisplayNearestPoint: point => screen.getDisplayNearestPoint(point),
+    screenToDipPoint: point => screen.screenToDipPoint(point),
+    sendCommand: command => presentationBridge.sendCommand(command),
+    sendBubbleCommand: command => presentationBridge.sendCommand(command, 'bubble'),
+    onBubbleUnavailable: () => { bubbleCrashed = true; presentationBridge.invalidateBubble(); },
+    onMaterialUnavailable: () => materialFailed(),
+    pointer: pointerObserver
+  });
+  const releasePresentationIpc = registerChatPresentationIpc(ipcMain, presentationBridge);
+  const closePresentation = (): Promise<void> => {
+    if (presentationClose) return presentationClose;
+    presentationClosing = true;
+    clearInterval(presentationTimer);
+    for (const release of presentationReleases.splice(0)) release();
+    releasePresentationIpc(); presentationBridge.dispose();
+    presentationClose = presentation.dispose().finally(() => {
+      if (!bubble.isDestroyed()) bubble.destroy();
+      if (!historyBackdrop.isDestroyed()) historyBackdrop.destroy();
+    });
+    return presentationClose;
+  };
+  startupCleanup.add(closePresentation);
 
   // Explorer 桥接只提供窗口事实，桌宠可见性始终由普通窗口流程管理。
   const storageDirectory = app.getPath('userData');
@@ -889,14 +936,14 @@ async function createApplicationWindows(
   };
   startupCleanup.add(releaseCharacterRuntime);
   pet.once('closed', () => { void releaseCharacterRuntime(); });
-  const hideOnClose = (window: BrowserWindow): void => {
+  const hideOnClose = (window: BrowserWindow, requestHide: () => void = () => window.hide()): void => {
     window.on('close', event => {
       if (isQuitting) return;
       event.preventDefault();
-      window.hide();
+        requestHide();
     });
   };
-  hideOnClose(chat);
+  hideOnClose(chat, () => presentation.requestClose());
   hideOnClose(settings);
 
   const reportCharacterWorkshopFlushError = (error: unknown): void => {
@@ -918,13 +965,93 @@ async function createApplicationWindows(
     ? createE2eCharacterDialogAdapter(e2eBoundary)
     : null;
 
-  const ensureChatWindow = async (): Promise<BrowserWindow> => {
-    if (!chat.isDestroyed()) return chat;
-    chat = createChatWindow(BrowserWindow, preload);
-    hideOnClose(chat);
-    await loadRenderer(chat, 'chat');
-    return chat;
+  let chatLoaded = false;
+  let chatCrashed = false;
+  let chatLoading: Promise<BrowserWindow> | null = null;
+  let bubbleLoaded = false;
+  let bubbleCrashed = false;
+  let bubbleLoading: Promise<BrowserWindow> | null = null;
+  const bindPresentationWindow = (window: BrowserWindow, surface: 'island' | 'bubble'): void => {
+    const failed = (): void => {
+      if (presentationClosing || window !== (surface === 'island' ? chat : bubble)) return;
+      presentation.markUnavailable(surface);
+      if (surface === 'island') chatCrashed = true; else bubbleCrashed = true;
+      // 展示窗口故障仅打开原聊天回退入口，不批准、清空或取消原任务。
+      void ensureChatWindow().then(() => presentation.requestOpen()).catch(() => {
+        console.error('聊天窗口暂不可用。', 'CHAT_PRESENTATION_UNAVAILABLE');
+      });
+    };
+    const loading = (): void => {
+      if (presentationClosing || window !== (surface === 'island' ? chat : bubble)) return;
+      if (surface === 'island') { presentationBridge.clear(); presentation.clear(); }
+      presentation.markUnavailable(surface);
+    };
+    window.on('closed', failed);
+    window.webContents.on('render-process-gone', failed);
+    window.webContents.on('did-start-loading', loading);
+    presentationReleases.push(() => {
+      window.removeListener('closed', failed);
+      window.webContents.removeListener('render-process-gone', failed);
+      window.webContents.removeListener('did-start-loading', loading);
+    });
   };
+  const ensureChatWindow = (): Promise<BrowserWindow> => {
+    if (chatLoading) return chatLoading;
+    if (!chat.isDestroyed() && chatLoaded && !chatCrashed) return Promise.resolve(chat);
+    if (chat.isDestroyed() || chatCrashed) {
+      const old = chat;
+      chat = createChatWindow(BrowserWindow, preload);
+      hideOnClose(chat, () => presentation.requestClose());
+      bindPresentationWindow(chat, 'island');
+      if (!old.isDestroyed()) old.destroy();
+      chatCrashed = false;
+    }
+    const candidate = chat;
+    chatLoading = loadRenderer(candidate, 'chat').then(() => {
+      if (candidate.isDestroyed() || candidate !== chat) throw new Error('CHAT_PRESENTATION_UNAVAILABLE');
+      chatLoaded = true; return candidate;
+    }).finally(() => { chatLoading = null; });
+    return chatLoading;
+  };
+  const ensureBubbleWindow = (): Promise<BrowserWindow> => {
+    if (bubbleLoading) return bubbleLoading;
+    if (!bubble.isDestroyed() && bubbleLoaded && !bubbleCrashed) return Promise.resolve(bubble);
+    if (bubble.isDestroyed() || bubbleCrashed) {
+      const old = bubble;
+      bubble = createBubbleWindow(BrowserWindow, preload); bindPresentationWindow(bubble, 'bubble');
+      if (!old.isDestroyed()) old.destroy();
+      bubbleCrashed = false;
+    }
+    const candidate = bubble;
+    bubbleLoading = loadRenderer(candidate, 'bubble').then(() => {
+      if (candidate.isDestroyed() || candidate !== bubble) throw new Error('CHAT_PRESENTATION_UNAVAILABLE');
+      bubbleLoaded = true; return candidate;
+    }).finally(() => { bubbleLoading = null; });
+    return bubbleLoading;
+  };
+  bindPresentationWindow(chat, 'island'); bindPresentationWindow(bubble, 'bubble');
+  historyBackdrop.setIgnoreMouseEvents(true, { forward: true });
+  const reportMaterialAvailability = (): void => {
+    try { presentationBridge.sendCommand({ type: 'material-availability', available: materialAvailable }); }
+    catch { /* chat 未就绪时由其 ready 握手补发当前材质可用性。 */ }
+  };
+  const materialFailed = (): void => {
+    historyReady = false; materialAvailable = false;
+    if (!historyBackdrop.isDestroyed()) historyBackdrop.hide();
+    if (!presentationClosing) reportMaterialAvailability();
+  };
+  historyBackdrop.on('closed', materialFailed);
+  historyBackdrop.webContents.on('render-process-gone', materialFailed);
+  presentationReleases.push(() => {
+    historyBackdrop.removeListener('closed', materialFailed);
+    historyBackdrop.webContents.removeListener('render-process-gone', materialFailed);
+  });
+  void historyBackdrop.loadURL('data:text/html,<html style="background:transparent"><body style="background:transparent"></body></html>').then(() => {
+    if (historyBackdrop.isDestroyed() || presentationClosing) return;
+    const supported = process.platform === 'win32' && Number(process.getSystemVersion().split('.').at(-1)) >= 22621;
+    if (supported) { historyBackdrop.setBackgroundMaterial('acrylic'); historyReady = true; materialAvailable = true; }
+    reportMaterialAvailability();
+  }).catch(materialFailed);
   const ensureSettingsWindow = async (): Promise<BrowserWindow> => {
     if (!settings.isDestroyed()) return settings;
     settings = createSettingsWindow(BrowserWindow, preload);
@@ -936,7 +1063,8 @@ async function createApplicationWindows(
   const windowCommands = createWindowCommandController({
     getChatWindow: () => chat,
     ensureChatWindow,
-    positionChat: chatWindow => positionChatNearPet(pet, chatWindow),
+    openChat: () => { void ensureBubbleWindow().catch(() => presentation.markUnavailable('bubble')); presentation.requestOpen(); },
+    closeChat: () => presentation.requestClose(),
     ensureCharacterWorkshopWindow
   });
   const togglePetVisibility = createPetVisibilityCommand({
@@ -1087,6 +1215,8 @@ async function createApplicationWindows(
     // Main 先接纳同一正式事件，再投递窗口；恢复快照与实时正文始终有单一顺序。
     conversationSession.observe(validated);
     conversationEventProjection.publish(validated);
+    // 只订阅既有 reset 结果清理展示；不进入会话、角色或权限决策。
+    if (validated.type === 'conversation_reset') { presentationBridge.clear(); presentation.clear(); }
     if (validated.type === 'error') reportedSubmitErrorCode = validated.code;
   };
   publishCharacterBehaviorNotice = notice => emitConversationEvent({
@@ -1250,6 +1380,7 @@ async function createApplicationWindows(
     bridge: explorerPort,
     position: petGeometry,
     services: [
+      closePresentation,
       async () => { await workshopCloseHandshake.flush(characterWorkshopWindows.getCurrent()); },
       () => desktopSettingsService.close(),
       () => localModelService.close(),
@@ -1284,7 +1415,8 @@ async function createApplicationWindows(
 
   await Promise.all([
     loadRenderer(pet, 'pet'),
-    loadRenderer(chat, 'chat'),
+    ensureChatWindow(),
+    ensureBubbleWindow().catch(() => { presentation.markUnavailable('bubble'); presentation.requestOpen(); }),
     loadRenderer(settings, 'settings'),
     ensureCharacterWorkshopWindow()
   ]);
@@ -1297,6 +1429,31 @@ async function createApplicationWindows(
   await characterBehavior.initialize();
   finishCharacterInitialization();
   await petGeometry.initialize();
+  // 只读现有视觉权威的相对包围框与当前原生位置，不回写宠物几何或移动状态。
+  const updatePresentationGeometry = (): void => {
+    if (presentationClosing) return;
+    const snapshot = getPetGeometrySnapshot();
+    if (pet.isDestroyed() || !snapshot) { presentation.updatePetGeometry(null); return; }
+    const bounds = pet.getBounds(), visual = snapshot.visualBoundsInWindowDip;
+    presentation.updatePetGeometry({ x: bounds.x + visual.x, y: bounds.y + visual.y, width: visual.width, height: visual.height });
+  };
+  const pollPresentation = (): void => {
+    try { updatePresentationGeometry(); presentation.poll(); }
+    catch { console.error('更新聊天窗口表现失败。', 'CHAT_PRESENTATION_UNAVAILABLE'); }
+  };
+  pet.on('move', pollPresentation); pet.on('show', pollPresentation);
+  pet.on('hide', pollPresentation); pet.on('closed', pollPresentation);
+  screen.on('display-metrics-changed', pollPresentation);
+  screen.on('display-added', pollPresentation);
+  screen.on('display-removed', pollPresentation);
+  presentationReleases.push(() => {
+    pet.removeListener('move', pollPresentation); pet.removeListener('show', pollPresentation);
+    pet.removeListener('hide', pollPresentation); pet.removeListener('closed', pollPresentation);
+    screen.removeListener('display-metrics-changed', pollPresentation);
+    screen.removeListener('display-added', pollPresentation);
+    screen.removeListener('display-removed', pollPresentation);
+  });
+  presentationTimer = setInterval(pollPresentation, 50); presentationTimer.unref(); pollPresentation();
   characterProactivityRuntime.start();
   await explorerComposition.start();
   if (!applicationQuit.activateNormal(shutdownApplication)) return;

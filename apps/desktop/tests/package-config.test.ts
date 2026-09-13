@@ -138,6 +138,8 @@ describe('electron-builder 配置', () => {
       'resources/windows/explorer-space-bridge.ps1',
       'resources/windows/explorer-space-shell-tab-helper.cs',
       'resources/windows/explorer-space-integrity.json',
+      'resources/windows/chat-pointer-observer.ps1',
+      'resources/windows/chat-pointer-observer.cs',
       'resources/local-model',
       '../../packages/coding-task-core/dist',
       '../../vendor/opencode/LICENSE'

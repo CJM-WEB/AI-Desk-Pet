@@ -11,7 +11,8 @@ export interface ChatWindowCommandTarget {
 export interface WindowCommandControllerOptions<TWindow extends ChatWindowCommandTarget> {
   getChatWindow(): TWindow;
   ensureChatWindow(): Promise<TWindow>;
-  positionChat(window: TWindow): void;
+  openChat(window: TWindow): void;
+  closeChat(window: TWindow): void;
   ensureCharacterWorkshopWindow(): Promise<TWindow>;
 }
 
@@ -166,13 +167,11 @@ export function createWindowCommandController<TWindow extends ChatWindowCommandT
   return {
     async showChat() {
       const chat = await options.ensureChatWindow();
-      options.positionChat(chat);
-      chat.show();
-      chat.focus();
+      options.openChat(chat);
     },
     hideChat() {
       const chat = options.getChatWindow();
-      if (!chat.isDestroyed()) chat.hide();
+      if (!chat.isDestroyed()) options.closeChat(chat);
     },
     async showCharacterWorkshop() {
       const workshop = await options.ensureCharacterWorkshopWindow();

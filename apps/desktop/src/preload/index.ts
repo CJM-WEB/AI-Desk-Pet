@@ -41,8 +41,10 @@ import {
   type LocalModelPublicStatus
 } from '../shared/local-model-ipc';
 import { workshopLayoutSettingsSchema } from '../shared/workshop-layout-ipc';
+import { createChatPresentationApi } from './chat-presentation';
 
-const e2eProbeEnabled = process.argv.includes('--myself-e2e-probe');
+const isChatBubble = process.argv.includes('--myself-chat-bubble');
+const e2eProbeEnabled = !isChatBubble && process.argv.includes('--myself-e2e-probe');
 let behaviorProbe: CharacterBehaviorProbe = {
   revision: 0,
   stateId: '',
@@ -85,6 +87,7 @@ if (e2eProbeEnabled) {
 }
 
 const api: MyselfApi = {
+  chatPresentation: createChatPresentationApi(ipcRenderer),
   getStatus: () => ipcRenderer.invoke(ipcChannels.appGetStatus),
   getSettings: (): Promise<PublicSettings> => ipcRenderer.invoke(ipcChannels.settingsGet),
   saveProvider: (input: unknown): Promise<PublicSettings> => (
@@ -372,4 +375,5 @@ const api: MyselfApi = {
   quit: (): Promise<void> => ipcRenderer.invoke(ipcChannels.appQuit)
 };
 
-contextBridge.exposeInMainWorld('myself', api);
+// Main 的固定气泡参数只公开展示接口，不把业务方法交给气泡 Renderer。
+contextBridge.exposeInMainWorld('myself', isChatBubble ? { chatPresentation: api.chatPresentation } : api);

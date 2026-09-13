@@ -620,7 +620,7 @@ export class ConversationCoordinator {
       if (!this.isRunning(context) || context.controller.signal.aborted) return;
     }
     const turnId = `assistant-${randomUUID()}`;
-    const bufferedDeltas: string[] = [];
+    let streamStarted = false;
     // 同步捕获公开快照和宿主标记；后者绝不进入模型请求或 Renderer。
     const expressionContext = this.options.behavior.captureExpressionContext();
     const behaviorContext = this.options.behavior.getChatContext();
@@ -657,24 +657,24 @@ export class ConversationCoordinator {
       onExpression: acceptExpression,
       onTextDelta: delta => {
         if (delta.length === 0 || !this.isRunning(context)) return;
-        bufferedDeltas.push(delta);
+        // 正文增量即时展示，只有最终校验成功才提交历史；每次公开后重新检查会话所有权。
+        if (!streamStarted) {
+          streamStarted = true;
+          this.options.emit({ type: 'assistant_message_start', turnId });
+        }
+        if (this.isRunning(context)) this.options.emit({ type: 'assistant_message_delta', turnId, delta });
       }
     });
     if (!this.isRunning(context)) return;
     if (reply.capabilityPlan?.kind === 'agent_task') {
+      // 原生工具可能在正文之后到达；回到准备阶段撤销未提交草稿，工具判定与许可流程保持原样。
+      if (streamStarted) this.options.emit({ type: 'phase', phase: 'thinking' });
+      if (!this.isRunning(context)) return;
       this.state = { kind: 'preparing_capability_task', generation: context.generation, controller: context.controller, taskKind: 'file' };
       await this.prepareCapabilityTask(context, 'file');
       return;
     }
     // 正文与独立表现分别交付；等待授权和真实任务期间同轮 owner 仍可接纳表现。
-    const streamStarted = bufferedDeltas.length > 0;
-    if (streamStarted) {
-      this.options.emit({ type: 'assistant_message_start', turnId });
-      for (const delta of bufferedDeltas) {
-        if (!this.isRunning(context)) return;
-        this.options.emit({ type: 'assistant_message_delta', turnId, delta });
-      }
-    }
     this.options.emit(streamStarted
       ? { type: 'assistant_message_commit', turnId, text: reply.text }
       : { type: 'message', role: 'assistant', text: reply.text });

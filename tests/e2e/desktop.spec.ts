@@ -8,7 +8,7 @@ import { tmpdir } from 'node:os';
 import { PassThrough } from 'node:stream';
 import { pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
-import { expect, test, type Page } from '@playwright/test';
+import { expect, test, type Locator, type Page } from '@playwright/test';
 import type { TaskEvent } from '@myself/shared-types';
 import { characterBehaviorRoles, type CharacterBehaviorBindings } from '../../apps/desktop/src/main/characters/character-behavior-bindings';
 import { CharacterStore } from '../../apps/desktop/src/main/characters/character-store';
@@ -368,7 +368,40 @@ function sanitizedCapturedError(
   return sanitized;
 }
 
+/** 业务回归通过真实菜单展示历史，不改变产品默认折叠状态。 */
+async function clickChatMenu(page: Page, label: '新对话' | '历史' | '设置'): Promise<void> {
+  const options = page.getByRole('button', { name: '选项', exact: true });
+  await expect(options).toBeVisible();
+  if (await options.getAttribute('aria-expanded') !== 'true') await options.click();
+  await page.getByRole('menuitem', { name: label, exact: true }).click({ timeout: 15_000 });
+}
+
+async function showChatHistory(page: Page): Promise<void> {
+  const history = page.getByRole('region', { name: '历史对话', exact: true });
+  if (!(await history.isVisible())) await clickChatMenu(page, '历史');
+  await expect(history).toBeVisible();
+  const options = page.getByRole('button', { name: '选项', exact: true });
+  if (await options.getAttribute('aria-expanded') === 'true') await options.click();
+}
+
+/** 授权从纯展示窗口真实点击，业务事件与正式 API 仍只从 chat 读取。 */
+async function chatBubblePage(chat: Page): Promise<Page> {
+  const find = () => chat.context().pages().find(page => new URL(page.url()).searchParams.get('view') === 'bubble');
+  await expect.poll(() => Boolean(find())).toBe(true);
+  const bubble = find();
+  if (!bubble) throw new Error('缺少头顶气泡 Renderer');
+  return bubble;
+}
+
+async function expandConfirmationDetails(card: Locator): Promise<void> {
+  await expect(card).toBeVisible();
+  const summary = card.locator('.bubble-summary');
+  if (await summary.getAttribute('aria-expanded') !== 'true') await summary.click();
+  await expect(summary).toHaveAttribute('aria-expanded', 'true');
+}
+
 async function submitChatMessage(page: Page, text: string): Promise<void> {
+  await showChatHistory(page);
   await page.getByLabel('和我说点什么').fill(text);
   const send = page.getByRole('button', { name: '发送给 AI Pet' });
   await expect(send).toBeEnabled();
@@ -538,12 +571,14 @@ async function configureCodingApp(fixture: AppFixture, provider: Awaited<ReturnT
     await window.myself.openChat();
   }, { baseUrl: provider.baseUrl, apiKey: provider.apiKey });
   await expect.poll(() => chat.evaluate(() => document.visibilityState)).toBe('visible');
+  await showChatHistory(chat);
   return { pet, chat };
 }
 
 async function approveCodingScope(chat: Page) {
-  const scope = chat.getByRole('article', { name: '本地任务授权' });
+  const scope = (await chatBubblePage(chat)).getByRole('article', { name: '本地任务授权' });
   await expect(scope).toBeVisible();
+  await expandConfirmationDetails(scope);
   await scope.getByRole('button', { name: '授权并开始任务' }).click();
 }
 
@@ -577,7 +612,8 @@ test.describe('正式 Core 任务 UI', () => {
       const { chat } = await configureCodingApp(fixture, provider);
       await chat.getByRole('textbox', { name: '和我说点什么' }).fill('note.txt 里面写了什么？');
       await chat.getByRole('button', { name: '发送给 AI Pet' }).click();
-      const scope = chat.getByRole('article', { name: '本地任务授权' });
+      const scope = (await chatBubblePage(chat)).getByRole('article', { name: '本地任务授权' });
+      await expandConfirmationDetails(scope);
       await expect(scope).toContainText('coding-e2e-model');
       await expect(scope).toContainText(await realpath(fixture.authorizedRootDirectory));
       expect(coreRequestCount(provider)).toBe(0);
@@ -613,10 +649,11 @@ test.describe('正式 Core 任务 UI', () => {
       const { chat } = await configureCodingApp(fixture, provider);
       await recordCodingEvents(chat);
       await submitChatMessage(chat, '读取 note.txt 文件');
-      await expect(chat.getByRole('article', { name: '本地任务授权' })).toBeVisible();
+      await expect((await chatBubblePage(chat)).getByRole('article', { name: '本地任务授权' })).toBeVisible();
       expect(coreRequestCount(provider)).toBe(0);
       await approveCodingScope(chat);
-      const permission = chat.getByRole('region', { name: '具体操作许可' });
+      const permission = (await chatBubblePage(chat)).getByRole('region', { name: '具体操作许可' });
+      await expandConfirmationDetails(permission);
       await expect(permission).toContainText('重复操作保护');
       await expect(permission).toContainText('连续 3 次');
       await expect(permission).toContainText('read');
@@ -625,6 +662,8 @@ test.describe('正式 Core 任务 UI', () => {
       if (third?.type !== 'task_permission_required') throw new Error('缺少循环许可');
       expect(third.request).toEqual({ action: 'doom_loop', tool: 'read', repeatCount: 3 });
       await permission.getByRole('button', { name: '仅继续这一次' }).click();
+      await expect(permission.locator('.bubble-summary')).toHaveAttribute('aria-expanded', 'false');
+      await expandConfirmationDetails(permission);
       await expect(permission).toContainText('连续 4 次');
       expect(coreRequestCount(provider)).toBe(4);
       await expect(chat.evaluate(id => window.myself.confirmAction(id), third.actionId)).rejects.toThrow();
@@ -665,7 +704,8 @@ test.describe('正式 Core 任务 UI', () => {
       await writeFile(join(fixture.authorizedRootDirectory, 'note.txt'), nonce);
       const { chat } = await configureCodingApp(fixture, provider);
       await submitChatMessage(chat, '请读取 note.txt 并告诉我里面的内容');
-      const scope = chat.getByRole('article', { name: '本地任务授权' });
+      const scope = (await chatBubblePage(chat)).getByRole('article', { name: '本地任务授权' });
+      await expandConfirmationDetails(scope);
       await expect(scope).toContainText('coding-e2e-model');
       await expect(scope).toContainText(await realpath(fixture.authorizedRootDirectory));
       await expect.poll(() => provider.requests.length).toBe(3);
@@ -716,11 +756,12 @@ test.describe('正式 Core 任务 UI', () => {
       await pet.evaluate(() => window.myself.openChat());
       for (const page of [pet, chat, settings, characters]) await recordCodingEvents(page);
       await submitChatMessage(chat, '删除 target.txt 文件');
-      await expect(chat.getByRole('article', { name: '本地任务授权' })).toBeVisible();
+      await expect((await chatBubblePage(chat)).getByRole('article', { name: '本地任务授权' })).toBeVisible();
       expect(coreRequestCount(provider)).toBe(0);
       expect(await pathExistsForAssertion(target)).toBe(true);
       await approveCodingScope(chat);
-      const permission = chat.getByRole('region', { name: '具体操作许可' });
+      const permission = (await chatBubblePage(chat)).getByRole('region', { name: '具体操作许可' });
+      await expandConfirmationDetails(permission);
       await expect(permission).toContainText('target.txt');
       const confirm = permission.getByRole('button', { name: '确认移入回收站' });
       await expect(confirm).toBeEnabled();
@@ -764,11 +805,11 @@ test.describe('正式 Core 任务 UI', () => {
         await chat.evaluate(() => { const state = globalThis as typeof globalThis & { __permissionId?: string }; window.myself.onTaskEvent(event => { if (event.type === 'task_permission_required') state.__permissionId = event.actionId; }); });
         await submitChatMessage(chat, '修改 existing.txt 文件');
         await approveCodingScope(chat);
-        await expect(chat.getByRole('button', { name: '确认覆盖文件' })).toBeEnabled();
+        await expect((await chatBubblePage(chat)).getByRole('button', { name: '确认覆盖文件' })).toBeEnabled();
         const id = await chat.evaluate(() => (globalThis as typeof globalThis & { __permissionId?: string }).__permissionId!);
         if (mode === '配置变更') await pet.evaluate(() => window.myself.saveModelRoute({ primaryProfileId: 'coding-e2e', chatProfileId: 'coding-e2e', agentProfileId: 'coding-e2e', visionProfileId: null, fallbackProfileIds: [], allowCrossProviderFallback: false }));
-        else await chat.getByRole('button', { name: mode, exact: true }).click();
-        await expect(chat.getByRole('region', { name: '具体操作许可' })).toHaveCount(0);
+        else await clickChatMenu(chat, '新对话');
+        await expect((await chatBubblePage(chat)).getByRole('region', { name: '具体操作许可' })).toHaveCount(0);
         await expect(chat.evaluate(id => window.myself.confirmAction(id), id)).rejects.toThrow();
         expect(await readFile(join(fixture.authorizedRootDirectory, 'existing.txt'), 'utf8')).toBe('原文件正文');
         await submitChatMessage(chat, '现在聊聊天');
@@ -5079,13 +5120,14 @@ test.describe('真实 Provider 业务闭环', () => {
       expect(cloud.requests).toHaveLength(0);
 
       await submitChatMessage(chat, pendingPrompt);
-      const pendingCard = chat.getByRole('article', { name: '本地任务授权' });
+      const pendingCard = (await chatBubblePage(chat)).getByRole('article', { name: '本地任务授权' });
       await expect(pendingCard).toBeVisible();
+      await expandConfirmationDetails(pendingCard);
       await expect(pendingCard).toContainText('builtin-local');
       await expect(lstat(join(fixture.authorizedRootDirectory, 'switch-stale.txt')))
         .rejects.toMatchObject({ code: 'ENOENT' });
 
-      await chat.getByRole('button', { name: '设置' }).click();
+      await clickChatMenu(chat, '设置');
       await expect.poll(() => Boolean(rendererPage(fixture, 'settings'))).toBe(true);
       settings = rendererPage(fixture, 'settings');
       if (!settings) throw new Error('缺少本地模型设置窗口');
@@ -5117,7 +5159,7 @@ test.describe('真实 Provider 业务闭环', () => {
       cloud.assertComplete();
       expect(cloud.inspectionErrors).toEqual([]);
 
-      await chat.getByRole('button', { name: '设置' }).click();
+      await clickChatMenu(chat, '设置');
       await expect.poll(() => Boolean(rendererPage(fixture, 'settings'))).toBe(true);
       settings = rendererPage(fixture, 'settings');
       if (!settings) throw new Error('重新打开后缺少本地模型设置窗口');
@@ -5735,7 +5777,7 @@ test.describe('真实 Provider 业务闭环', () => {
         visibleMessageCount: 3,
         historyDisclosureVisible: true
       });
-      await chat.getByRole('button', { name: '仅发送当前消息' }).click();
+      await (await chatBubblePage(chat)).getByRole('region', { name: '历史共享授权' }).getByRole('button', { name: '仅发送当前消息' }).click();
       await approveCodingScope(chat);
       await expect.poll(() => fixture.getConversationProbe()).toMatchObject({
         visibleMessageCount: 4,
@@ -5746,7 +5788,7 @@ test.describe('真实 Provider 业务闭环', () => {
         return phase === 'success' || phase === 'idle';
       }).toBe(true);
 
-      await chat.getByRole('button', { name: '新对话' }).click();
+      await clickChatMenu(chat, '新对话');
       await expect.poll(() => fixture.getConversationProbe()).toMatchObject({
         phase: 'idle',
         visibleMessageCount: 0,
@@ -5769,7 +5811,7 @@ test.describe('真实 Provider 业务闭环', () => {
         visibleMessageCount: 3,
         historyDisclosureVisible: true
       });
-      await chat.getByRole('button', { name: '仅本次共享历史' }).click();
+      await (await chatBubblePage(chat)).getByRole('region', { name: '历史共享授权' }).getByRole('button', { name: '仅本次共享历史' }).click();
       await approveCodingScope(chat);
       await expect.poll(() => fixture.getConversationProbe()).toMatchObject({
         visibleMessageCount: 4,
@@ -5880,7 +5922,7 @@ test.describe('真实 Provider 业务闭环', () => {
         historyDisclosureVisible: false,
         fileConfirmationVisible: false
       });
-      await chat.getByRole('button', { name: '新对话' }).click();
+      await clickChatMenu(chat, '新对话');
       await expect.poll(() => fixture.getConversationProbe()).toMatchObject({
         phase: 'idle',
         visibleMessageCount: 0,
@@ -6268,7 +6310,9 @@ async function reopenConversationFixture(fixture: AppFixture): Promise<Page> {
   await fixture.restart();
   const pet = await waitForRendererPage(fixture, 'pet', 30_000);
   await pet.evaluate(() => window.myself.openChat());
-  return waitForRendererPage(fixture, 'chat');
+  const chat = await waitForRendererPage(fixture, 'chat');
+  await showChatHistory(chat);
+  return chat;
 }
 
 test.describe('当前对话持久化与无痕隔离', () => {
@@ -6309,7 +6353,7 @@ test.describe('当前对话持久化与无痕隔离', () => {
       await submitChatMessage(chat, second);
       await expect(chat.getByText('我还记得刚才的晚霞。', { exact: true })).toBeVisible();
 
-      await chat.getByRole('button', { name: '新对话', exact: true }).click();
+      await clickChatMenu(chat, '新对话');
       await expect(chat.locator('.messages article.message')).toHaveCount(0);
       await closeConversationFixture(fixture);
       chat = await reopenConversationFixture(fixture);

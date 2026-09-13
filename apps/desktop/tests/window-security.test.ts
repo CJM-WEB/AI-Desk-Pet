@@ -68,8 +68,13 @@ describe('窗口安全配置', () => {
 
   it('聊天与设置使用互相独立的隐藏窗口', () => {
     expect(chatWindowOptions('preload.js')).toMatchObject({
-      width: 420,
-      height: 520,
+      width: 528,
+      height: 46,
+      transparent: true,
+      frame: false,
+      thickFrame: false,
+      alwaysOnTop: true,
+      resizable: false,
       show: false
     });
     expect(settingsWindowOptions('preload.js')).toMatchObject({
@@ -220,13 +225,24 @@ describe('桌宠交互控制器生命周期', () => {
     expect(controller.endDrag).toHaveBeenCalledOnce();
     expect(controller.dispose).toHaveBeenCalledOnce();
   });
+
+  it('气泡固定只展示preload参数，历史原生背景无preload与业务入口', () => {
+    expect(windowManager.bubbleWindowOptions).toBeTypeOf('function');
+    expect(windowManager.historyBackdropWindowOptions).toBeTypeOf('function');
+    expect(windowManager.bubbleWindowOptions('preload.js').webPreferences).toMatchObject({
+      ...secureWebPreferences('preload.js'), additionalArguments: ['--myself-chat-bubble']
+    });
+    const history = windowManager.historyBackdropWindowOptions();
+    expect(history).toMatchObject({ transparent: false, frame: false, backgroundColor: '#00000000', focusable: false });
+    expect(history.webPreferences?.preload).toBeUndefined();
+  });
 });
 
 describe('preload 白名单', () => {
   it('只暴露固定 myself API，不暴露 ipcRenderer 或通用 invoke', async () => {
     const source = await readFile(new URL('../src/preload/index.ts', import.meta.url), 'utf8');
 
-    expect(source).toContain("contextBridge.exposeInMainWorld('myself', api)");
+    expect(source).toContain("contextBridge.exposeInMainWorld('myself', isChatBubble ? { chatPresentation: api.chatPresentation } : api)");
     expect(source).not.toMatch(/exposeInMainWorld\([^,]+,\s*ipcRenderer/u);
     expect(source).not.toMatch(/\binvoke\s*:\s*/u);
     expect(source).not.toMatch(/\(channel(?:Name)?\s*:/u);
@@ -247,6 +263,15 @@ describe('preload 白名单', () => {
     expect(main).toContain(
       'registerAgentIpc(ipcMain, conversationIpcService, getCurrentChatWebContents)'
     );
+  });
+
+  it('同一chat页面reload也撤销展示代次；辅助窗在下一次创建前已登记启动清理', async () => {
+    const main = await readFile(new URL('../src/main/index.ts', import.meta.url), 'utf8');
+    const loading = main.slice(main.indexOf('const loading = (): void =>'), main.indexOf("window.on('closed', failed)"));
+    expect(loading).toContain("if (surface === 'island') { presentationBridge.clear(); presentation.clear(); }");
+    const bubbleCreation = main.indexOf('let bubble = createBubbleWindow(');
+    const historyCreation = main.indexOf('const historyBackdrop = createHistoryBackdropWindow(');
+    expect(main.slice(bubbleCreation, historyCreation)).toContain('startupCleanup.add(');
   });
 
   it('Main 由会话投影器独占 taskEvent 窗口投递', async () => {

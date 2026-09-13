@@ -14,6 +14,7 @@ import {
 import { ProviderResponseError } from './provider-response-error';
 import { conversationTaskInstructions } from '../conversation/conversation-chat-adapter';
 import { throwIfCancelled } from '../conversation/character-expression-adapter';
+import { createLocalConversationTextStream, LOCAL_DECISION_JSON_BYTE_BUDGET, LOCAL_THINKING_TAG_PATTERN } from './local-conversation-text-stream';
 
 export interface LocalModelConnection {
   generation: string;
@@ -37,8 +38,6 @@ const localRequestBody = {
 const LOCAL_INPUT_TOKEN_BUDGET = 6_400;
 const CONSERVATIVE_UTF8_BYTES_PER_TOKEN = 3;
 const LOCAL_READ_RESULT_CHARACTER_BUDGET = 4_000;
-const LOCAL_DECISION_JSON_BYTE_BUDGET = 64 * 1024;
-const THINKING_TAG_PATTERN = /<\/?think(?:\s[^>]*)?>/iu;
 const conversationDecisionJsonSchema = { anyOf: [
   { type: 'object', additionalProperties: false, properties: {
     kind: { type: 'string', enum: ['task'] }, text: { type: 'string', enum: [''] }
@@ -58,7 +57,7 @@ const conversationDecisionInstructions = '你负责桌宠应用的聊天回复�
 function createConversationDecisionRequest(request: ModelRequest): ModelRequest | undefined {
   const tool = request.tools[0];
   if (request.purpose !== 'conversation' || request.toolChoice !== 'auto'
-    || request.responseContract !== undefined || request.onTextDelta !== undefined
+    || request.responseContract !== undefined
     || request.tools.length !== 1 || tool?.type !== 'function'
     || tool.function.name !== 'request_task_authorization'
     || !isDeepStrictEqual(tool.function.parameters, { type: 'object', additionalProperties: false, properties: {}, required: [] })
@@ -80,7 +79,7 @@ function decodeConversationDecision(response: ModelResponse): { kind: 'task' | '
   if (typeof text !== 'string' || (kind !== 'task' && kind !== 'chat')
     || (kind === 'task' ? text !== '' : !text.trim() || Array.from(text).length > 4000)) throw invalid();
   // 转义后的正文也检查思考标签，防止JSON转义绕过传输层原文检查。
-  if (THINKING_TAG_PATTERN.test(text)) throw new ProviderError('LOCAL_MODEL_REASONING_LEAK', false);
+  if (LOCAL_THINKING_TAG_PATTERN.test(text)) throw new ProviderError('LOCAL_MODEL_REASONING_LEAK', false);
   return { kind, text };
 }
 
@@ -230,7 +229,7 @@ function assertLocalResponse(raw: unknown, conversationDecision: boolean): void 
     const content = Reflect.get(message, 'content');
     if (
       Object.prototype.hasOwnProperty.call(message, 'reasoning_content')
-      || (typeof content === 'string' && THINKING_TAG_PATTERN.test(content))
+      || (typeof content === 'string' && LOCAL_THINKING_TAG_PATTERN.test(content))
     ) {
       throw new ProviderError('LOCAL_MODEL_REASONING_LEAK', false);
     }
@@ -255,7 +254,7 @@ function createRequestPolicy(
   return {
     body: {
       ...localRequestBody,
-      stream: false,
+      stream: conversationDecision && request.onTextDelta !== undefined,
       ...(conversationDecision || characterDecision || request.toolChoice === 'required' ? { temperature: 0 } : {}),
       // 锁定的 llama.cpp 支持在 json_object 中附带 Schema；只约束本地结构化回合。
       ...(responseSchema === undefined
@@ -287,6 +286,12 @@ export class LocalModelProvider implements ModelProvider {
     const budgetedRequest = applyLocalContextBudget(mergeCharacterSystemMessages(decisionRequest ?? request),
       decisionRequest ? conversationDecisionJsonSchema : undefined);
     const connection = this.connectionPort.getReadyConnection();
+    const onTextDelta = decisionRequest && request.onTextDelta
+      ? createLocalConversationTextStream(delta => {
+        throwIfCancelled(signal);
+        assertCurrentGeneration(this.connectionPort, connection.generation);
+        request.onTextDelta!(delta);
+      }) : undefined;
     const provider = new OpenAICompatibleProvider(
       {
         baseUrl: connection.baseUrl,
@@ -302,6 +307,7 @@ export class LocalModelProvider implements ModelProvider {
     try {
       const response = await provider.respond({
         ...budgetedRequest,
+        ...(onTextDelta ? { onTextDelta } : {}),
         reasoningMode: 'disabled'
       }, signal);
       if (!decisionRequest) return response;

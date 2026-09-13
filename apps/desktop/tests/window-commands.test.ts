@@ -29,7 +29,8 @@ type WindowCommandsModule = {
   createWindowCommandController(options: {
     getChatWindow(): TestWindow;
     ensureChatWindow(): Promise<TestWindow>;
-    positionChat(window: TestWindow): void;
+    openChat(window: TestWindow): void;
+    closeChat(window: TestWindow): void;
     ensureCharacterWorkshopWindow(): Promise<TestWindow>;
   }): WindowCommandController;
   createLoadBeforePublishWindow<TWindow extends {
@@ -120,7 +121,7 @@ describe('Main 窗口命令控制器', () => {
     expect(show).not.toHaveBeenCalled();
   });
 
-  test('hideChat 只隐藏未销毁的聊天窗口', async () => {
+  test('hideChat 仅向未销毁聊天窗口请求收起动画', async () => {
     const module = await loadWindowCommandsModule();
     expect(module, '应提供独立的窗口命令控制器').not.toBeNull();
     if (!module) return;
@@ -131,7 +132,8 @@ describe('Main 窗口命令控制器', () => {
     const controller = module.createWindowCommandController({
       getChatWindow: () => current,
       ensureChatWindow: async () => current,
-      positionChat: () => undefined,
+      openChat: () => undefined,
+      closeChat: () => visibleCalls.push('request-close'),
       ensureCharacterWorkshopWindow: async () => current
     });
 
@@ -139,14 +141,14 @@ describe('Main 窗口命令控制器', () => {
     current = testWindow(destroyedCalls, true);
     controller.hideChat();
 
-    expect(visibleCalls).toEqual(['hide']);
+    expect(visibleCalls).toEqual(['request-close']);
     expect(destroyedCalls).toEqual([]);
   });
 
   test.each([
     ['现存窗口', false],
     ['重建窗口', true]
-  ] as const)('showChat 对%s统一执行 position、show、focus', async (_label, recreate) => {
+  ] as const)('showChat 对%s加载后仅请求顶部展开', async (_label, recreate) => {
     const module = await loadWindowCommandsModule();
     expect(module, '应提供独立的窗口命令控制器').not.toBeNull();
     if (!module) return;
@@ -160,10 +162,11 @@ describe('Main 窗口命令控制器', () => {
         sequence.push(recreate ? 'recreate' : 'reuse');
         return ensured;
       },
-      positionChat: window => {
+      openChat: window => {
         expect(window).toBe(ensured);
-        sequence.push('position');
+        sequence.push('request-open');
       },
+      closeChat: () => undefined,
       ensureCharacterWorkshopWindow: async () => ensured
     });
 
@@ -171,9 +174,7 @@ describe('Main 窗口命令控制器', () => {
 
     expect(sequence).toEqual([
       recreate ? 'recreate' : 'reuse',
-      'position',
-      'show',
-      'focus'
+      'request-open'
     ]);
   });
 
@@ -187,7 +188,8 @@ describe('Main 窗口命令控制器', () => {
     const controller = module.createWindowCommandController({
       getChatWindow: () => chat,
       ensureChatWindow: async () => chat,
-      positionChat: () => sequence.push('position'),
+      openChat: () => sequence.push('request-open'),
+      closeChat: () => sequence.push('request-close'),
       ensureCharacterWorkshopWindow: async () => chat
     });
     const handlers = new Map<string, (
@@ -215,7 +217,7 @@ describe('Main 窗口命令控制器', () => {
     await handlers.get(ipcChannels.windowOpenChat)?.(event);
     await handlers.get(ipcChannels.windowHideChat)?.(event);
 
-    expect(sequence).toEqual(['position', 'show', 'focus', 'hide']);
+    expect(sequence).toEqual(['request-open', 'request-close']);
     expect(handlers.has(ipcChannels.windowOpenChat)).toBe(true);
     expect(handlers.has(ipcChannels.windowHideChat)).toBe(true);
   });
@@ -231,7 +233,8 @@ describe('Main 窗口命令控制器', () => {
     const controller = module.createWindowCommandController({
       getChatWindow: () => chat,
       ensureChatWindow: async () => chat,
-      positionChat: () => undefined,
+      openChat: () => undefined,
+      closeChat: () => undefined,
       ensureCharacterWorkshopWindow: async () => {
         sequence.push('reuse');
         return workshop;

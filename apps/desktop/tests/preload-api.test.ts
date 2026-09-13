@@ -145,6 +145,7 @@ describe('preload 公开 API', () => {
 
   test('公开键严格等于既有白名单加两个会话入口', () => {
     expect(Object.keys(exposedApi ?? {})).toEqual([
+      'chatPresentation',
       'getStatus',
       'getSettings',
       'saveProvider',

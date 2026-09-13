@@ -8,6 +8,7 @@ import {
 import { ProviderError } from '../src/main/providers/openai-provider';
 import { characterExpressionResponseContract } from '../src/main/conversation/character-expression-adapter';
 import { ConversationChatAdapter } from '../src/main/conversation/conversation-chat-adapter';
+import { createLocalConversationTextStream } from '../src/main/providers/local-conversation-text-stream';
 
 type FetchLike = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
 
@@ -116,7 +117,142 @@ async function officialConversationRequest(): Promise<ModelRequest> {
   return captured;
 }
 
+/** 手动控制 HTTP 正文结束，证明增量来自传输过程而非完整答复后的拆分。 */
+function controlledConversationStream() {
+  let controller!: ReadableStreamDefaultController<Uint8Array>;
+  let cancelled = false;
+  const encoder = new TextEncoder();
+  const response = new Response(new ReadableStream<Uint8Array>({ start(value) { controller = value; }, cancel() { cancelled = true; } }), {
+    headers: { 'content-type': 'text/event-stream' }
+  });
+  return {
+    response,
+    send(content: string) {
+      if (cancelled) return;
+      controller.enqueue(encoder.encode(`data: ${JSON.stringify({ choices: [{ index: 0, delta: { content }, finish_reason: null }] })}\n\n`));
+    },
+    finish() {
+      if (cancelled) return;
+      controller.enqueue(encoder.encode('data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n'));
+      controller.close();
+    }
+  };
+}
+
 describe('LocalModelProvider', () => {
+  test('正式 Qwen SSE 在响应结束前交付已解码正文，最终仍完整校验私有判别', async () => {
+    const stream = controlledConversationStream();
+    const fetchClient = vi.fn<FetchLike>(async () => stream.response);
+    const deltas: string[] = [];
+    let settled = false;
+    const official = await officialConversationRequest();
+    const pending = new LocalModelProvider(readyPort(), fetchClient).respond({ ...official, onTextDelta: delta => deltas.push(delta) }, new AbortController().signal)
+      .then(value => ({ value }), error => ({ error })).finally(() => { settled = true; });
+    try {
+      stream.send('{"kind":"chat","text":"你好');
+      await vi.waitFor(() => expect(deltas.join('')).toBe('你好'), { timeout: 250 });
+      expect(settled).toBe(false);
+      expect(JSON.parse(String(fetchClient.mock.calls[0]?.[1]?.body))).toMatchObject({
+        stream: true, tools: [], tool_choice: 'none', response_format: { schema: decisionJsonSchema }
+      });
+      stream.send('，朋友"}');
+    } finally { stream.finish(); }
+    expect(await pending).toEqual({ value: { type: 'text', text: '你好，朋友' } });
+    expect(deltas.join('')).toBe('你好，朋友');
+  });
+
+  test('Qwen 正文先于分类时缓冲，确认 chat 后一次解码跨块转义且不拆开代理对', async () => {
+    const stream = controlledConversationStream();
+    const deltas: string[] = [];
+    const official = await officialConversationRequest();
+    const pending = new LocalModelProvider(readyPort(), async () => stream.response).respond({ ...official, onTextDelta: delta => deltas.push(delta) }, new AbortController().signal)
+      .then(value => ({ value }), error => ({ error }));
+    stream.send('{"text":"先说\\n\\u4f60\\ud83d');
+    stream.send('\\ude00\\\"\\\\","kind":"cha');
+    expect(deltas).toEqual([]);
+    stream.send('t"');
+    try {
+      await vi.waitFor(() => expect(deltas.join('')).toBe('先说\n你😀"\\'), { timeout: 250 });
+      stream.send('}');
+    } finally { stream.finish(); }
+    expect(await pending).toEqual({ value: { type: 'text', text: '先说\n你😀"\\' } });
+  });
+
+  test('Qwen SSE 中分块出现的转义思考标签不会进入正文增量', async () => {
+    const stream = controlledConversationStream();
+    const deltas: string[] = [];
+    const official = await officialConversationRequest();
+    const pending = new LocalModelProvider(readyPort(), async () => stream.response).respond({ ...official, onTextDelta: delta => deltas.push(delta) }, new AbortController().signal)
+      .then(value => ({ value }), error => ({ error }));
+    stream.send('{"kind":"chat","text":"安全正文\\u003cth');
+    try {
+      await vi.waitFor(() => expect(deltas.join('')).toBe('安全正文'), { timeout: 250 });
+      stream.send('ink>私有推理</think>"}');
+    } finally { stream.finish(); }
+    expect(await pending).toMatchObject({ error: { code: 'LOCAL_MODEL_REASONING_LEAK', retryable: false } });
+    expect(deltas.join('')).toBe('安全正文');
+  });
+
+  test.each(['取消', 'generation'])('Qwen SSE 在%s后拒绝迟到正文与最终结果', async variant => {
+    const stream = controlledConversationStream();
+    const deltas: string[] = [];
+    const controller = new AbortController();
+    let current = connection;
+    const official = await officialConversationRequest();
+    const pending = new LocalModelProvider(readyPort(() => current), async () => stream.response).respond({ ...official, onTextDelta: delta => deltas.push(delta) }, controller.signal)
+      .then(value => ({ value }), error => ({ error }));
+    stream.send('{"kind":"chat","text":"第一段');
+    try {
+      await vi.waitFor(() => expect(deltas.join('')).toBe('第一段'), { timeout: 250 });
+      if (variant === '取消') controller.abort();
+      else current = { ...connection, generation: 'generation-stream-late' };
+      stream.send('迟到正文"}');
+    } finally { stream.finish(); }
+    expect(await pending).toMatchObject({ error: variant === '取消' ? { name: 'AbortError' } : { code: 'LOCAL_MODEL_CONNECTION_STALE' } });
+    expect(deltas.join('')).toBe('第一段');
+  });
+
+  test('Qwen 增量不提前交付半个 Unicode 转义或代理对，结束的普通标签前缀原样交付', () => {
+    const deltas: string[] = [];
+    const accept = createLocalConversationTextStream(delta => deltas.push(delta));
+    accept('{"kind":"chat","text":"甲\\u4');
+    expect(deltas.join('')).toBe('甲');
+    accept('f60\\ud83d');
+    expect(deltas.join('')).toBe('甲你');
+    accept('\\ude00\\\"\\\\<thi');
+    expect(deltas.join('')).toBe('甲你😀"\\');
+    accept('"}');
+    expect(deltas.join('')).toBe('甲你😀"\\<thi');
+  });
+
+  test('Qwen 增量在 text 先完成而 kind 未完成时仍不公开正文', () => {
+    const deltas: string[] = [];
+    const accept = createLocalConversationTextStream(delta => deltas.push(delta));
+    accept('{"text":"尚未确定分类的正文","kind":"cha');
+    expect(deltas).toEqual([]);
+    accept('t"}');
+    expect(deltas).toEqual(['尚未确定分类的正文']);
+  });
+
+  test.each([
+    ['任务分支', '{"kind":"task","text":""}', 'task'],
+    ['任务携带正文', '{"text":"模型伪造的完成声明","kind":"task"}', 'invalid'],
+    ['未知字段', '{"metadata":"私有字段","kind":"chat","text":"正文"}', 'invalid'],
+    ['非法最终字段', '{"kind":"chat","text":"正文","approved":true}', 'invalid']
+  ])('Qwen SSE 的%s不发布私有内容且最终判别保持严格', async (_name, raw, expected) => {
+    const stream = controlledConversationStream();
+    const deltas: string[] = [];
+    const official = await officialConversationRequest();
+    const pending = new LocalModelProvider(readyPort(), async () => stream.response).respond({ ...official, onTextDelta: delta => deltas.push(delta) }, new AbortController().signal)
+      .then(value => ({ value }), error => ({ error }));
+    stream.send(raw);
+    stream.finish();
+    expect(await pending).toMatchObject(expected === 'task'
+      ? { value: { type: 'tool_request', request: { toolName: 'request_task_authorization', arguments: {} } } }
+      : { error: { code: 'RESPONSE_FORMAT_UNSUPPORTED', retryable: false } });
+    expect(deltas).toEqual([]);
+  });
+
   test('正式主聊天使用单次严格判别并保留人设历史正文，独立表现使用正式扁平协议', async () => {
     const requests: ModelRequest[] = [];
     const fetchClient = vi.fn<FetchLike>(async (_url, init) => {
@@ -266,7 +402,7 @@ describe('LocalModelProvider', () => {
     expect(body.messages[0].content).not.toContain(host.content);
     expect(body.messages.slice(1)).toEqual(official.messages.filter(message => message.role !== 'system'));
   });
-  test.each(['无工具', '其他工具', '两个工具', '非主请求', '不同宿主', '非system宿主', '重复宿主', '非空参数', '增量回调', 'required'])(
+  test.each(['无工具', '其他工具', '两个工具', '非主请求', '不同宿主', '非system宿主', '重复宿主', '非空参数', 'required'])(
     '%s保持既有协议，不通过局部文本或不匹配工具触发判别', async variant => {
       const official = await officialConversationRequest();
       let input: ModelRequest = official;
@@ -279,7 +415,6 @@ describe('LocalModelProvider', () => {
       if (variant === '重复宿主') input = { ...official, messages: [official.messages[0]!, ...official.messages] };
       if (variant === '非空参数') input = { ...official, tools: [{ ...official.tools[0]!, function: { ...official.tools[0]!.function,
         parameters: { type: 'object', additionalProperties: false, properties: { root: { type: 'string' } }, required: [] } } }] };
-      if (variant === '增量回调') input = { ...official, onTextDelta: vi.fn() };
       if (variant === 'required') input = { ...official, toolChoice: 'required' };
       const fetchClient = vi.fn<FetchLike>(async () => jsonResponse({ choices: [{ message: { content: '保持正文' } }] }));
       await expect(new LocalModelProvider(readyPort(), fetchClient).respond(input, new AbortController().signal)).resolves.toEqual({ type: 'text', text: '保持正文' });

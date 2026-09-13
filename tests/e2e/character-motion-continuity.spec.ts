@@ -62,6 +62,14 @@ async function renderer(fixture: ElectronAppFixture, view: string): Promise<Page
 }
 
 async function submit(page: Page, text: string): Promise<void> {
+  // 正文已迁入默认折叠历史；通过正式菜单显示，保留原正文与运动断言。
+  const history = page.getByRole('region', { name: '历史对话', exact: true });
+  if (!(await history.isVisible())) {
+    await page.getByRole('button', { name: '选项', exact: true }).click();
+    await page.getByRole('menuitem', { name: '历史', exact: true }).click();
+    await page.getByRole('button', { name: '选项', exact: true }).click();
+  }
+  await expect(history).toBeVisible();
   await page.getByLabel('和我说点什么').fill(text);
   const send = page.getByRole('button', { name: '发送给 AI Pet' });
   await expect(send).toBeEnabled();

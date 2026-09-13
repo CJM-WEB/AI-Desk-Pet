@@ -7,6 +7,24 @@ import {
 } from '../src/shared/conversation-transcript';
 
 describe('当前对话统一正文归并', () => {
+  test('四千 Unicode 码点的合法流式正文不会丢失最终提交', () => {
+    let state = reduceConversationTranscript(emptyConversationTranscript(), { type: 'assistant_message_start', turnId: 'unicode' });
+    state = reduceConversationTranscript(state, { type: 'assistant_message_delta', turnId: 'unicode', delta: '😀'.repeat(4000) });
+    expect(state.messages[0]?.text).toBe('😀'.repeat(4000));
+    state = reduceConversationTranscript(state, { type: 'assistant_message_commit', turnId: 'unicode', text: '😀'.repeat(4000) });
+    expect(state.messages[0]?.text).toBe('😀'.repeat(4000));
+    expect(state.activeAssistantStreamTurnId).toBeNull();
+  });
+
+  test('普通正文转入任务准备时撤销草稿，保留此前完整消息', () => {
+    let state = reduceConversationTranscript(emptyConversationTranscript(), { type: 'message', role: 'user', text: '查看文件' });
+    state = reduceConversationTranscript(state, { type: 'assistant_message_start', turnId: 'task' });
+    state = reduceConversationTranscript(state, { type: 'assistant_message_delta', turnId: 'task', delta: '先看看' });
+    state = reduceConversationTranscript(state, { type: 'phase', phase: 'thinking' });
+    expect(state.messages.map(message => message.text)).toEqual(['查看文件']);
+    expect(state.activeAssistantStreamTurnId).toBeNull();
+  });
+
   test('正式提交替换流式占位，重复提交与迟到增量不产生重复正文', () => {
     let state = emptyConversationTranscript();
     state = reduceConversationTranscript(state, { type: 'message', role: 'user', text: '你好' });

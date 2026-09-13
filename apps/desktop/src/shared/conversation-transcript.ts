@@ -83,14 +83,15 @@ export function reduceConversationTranscript(
     const message = snapshot.messages.find(item => item.id === id);
     if (!message) return committedConversationTranscript(snapshot);
     const text = event.type === 'assistant_message_delta' ? message.text + event.delta : event.text;
-    if (text.length > ASSISTANT_STREAM_TEXT_MAX_CHARACTERS) return committedConversationTranscript(snapshot);
+    if (Array.from(text).length > ASSISTANT_STREAM_TEXT_MAX_CHARACTERS) return committedConversationTranscript(snapshot);
     return {
       ...snapshot,
       activeAssistantStreamTurnId: event.type === 'assistant_message_commit' ? null : event.turnId,
       messages: snapshot.messages.map(item => item.id === id ? { ...item, text } : item)
     };
   }
-  if (event.type === 'phase' && ['idle', 'success', 'error', 'cancelled'].includes(event.phase)) {
+  // 从流式正文回到准备阶段时，原生工具申请不能留下未提交的普通回复。
+  if (event.type === 'phase' && ['thinking', 'idle', 'success', 'error', 'cancelled'].includes(event.phase)) {
     return committedConversationTranscript(snapshot);
   }
   return snapshot;

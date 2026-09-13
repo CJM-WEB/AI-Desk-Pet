@@ -27,6 +27,8 @@
 
 ## 3. 方案与接口
 
+2026-09-13 局部更新：正式聊天的流式传输以[普通聊天真实流式修复](2026-09-13-conversation-streaming-fix.md)为准。下文固定 `stream:false` 仅保留为原方案记录；单次判别与严格最终校验继续有效。
+
 继续由 `ConversationChatAdapter` 生成正式主请求。仅当本地 Provider 接到 `purpose='conversation'`、原正式空参数 `request_task_authorization` 入口及准确宿主提示时，转换为 Qwen 私有会话判别请求；不能依靠用户文本、人设内容或部分字符串匹配触发转换。无工具、其他工具、非主会话及任意其他宿主 system 保持既有处理。
 
 本地模型的一次 HTTP 请求使用 `tools:[]`、`tool_choice:'none'`、`stream:false`、`temperature:0`，通过锁定 llama.cpp 已使用的 `response_format:{type:'json_object',schema:...}` 发送严格联合 Schema。模型不能在该请求中返回原生工具调用。只替换准确宿主提示；人设与其他 system 的字节和相对顺序、用户原文和历史保持，沿用原 system 合并。转换后的完整提示和 Schema 必须先计入既有本地预算，再发送；不通过缩短用户原文或丢弃受保护工具链满足预算。

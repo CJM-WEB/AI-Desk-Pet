@@ -22,6 +22,10 @@ extraResources:
     to: windows/explorer-space-shell-tab-helper.cs
   - from: resources/windows/explorer-space-integrity.json
     to: windows/explorer-space-integrity.json
+  - from: resources/windows/chat-pointer-observer.ps1
+    to: windows/chat-pointer-observer.ps1
+  - from: resources/windows/chat-pointer-observer.cs
+    to: windows/chat-pointer-observer.cs
   - from: resources/local-model
     to: local-model
   - from: ../../packages/coding-task-core/dist

@@ -84,7 +84,19 @@ async function waitForStartup(provider: Awaited<ReturnType<typeof startProviderS
     .toEqual({ waiting: true, requests: 1, errors: [] });
 }
 
+/** 正文通过正式菜单进入历史，授权操作独立从气泡点击，保持原业务判定。 */
+async function showHistory(chat: Page): Promise<void> {
+  const history = chat.getByRole('region', { name: '历史对话', exact: true });
+  if (!(await history.isVisible())) {
+    await chat.getByRole('button', { name: '选项', exact: true }).click();
+    await chat.getByRole('menuitem', { name: '历史', exact: true }).click();
+    await chat.getByRole('button', { name: '选项', exact: true }).click();
+  }
+  await expect(history).toBeVisible();
+}
+
 async function submit(chat: Page, text: string): Promise<void> {
+  await showHistory(chat);
   await chat.getByLabel('和我说点什么').fill(text);
   const send = chat.getByRole('button', { name: '发送给 AI Pet' });
   await expect(send).toBeEnabled(); await send.click();
@@ -126,7 +138,7 @@ async function coldStart(provider: Awaited<ReturnType<typeof startProviderServer
     const restartAt = Date.now(); await fixture.restart();
     const pet = await pageFor(fixture, 'pet'); const chat = await pageFor(fixture, 'chat');
     await record(pet);
-    return { fixture, pet, chat, restartAt };
+    return { fixture, pet, chat, bubble: await pageFor(fixture, 'bubble'), restartAt };
   } catch (error) {
     try { await test.info().attach('准备实例启动失败日志', { body: fixture.logs.join('\n'), contentType: 'text/plain' }); }
     finally { await fixture.dispose(); }
@@ -222,7 +234,7 @@ for (const result of ['success', 'error'] as const) {
       await waitForStartup(provider, startup); startup.release(); await provider.waitForCompletedResponses(1);
       await app.pet.evaluate(() => window.myself.openChat());
       await submit(app.chat, result === 'success' ? '请读取 note.txt 的实际内容' : `请执行 PowerShell 命令 ${command}`);
-      const scope = app.chat.getByRole('article', { name: '本地任务授权' }); await expect(scope).toBeVisible();
+      const scope = app.bubble.getByRole('article', { name: '本地任务授权' }); await expect(scope).toBeVisible();
       await started(app.fixture, 'state-7-action', '范围未授权时等待已首帧', stages);
       expect(provider.requests.filter(request => request.toolCount > 1)).toHaveLength(0);
       await scope.getByRole('button', { name: '授权并开始任务' }).click();
@@ -234,7 +246,8 @@ for (const result of ['success', 'error'] as const) {
       expect(processing.every(event => event.actionId === 'state-6-action')).toBe(true);
       await expect(app.chat.getByText(finalText, { exact: true })).toHaveCount(0); core.release();
       if (result === 'error') {
-        const permission = app.chat.getByRole('region', { name: '具体操作许可' });
+        const permission = app.bubble.getByRole('region', { name: '具体操作许可' });
+        await expect(permission).toBeVisible(); await permission.locator('.bubble-summary').click();
         await expect(permission).toContainText(command);
         await started(app.fixture, 'state-7-action', '真实命令等待具体许可时工作退出', stages);
         await permission.getByRole('button', { name: '确认运行命令' }).click();
@@ -318,8 +331,9 @@ test('真实拖拽与挂起聊天重叠，释放后继续思考并在回复后�
     await expect.poll(() => main.isWaiting()).toBe(true);
     await started(app.fixture, 'state-7-action', '拖拽前正文挂起且思考已首帧', stages);
     expect((await app.pet.evaluate(() => window.myself.getCharacterMotionSnapshot())).moving).toBe(false);
-    // 隐藏自己的聊天窗口保持请求在途，使 Win32 主窗口查询准确落在自己的桌宠上。
+    // 等自己的聊天收起动画结束并保持请求在途，使 Win32 主窗口查询准确落在自己的桌宠上。
     await app.chat.evaluate(() => window.myself.hideChat());
+    await expect(app.chat.locator('.chat-island-stage')).toHaveAttribute('data-island-mode', 'hidden');
     const shell = app.pet.getByRole('main', { name: 'AI Pet 桌宠' });
     const candidates = [{ x: 90, y: 110 }, ...Array.from({ length: 42 }, (_, index) => ({
       x: 18 + (index % 6) * 24, y: 18 + Math.floor(index / 6) * 24
@@ -371,6 +385,7 @@ test('真实拖拽与挂起聊天重叠，释放后继续思考并在回复后�
     expect((await app.pet.evaluate(() => window.myself.getCharacterMotionSnapshot())).moving).toBe(false);
     expect(main.isWaiting()).toBe(true); await stage('释放后聊天仍占用，不能提前恢复运动');
     main.release(); await app.pet.evaluate(() => window.myself.openChat());
+    await showHistory(app.chat);
     await expect(app.chat.getByText(reply, { exact: true })).toBeVisible();
     await started(app.fixture, 'state-action', '聊天结束后恢复持续运动首帧', stages);
     await expect.poll(async () => (await app!.pet.evaluate(() => window.myself.getCharacterMotionSnapshot())).moving).toBe(true);

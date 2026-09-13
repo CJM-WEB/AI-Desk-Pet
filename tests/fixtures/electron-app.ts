@@ -1780,15 +1780,15 @@ export async function createElectronAppFixture(
         if (!browser || !('contexts' in browser) || typeof browser.contexts !== 'function') {
           throw new Error('ELECTRON_E2E_PROBE_BROWSER_UNAVAILABLE');
         }
-        const chatPage = browser.contexts()
-          .flatMap(context => context.pages())
-          .find(page => {
-            try {
-              return new URL(page.url()).searchParams.get('view') === 'chat';
-            } catch {
-              return false;
-            }
-          });
+        const pages = browser.contexts().flatMap(context => context.pages());
+        const pageFor = (view: 'chat' | 'bubble') => pages.find(page => {
+          try {
+            return new URL(page.url()).searchParams.get('view') === view;
+          } catch {
+            return false;
+          }
+        });
+        const chatPage = pageFor('chat');
         if (!chatPage) throw new Error('ELECTRON_E2E_PROBE_CHAT_PAGE_UNAVAILABLE');
         // 只从可见 DOM 提取去标识化状态，禁止返回消息正文、Provider 或能力标识。
         const probe = await chatPage.evaluate(() => {
@@ -1801,10 +1801,20 @@ export async function createElectronAppFixture(
           return {
             phase: phaseClass?.slice('phase-'.length) ?? '',
             visibleMessageCount: document.querySelectorAll('.messages article.message').length,
-            historyDisclosureVisible: document.querySelector('#history-disclosure-title') !== null,
-            fileConfirmationVisible: document.querySelector('#confirmation-title') !== null
+            historyDisclosureVisible: Boolean(document.querySelector('[data-confirmation-kind="disclosure"]')?.getClientRects().length),
+            fileConfirmationVisible: Boolean(document.querySelector('[data-confirmation-kind="permission"]')?.getClientRects().length)
           };
         });
+        // 头顶仅返回卡片存在与否；原 chat 的故障回退也沿用相同公开标记。
+        const bubblePage = pageFor('bubble');
+        if (bubblePage) {
+          const confirmation = await bubblePage.evaluate(() => ({
+            historyDisclosureVisible: Boolean(document.querySelector('[data-confirmation-kind="disclosure"]')?.getClientRects().length),
+            fileConfirmationVisible: Boolean(document.querySelector('[data-confirmation-kind="permission"]')?.getClientRects().length)
+          }));
+          probe.historyDisclosureVisible ||= confirmation.historyDisclosureVisible;
+          probe.fileConfirmationVisible ||= confirmation.fileConfirmationVisible;
+        }
         const phases = new Set([
           'idle', 'listening', 'thinking', 'awaiting_confirmation',
           'acting', 'success', 'error', 'cancelled'
