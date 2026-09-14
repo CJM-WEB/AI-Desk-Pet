@@ -318,18 +318,18 @@ describe('最小聊天展示桥', () => {
     expect(f.chat.messages.at(-1)?.payload).not.toHaveProperty('preserveConfirmation');
   });
 
-  test('历史材质区域只允许顶部界面声明一个，气泡和未知区域种类拒绝', async () => {
+  test('历史只上报普通交互区域，已退役的材质字段与命令拒绝', async () => {
     const f = await fixture();
-    const region = { x: 20, y: 30, width: 560, height: 100, radius: 20, kind: 'history' };
+    const region = { x: 20, y: 30, width: 560, height: 100, radius: 20 };
     const valid = { ...layout(), regions: [region] };
     f.bridge.setLayout(f.chat, valid);
     expect(f.layouts).toEqual([valid]);
     for (const [sender, invalid] of [
-      [f.chat, { ...valid, regions: [region, region] }],
-      [f.bubble, { ...valid, surface: 'bubble' }],
+      [f.chat, { ...valid, regions: [{ ...region, kind: 'history' }] }],
       [f.chat, { ...valid, regions: [{ ...region, kind: 'arbitrary' }] }]
     ] as const) expect(() => f.bridge.setLayout(sender, invalid)).toThrow('CHAT_PRESENTATION_PAYLOAD_INVALID');
     expect(f.layouts).toHaveLength(1);
+    expect(f.shared.chatPresentationCommandSchema.safeParse({ type: 'material-availability', available: true }).success).toBe(false);
   });
 
   test('窗口命令只交当前 chat 且释放后不保留快照、点击或调用', async () => {

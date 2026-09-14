@@ -23,7 +23,6 @@ export function useChatPresentation(options: Options) {
   const [available, setAvailable] = useState(false);
   const [failed, setFailed] = useState(false);
   const [pointerAvailable, setPointerAvailable] = useState(true);
-  const [materialAvailable, setMaterialAvailable] = useState(true);
   const suppressedConfirmation = useRef<{ id: string; revision: number } | null>(null);
   const controller = useRef<ChatReplyPresentationController | null>(null);
   const published = useRef<ChatPresentationSnapshot | null>(null);
@@ -48,7 +47,6 @@ export function useChatPresentation(options: Options) {
     const commands = presentation.onCommand(command => {
       if (command.type === 'availability') setAvailable(command.available);
       else if (command.type === 'pointer-availability') setPointerAvailable(command.available);
-      else if (command.type === 'material-availability') setMaterialAvailable(command.available);
       else if (command.type === 'reset') {
         resetReceived = true;
         if (!command.preserveConfirmation) {
@@ -95,5 +93,5 @@ export function useChatPresentation(options: Options) {
     }).catch(() => { if (published.current === snapshot) setFailed(true); });
   }, [presentation, handshake, conversationRevision, confirmation, reply]);
 
-  return { fallback: !presentation || !available || failed, reply, pointerAvailable, materialAvailable };
+  return { fallback: !presentation || !available || failed, reply, pointerAvailable };
 }

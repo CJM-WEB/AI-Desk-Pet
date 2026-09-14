@@ -1,4 +1,4 @@
-import type { Rectangle } from 'electron';
+import type { MouseInputEvent, Rectangle } from 'electron';
 import type { ChatPresentationCommand, ChatPresentationLayout } from '../../shared/chat-presentation';
 
 export interface ChatPresentationWindowPort {
@@ -11,14 +11,12 @@ export interface ChatPresentationWindowPort {
   showInactive(): void;
   hide(): void;
   focus(): void;
-  moveTop?(): void;
 }
 type Point = { x: number; y: number };
 type Display = { bounds: Rectangle; workArea: Rectangle };
 export interface ChatPresentationWindowControllerOptions {
   getChat(): ChatPresentationWindowPort | null;
   getBubble(): ChatPresentationWindowPort | null;
-  getHistory(): ChatPresentationWindowPort | null;
   getPetVisible(): boolean;
   getCursorScreenPoint(): Point;
   getDisplayNearestPoint(point: Point): Display;
@@ -26,7 +24,6 @@ export interface ChatPresentationWindowControllerOptions {
   sendCommand(command: ChatPresentationCommand): void;
   sendBubbleCommand?(command: ChatPresentationCommand): void;
   onBubbleUnavailable?(): void;
-  onMaterialUnavailable?(): void;
   pointer: { setEnabled(enabled: boolean): void; dispose(): Promise<void> };
 }
 type Region = ChatPresentationLayout['regions'][number];
@@ -42,9 +39,12 @@ function contains(region: Region, x: number, y: number): boolean {
   return dx * dx + dy * dy <= radius * radius;
 }
 
-/** 扫描行只裁透明内容窗；原生历史材质使用系统圆角，不向 DWM 请求任意形状。 */
+/** 原生裁区只限制绘制范围，外扩留出 CSS 抗锯齿与阴影；命中始终使用原始区域。 */
 function shape(regions: Region[]): Rectangle[] {
-  return regions.flatMap(region => {
+  const halo = 16;
+  return regions.flatMap(source => {
+    const region = { x: source.x - halo, y: source.y - halo, width: source.width + halo * 2,
+      height: source.height + halo * 2, radius: (source.radius ?? 0) + halo };
     const rows: Rectangle[] = [];
     const radius = region.radius ?? 0;
     for (let y = Math.floor(region.y); y < Math.ceil(region.y + region.height); y++) {
@@ -67,7 +67,6 @@ export class ChatPresentationWindowController {
   private islandReady = false;
   private bubbleReady = false;
   private petUnavailable = false;
-  private materialFailed = false;
   private islandShapeDisabled = false;
   private pointerAvailable = true;
   private pendingOpen = false;
@@ -81,6 +80,8 @@ export class ChatPresentationWindowController {
   private closeTimer: ReturnType<typeof setTimeout> | undefined;
   private readonly boundsCache = new WeakMap<ChatPresentationWindowPort, string>();
   private readonly shapeCache = new WeakMap<ChatPresentationWindowPort, string>();
+  private readonly ignoreCache = new WeakMap<ChatPresentationWindowPort, boolean | 'hidden'>();
+  private readonly pressedButtons = new WeakMap<ChatPresentationWindowPort, number>();
   constructor(private readonly options: ChatPresentationWindowControllerOptions) {}
 
   markReady(surface: 'island' | 'bubble'): void {
@@ -94,7 +95,7 @@ export class ChatPresentationWindowController {
     if (this.disposed) return;
     if (surface === 'island') {
       this.islandReady = false; this.island = null; this.mode = 'hidden';
-      this.options.pointer.setEnabled(false); this.hide(this.options.getChat()); this.hide(this.options.getHistory());
+      this.options.pointer.setEnabled(false); this.hide(this.options.getChat());
     } else {
       const wasReady = this.bubbleReady;
       this.bubbleReady = false; this.bubble = null; this.hide(this.options.getBubble());
@@ -127,7 +128,7 @@ export class ChatPresentationWindowController {
     const previous = this.mode;
     this.mode = layout.mode; this.island = layout;
     if (layout.mode === 'hidden') {
-      clearTimeout(this.closeTimer); this.hide(this.options.getChat()); this.hide(this.options.getHistory());
+      clearTimeout(this.closeTimer); this.hide(this.options.getChat());
       this.options.pointer.setEnabled(false); return;
     }
     if (!this.islandReady) return;
@@ -136,7 +137,7 @@ export class ChatPresentationWindowController {
     const chat = this.options.getChat();
     let shapeFailed = false;
     if (available(chat)) {
-      chat.setIgnoreMouseEvents(layout.regions.length === 0, { forward: true });
+      this.applyMouseState(chat, layout);
       if (layout.regions.length && !this.islandShapeDisabled) {
         try { this.applyShape(chat, layout.regions); }
         catch {
@@ -149,7 +150,6 @@ export class ChatPresentationWindowController {
       if (layout.mode === 'opening' && previous !== 'opening' && previous !== 'open') chat.focus();
     }
     this.options.pointer.setEnabled(this.pointerAvailable);
-    this.positionHistory();
     if (layout.mode === 'closing' && previous !== 'closing') this.armClose();
     if (shapeFailed) throw new Error('CHAT_PRESENTATION_UNAVAILABLE');
   }
@@ -161,15 +161,14 @@ export class ChatPresentationWindowController {
     const display = this.petDisplay();
     if (this.display) {
       this.display = display;
-      this.positionIsland(); this.positionHistory();
+      this.positionIsland();
     }
     const cursor = this.options.getCursorScreenPoint();
-    if (this.islandShapeDisabled) {
-      const chat = this.options.getChat(), bounds = available(chat) ? chat.getBounds() : null;
-      if (available(chat) && bounds) chat.setIgnoreMouseEvents(!this.island?.regions.some(region => contains(region, cursor.x - bounds.x, cursor.y - bounds.y)), { forward: true });
-    }
+    const chat = this.options.getChat();
+    if (available(chat) && chat.isVisible()) this.applyMouseState(chat, this.island);
     const center = display.bounds.x + display.bounds.width / 2;
-    const halfWidth = Math.min(this.island?.width ?? 480, display.bounds.width) / 2;
+    // 菜单透明留白只增加绘制画布，不扩大原有顶边入口。
+    const halfWidth = Math.min(528, display.bounds.width) / 2;
     if (this.mode === 'hidden' && Math.abs(cursor.x - center) <= halfWidth && cursor.y >= display.bounds.y && cursor.y <= display.bounds.y + 1) {
       this.display = display; this.mode = 'peek'; this.command({ type: 'peek' }); return;
     }
@@ -193,6 +192,26 @@ export class ChatPresentationWindowController {
     }
     this.requestClose();
   }
+  /** 仅消费 Main 原生鼠标事件，复用已缓存布局；不测量 DOM、不发送高频 IPC。 */
+  onMouseEvent(surface: 'island' | 'bubble', mouse: MouseInputEvent): void {
+    if (this.disposed) return;
+    const window = surface === 'island' ? this.options.getChat() : this.options.getBubble();
+    const layout = surface === 'island' ? this.island : this.bubble;
+    if (!available(window) || !window.isVisible() || !layout || layout.mode === 'hidden') return;
+    const inside = layout.regions.some(region => contains(region, mouse.x, mouse.y));
+    const button = mouse.button === 'middle' ? 2 : mouse.button === 'right' ? 4 : 1;
+    let pressed = this.pressedButtons.get(window) ?? 0;
+    if (mouse.type === 'mouseDown' && inside) pressed |= button;
+    if (mouse.type === 'mouseUp') pressed &= ~button;
+    if (mouse.type === 'mouseMove' && mouse.modifiers) {
+      const held = (mouse.modifiers.includes('leftbuttondown') ? 1 : 0)
+        | (mouse.modifiers.includes('middlebuttondown') ? 2 : 0)
+        | (mouse.modifiers.includes('rightbuttondown') ? 4 : 0);
+      pressed &= held;
+    }
+    this.pressedButtons.set(window, pressed);
+    this.applyMouseState(window, layout, mouse);
+  }
   onPointerFailure(): void {
     if (this.disposed) return;
     this.pointerAvailable = false; this.options.pointer.setEnabled(false);
@@ -204,7 +223,12 @@ export class ChatPresentationWindowController {
   }
   clear(): void {
     if (this.disposed) return;
-    this.island = null; this.bubble = null; this.hide(this.options.getBubble()); this.hide(this.options.getHistory());
+    this.island = null; this.bubble = null; this.hide(this.options.getBubble());
+    const chat = this.options.getChat();
+    if (available(chat)) {
+      this.pressedButtons.delete(chat);
+      if (chat.isVisible()) this.applyMouseState(chat, null);
+    }
   }
   snapshot(): Readonly<{ mode: ChatPresentationLayout['mode']; pointerAvailable: boolean; disposed: boolean }> {
     return { mode: this.mode, pointerAvailable: this.pointerAvailable, disposed: this.disposed };
@@ -212,7 +236,7 @@ export class ChatPresentationWindowController {
   dispose(): Promise<void> {
     if (this.disposal) return this.disposal;
     this.disposed = true; clearTimeout(this.closeTimer); clearTimeout(this.concealTimer);
-    this.hide(this.options.getChat()); this.hide(this.options.getBubble()); this.hide(this.options.getHistory());
+    this.hide(this.options.getChat()); this.hide(this.options.getBubble());
     this.disposal = this.options.pointer.dispose(); return this.disposal;
   }
   private command(value: ChatPresentationCommand): void {
@@ -221,7 +245,29 @@ export class ChatPresentationWindowController {
     catch { this.islandReady = false; this.options.pointer.setEnabled(false); }
   }
   private hide(window: ChatPresentationWindowPort | null): void {
-    try { if (available(window)) window.hide(); } catch { /* 销毁并发中继续清理其他资源。 */ }
+    try {
+      if (window) this.pressedButtons.delete(window);
+      if (!available(window)) return;
+      // 隐藏状态不需要 Chromium 鼠标转发，明确关闭其原生钩子，轮询不得重新开启。
+      try {
+        if (this.ignoreCache.get(window) !== 'hidden') {
+          window.setIgnoreMouseEvents(true);
+          this.ignoreCache.set(window, 'hidden');
+        }
+      } finally { if (window.isVisible()) window.hide(); }
+    } catch { /* 销毁并发中继续清理其他资源。 */ }
+  }
+  private applyMouseState(window: ChatPresentationWindowPort, layout: ChatPresentationLayout | null, local?: Point): void {
+    const bounds = local ? null : window.getBounds();
+    const cursor = local ?? this.options.getCursorScreenPoint();
+    const point = local ?? { x: cursor.x - bounds!.x, y: cursor.y - bounds!.y };
+    // 原区域内按下后的文本选择/滚动条拖拽保留抬起事件，阴影不扩大交互范围。
+    const interactive = layout?.mode !== 'hidden' && Boolean(layout?.regions.length)
+      && (Boolean(this.pressedButtons.get(window)) || layout!.regions.some(region => contains(region, point.x, point.y)));
+    const ignore = !interactive;
+    if (this.ignoreCache.get(window) === ignore) return;
+    window.setIgnoreMouseEvents(ignore, { forward: true });
+    this.ignoreCache.set(window, ignore);
   }
   private applyBounds(window: ChatPresentationWindowPort, bounds: Rectangle): void {
     const key = JSON.stringify(bounds);
@@ -238,13 +284,13 @@ export class ChatPresentationWindowController {
     const chat = this.options.getChat();
     this.closeTimer = setTimeout(() => {
       if (this.disposed || this.mode !== 'closing' || chat !== this.options.getChat()) return;
-      this.mode = 'hidden'; this.hide(chat); this.hide(this.options.getHistory()); this.options.pointer.setEnabled(false);
+      this.mode = 'hidden'; this.hide(chat); this.options.pointer.setEnabled(false);
     }, 700);
   }
   private positionIsland(): void {
     const chat = this.options.getChat(), display = this.display;
     if (!available(chat) || !display) return;
-    const width = Math.min(528, display.bounds.width);
+    const width = Math.min(712, display.bounds.width);
     const height = Math.min(this.island?.height ?? 88, display.bounds.height);
     this.applyBounds(chat, { x: Math.round(display.bounds.x + (display.bounds.width - width) / 2), y: display.bounds.y, width: Math.ceil(width), height: Math.ceil(height) });
   }
@@ -252,25 +298,6 @@ export class ChatPresentationWindowController {
     return this.options.getDisplayNearestPoint(this.pet
       ? { x: this.pet.x + this.pet.width / 2, y: this.pet.y }
       : this.options.getCursorScreenPoint());
-  }
-  private positionHistory(): void {
-    if (this.materialFailed) return;
-    try { this.applyHistory(); }
-    catch {
-      this.materialFailed = true; this.hide(this.options.getHistory());
-      this.options.onMaterialUnavailable?.();
-      this.command({ type: 'material-availability', available: false }); this.requestOpen();
-    }
-  }
-  private applyHistory(): void {
-    const history = this.options.getHistory(), chat = this.options.getChat();
-    const region = this.island?.regions.find(item => item.kind === 'history');
-    if (!available(history) || !available(chat) || !region || this.mode === 'hidden') { this.hide(history); return; }
-    const bounds = chat.getBounds();
-    this.applyBounds(history, { x: Math.round(bounds.x + region.x), y: Math.round(bounds.y + region.y), width: Math.ceil(region.width), height: Math.ceil(region.height) });
-    history.setIgnoreMouseEvents(true, { forward: true });
-    if (!history.isVisible()) history.showInactive();
-    chat.moveTop?.();
   }
   private positionBubble(): void {
     try { this.applyBubble(); }
@@ -311,7 +338,7 @@ export class ChatPresentationWindowController {
       const anchor = JSON.stringify(command);
       if (anchor !== this.bubbleAnchor) { this.options.sendBubbleCommand(command); this.bubbleAnchor = anchor; }
     }
-    bubble.setIgnoreMouseEvents(layout.regions.length === 0, { forward: true });
+    this.applyMouseState(bubble, layout);
     if (layout.regions.length) this.applyShape(bubble, layout.regions);
     if (!bubble.isVisible()) bubble.showInactive();
   }

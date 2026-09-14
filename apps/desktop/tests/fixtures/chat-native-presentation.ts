@@ -120,20 +120,17 @@ async function run() {
   facts.directRoundRegion = await native('round-region', { Handle: handle(glass) });
   await capture('05-acrylic-native-round-region');
   glass.hide();
-  const history = new BrowserWindow({ x: bounds.x + 190, y: bounds.y + 75, width: 360, height: 280, frame: false, thickFrame: true, show: false, transparent: false, backgroundColor: '#00000000', alwaysOnTop: true, focusable: false, webPreferences: { sandbox: true, contextIsolation: true, nodeIntegration: false } });
-  windows.push(history);
-  await history.loadURL('data:text/html,<html style="background:transparent"><body style="background:transparent"></body></html>');
-  history.setBackgroundMaterial('acrylic'); history.setIgnoreMouseEvents(true); history.showInactive();
-  const content = new BrowserWindow({ x: bounds.x + 100, y: bounds.y + 75, width: 540, height: 360, frame: false, thickFrame: false, show: false, transparent: true, backgroundColor: '#00000000', alwaysOnTop: true, parent: history, webPreferences: { sandbox: true, contextIsolation: true, nodeIntegration: false } });
+  // 历史仅使用透明内容窗，受控背景用于核对空白区没有磨砂或白色背板。
+  const content = new BrowserWindow({ x: bounds.x + 100, y: bounds.y + 75, width: 540, height: 360, frame: false, thickFrame: false, show: false, transparent: true, backgroundColor: '#00000000', alwaysOnTop: true, webPreferences: { sandbox: true, contextIsolation: true, nodeIntegration: false } });
   windows.push(content);
-  await content.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent('<html><style>html,body{margin:0;background:transparent;font:16px sans-serif;color:#222}.history{position:absolute;left:90px;top:0;width:360px;height:280px;border-radius:24px;background:#ffffff55;box-sizing:border-box;padding:24px}.bar{position:absolute;left:90px;top:300px;width:360px;height:48px;border-radius:24px;background:#ffffffd0;text-align:center;line-height:48px}.ball{position:absolute;top:300px;width:48px;height:48px;border-radius:50%;background:linear-gradient(135deg,#59d9e8,#9a7be8)}.left{left:30px}.right{right:30px}</style><div class="history">历史原生背景与清晰合成正文<br><br>此窗口不连接正式聊天内容。</div><div class="bar">透明聊天内容层</div><div class="ball left"></div><div class="ball right"></div></html>')}`);
+  await content.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent('<html><style>html,body{margin:0;background:transparent;font:16px sans-serif;color:#222}.history{position:absolute;left:90px;top:0;width:360px;height:280px;box-sizing:border-box;padding:24px}.message{padding:12px;border-radius:16px;background:#ffffffa6;box-shadow:0 4px 10px #20335029}.bar{position:absolute;left:90px;top:300px;width:360px;height:48px;border-radius:24px;background:#ffffffd0;text-align:center;line-height:48px}.ball{position:absolute;top:300px;width:48px;height:48px;border-radius:50%;background:linear-gradient(135deg,#59d9e8,#9a7be8)}.left{left:30px}.right{right:30px}</style><div class="history"><div class="message">透明历史与消息阴影<br><br>此窗口不连接正式聊天内容。</div></div><div class="bar">透明聊天内容层</div><div class="ball left"></div><div class="ball right"></div></html>')}`);
   content.show(); content.focus();
-  await capture('06-history-acrylic-under-transparent-content');
+  await capture('06-history-transparent-content');
   await backdrop.webContents.executeJavaScript("document.documentElement.style.background='linear-gradient(90deg,#ff2030 0 50%,#174cff 50% 100%)';document.body.style.background='transparent'");
   await capture('07-history-low-frequency-red-blue-boundary');
   await backdrop.webContents.executeJavaScript("document.documentElement.style.background='linear-gradient(90deg,#174cff 0 50%,#ff2030 50% 100%)'");
   await capture('08-history-swapped-blue-red-boundary');
-  facts.historyLayer = { bounds: history.getBounds(), visible: history.isVisible(), ignoresMouse: '已启用', contentBounds: content.getBounds(), contentVisible: content.isVisible() };
+  facts.historyLayer = { contentBounds: content.getBounds(), contentVisible: content.isVisible() };
   facts.observerFailures = failures;
   facts.observerPoints = points;
   facts.observerProtocol = trace;

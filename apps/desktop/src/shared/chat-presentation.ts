@@ -53,21 +53,17 @@ export const chatPresentationLayoutSchema = z.object({
     y: coordinateSchema,
     width: dimensionSchema,
     height: dimensionSchema,
-    radius: coordinateSchema.optional(),
-    kind: z.literal('history').optional()
+    radius: coordinateSchema.optional()
   }).strict()).max(32),
   mode: z.enum(['hidden', 'peek', 'opening', 'open', 'closing'])
 }).strict().refine(layout => {
-  const historyCount = layout.regions.filter(region => region.kind === 'history').length;
-  return historyCount <= (layout.surface === 'island' ? 1 : 0)
-    && layout.regions.every(region => region.x + region.width <= layout.width
+  return layout.regions.every(region => region.x + region.width <= layout.width
       && region.y + region.height <= layout.height
       && (region.radius ?? 0) <= Math.min(region.width, region.height) / 2);
 });
 
 export const chatPresentationCommandSchema = z.union([
   z.object({ type: z.literal('bubble-anchor'), bodyLeft: coordinateSchema, tailX: coordinateSchema, side: z.enum(['top', 'bottom']) }).strict(),
-  z.object({ type: z.literal('material-availability'), available: z.boolean() }).strict(),
   z.object({ type: z.enum(['peek', 'conceal', 'open', 'close']) }).strict(),
   z.object({ type: z.enum(['availability', 'pointer-availability']), available: z.boolean() }).strict(),
   z.object({ type: z.literal('reset'), epoch: epochSchema, revisionFloor: revisionSchema,

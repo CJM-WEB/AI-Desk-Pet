@@ -3,7 +3,7 @@
   color: #293342;
   font: 14px/1.6 "Microsoft YaHei UI", "Segoe UI", sans-serif;
   --glass-border: rgba(255, 255, 255, .84);
-  --glass-shadow: 0 8px 22px rgba(27, 39, 65, .16), inset 0 1px 0 rgba(255, 255, 255, .95);
+  --glass-shadow: 0 7px 14px -5px rgba(27, 39, 65, .25), 0 2px 4px rgba(27, 39, 65, .10), inset 0 1px 1px rgba(255, 255, 255, .98);
   --island-ease: cubic-bezier(.2, .8, .2, 1);
 }
 .chat-island-stage [hidden], .chat-bubble-stage [hidden] { display: none !important; }
@@ -16,7 +16,8 @@
   background: linear-gradient(135deg, rgba(255,255,255,.91), rgba(233,239,250,.83));
   box-shadow: var(--glass-shadow);
 }
-.chat-island-stage { position: relative; width: min(528px, 100vw); padding: 18px 24px 158px; }
+/* 左侧留出菜单和阴影；常规屏幕左右对称，保留原输入框与按钮的宽度及屏幕中心。 */
+.chat-island-stage { position: relative; width: min(712px, 100vw); padding: 18px clamp(24px, calc(100vw - 596px), 116px) 158px 116px; }
 .chat-island-stage[data-island-mode="hidden"], .chat-island-stage[data-island-mode="peek"] { height: 46px; padding: 0; }
 .island-peek, .island-collapse {
   display: grid; place-items: center; margin: 0 auto; border: 1px solid rgba(255,255,255,.88);
@@ -42,21 +43,22 @@
   border: 1px solid rgba(255,255,255,.9); border-radius: 50%;
   background: radial-gradient(ellipse at 30% 12%, #fff 0%, rgba(255,255,255,.96) 39%, rgba(242,249,255,.86) 57%, transparent 70%),
     conic-gradient(from 160deg, #f0a1b5, #9a7be8, #5e9bf4, #59d9e8, #e6fafd, #f0a1b5);
-  box-shadow: var(--glass-shadow), inset -2px -3px 7px rgba(88,124,216,.15);
+  background-clip: padding-box;
+  box-shadow: var(--glass-shadow), inset 0 -3px 7px rgba(88,124,216,.17), inset 0 0 0 1px rgba(255,255,255,.42);
   transition: filter 160ms, box-shadow 160ms;
 }
-.island-orb:hover, .island-send > button:hover { filter: brightness(1.035); box-shadow: 0 6px 24px rgba(86,129,199,.25), inset 0 1px 1px #fff; }
+.island-orb:hover, .island-send > button:hover { filter: brightness(1.035); box-shadow: var(--glass-shadow), inset 0 -3px 7px rgba(88,124,216,.12); }
 .island-orb:active, .island-send > button:active { filter: brightness(.96); }
 .island-orb { z-index: 2; }
-.island-menu-items { position: absolute; left: 0; top: 0; width: 140px; padding: 50px 6px 7px; border-radius: 24px; transform-origin: 24px 24px; animation: menu-unfold 220ms var(--island-ease); }
+.island-menu-items { position: absolute; right: 0; top: 0; width: 140px; padding: 50px 6px 7px; border-radius: 24px; transform-origin: calc(100% - 24px) 24px; animation: menu-unfold 220ms var(--island-ease); }
 .island-menu-items button { display: flex; align-items: center; gap: 12px; width: 100%; min-height: 40px; padding: 7px 12px; border: 0; border-radius: 13px; background: transparent; text-align: left; }
 .island-menu-items button:hover, .island-menu-items button[aria-pressed="true"] { background: rgba(148,177,229,.18); }
 .island-history-wrap { height: 0; opacity: 0; overflow: hidden; transition: height 300ms var(--island-ease), opacity 220ms; }
 .island-history-wrap[data-open="true"] { height: calc(var(--history-height) + 18px); opacity: 1; }
-/* 系统历史模糊底使用 Windows 标准小圆角，与透明内容层保持一致。 */
-.island-history { height: var(--history-height); overflow-y: auto; overscroll-behavior: contain; border-radius: 8px; padding: 18px; background: rgba(246,249,255,.18); box-shadow: none; scrollbar-width: thin; scrollbar-color: rgba(90,108,136,.3) transparent; }
+/* 历史容器完全透明，只给消息自身投影；内边距为投影保留滚动裁剪空间。 */
+.island-history { height: var(--history-height); overflow-y: auto; overscroll-behavior: contain; border: 0; border-radius: 8px; padding: 18px; background: transparent; box-shadow: none; scrollbar-width: thin; scrollbar-color: rgba(90,108,136,.3) transparent; }
 .island-history .messages { display: flex; flex-direction: column; gap: 14px; padding: 0; overflow: visible; min-height: 0; }
-.island-history .message { align-self: flex-start; max-width: 89%; padding: 10px 14px; border-radius: 16px 16px 16px 5px; background: rgba(255,255,255,.65); border: 1px solid rgba(255,255,255,.58); color: #293342; }
+.island-history .message { align-self: flex-start; max-width: 89%; padding: 10px 14px; border-radius: 16px 16px 16px 5px; background: rgba(255,255,255,.65); border: 1px solid rgba(255,255,255,.58); box-shadow: 0 4px 9px -3px rgba(27,39,65,.22); color: #293342; }
 .island-history .message-user { align-self: flex-end; border-radius: 16px 16px 5px 16px; background: rgba(220,233,252,.8); }
 .island-history .message > span { font-size: 10px; color: #7b899d; letter-spacing: .04em; }
 .island-history .message p { margin: 3px 0 0; line-height: 1.7; white-space: pre-wrap; overflow-wrap: anywhere; }
@@ -91,7 +93,8 @@
 .pet-speech { translate: clamp(0px, var(--bubble-offset, 0px), calc(100vw - 24px - 100%)) 0; }
 .speech-tail { width: 12px; height: 12px; background: #eaf0fa; position: absolute; bottom: -6px; left: calc(50% - 6px); transform: rotate(45deg); border-radius: 0 0 3px 0; }
 .speech-tail[data-side="top"] { top: -6px; bottom: auto; border-radius: 3px 0 0 0; }
-.speech-text { max-width: 400px; max-height: var(--bubble-max-height); padding-top: 10px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; scrollbar-width: thin; }
+/* 四行只限制可视高度，完整流式正文保留在滚动区；顶部留白不占正文行数。 */
+.speech-text { max-width: 400px; max-height: calc(4lh + 10px); padding-top: 10px; overflow: auto; overscroll-behavior: contain; white-space: pre-wrap; overflow-wrap: anywhere; scrollbar-width: thin; }
 .speech-close { opacity: 0; position: absolute; z-index: 2; top: 5px; left: 5px; display: grid; place-items: center; width: 22px; height: 22px; border: 1px solid #fff; border-radius: 50%; background: #e6ebf4; font-size: 18px; line-height: 1; transition: opacity 120ms; }
 .pet-speech:hover .speech-close, .pet-speech:focus-within .speech-close { opacity: 1; }
 .confirmation-bubble { min-width: 0; max-width: 400px; }

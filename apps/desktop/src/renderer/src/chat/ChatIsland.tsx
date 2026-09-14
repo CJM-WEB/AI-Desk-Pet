@@ -69,8 +69,8 @@ export function ChatIsland({ api, history, input, send, notice, attentionKey, bu
       data-presentation-region="18" onClick={() => changeMode('opening')}><ChevronDown size={18} /></button>
     <div className="island-expanded" hidden={!expanded}>
       <div className="island-history-wrap" data-open={historyOpen} aria-hidden={!historyOpen}>
-        <section className="island-history glass-surface" role="region" aria-label="历史对话"
-          data-presentation-region={historyOpen ? '8' : undefined} data-presentation-kind={historyOpen ? 'history' : undefined} onPointerDown={() => setMenuOpen(false)}>
+        <section className="island-history" role="region" aria-label="历史对话"
+          data-presentation-region={historyOpen ? '8' : undefined} onPointerDown={() => setMenuOpen(false)}>
           {history}
         </section>
       </div>

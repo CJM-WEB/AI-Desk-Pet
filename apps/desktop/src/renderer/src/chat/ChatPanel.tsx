@@ -324,7 +324,6 @@ export function ChatPanel({ api = window.myself }: { api?: MyselfApi }) {
     {localModelStatus.enabled && localModelStatus.phase === 'ready' && localModelStatus.backend === 'cpu'
       ? <p role="status">CPU 兼容模式</p> : null}
     {!presentation.pointerAvailable ? <p role="status">桌面点击观察暂不可用，可点击输入框下方三角收起聊天。</p> : null}
-    {!presentation.materialAvailable ? <p role="status">当前系统无法启用背景模糊，历史将使用半透明底色。</p> : null}
     {presentation.fallback && api.chatPresentation ? <p>头顶气泡暂不可用，请在这里继续。</p> : null}
     {presentation.fallback && pendingHistoryDisclosure ? <HistoryDisclosureCard
       disclosure={pendingHistoryDisclosure}
@@ -341,7 +340,7 @@ export function ChatPanel({ api = window.myself }: { api?: MyselfApi }) {
       onConfirm={() => void confirmAction()} onCancel={() => void cancelAction()} /> : null}
   </>;
   const hasNotice = Boolean(persistenceError || interactionError || localModelStatus.enabled && (localModelStatus.phase !== 'ready' || localModelStatus.backend === 'cpu')
-    || !presentation.pointerAvailable || !presentation.materialAvailable || presentation.fallback && (api.chatPresentation || confirmation));
+    || !presentation.pointerAvailable || presentation.fallback && (api.chatPresentation || confirmation));
 
   return <form onSubmit={event => { event.preventDefault(); void submit(); }}>
     <ChatIsland api={api.chatPresentation} busy={anyInteractionBusy}

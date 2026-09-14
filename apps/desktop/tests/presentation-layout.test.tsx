@@ -10,7 +10,7 @@ test('历史下滑期间仅上报容器实际揭开的区域，系统模糊不�
   const history = document.createElement('section');
   // jsdom 未把 overflow 简写展开到坐标轴，直接声明与浏览器相同的计算值。
   clipping.style.overflowX = 'hidden'; clipping.style.overflowY = 'hidden';
-  history.dataset.presentationRegion = '8'; history.dataset.presentationKind = 'history';
+  history.dataset.presentationRegion = '8';
   clipping.append(history); root.append(clipping); document.body.append(root);
   const rect = (x: number, y: number, width: number, height: number) => ({ x, y, left: x, top: y, right: x + width, bottom: y + height, width, height, toJSON() {} });
   root.getBoundingClientRect = () => rect(0, 0, 528, 500);
@@ -18,6 +18,6 @@ test('历史下滑期间仅上报容器实际揭开的区域，系统模糊不�
   history.getBoundingClientRect = () => rect(24, 18, 480, 360);
   const api = { setLayout: vi.fn().mockResolvedValue(undefined) };
   const hook = renderHook(() => usePresentationLayout({ current: root }, api, 'island', 'open', 'history-opening', vi.fn()));
-  expect(api.setLayout.mock.calls[0]![0].regions).toEqual([{ x: 24, y: 18, width: 480, height: 80, radius: 8, kind: 'history' }]);
+  expect(api.setLayout.mock.calls[0]![0].regions).toEqual([{ x: 24, y: 18, width: 480, height: 80, radius: 8 }]);
   hook.unmount(); root.remove();
 });

@@ -23,6 +23,7 @@ import {
   shell,
   Tray,
   type MenuItemConstructorOptions,
+  type MouseInputEvent,
   type WebContents
 } from 'electron';
 
@@ -123,7 +124,6 @@ import {
   createCharacterWorkshopWindow,
   createChatWindow,
   createBubbleWindow,
-  createHistoryBackdropWindow,
   createPetWindow,
   createSettingsWindow,
   setPetWindowPosition
@@ -275,14 +275,10 @@ async function createApplicationWindows(
     return chat.webContents;
   };
 
-  // 原聊天仍是唯一业务 owner；气泡仅展示，历史背景连 preload 都不加载。
+  // 原聊天仍是唯一业务 owner；气泡仅展示，历史直接复用透明聊天内容层。
   let bubble = createBubbleWindow(BrowserWindow, preload);
   // 每个原生资源创建后立即登记，后续构造/IPC注册失败也不会遗留窗口。
   startupCleanup.add(() => { if (!bubble.isDestroyed()) bubble.destroy(); });
-  const historyBackdrop = createHistoryBackdropWindow(BrowserWindow);
-  startupCleanup.add(() => { if (!historyBackdrop.isDestroyed()) historyBackdrop.destroy(); });
-  let historyReady = false;
-  let materialAvailable = false;
   let presentation!: ChatPresentationWindowController;
   let presentationTimer: ReturnType<typeof setInterval> | undefined;
   let presentationClosing = false;
@@ -291,10 +287,7 @@ async function createApplicationWindows(
   const presentationBridge = new ChatPresentationBridge({
     getChat: getCurrentChatWebContents,
     getBubble: () => bubble.isDestroyed() || bubble.webContents.isDestroyed() ? null : bubble.webContents,
-    onReady: surface => {
-      presentation.markReady(surface);
-      if (surface === 'island') presentationBridge.sendCommand({ type: 'material-availability', available: materialAvailable });
-    },
+    onReady: surface => presentation.markReady(surface),
     onLayout: layout => presentation.setLayout(layout)
   });
   const pointerObserver = createChatPointerObserver({
@@ -305,7 +298,6 @@ async function createApplicationWindows(
   presentation = new ChatPresentationWindowController({
     getChat: () => chat,
     getBubble: () => bubble,
-    getHistory: () => historyReady ? historyBackdrop : null,
     getPetVisible: () => !pet.isDestroyed() && pet.isVisible(),
     getCursorScreenPoint: () => screen.getCursorScreenPoint(),
     getDisplayNearestPoint: point => screen.getDisplayNearestPoint(point),
@@ -313,7 +305,6 @@ async function createApplicationWindows(
     sendCommand: command => presentationBridge.sendCommand(command),
     sendBubbleCommand: command => presentationBridge.sendCommand(command, 'bubble'),
     onBubbleUnavailable: () => { bubbleCrashed = true; presentationBridge.invalidateBubble(); },
-    onMaterialUnavailable: () => materialFailed(),
     pointer: pointerObserver
   });
   const releasePresentationIpc = registerChatPresentationIpc(ipcMain, presentationBridge);
@@ -325,7 +316,6 @@ async function createApplicationWindows(
     releasePresentationIpc(); presentationBridge.dispose();
     presentationClose = presentation.dispose().finally(() => {
       if (!bubble.isDestroyed()) bubble.destroy();
-      if (!historyBackdrop.isDestroyed()) historyBackdrop.destroy();
     });
     return presentationClose;
   };
@@ -967,6 +957,11 @@ async function createApplicationWindows(
   let bubbleCrashed = false;
   let bubbleLoading: Promise<BrowserWindow> | null = null;
   const bindPresentationWindow = (window: BrowserWindow, surface: 'island' | 'bubble'): void => {
+    const mouse = (_event: Electron.Event, input: MouseInputEvent): void => {
+      if (presentationClosing || window !== (surface === 'island' ? chat : bubble)) return;
+      try { presentation.onMouseEvent(surface, input); }
+      catch { console.error('更新聊天窗口穿透失败。', 'CHAT_PRESENTATION_UNAVAILABLE'); }
+    };
     const failed = (): void => {
       if (presentationClosing || window !== (surface === 'island' ? chat : bubble)) return;
       presentation.markUnavailable(surface);
@@ -984,10 +979,12 @@ async function createApplicationWindows(
     window.on('closed', failed);
     window.webContents.on('render-process-gone', failed);
     window.webContents.on('did-start-loading', loading);
+    window.webContents.on('before-mouse-event', mouse);
     presentationReleases.push(() => {
       window.removeListener('closed', failed);
       window.webContents.removeListener('render-process-gone', failed);
       window.webContents.removeListener('did-start-loading', loading);
+      window.webContents.removeListener('before-mouse-event', mouse);
     });
   };
   const ensureChatWindow = (): Promise<BrowserWindow> => {
@@ -1025,28 +1022,6 @@ async function createApplicationWindows(
     return bubbleLoading;
   };
   bindPresentationWindow(chat, 'island'); bindPresentationWindow(bubble, 'bubble');
-  historyBackdrop.setIgnoreMouseEvents(true, { forward: true });
-  const reportMaterialAvailability = (): void => {
-    try { presentationBridge.sendCommand({ type: 'material-availability', available: materialAvailable }); }
-    catch { /* chat 未就绪时由其 ready 握手补发当前材质可用性。 */ }
-  };
-  const materialFailed = (): void => {
-    historyReady = false; materialAvailable = false;
-    if (!historyBackdrop.isDestroyed()) historyBackdrop.hide();
-    if (!presentationClosing) reportMaterialAvailability();
-  };
-  historyBackdrop.on('closed', materialFailed);
-  historyBackdrop.webContents.on('render-process-gone', materialFailed);
-  presentationReleases.push(() => {
-    historyBackdrop.removeListener('closed', materialFailed);
-    historyBackdrop.webContents.removeListener('render-process-gone', materialFailed);
-  });
-  void historyBackdrop.loadURL('data:text/html,<html style="background:transparent"><body style="background:transparent"></body></html>').then(() => {
-    if (historyBackdrop.isDestroyed() || presentationClosing) return;
-    const supported = process.platform === 'win32' && Number(process.getSystemVersion().split('.').at(-1)) >= 22621;
-    if (supported) { historyBackdrop.setBackgroundMaterial('acrylic'); historyReady = true; materialAvailable = true; }
-    reportMaterialAvailability();
-  }).catch(materialFailed);
   const ensureSettingsWindow = async (): Promise<BrowserWindow> => {
     if (!settings.isDestroyed()) return settings;
     settings = createSettingsWindow(BrowserWindow, preload);

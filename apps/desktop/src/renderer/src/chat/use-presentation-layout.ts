@@ -27,7 +27,7 @@ export function usePresentationLayout(
           const rect = node.getBoundingClientRect();
           if (rect.width <= 0 || rect.height <= 0 || node.closest('[hidden]')) return [];
           let left = rect.left, top = rect.top, right = rect.right, bottom = rect.bottom;
-          // 历史揭开动画由祖先裁剪；原生模糊与命中形状必须使用同一可见范围。
+          // 历史揭开动画由祖先裁剪，命中形状仅覆盖当前可见范围。
           for (let parent = node.parentElement; parent && parent !== element; parent = parent.parentElement) {
             const style = getComputedStyle(parent);
             const clipping = parent.getBoundingClientRect();
@@ -43,8 +43,7 @@ export function usePresentationLayout(
           const w = Math.min(width - x, Math.ceil(right - left));
           const h = Math.min(height - y, Math.ceil(bottom - top));
           if (w <= 0 || h <= 0) return [];
-          const kind = node.dataset.presentationKind === 'history' ? 'history' as const : undefined;
-          return [{ x, y, width: w, height: h, radius: Math.min(Number(node.dataset.presentationRegion) || 0, w / 2, h / 2), ...(kind ? { kind } : {}) }];
+          return [{ x, y, width: w, height: h, radius: Math.min(Number(node.dataset.presentationRegion) || 0, w / 2, h / 2) }];
         });
       const layout = { surface, width, height, regions, mode };
       const key = JSON.stringify(layout);

@@ -10,7 +10,7 @@ import { readWindowsCursor, setWindowsCursor } from '../fixtures/windows-pointer
 const execFileAsync = promisify(execFile);
 type NativeFacts = {
   handle: number; visible: boolean; regionKind: number; points: boolean[];
-  dpi: number; cursor: { x: number; y: number };
+  dpi: number; cursor: { x: number; y: number }; ignoresMouse: boolean;
   rect: { left: number; top: number; right: number; bottom: number };
   monitor: { left: number; top: number; right: number; bottom: number };
 };
@@ -39,6 +39,7 @@ public static class VisualProbe {
   [DllImport("user32.dll",CharSet=CharSet.Unicode)] public static extern int GetWindowText(IntPtr hwnd,StringBuilder value,int count);
   [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr hwnd,out Rect rect);
   [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr hwnd);
+  [DllImport("user32.dll")] public static extern int GetWindowLong(IntPtr hwnd,int index);
   [DllImport("user32.dll")] public static extern bool SetWindowPos(IntPtr hwnd,IntPtr after,int x,int y,int width,int height,uint flags);
   [DllImport("user32.dll")] public static extern IntPtr MonitorFromWindow(IntPtr hwnd,uint flags);
   [DllImport("user32.dll")] public static extern bool GetMonitorInfo(IntPtr monitor,ref Monitor info);
@@ -73,7 +74,7 @@ try {
   $kind=[VisualProbe]::GetWindowRgn($handle,$region)
   $points=ConvertFrom-Json '${JSON.stringify(points.map(point => ({ x: Math.round(point.x), y: Math.round(point.y) })))}'
   $hits=@($points | ForEach-Object { [VisualProbe]::PtInRegion($region,$_.x,$_.y) })
-  ConvertTo-Json -Compress -Depth 5 @{handle=$handle.ToInt64();visible=[VisualProbe]::IsWindowVisible($handle);regionKind=$kind;rect=$rect;monitor=$monitor.bounds;points=$hits;cursor=$cursor;dpi=[VisualProbe]::GetDpiForWindow($handle)}
+  ConvertTo-Json -Compress -Depth 5 @{handle=$handle.ToInt64();visible=[VisualProbe]::IsWindowVisible($handle);regionKind=$kind;rect=$rect;monitor=$monitor.bounds;points=$hits;cursor=$cursor;dpi=[VisualProbe]::GetDpiForWindow($handle);ignoresMouse=([VisualProbe]::GetWindowLong($handle,-20) -band 0x20) -ne 0}
 } finally { [void][VisualProbe]::DeleteObject($region) }
 `;
   const { stdout } = await execFileAsync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], { windowsHide: true, timeout: 10_000, encoding: 'utf8' });
@@ -187,12 +188,16 @@ test('正式视觉：宠物屏顶边仅提示，点击展开与菜单历史收�
       await input.click();
     });
 
-    await test.step('Win32实际区域排除透明角并包含输入中心', async () => {
+    await test.step('Win32裁区保留阴影，光标进入正文接收交互而移到阴影时穿透', async () => {
       const native = await nativeFacts(fixture!.processId, 'Myself-Visual-E2E-chat');
-      const metrics = await chat.evaluate(() => { const rect = document.querySelector('.island-input')!.getBoundingClientRect(); return { width: innerWidth, x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 }; });
+      const metrics = await chat.evaluate(() => { const rect = document.querySelector('.island-input')!.getBoundingClientRect(); return { width: innerWidth, x: rect.x + rect.width / 2, y: rect.y + rect.height / 2, shadowX: rect.left + 40, shadowY: rect.bottom + 8 }; });
       const scale = (native.rect.right - native.rect.left) / metrics.width;
-      const facts = await nativeFacts(fixture!.processId, 'Myself-Visual-E2E-chat', [{ x: 1, y: 1 }, { x: metrics.x * scale, y: metrics.y * scale }]);
-      expect(facts.regionKind).toBe(3); expect(facts.points).toEqual([false, true]); evidence.chatRegion = facts;
+      const facts = await nativeFacts(fixture!.processId, 'Myself-Visual-E2E-chat', [{ x: 1, y: 1 }, { x: metrics.x * scale, y: metrics.y * scale }, { x: metrics.shadowX * scale, y: metrics.shadowY * scale }]);
+      expect(facts.regionKind).toBe(3); expect(facts.points).toEqual([false, true, true]); evidence.chatRegion = facts;
+      await setPhysicalCursor({ x: native.rect.left + metrics.x * scale, y: native.rect.top + metrics.y * scale });
+      await expect.poll(async () => (await nativeFacts(fixture!.processId, 'Myself-Visual-E2E-chat')).ignoresMouse).toBe(false);
+      await setPhysicalCursor({ x: native.rect.left + metrics.shadowX * scale, y: native.rect.top + metrics.shadowY * scale });
+      await expect.poll(async () => (await nativeFacts(fixture!.processId, 'Myself-Visual-E2E-chat')).ignoresMouse).toBe(true);
     });
 
     await test.step('气泡正式preload仅展示协议；合成展示经白名单桥交付且尾部进入原生区域', async () => {
@@ -237,6 +242,7 @@ test('正式视觉：宠物屏顶边仅提示，点击展开与菜单历史收�
         document.body.append(layer);
       });
       const backgroundNative = await nativeFacts(fixture!.processId, 'Myself-Visual-E2E-settings', [], petNative.monitor);
+      evidence.backgroundNative = backgroundNative;
       await chat.evaluate(() => window.myself.openChat());
       await expect(stage).toHaveAttribute('data-island-mode', 'open');
       await chat.getByRole('button', { name: '选项', exact: true }).click();
@@ -259,8 +265,18 @@ test('正式视觉：宠物屏顶边仅提示，点击展开与菜单历史收�
         if (right <= left || bottom <= top) throw new Error('VISUAL_CAPTURE_OUTSIDE_CONTROLLED_BACKGROUND');
         evidence[`${view}CaptureRect`] = { original: facts.rect, captured: { left, top, right, bottom } };
         const path = testInfo.outputPath(`controlled-native-${view}.png`);
-        await run('capture', ['-Handle', String(backgroundNative.handle), '-X', String(left), '-Y', String(top), '-Width', String(right - left), '-Height', String(bottom - top), '-OutputPath', path]);
-        await testInfo.attach(`controlled-native-${view}`, { path, contentType: 'image/png' });
+        try {
+          await run('capture', ['-Handle', String(backgroundNative.handle), '-X', String(left), '-Y', String(top), '-Width', String(right - left), '-Height', String(bottom - top), '-OutputPath', path]);
+          await testInfo.attach(`controlled-native-${view}`, { path, contentType: 'image/png' });
+        } catch (error) {
+          if (!String(error).includes('FIXTURE_CAPTURE_NOT_OWNED')) throw error;
+          // 保留桌面截图守卫：环境不满足时仅捕获本夹具 Renderer，不冒充原生合成证据。
+          evidence[`${view}NativeCapture`] = '未验证：桌面截图归属守卫未通过，改用 Renderer 截图';
+          testInfo.annotations.push({ type: '环境限制', description: `${view} 原生合成截图未验证；窗口区域与真实鼠标断言继续执行。` });
+          const rendererPath = testInfo.outputPath(`renderer-only-${view}.png`);
+          await (view === 'chat' ? chat : bubble).screenshot({ path: rendererPath, omitBackground: true });
+          await testInfo.attach(`renderer-only-${view}`, { path: rendererPath, contentType: 'image/png' });
+        }
       };
       await capture('chat');
       // 合成背景保持普通窗口，产品原生置顶层应自然位于其上；只重投测试正文等待新的布局。

@@ -68,7 +68,7 @@ describe('窗口安全配置', () => {
 
   it('聊天与设置使用互相独立的隐藏窗口', () => {
     expect(chatWindowOptions('preload.js')).toMatchObject({
-      width: 528,
+      width: 712,
       height: 46,
       transparent: true,
       frame: false,
@@ -226,15 +226,13 @@ describe('桌宠交互控制器生命周期', () => {
     expect(controller.dispose).toHaveBeenCalledOnce();
   });
 
-  it('气泡固定只展示preload参数，历史原生背景无preload与业务入口', () => {
+  it('气泡固定只展示preload参数，历史不再创建独立背板窗口', () => {
     expect(windowManager.bubbleWindowOptions).toBeTypeOf('function');
-    expect(windowManager.historyBackdropWindowOptions).toBeTypeOf('function');
+    expect(windowManager).not.toHaveProperty('historyBackdropWindowOptions');
+    expect(windowManager).not.toHaveProperty('createHistoryBackdropWindow');
     expect(windowManager.bubbleWindowOptions('preload.js').webPreferences).toMatchObject({
       ...secureWebPreferences('preload.js'), additionalArguments: ['--myself-chat-bubble']
     });
-    const history = windowManager.historyBackdropWindowOptions();
-    expect(history).toMatchObject({ transparent: false, frame: false, backgroundColor: '#00000000', focusable: false });
-    expect(history.webPreferences?.preload).toBeUndefined();
   });
 });
 
@@ -270,8 +268,10 @@ describe('preload 白名单', () => {
     const loading = main.slice(main.indexOf('const loading = (): void =>'), main.indexOf("window.on('closed', failed)"));
     expect(loading).toContain("if (surface === 'island') { presentationBridge.clear(); presentation.clear(); }");
     const bubbleCreation = main.indexOf('let bubble = createBubbleWindow(');
-    const historyCreation = main.indexOf('const historyBackdrop = createHistoryBackdropWindow(');
-    expect(main.slice(bubbleCreation, historyCreation)).toContain('startupCleanup.add(');
+    const presentationCreation = main.indexOf('let presentation!: ChatPresentationWindowController');
+    expect(main.slice(bubbleCreation, presentationCreation)).toContain('startupCleanup.add(');
+    expect(main).not.toContain('createHistoryBackdropWindow');
+    expect(main).not.toContain("setBackgroundMaterial('acrylic')");
   });
 
   it('Main 由会话投影器独占 taskEvent 窗口投递', async () => {

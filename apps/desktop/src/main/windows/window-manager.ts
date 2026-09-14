@@ -74,7 +74,7 @@ export function petWindowOptions(
 
 export function chatWindowOptions(preload: string): BrowserWindowConstructorOptions {
   return {
-    width: 528,
+    width: 712,
     height: 46,
     transparent: true,
     frame: false,
@@ -244,19 +244,8 @@ export function bubbleWindowOptions(preload: string): BrowserWindowConstructorOp
     webPreferences: { ...secureWebPreferences(preload), additionalArguments: ['--myself-chat-bubble'] } };
 }
 
-/** 历史材质背景没有 preload、正文或 IPC，只为透明内容层提供系统背景。 */
-export function historyBackdropWindowOptions(): BrowserWindowConstructorOptions {
-  return { width: 360, height: 280, frame: false, thickFrame: true, transparent: false,
-    show: false, focusable: false, alwaysOnTop: true, skipTaskbar: true, resizable: false,
-    backgroundColor: '#00000000',
-    webPreferences: { nodeIntegration: false, contextIsolation: true, sandbox: true, webSecurity: true } };
-}
-
 export function createBubbleWindow(BrowserWindowClass: BrowserWindowConstructor, preload: string): BrowserWindow {
   const window = new BrowserWindowClass(bubbleWindowOptions(preload)); lockNavigation(window); return window;
-}
-export function createHistoryBackdropWindow(BrowserWindowClass: BrowserWindowConstructor): BrowserWindow {
-  const window = new BrowserWindowClass(historyBackdropWindowOptions()); lockNavigation(window); return window;
 }
 
 function validRectangle(rectangle: Rectangle): boolean {
