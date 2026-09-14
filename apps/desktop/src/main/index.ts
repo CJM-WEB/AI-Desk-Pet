@@ -129,6 +129,7 @@ import {
   setPetWindowPosition
 } from './windows/window-manager';
 import { ChatPresentationBridge, registerChatPresentationIpc } from './windows/chat-presentation-bridge';
+import { waitForRendererReady } from './windows/renderer-ready';
 import { ChatPresentationWindowController } from './windows/chat-presentation-windows';
 import { createChatPointerObserver } from './windows/chat-native-pointer';
 import { PetWindowInteractionController } from
@@ -239,9 +240,11 @@ async function loadRenderer(
   const url = rendererUrl(view);
   if (url) {
     await window.loadURL(url);
-    return;
+  } else {
+    await window.loadFile(join(__dirname, '../renderer/index.html'), { query: { view } });
   }
-  await window.loadFile(join(__dirname, '../renderer/index.html'), { query: { view } });
+  // 页面导航成功后继续等待首个视图提交，按需加载完成前不显示空窗口。
+  await waitForRendererReady(window.webContents);
 }
 
 async function createApplicationWindows(
@@ -268,8 +271,16 @@ async function createApplicationWindows(
   });
   let chat = createChatWindow(BrowserWindow, preload);
   startupCleanup.add(() => { if (!chat.isDestroyed()) chat.destroy(); });
-  let settings = createSettingsWindow(BrowserWindow, preload);
-  startupCleanup.add(() => { if (!settings.isDestroyed()) settings.destroy(); });
+  // 设置首次打开才创建；加载事务复用同一候选，隐藏后保留未提交字段。
+  const settingsWindows = createLoadBeforePublishWindow<BrowserWindow>({
+    create: () => {
+      const candidate = createSettingsWindow(BrowserWindow, preload);
+      startupCleanup.add(() => { if (!candidate.isDestroyed()) candidate.destroy(); });
+      return candidate;
+    },
+    prepare: window => hideOnClose(window),
+    load: window => loadRenderer(window, 'settings')
+  });
   const getCurrentChatWebContents = (): WebContents | null => {
     if (chat.isDestroyed() || chat.webContents.isDestroyed()) return null;
     return chat.webContents;
@@ -567,8 +578,8 @@ async function createApplicationWindows(
   // 状态投影在 Main 完成严格校验；Renderer 永远不接触端口、令牌、路径、PID 或原始 stderr。
   const publishLocalModelStatus = (status: LocalModelPublicStatus): void => {
     localModelStatus = localModelPublicStatusSchema.parse(status);
-    for (const window of [chat, settings]) {
-      if (!window.isDestroyed() && !window.webContents.isDestroyed()) {
+    for (const window of [chat, settingsWindows.getCurrent()]) {
+      if (window && !window.isDestroyed() && !window.webContents.isDestroyed()) {
         window.webContents.send(ipcChannels.localModelStatus, localModelStatus);
       }
     }
@@ -929,7 +940,6 @@ async function createApplicationWindows(
     });
   };
   hideOnClose(chat, () => presentation.requestClose());
-  hideOnClose(settings);
 
   const reportCharacterWorkshopFlushError = (error: unknown): void => {
     console.error('角色工作室关闭前保存失败。', error);
@@ -941,7 +951,11 @@ async function createApplicationWindows(
     reportError: reportCharacterWorkshopFlushError
   });
   const characterWorkshopWindows = createLoadBeforePublishWindow({
-    create: () => createCharacterWorkshopWindow(BrowserWindow, preload),
+    create: () => {
+      const candidate = createCharacterWorkshopWindow(BrowserWindow, preload);
+      startupCleanup.add(() => { if (!candidate.isDestroyed()) candidate.destroy(); });
+      return candidate;
+    },
     prepare: window => workshopCloseHandshake.bindWindow(window, () => isQuitting),
     load: window => loadRenderer(window, 'characters')
   });
@@ -1022,13 +1036,7 @@ async function createApplicationWindows(
     return bubbleLoading;
   };
   bindPresentationWindow(chat, 'island'); bindPresentationWindow(bubble, 'bubble');
-  const ensureSettingsWindow = async (): Promise<BrowserWindow> => {
-    if (!settings.isDestroyed()) return settings;
-    settings = createSettingsWindow(BrowserWindow, preload);
-    hideOnClose(settings);
-    await loadRenderer(settings, 'settings');
-    return settings;
-  };
+  const ensureSettingsWindow = settingsWindows.ensure;
   const ensureCharacterWorkshopWindow = characterWorkshopWindows.ensure;
   const windowCommands = createWindowCommandController({
     getChatWindow: () => chat,
@@ -1108,7 +1116,7 @@ async function createApplicationWindows(
   );
   characterActions.subscribeCharacterEvents(event => {
     broadcastCharacterEvent(
-      [pet, chat, settings, characterWorkshopWindows.getCurrent()],
+      [pet, chat, settingsWindows.getCurrent(), characterWorkshopWindows.getCurrent()],
       ipcChannels.characterEvent,
       event
     );
@@ -1386,9 +1394,7 @@ async function createApplicationWindows(
   await Promise.all([
     loadRenderer(pet, 'pet'),
     ensureChatWindow(),
-    ensureBubbleWindow().catch(() => { presentation.markUnavailable('bubble'); presentation.requestOpen(); }),
-    loadRenderer(settings, 'settings'),
-    ensureCharacterWorkshopWindow()
+    ensureBubbleWindow().catch(() => { presentation.markUnavailable('bubble'); presentation.requestOpen(); })
   ]);
   void localModelService.start().catch(error => {
     const code = error instanceof Error && 'code' in error && typeof error.code === 'string'

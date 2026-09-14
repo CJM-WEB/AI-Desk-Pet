@@ -111,6 +111,7 @@ export function createLoadBeforePublishWindow<
       creation = (async () => {
         try {
           await options.load(candidate);
+          if (candidate.isDestroyed()) throw new Error('WINDOW_LOAD_DESTROYED');
           current = candidate;
           return candidate;
         } catch (error) {

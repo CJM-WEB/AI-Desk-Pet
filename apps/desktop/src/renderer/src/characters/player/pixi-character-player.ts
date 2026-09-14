@@ -8,6 +8,7 @@ import type {
 } from '@myself/character-runtime';
 import type { CharacterAssetBundle } from './character-resource-cache';
 import {
+  createAlphaMask,
   hitTestCharacterAlpha,
   type AlphaMask,
   type CharacterHitSnapshot
@@ -431,13 +432,15 @@ class BrowserPixiCharacterScene implements PixiCharacterScene {
 
   private constructor(
     private readonly pixi: PixiModule,
-    private readonly application: PixiApplication
+    private readonly application: PixiApplication,
+    private readonly captureAlphaMask: boolean
   ) {}
 
   static async initialize(
     container: HTMLElement,
     pixi: PixiModule,
-    application: PixiApplication
+    application: PixiApplication,
+    captureAlphaMask: boolean
   ): Promise<BrowserPixiCharacterScene> {
     const size = measureContainer(container);
     await application.init({
@@ -450,7 +453,7 @@ class BrowserPixiCharacterScene implements PixiCharacterScene {
     });
     application.ticker.stop();
     container.appendChild(application.canvas);
-    return new BrowserPixiCharacterScene(pixi, application);
+    return new BrowserPixiCharacterScene(pixi, application, captureAlphaMask);
   }
 
   async loadAssets(assets: CharacterVisualAssets): Promise<void> {
@@ -460,7 +463,8 @@ class BrowserPixiCharacterScene implements PixiCharacterScene {
       for (const [assetId, url] of assets) {
         const image = await loadImage(url);
         const texture = this.pixi.Texture.from(image, true);
-        entries.push({ assetId, texture, mask: extractAlphaMask(image) });
+        // 草稿预览不消费像素命中；正式桌宠缺省保留完整 Alpha 掩码。
+        entries.push({ assetId, texture, mask: this.captureAlphaMask ? extractAlphaMask(image) : null });
       }
     } catch (error) {
       for (const { texture } of entries) texture.destroy(true);
@@ -703,12 +707,15 @@ export async function createBrowserPixiCharacterScene(
     // Electron 的严格 CSP 禁止 unsafe-eval；Pixi 官方适配模块改用解释执行着色器程序。
     await import('pixi.js/unsafe-eval');
     return import('pixi.js');
-  }
+  },
+  options: { captureAlphaMask?: boolean } = {}
 ): Promise<PixiCharacterScene> {
   const pixi = await loadPixi();
   const application = new pixi.Application();
   try {
-    return await BrowserPixiCharacterScene.initialize(container, pixi, application);
+    return await BrowserPixiCharacterScene.initialize(
+      container, pixi, application, options.captureAlphaMask ?? true
+    );
   } catch (error) {
     bestEffort(() => application.ticker.stop());
     bestEffort(() => application.canvas.remove());
@@ -763,25 +770,28 @@ async function loadImage(url: string): Promise<HTMLImageElement> {
 
 /** 在图片解码后采样一次 Alpha；Canvas 不可用时保留渲染并让命中默认穿透。 */
 function extractAlphaMask(image: HTMLImageElement): AlphaMask | null {
+  let canvas: HTMLCanvasElement | null = null;
   try {
     const width = image.naturalWidth || image.width;
     const height = image.naturalHeight || image.height;
     if (!Number.isInteger(width) || !Number.isInteger(height) || width <= 0 || height <= 0) {
       return null;
     }
-    const canvas = document.createElement('canvas');
+    canvas = document.createElement('canvas');
     canvas.width = width;
     canvas.height = height;
     const context = canvas.getContext('2d', { willReadFrequently: true });
     if (!context) return null;
     context.drawImage(image, 0, 0);
     const rgba = context.getImageData(0, 0, width, height).data;
-    const bytes = new Uint8Array(width * height);
-    for (let pixel = 0; pixel < bytes.length; pixel += 1) {
-      bytes[pixel] = rgba[pixel * 4 + 3]!;
-    }
-    return { width, height, bytes };
+    return createAlphaMask(width, height, rgba);
   } catch {
     return null;
+  } finally {
+    // Alpha 已独立复制；及时释放临时采样表面，不影响显示纹理和命中数据。
+    if (canvas) {
+      canvas.width = 0;
+      canvas.height = 0;
+    }
   }
 }

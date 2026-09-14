@@ -315,6 +315,37 @@ describe('Main 窗口命令控制器', () => {
     releaseLoad?.();
     await expect(first).resolves.toBe(candidate);
     expect(manager.getCurrent()).toBe(candidate);
+    // 隐藏没有销毁窗口时，重开必须复用原实例与页面状态，不重复加载。
+    await expect(manager.ensure()).resolves.toBe(candidate);
+    expect(sequence).toEqual(['create', 'prepare', 'load']);
+  });
+
+  test('候选加载期间销毁后不发布迟到结果并允许重新创建', async () => {
+    const module = await loadWindowCommandsModule();
+    expect(module).not.toBeNull();
+    if (!module) return;
+    let release!: () => void;
+    const loaded = new Promise<void>(resolve => { release = resolve; });
+    let created = 0;
+    const candidates: Array<{ isDestroyed(): boolean; destroy(): void }> = [];
+    const manager = module.createLoadBeforePublishWindow({
+      create: () => {
+        let destroyed = false;
+        const candidate = { isDestroyed: () => destroyed, destroy: () => { destroyed = true; } };
+        candidates.push(candidate);
+        created++;
+        return candidate;
+      },
+      prepare: () => undefined,
+      load: async () => loaded
+    });
+    const first = manager.ensure();
+    candidates[0]!.destroy();
+    release();
+    await expect(first).rejects.toThrow('WINDOW_LOAD_DESTROYED');
+    expect(manager.getCurrent()).toBeNull();
+    await expect(manager.ensure()).resolves.toBe(candidates[1]);
+    expect(created).toBe(2);
   });
 
   test('角色工作室加载失败会销毁候选并允许后续 ensure 重建', async () => {
@@ -369,6 +400,7 @@ describe('Main 窗口命令控制器', () => {
     });
 
     expect(() => module.broadcastCharacterEvent([
+      null,
       target('first', { throws: true }),
       target('window-destroyed', { windowDestroyed: true }),
       target('contents-destroyed', { contentsDestroyed: true }),

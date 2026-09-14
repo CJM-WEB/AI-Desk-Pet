@@ -5324,10 +5324,12 @@ test.describe('真实 Provider 业务闭环', () => {
 
     try {
       await mkdir(join(fixture.authorizedRootDirectory, 'docs'), { recursive: true });
-      await expect.poll(() => Boolean(pageFor('pet') && pageFor('chat') && pageFor('settings')))
+      await expect.poll(() => Boolean(pageFor('pet') && pageFor('chat')))
         .toBe(true);
       const pet = pageFor('pet')!;
       const chat = pageFor('chat')!;
+      await pet.evaluate(() => window.myself.openSettings());
+      await expect.poll(() => Boolean(pageFor('settings'))).toBe(true);
       let settings = pageFor('settings')!;
 
       // 只记录脱敏后的 Renderer 诊断，泄漏判定仅保留布尔结果。
@@ -5340,7 +5342,6 @@ test.describe('真实 Provider 业务闭环', () => {
         page.on('pageerror', error => recordDiagnostic(error.message));
       }
 
-      await pet.evaluate(() => window.myself.openSettings());
       await expect.poll(() => settings.evaluate(() => document.visibilityState)).toBe('visible');
       await settings.getByLabel('自定义').check();
       await settings.getByText('高级设置', { exact: true }).click();

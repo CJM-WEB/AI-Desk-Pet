@@ -58,8 +58,11 @@ test('每个 Desktop E2E spec 都由一个显式入口拥有且 verify:desktop �
   expect(desktopMatches).toEqual([
     'character-event-bindings.spec.ts',
     'character-motion-continuity.spec.ts',
+    'chat-appearance.spec.ts',
     'chat-visual-presentation.spec.ts',
+    'desktop-memory-lifecycle.spec.ts',
     'desktop-settings-layout.spec.ts',
+    'desktop-style-loading.spec.ts',
     'desktop.spec.ts'
   ]);
   expect(new Set(desktopMatches).size).toBe(desktopMatches.length);

@@ -408,7 +408,9 @@ export function DraftCharacterPreview(props: DraftCharacterPreviewProps) {
     let unsubscribeFrame: (() => void) | null = null;
     let resizeObserver: ResizeObserver | null = null;
 
-    void createBrowserPixiCharacterScene(container).then(createdScene => {
+    void createBrowserPixiCharacterScene(container, undefined, {
+      captureAlphaMask: false
+    }).then(createdScene => {
       if (!active) {
         createdScene.destroy();
         return;

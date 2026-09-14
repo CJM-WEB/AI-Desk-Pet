@@ -24,6 +24,10 @@ test('选项向左展开且不遮输入，窄屏仍能完整点击', async () =>
   try {
     await page.goto(url);
     await page.getByRole('button', { name: '选项', exact: true }).click();
+    // 减少动态效果仍有一帧动画；完成后再核对最终几何，避免采到缩放中间态。
+    await page.locator('[role="menu"]').evaluate(async element => {
+      await Promise.all(element.getAnimations().map(animation => animation.finished));
+    });
     for (const width of [712, 528, 360]) {
       await page.setViewportSize({ width, height: 800 });
       const geometry = await page.locator('[role="menu"]').evaluate(menu => {

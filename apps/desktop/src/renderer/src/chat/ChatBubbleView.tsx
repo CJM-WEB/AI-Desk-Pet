@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useRef, useState, type CSSProperties } from 'react';
 import type { ChatPresentationApi, ChatPresentationIntent, ChatPresentationSnapshot } from '../../../shared/chat-presentation';
 import { usePresentationLayout } from './use-presentation-layout';
+// 独立窗口自行加载共享气泡样式，不依赖聊天面板的模块副作用。
+import './chat-presentation.css';
 
 export type ConfirmationPresentation = NonNullable<ChatPresentationSnapshot['confirmation']>;
 

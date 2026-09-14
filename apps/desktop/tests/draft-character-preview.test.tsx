@@ -612,6 +612,24 @@ describe('真实草稿预览', () => {
     vi.restoreAllMocks();
   });
 
+  test('预览 Alpha 采样显式关闭，播放帧和方向继续交给正式场景', async () => {
+    const current = sceneDouble();
+    pixiFactory.mockResolvedValue(current.scene);
+    const props = previewProps();
+    const view = render(<DraftCharacterPreview {...props} />);
+    await screen.findByText('预览已就绪');
+
+    expect(pixiFactory).toHaveBeenCalledWith(
+      expect.any(HTMLElement), undefined, { captureAlphaMask: false }
+    );
+    view.rerender(<DraftCharacterPreview {...props} preview={previewState({
+      direction: 'left', frameIndex: 1
+    })} />);
+    expect(current.scene.showAction).toHaveBeenLastCalledWith(
+      idleAction, expect.objectContaining({ direction: 'left', frameIndex: 1 })
+    );
+  });
+
   test('分页预览的初次播放和方向切换都使用临时坐标，编辑草稿保持原样', async () => {
     const current = sceneDouble();
     pixiFactory.mockResolvedValue(current.scene);
