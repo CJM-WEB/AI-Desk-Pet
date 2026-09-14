@@ -4,7 +4,6 @@ import { Download, ThumbsUp } from 'lucide-react';
 import { LIQUID_GLASS_RIPPLE_EVENT } from '../../home-experience/LiquidGlassHome';
 import { useI18n } from '../../i18n/I18nProvider';
 import type { SharedPetPackageSummary } from './shared-pet-types';
-import { SharedPetOverrideWarning } from './SharedPetOverrideWarning';
 import { useObjectUrl } from './use-object-url';
 import styles from './community.module.css';
 
@@ -67,9 +66,6 @@ export function SharedPetCard({
         <div className={styles.cardBody}>
           <h3>{item.name}</h3>
           <p>{item.description}</p>
-          {item.publicationBasis === 'admin_override' ? (
-            <SharedPetOverrideWarning ariaLabel={t('sharedPet.override.cardLabel')} />
-          ) : null}
         </div>
       </button>
       <div className={styles.cardActions}>

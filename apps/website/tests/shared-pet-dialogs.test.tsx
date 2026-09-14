@@ -298,7 +298,7 @@ describe('共享包弹窗', () => {
     trigger.remove();
   });
 
-  it('详情以当前语言显示文件、大小、日期和统计数据', () => {
+  it('详情隐藏原始文件名并依次显示日期、大小、下载数和点赞数', () => {
     render(
       <I18nProvider initialLocale="zh-CN">
         <SharedPetDetailDialog
@@ -311,7 +311,10 @@ describe('共享包弹窗', () => {
     );
 
     const dialog = screen.getByRole('dialog', { name: 'My Pet' });
-    expect(dialog.textContent).toContain('my-pet.zip');
+    expect(dialog.textContent).not.toContain('my-pet.zip');
+    expect(dialog.textContent).not.toContain('原始文件名');
+    expect(Array.from(dialog.querySelectorAll('dt'), node => node.textContent))
+      .toEqual(['发布时间', '文件大小', '下载次数', '点赞数']);
     expect(dialog.textContent).toContain('2 KB');
     expect(dialog.textContent).toContain('12');
     expect(dialog.textContent).toContain('34');
@@ -333,7 +336,7 @@ describe('共享包弹窗', () => {
     expect(screen.getByRole('dialog', { name: 'My Pet' }).textContent).toContain('1 MB');
   });
 
-  it('管理员人工放行的详情与下载入口分别显示固定风险提示', () => {
+  it('管理员人工放行的详情与下载入口均不显示风险提示', () => {
     render(
       <I18nProvider initialLocale="zh-CN">
         <SharedPetDetailDialog
@@ -345,10 +348,8 @@ describe('共享包弹窗', () => {
       </I18nProvider>
     );
 
-    expect(screen.getByRole('note', { name: '详情风险提示' }).textContent)
-      .toContain('管理员人工放行，未通过系统安全验证');
-    expect(screen.getByRole('note', { name: '下载风险提示' }).textContent)
-      .toContain('管理员人工放行，未通过系统安全验证');
+    expect(screen.queryByRole('note', { name: '详情风险提示' })).toBeNull();
+    expect(screen.queryByRole('note', { name: '下载风险提示' })).toBeNull();
   });
 
   it('标准发布详情不显示管理员人工放行提示', () => {

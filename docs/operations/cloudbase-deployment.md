@@ -1,10 +1,12 @@
 # CloudBase 部署与上线手册
 
-本文是网站阶段 2C 零费用人工审核方案的现行运维入口。它只描述上海 CloudBase PostgreSQL 开发环境的最小运行面；不构成远端操作授权，更不构成正式生产上线授权。
+本文是网站 CloudBase 最小运行面的现行运维入口。2026-09-11 起，本轮共享资源开放按[已确认规格](../superpowers/specs/2026-09-11-shared-resources-opening-design.md)沿用现有上海环境及用户已购个人版，直接人工审核、不执行 Scanner、不新建环境；其他范围仍遵守原隔离与授权边界。本文不代替具体远端操作授权或真实链路验收。
+
+> 当前结果（2026-09-11）：个人版和 `cjmwebsite.cn` 精确安全来源已确认；`SHARED_PACKAGE_SUBMISSIONS_ENABLED=true`，API 正常且两个 CLS 绑定为空。真实官网上传、人工强制发布、三处风险提示、浏览器下载触发和匿名完整 ZIP 哈希核对均通过。测试包已软下架，投稿保持开启。投稿者专属状态页因浏览器工具策略拦截未验证；样本及证据范围见[本轮验收记录](2026-09-11-shared-resources-opening-acceptance.md)。
 
 > 历史基线（2026-09-02）：`remote: pass`。上海免费开发环境 `ai-pet-scanner-dev-d0cp…826` 的 16 条 migration、私有 Bucket、两个函数、邮箱 OTP、最小网关、静态托管、备案根域名 `cjmwebsite.cn`、公开反馈／建议正文及其点赞、共享包强制发布/风险披露/互动/隔离清理和官方下载计数均已实际验证；cleanup 每日 timer 配置已创建并启用，函数直调和真实清理通过，自然定时投递尚未观察。用户已确认不实现共享资源留言或回复。当时共享包匿名投稿开关为 false。根域名只接入本开发环境用于验收，不是正式生产上线，该日期证据见 `website-stage-2c-zero-cost-manual-review-acceptance.md`。
 
-> 当前修复（2026-09-09 08:39）：管理员根域入口自动转到已允许认证的默认托管域，实际观察验证码发送被平台接受、后续工作台恢复。API CLS 已解除绑定；投稿曾开启实测，但根域存储预检因安全来源限制返回 403，控制台添加根域要求升级套餐，因此已恢复 `SHARED_PACKAGE_SUBMISSIONS_ENABLED=false`。用户已同意测试协议，不再是等待协议；上传仍未修复完成，待裁决免费默认测试域的临时入口。没有修改首页视觉、放开存储权限或增加收费资源，详见 [本次验收记录](website-login-upload-repair-2026-09-09.md)。不改变开发环境和正式上线边界。
+> 历史修复（2026-09-09 08:39）：管理员根域入口自动转到已允许认证的默认托管域，实际观察验证码发送被平台接受、后续工作台恢复。API CLS 已解除绑定；投稿曾开启实测，但根域存储预检因安全来源限制返回 403，控制台添加根域要求升级套餐，因此当时恢复 `SHARED_PACKAGE_SUBMISSIONS_ENABLED=false`。当日用户已同意测试协议，上传仍未修复完成，免费默认测试域临时入口尚待裁决。没有修改首页视觉、放开存储权限或增加收费资源，详见[该日验收记录](website-login-upload-repair-2026-09-09.md)。该段仅保留历史事实，当前配置与本轮确认状态见上方。
 
 > 下载接入（2026-09-09）：用户已同意沿用免费环境供少量测试；官网 Windows 下载入口已接入同环境默认域的 `0.1.0-alpha.1` 安装包。约 2.86 GB 整包实际下载与 SHA-256 校验通过，线上入口观察通过；默认下载域不承诺断点续传，安装卸载仍待人工确认。详见 [下载接入验收](2026-09-09-website-installer-download.md)。不改变投稿暂停、管理员认证、存储权限、计费和开发环境边界。
 
@@ -21,17 +23,17 @@
 
 以下旧能力已退役，**禁止部署、配置或作为冒烟前提**：CloudBase Run Scanner、腾讯 TMS、腾讯 IMS、`ai-pet-moderation-worker`、Scanner HTTP/HMAC 协议和 Scanner Secret。云函数构建产物只应包含 `api` 与 `cleanup`。
 
-任何创建页若不能同时证明上海、PostgreSQL、应付 `0 元`、按量付费关闭和自动续费关闭，立即停止。不得通过购买、开启按量、未经批准创建持久云密钥或恢复已退役组件绕过该门禁。
+阶段 2C 的新建环境曾要求上海、PostgreSQL、应付 `0 元`、按量付费关闭和自动续费关闭；本轮已由用户明确改为沿用已购个人版，不再创建或购买环境。不得自行重复购买、开启按量、创建持久云密钥或恢复已退役组件。
 
 ## 2. 环境隔离与投稿开关
 
-1. 开发与正式生产环境必须分离，分别保存环境标识；数据库、Bucket、函数、域名、密钥和告警不得复用。
+1. 开发与正式生产环境默认分离。2026-09-11 用户已明确批准本轮共享资源沿用上海 `ai-pet-scanner-dev-d0cpbc8094826`，不新建环境；此例外只覆盖本轮规格，其余环境复用仍需独立授权。
 2. 服务端目标地域为 `ap-shanghai`；正式生产地域由独立生产计划重新裁决。
-3. `cjmwebsite.cn` 当前只指向本开发环境。`www.cjmwebsite.cn` CNAME 为 `www.cjmwebsite.cn.pages.dnsoe6.com`，由独立 Makers 项目 `cjmwebsite-www-redirect` 承接 HTTPS 并保留路径、查询参数跳到根域，不承载业务或连接数据库。根域 CNAME 保持 `cjmwebsite.cn.cdn.dnsv1.com`。正式生产环境不得默认复用当前环境、证书、密钥、日志或数据库。
-4. 根域真实上传受到体验版安全来源限制，当前已恢复暂停；后续开启前仍须保持 API CLS 响应日志解除绑定，并验证实际浏览器来源的完整上传链路：
+3. `cjmwebsite.cn` 继续指向本环境。`www.cjmwebsite.cn` CNAME 为 `www.cjmwebsite.cn.pages.dnsoe6.com`，由独立 Makers 项目 `cjmwebsite-www-redirect` 承接 HTTPS 并保留路径、查询参数跳到根域，不承载业务或连接数据库。根域 CNAME 保持 `cjmwebsite.cn.cdn.dnsv1.com`。其他生产用途不得由本轮例外推导复用授权。
+4. 当前个人版和官网安全来源已核对，真实上传、人工发布和完整下载验收已通过，投稿开关保持开启；API CLS 响应日志须继续解除绑定。后续上传、审核或完整下载出现阻断时恢复 false，并读取确认。当前值：
 
    ```text
-   SHARED_PACKAGE_SUBMISSIONS_ENABLED=false
+   SHARED_PACKAGE_SUBMISSIONS_ENABLED=true
    ```
 
 5. `pnpm.cmd plan:cloudbase-migrations` 仅生成本地 checksum plan，不读取凭据、不连接或写入远端数据库。远端 migration 只能在获得单独授权后，由现有 Adapter 顺序执行；不得通过控制台手工复制 SQL。
@@ -60,7 +62,7 @@ PRIVATE_BUCKET_ID
 CLOUDBASE_API_KEY
 ADMIN_EMAIL
 ABUSE_HMAC_SECRET
-SHARED_PACKAGE_SUBMISSIONS_ENABLED=false
+SHARED_PACKAGE_SUBMISSIONS_ENABLED=true
 ```
 
 `ai-pet-cleanup` 额外配置：
@@ -79,7 +81,7 @@ CLOUDBASE_API_KEY
 
 默认网关域名已使用两条 `SCF` 路由：公开 `/api` 不启用网关认证；管理员 `/api/v1/admin` 启用网关认证。备案根域名额外使用 `/` 静态托管、公开 `/api` 和管理员 `/api/v1/admin` 三条路由；公开 API 按客户端 IP 限制为总 QPS 100、单客户端 10，管理员 API 按用户限制为总 QPS 100、单用户 10。最长前缀使管理员路由优先；公开 `GET /api/v1/community` 返回 200，未认证管理员请求在网关返回 401 `MISSING_CREDENTIALS`。
 
-免费体验版调用 `CreateAuthDomain` 会被平台以 `OperationDenied.FreePackageDenied` 拒绝，因此不得购买套餐绕过。公开站构建把 `NEXT_PUBLIC_API_BASE_URL` 固定为 `https://cjmwebsite.cn/api/v1`，在备案根域名上走同源请求；管理员邮箱 OTP 继续从已存在于 Web 安全域名列表的默认静态托管域名进入，其跨域调用备案根域 API 已用真实已登录工作台验证。不得配置带认证信息的通配 CORS 来源。
+2026-09-09 免费体验版曾以 `OperationDenied.FreePackageDenied` 拒绝新增安全域名；2026-09-11 已确认用户购买个人版，官网 `cjmwebsite.cn` 已加入精确安全来源。公开站构建继续把 `NEXT_PUBLIC_API_BASE_URL` 固定为 `https://cjmwebsite.cn/api/v1`；管理员邮箱 OTP 继续从既有默认静态托管域名进入，本轮不改入口。安全来源配置成功不代替浏览器 PUT 实测，禁止带认证信息的通配 CORS 来源。
 
 2026-09-09 起部署时同时设置 `NEXT_PUBLIC_ADMIN_ORIGIN=https://ai-pet-scanner-dev-d0cpbc8094826-1391054083.tcloudbaseapp.com`。根域 `/admin/` 会在初始化认证 SDK 前跳到该来源的 `/admin/`，不携带查询或 fragment；同来源不循环。配置只接受纯 HTTPS origin（允许尾部斜杠），错误配置显示原有配置错误页面。Memory E2E 构建必须清空该变量，正式产物不得从 `.e2e-out` 部署。
 
@@ -104,7 +106,9 @@ pnpm.cmd --filter @myself/website build
 - 新共享包没有当前有效系统扫描通过证据时，普通 `approve` 必须返回 `TECHNICAL_SCAN_REQUIRED`；管理员只能完成独立风险确认后执行 `force_publish`，发布依据为 `admin_override`。
 - 强制发布不改变历史扫描事实、结构不变量、审计、状态版本或公开风险提示。
 
-## 7. 本地 Docker 辅助检查
+## 7. 本地 Docker 辅助检查（历史参考，本轮不执行）
+
+2026-09-11 用户已明确跳过 Scanner，管理员按本轮规格直接人工审核并保留 `force_publish`／`admin_override`。以下旧步骤仅作为历史参考，不是当前发布或开放的前置门禁，不执行、不生成扫描通过结论。
 
 共享包只在管理员本机进行一次性 Docker CLI 检查，不上传报告、不调用云服务，也不生成系统通过证据。管理员从详情中的“下载待审 ZIP（5分钟）”取得短期地址；该地址只出现在管理员 DTO，既不进入公开 DTO，也不增加公开下载计数。构建时 `freshclam` 需要网络下载病毒库；运行时必须断网。`CLAMAV_DB_REFRESH_DATE` 按 UTC 日期使构建阶段每日刷新，候选验证拒绝超过 7 天的病毒库，因此超过 7 天必须重新构建并复验。
 
@@ -125,8 +129,8 @@ docker run --rm --network none --read-only --cap-drop ALL `
 
 ## 8. 远端开发环境 smoke 与发布边界
 
-同一上海环境在 2026-09-02 已经验证：migration、匿名与管理员授权、反馈直入人工队列、普通批准、公开读取、点赞与撤赞、删除隔离、审计记录、官方下载计数、私有对象短期上传/下载、共享包两步强制发布、三处公开风险提示、幂等下载计数和完整物理清理。cleanup 每日 timer 的名称、类型、Cron 与启用状态已核对，函数直调成功，但尚未观察一次平台自然定时投递。用户已确认规格中的“评论”仅指公开反馈／建议正文，不包含共享资源留言或回复；现有反馈发布、公开读取与点赞链即为该验收。2026-09-09 根域真实上传失败，投稿开关已恢复 false，不能引用旧通过记录替代当前验收。
+同一上海环境在 2026-09-02 已经验证：migration、匿名与管理员授权、反馈直入人工队列、普通批准、公开读取、点赞与撤赞、删除隔离、审计记录、官方下载计数、私有对象短期上传/下载、共享包两步强制发布、三处公开风险提示、幂等下载计数和完整物理清理。cleanup 每日 timer 的名称、类型、Cron 与启用状态已核对，函数直调成功，但尚未观察一次平台自然定时投递。用户已确认规格中的“评论”仅指公开反馈／建议正文，不包含共享资源留言或回复；现有反馈发布、公开读取与点赞链即为该验收。2026-09-09 根域真实上传失败并暂时恢复 false；2026-09-11 增加精确安全来源并开启投稿后，本轮实际完成官网上传、人工发布、匿名完整下载与测试包软下架，详见独立验收记录。
 
 本次已按以下合同验证官方安装包计数，后续重新部署仍须复验：公开 `POST /api/v1/official-downloads/windows/click` 只接受空对象并只返回空数据；管理员 `GET /api/v1/admin/metrics/official-windows-download` 经现有管理员认证后才返回累计值；公开页面、公开 DTO 与静态导出均不含累计值。上述计数是被服务端接受的点击，既不代表下载、安装、独立用户，也不应把原始 IP、User-Agent、下载地址或管理员令牌写入日志。
 
-单独的本地验证或开发域名可访问不能证明阶段 2C 通过；现行验收记录已经汇总完整远端证据并将阶段 2C 关闭为 `pass`。该状态仍不等于正式上线；正式生产需要独立规格和授权，单独裁决生产环境、套餐、域名切换、备份、监控、迁移与回滚。
+单独的本地验证或域名可访问不能证明完整链通过；历史阶段 2C 的 `pass` 与本轮开放证据分别记录，不互相替代。本轮环境复用和个人版安排以已确认规格为准；其他生产事项仍须独立裁决，不扩展本轮上传与下载范围。
