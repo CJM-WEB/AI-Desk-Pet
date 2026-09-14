@@ -14,9 +14,9 @@ describe('官网版本清单', () => {
     expect(release.downloadUrl).toBe(
       'https://ai-pet-scanner-dev-d0cpbc8094826-1391054083.tcloudbaseapp.com/releases/0.1.0-alpha.1/AI-Pet-0.1.0-alpha.1-windows-x64.exe'
     );
-    expect(release.sizeBytes).toBe(2855778466);
+    expect(release.sizeBytes).toBe(2982126566);
     expect(release.sha256).toBe(
-      '14163215f587962301ae88b336852ef1372eee64a092052b46de96c7341867ee'
+      '17e1516a086c65d212a30c27206c6414fc2d127aefbb2d98a4030e1faa818cef'
     );
     expect(release.signed).toBe(false);
   });

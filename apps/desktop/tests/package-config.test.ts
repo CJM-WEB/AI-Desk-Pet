@@ -1,4 +1,5 @@
 import { execFile } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { readFile, stat } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { join } from 'node:path';
@@ -7,6 +8,7 @@ import { promisify } from 'node:util';
 import { describe, expect, test, vi } from 'vitest';
 import ts from 'typescript';
 import packageJson from '../package.json';
+import explorerSpaceIntegrity from '../resources/windows/explorer-space-integrity.json';
 
 const execFileAsync = promisify(execFile);
 
@@ -204,6 +206,8 @@ describe('electron-builder 配置', () => {
   test('固定发行文本在 Windows checkout 保持 LF 以稳定 manifest 哈希', async () => {
     const repositoryRoot = new URL('../../..', import.meta.url);
     const paths = [
+      'apps/desktop/resources/windows/explorer-space-bridge.ps1',
+      'apps/desktop/resources/windows/explorer-space-shell-tab-helper.cs',
       'apps/desktop/resources/local-model/THIRD-PARTY-NOTICES.txt',
       'apps/desktop/resources/local-model/licenses/llama.cpp-LICENSE.txt',
       'apps/desktop/resources/local-model/licenses/Qwen3.5-4B-LICENSE.txt'
@@ -214,6 +218,15 @@ describe('electron-builder 配置', () => {
 
     expect(stdout.trim().split(/\r?\n/u)).toEqual(paths.map(path => `${path}: eol: lf`));
   });
+
+  test.each(['explorer-space-bridge.ps1', 'explorer-space-shell-tab-helper.cs'] as const)(
+    '受保护的 Explorer 发行资源 %s 与既有完整性清单 SHA-256 一致',
+    async fileName => {
+      // 校验实际打包字节，防止 Windows 换行转换导致运行期完整性校验拒绝可信资源。
+      const resource = await readFile(new URL(`../resources/windows/${fileName}`, import.meta.url));
+      expect(createHash('sha256').update(resource).digest('hex')).toBe(explorerSpaceIntegrity.files[fileName]);
+    }
+  );
 
   test('Windows 图标包含 256 像素资源', async () => {
     const icon = await readFile(new URL('../resources/icon.ico', import.meta.url));

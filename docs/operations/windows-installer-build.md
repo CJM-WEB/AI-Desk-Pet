@@ -15,6 +15,8 @@ pnpm.cmd --filter @myself/desktop package:win
 
 正式入口依次校验完整本地模型、执行生产构建、由 `electron-builder` 生成 `dist/win-unpacked` 完整发行目录，再调用 Inno Setup 将整个目录递归封装。构建过程不联网下载编译器。
 
+Explorer桥接脚本 `apps/desktop/resources/windows/explorer-space-bridge.ps1` 与 `explorer-space-shell-tab-helper.cs` 由既有SHA-256清单保护，必须保持 `.gitattributes` 指定的LF字节。打包前运行 `tests/package-config.test.ts` 检查真实资源摘要；不得通过修改清单或放宽运行期检查来绕过换行错误。
+
 输出文件为 `apps/desktop/dist/AI-Pet-0.1.0-alpha.1-windows-x64.exe`。这是包含应用、完整本地模型与许可文件的单个离线安装程序，不生成分卷；交付前应核对目录内容、安装器数量、文件大小和 SHA256。
 
 ## 安装与卸载注意事项
