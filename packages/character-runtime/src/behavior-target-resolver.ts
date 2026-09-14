@@ -51,23 +51,28 @@ function scoreText(query: string, text: string): number {
   const wanted = terms(query); const actual = terms(text);
   return [...wanted].filter(term => actual.has(term)).length / Math.max(1, wanted.size);
 }
-function mentioned(text: string, candidate: { name: string }, id: string): boolean {
+function mentionWeight(text: string, candidate: { name: string }, id: string): number {
   const query = normalized(text);
-  return query.includes(normalized(candidate.name))
-    || query.split(/[^\p{L}\p{N}_-]+/u).includes(normalized(id));
+  const name = normalized(candidate.name);
+  const normalizedId = normalized(id);
+  return Math.max(
+    query.includes(name) ? Array.from(name).length : 0,
+    query.split(/[^\p{L}\p{N}_-]+/u).includes(normalizedId) ? Array.from(normalizedId).length : 0
+  );
 }
 export type BehaviorCandidateContext = {
   text: string; sequence: number; currentStateId?: string | null | undefined; mood?: string | undefined;
+  backgroundStateId?: string | null | undefined;
   recentActions?: readonly string[] | undefined; explicitPlaybackRequested?: boolean | undefined;
 };
 /** 描述仅排序候选；预留轮换位置，使大包末尾与同状态末尾动作都可被看见。 */
 export function selectBehaviorCandidates(catalog: PublicBehaviorCatalog, context: BehaviorCandidateContext): PublicBehaviorCatalog {
   // 描述可能被多个状态共享；每次请求只算一次相关性，避免排序反复扫描长文本。
   const relevance = new Map<string, number>();
-  const mentions = new Map<string, boolean>();
+  const mentions = new Map<string, number>();
   const isMentioned = (entry: { name: string }, id: string) => {
     const key = `${entry.name}\0${id}`;
-    if (!mentions.has(key)) mentions.set(key, mentioned(context.text, entry, id));
+    if (!mentions.has(key)) mentions.set(key, mentionWeight(context.text, entry, id));
     return mentions.get(key)!;
   };
   const similarity = (text: string, mood = false) => {
@@ -79,23 +84,30 @@ export function selectBehaviorCandidates(catalog: PublicBehaviorCatalog, context
     Math.max(...[entry.name, entry.description ?? '', ...entry.tags].map(text => similarity(text)))
     + .2 * similarity(entry.description ?? entry.name, true);
   const states = catalog.states.filter(state => state.agentInferable || context.explicitPlaybackRequested
-    || state.stateId === catalog.idleStateId || state.stateId === context.currentStateId);
-  const ranked = [...states].sort((a, b) => {
-    const rank = (state: PublicBehaviorState) => (state.stateId === catalog.idleStateId ? 100 : 0)
-      + (state.stateId === context.currentStateId ? 90 : 0)
-      + (isMentioned(state, state.stateId) || state.actions.some(action => isMentioned(action, action.actionId)) ? 80 : 0)
-      + Math.max(score(state), ...state.actions.map(score));
-    return rank(b) - rank(a);
-  });
-  const selected = ranked.slice(0, states.length > 24 ? 23 : 24);
-  if (ranked.length > selected.length) {
-    const exploration = ranked.slice(selected.length);
+    || state.stateId === catalog.idleStateId || state.stateId === context.currentStateId
+    || state.stateId === context.backgroundStateId);
+  const rank = (state: PublicBehaviorState) =>
+    Math.max(isMentioned(state, state.stateId), ...state.actions.map(action => isMentioned(action, action.actionId))) * 10
+    + Math.max(score(state), ...state.actions.map(score));
+  const ranked = [...states].sort((a, b) => rank(b) - rank(a));
+  const explorationReserved = ranked.length > 24;
+  const selected = ranked.slice(0, explorationReserved ? 23 : 24);
+  if (explorationReserved) {
+    const protectedIds = new Set([catalog.idleStateId, context.currentStateId, context.backgroundStateId]);
+    for (const state of ranked.filter(state => protectedIds.has(state.stateId))) {
+      if (selected.includes(state)) continue;
+      let replaceIndex = selected.length - 1;
+      while (replaceIndex >= 0 && protectedIds.has(selected[replaceIndex]!.stateId)) replaceIndex--;
+      if (replaceIndex >= 0) selected.splice(replaceIndex, 1, state);
+    }
+    selected.sort((a, b) => rank(b) - rank(a));
+    const exploration = ranked.filter(state => !selected.includes(state));
     selected.push(exploration[Math.abs(context.sequence) % exploration.length]!);
   }
   const ordered = selected.map(state => {
     const actions = [...state.actions].sort((a, b) =>
-      (Number(isMentioned(b, b.actionId)) * 10 + score(b) - Number(context.recentActions?.includes(b.name)) * .05)
-      - (Number(isMentioned(a, a.actionId)) * 10 + score(a) - Number(context.recentActions?.includes(a.name)) * .05));
+      (isMentioned(b, b.actionId) * 10 + score(b) - Number(context.recentActions?.includes(b.name) === true) * .05)
+      - (isMentioned(a, a.actionId) * 10 + score(a) - Number(context.recentActions?.includes(a.name) === true) * .05));
     // 每状态第二个位置用于探索，后续仍按相关性；不会让首个共享动作吞尽目录。
     if (actions.length > 1) {
       const index = 1 + Math.abs(context.sequence) % (actions.length - 1);

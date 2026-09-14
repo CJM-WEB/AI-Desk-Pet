@@ -7,6 +7,15 @@ import {
   toolRequestSchema
 } from '../src/contracts';
 
+describe('流式正文沿用普通聊天的 Unicode 码点预算', () => {
+  it.each(['assistant_message_delta', 'assistant_message_commit'] as const)('%s 接纳四千 emoji，拒绝超过四千码点', type => {
+    const field = type === 'assistant_message_delta' ? 'delta' : 'text';
+    expect(taskEventSchema.safeParse({ type, turnId: 'unicode', [field]: '😀'.repeat(4000) }).success).toBe(true);
+    expect(taskEventSchema.safeParse({ type, turnId: 'unicode', [field]: '😀'.repeat(4001) }).success).toBe(false);
+    expect(taskEventSchema.safeParse({ type, turnId: 'unicode', [field]: '字'.repeat(4001) }).success).toBe(false);
+  });
+});
+
 describe('正式任务许可契约', () => {
   const loop = { type: 'task_permission_required', actionId: 'loop-1', summary: '重复操作保护', request: { action: 'doom_loop', tool: 'read', repeatCount: 3 } };
   it('重复操作许可仅暴露白名单工具与安全整数次数', () => {

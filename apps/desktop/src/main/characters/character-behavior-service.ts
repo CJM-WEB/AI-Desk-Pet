@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import {
   CharacterExpressionEngine, characterPlaybackFeedbackSchema, createPublicBehaviorCatalog, resolveBehaviorTarget, resolveCharacterPresentationV3,
   type BehaviorTarget, type CharacterAgentBehaviorIntent, type CharacterBehaviorPlan,
-  type CharacterExpressionContext, type CharacterExpressionDecision, type CharacterExpressionResult,
+  type CharacterExpressionContext, type CharacterExpressionDecision, type CharacterExpressionResult, type CharacterExpressionPlanInput,
   type CharacterManifestV3, type CharacterPlaybackFeedback, type PublicBehaviorCatalog,
   type CharacterExpressionTarget, type TrustedCharacterEventV3, type CharacterRuntimeFacts
 } from '@myself/character-runtime';
@@ -45,6 +45,8 @@ export class CharacterBehaviorService {
   /** 仅保存最近十六个实际发布片段，辨认宿主先到期而 Renderer 终态稍晚的正常竞争。 */
   private readonly publishedPlaybacks = new Map<string, { actionId: string; scheduledAtMs: number }>();
   private engine: CharacterExpressionEngine | null = null;
+  /** 就绪事实只属于接纳过合法 started 的引擎实例，角色重载不能继承旧画面。 */
+  private startedPlaybackEngine: CharacterExpressionEngine | null = null;
   private manifest: CharacterManifestV3 | null = null;
   private direction: 'left' | 'right' = 'right';
   private moving = false;
@@ -79,7 +81,8 @@ export class CharacterBehaviorService {
     const resolved = resolveCharacterPresentationV3(this.manifest, snapshot.skinId, current.stateId, current.actionId);
     if (!resolved) return null;
     const resourceRevision = resolved.presentation.geometry.resourceRevision;
-    const key = JSON.stringify([this.loadRevision, resolved.skinId, current.actionId, snapshot.schedule.revision, resourceRevision, this.direction]);
+    // 同动作续播只更新播放授权；几何来源未变时不重复布局落盘，避免阻塞运动 tick。
+    const key = JSON.stringify([this.loadRevision, resolved.skinId, current.actionId, resourceRevision, this.direction]);
     if (key !== this.geometryBindingKey) { this.geometryBindingKey = key; this.geometryBindingGeneration++; }
     return Object.freeze({ generation: this.geometryBindingGeneration, manifest: this.manifest,
       skinId: resolved.skinId, actionId: current.actionId, actionRevision: snapshot.schedule.revision, resourceRevision, direction: this.direction });
@@ -110,7 +113,7 @@ export class CharacterBehaviorService {
   handleTaskEvent(event: TaskEvent, _options: Readonly<{ allowPlayback?: boolean }> = {}): CharacterExpressionAuthorization {
     if (this.closed) return NONE;
     this.options.motion.applyTaskEvent(event);
-    // 来源区分将在普通聊天/文件任务接线补齐；此处不制造 task-finished 等边沿。
+    // 任务生命周期由 Director 接收可信 Core 事件；此处仅转交运动层。
     return NONE;
   }
   handleMovement(snapshot: CharacterMotionSnapshot): void {
@@ -122,21 +125,21 @@ export class CharacterBehaviorService {
     this.recordTrustedEvent(snapshot.moving ? 'move-start' : 'move-stop');
   }
   /** 真实事实即刻重判并发布；切换期间缓存，交由新角色的唯一 Engine 重新接纳。 */
-  updateRuntimeFacts(facts: Partial<CharacterRuntimeFacts>): void {
+  updateRuntimeFacts(facts: Partial<CharacterRuntimeFacts>, activityPlan?: CharacterExpressionPlanInput): void {
     if (this.closed) return;
     this.runtimeFacts = { ...this.runtimeFacts, ...facts };
-    if (!this.transitioning && this.engine) this.publish(this.engine.updateRuntimeFacts(facts));
+    if (!this.transitioning && this.engine) this.publish(this.engine.updateRuntimeFacts(facts, activityPlan));
   }
   hasEligibleExpressionFor(facts: Partial<CharacterRuntimeFacts>, requiredFact?: keyof CharacterRuntimeFacts): boolean {
     return !this.closed && !this.transitioning && !!this.engine && this.engine.hasEligibleExpressionFor(facts, requiredFact);
   }
   /** 活动准备只发布同一引擎令牌，不伪造真实移动事实；复用令牌也返回原授权。 */
-  prepareActivity(): CharacterExpressionAuthorization {
+  prepareActivity(fact: keyof CharacterRuntimeFacts = 'moving'): CharacterExpressionAuthorization {
     if (this.closed || this.transitioning || !this.engine) return NONE;
-    if (!this.engine.hasEligibleExpressionFor({ moving: true }, 'moving')) return NONE;
-    this.publish(this.engine.prepareActivity('moving'));
+    if (!this.engine.hasEligibleExpressionFor({ [fact]: true }, fact)) return NONE;
+    this.publish(this.engine.prepareActivity(fact));
     const current = this.engine.snapshot().schedule.current;
-    return current && this.engine.hasEligibleExpressionFor({ moving: true }, 'moving')
+    return current && this.engine.hasEligibleExpressionFor({ [fact]: true }, fact)
       ? { kind: 'play', stateId: current.stateId, actionId: current.actionId, playbackToken: current.playbackToken } : NONE;
   }
   releasePreparedActivity(): void {
@@ -159,8 +162,20 @@ export class CharacterBehaviorService {
   }
   snapshot() { return this.closed || this.transitioning ? null : this.engine?.snapshot() ?? null; }
   cancelStateLifecycle(): void {
-    this.publishedPlaybacks.clear();
+    // 同一角色的配置重置仍允许识别已发布片段的迟到回报；角色切换和关闭时再清空，避免旧生命周期穿透。
     if (this.engine) { this.publish(this.engine.reset()); this.publish(this.engine.updateRuntimeFacts(this.runtimeFacts)); }
+  }
+  releaseBackgroundSelection(stateId: string): void {
+    if (!this.closed && !this.transitioning && this.engine) this.publish(this.engine.releaseBackgroundSelection(stateId));
+  }
+  cancelSingleEpisode(): void {
+    if (!this.closed && !this.transitioning && this.engine) this.publish(this.engine.cancelSingleEpisode());
+  }
+  hasActiveSingleEpisode(): boolean {
+    return !this.closed && !this.transitioning && !!this.engine?.hasActiveSingleEpisode();
+  }
+  hasStartedPlayback(): boolean {
+    return !this.closed && !this.transitioning && this.engine !== null && this.startedPlaybackEngine === this.engine;
   }
   advance(): readonly string[] {
     if (this.closed || this.transitioning || !this.engine) return [];
@@ -172,15 +187,19 @@ export class CharacterBehaviorService {
     if (this.closed) return;
     const current = this.engine?.snapshot().schedule.current;
     const published = this.publishedPlaybacks.get(feedback.playbackToken);
-    // 旧片段只能无副作用地确认终态；不能再次 started，也不能进入 Engine 污染当前播放或近期动作。
+    // 旧片段的迟到回报只作无副作用丢弃，不能进入 Engine 污染当前播放或近期动作。
     if (!this.transitioning && this.engine && current?.playbackToken !== feedback.playbackToken
       && published?.actionId === feedback.actionId && characterPlaybackFeedbackSchema.safeParse(feedback).success
-      && feedback.status !== 'started' && feedback.occurredAtMs >= published.scheduledAtMs && feedback.occurredAtMs <= this.now()) return;
+      && feedback.occurredAtMs >= published.scheduledAtMs && feedback.occurredAtMs <= this.now()) return;
     if (this.transitioning || !this.engine || !current || current.playbackToken !== feedback.playbackToken
       || current.actionId !== feedback.actionId || feedback.occurredAtMs < current.scheduledAtMs || feedback.occurredAtMs > this.now()) {
       throw new Error('CHARACTER_PLAYBACK_UNAUTHORIZED');
     }
-    this.publish(this.engine.applyFeedback(feedback));
+    const result = this.engine.applyFeedback(feedback);
+    const accepted = result.snapshot.schedule.current;
+    if (feedback.status === 'started' && accepted?.playbackToken === feedback.playbackToken
+      && accepted.actionId === feedback.actionId && accepted.startedAtMs !== null) this.startedPlaybackEngine = this.engine;
+    this.publish(result);
     if (feedback.status === 'started') {
       const name = this.manifest?.actions.find(action => action.id === feedback.actionId)?.name;
       if (name && this.recentPublicActions.at(-1) !== name) this.recentPublicActions.push(name);
@@ -195,7 +214,7 @@ export class CharacterBehaviorService {
   close(): void {
     if (this.closed) return;
     if (this.engine) this.publish(this.engine.reset());
-    this.closed = true; this.loadRevision++; this.engine = null; this.manifest = null;
+    this.closed = true; this.loadRevision++; this.engine = null; this.startedPlaybackEngine = null; this.manifest = null;
     this.publishedPlaybacks.clear();
     this.recentPublicActions.splice(0); this.listeners.clear();
   }
@@ -205,7 +224,7 @@ export class CharacterBehaviorService {
     this.transitioning = true;
     if (this.engine) this.publish(this.engine.reset());
     this.publishedPlaybacks.clear();
-    this.engine = null; this.manifest = null; this.recentPublicActions.splice(0);
+    this.engine = null; this.startedPlaybackEngine = null; this.manifest = null; this.recentPublicActions.splice(0);
     try {
       const manifest = await this.options.store.getActiveManifestV3();
       if (this.closed || revision !== this.loadRevision) return;

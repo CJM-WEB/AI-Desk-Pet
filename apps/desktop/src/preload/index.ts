@@ -6,6 +6,7 @@ import {
   type TaskEvent
 } from '@myself/shared-types';
 import { ipcChannels } from '../shared/ipc-channels';
+import { conversationTranscriptSnapshotSchema } from '../shared/conversation-transcript';
 import type {
   CharacterCreateInput,
   CharacterEvent,
@@ -40,8 +41,10 @@ import {
   type LocalModelPublicStatus
 } from '../shared/local-model-ipc';
 import { workshopLayoutSettingsSchema } from '../shared/workshop-layout-ipc';
+import { createChatPresentationApi } from './chat-presentation';
 
-const e2eProbeEnabled = process.argv.includes('--myself-e2e-probe');
+const isChatBubble = process.argv.includes('--myself-chat-bubble');
+const e2eProbeEnabled = !isChatBubble && process.argv.includes('--myself-e2e-probe');
 let behaviorProbe: CharacterBehaviorProbe = {
   revision: 0,
   stateId: '',
@@ -84,6 +87,7 @@ if (e2eProbeEnabled) {
 }
 
 const api: MyselfApi = {
+  chatPresentation: createChatPresentationApi(ipcRenderer),
   getStatus: () => ipcRenderer.invoke(ipcChannels.appGetStatus),
   getSettings: (): Promise<PublicSettings> => ipcRenderer.invoke(ipcChannels.settingsGet),
   saveProvider: (input: unknown): Promise<PublicSettings> => (
@@ -149,6 +153,15 @@ const api: MyselfApi = {
     ipcRenderer.invoke(ipcChannels.actionCancel, { actionId })
   ),
   resetConversation: (): Promise<void> => ipcRenderer.invoke(ipcChannels.conversationReset),
+  restoreConversation: async (): Promise<void> => { await ipcRenderer.invoke(ipcChannels.conversationRestore); },
+  onConversationSnapshot: listener => {
+    const handler = (_event: Electron.IpcRendererEvent, payload: unknown): void => {
+      const parsed = conversationTranscriptSnapshotSchema.safeParse(payload);
+      if (parsed.success) listener(parsed.data);
+    };
+    ipcRenderer.on(ipcChannels.conversationSnapshot, handler);
+    return () => ipcRenderer.removeListener(ipcChannels.conversationSnapshot, handler);
+  },
   resolveHistoryDisclosure: (
     requestId: string,
     decision: HistoryDisclosureDecision
@@ -362,4 +375,5 @@ const api: MyselfApi = {
   quit: (): Promise<void> => ipcRenderer.invoke(ipcChannels.appQuit)
 };
 
-contextBridge.exposeInMainWorld('myself', api);
+// Main 的固定气泡参数只公开展示接口，不把业务方法交给气泡 Renderer。
+contextBridge.exposeInMainWorld('myself', isChatBubble ? { chatPresentation: api.chatPresentation } : api);

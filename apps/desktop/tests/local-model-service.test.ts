@@ -6,6 +6,7 @@ import {
   type LocalModelServiceRuntime
 } from '../src/main/local-model/local-model-service';
 import { BUILTIN_LOCAL_PROFILE_ID } from '../src/main/local-model/local-model-route';
+import { ModelChangeCoordinator } from '../src/main/settings/model-change-coordinator';
 
 const cloudSettings: ProviderSettingsSnapshot = {
   profiles: [{
@@ -69,6 +70,7 @@ function createHarness(input: {
   start?: () => Promise<void>;
   stop?: () => Promise<void>;
   reset?: () => Promise<void>;
+  confirm?: () => Promise<boolean>;
 }) {
   const runtime = runtimeDouble(input);
   const published: LocalModelPublicStatus[] = [];
@@ -78,18 +80,61 @@ function createHarness(input: {
   const resetForConfigurationChange = vi.fn(input.reset ?? (async () => {
     input.order?.push('reset');
   }));
-  const service = new LocalModelService({
+  const confirmModelChange = vi.fn(input.confirm ?? (async () => true));
+  const onModelChanged = vi.fn(async () => undefined);
+  let service!: LocalModelService;
+  const modelChanges = new ModelChangeCoordinator({
+    readConfiguration: async () => ({ ...structuredClone(cloudSettings), localModelEnabled: service.isEnabled() }),
+    confirmModelChange, invalidateConfiguration: resetForConfigurationChange, onModelChanged
+  });
+  service = new LocalModelService({
     initialEnabled: input.enabled,
     runtime: runtime.runtime,
     readCloudProviderSettings: async () => structuredClone(cloudSettings),
     saveEnabled,
-    resetForConfigurationChange,
+    modelChanges,
     publishStatus: value => published.push(value)
   });
-  return { published, resetForConfigurationChange, runtime, saveEnabled, service };
+  return { published, resetForConfigurationChange, runtime, saveEnabled, service, confirmModelChange, onModelChanged, modelChanges };
 }
 
 describe('LocalModelService', () => {
+  test('取消本地模型切换不停止Runtime、不写设置且不清旧对话', async () => {
+    const harness = createHarness({ enabled: true, confirm: async () => false });
+    await expect(harness.service.setEnabled(false)).rejects.toMatchObject({ code: 'MODEL_CHANGE_CANCELLED' });
+    expect(harness.confirmModelChange).toHaveBeenCalledOnce();
+    expect(harness.runtime.runtime.stop).not.toHaveBeenCalled();
+    expect(harness.saveEnabled).not.toHaveBeenCalled();
+    expect(harness.resetForConfigurationChange).not.toHaveBeenCalled();
+    expect(harness.onModelChanged).not.toHaveBeenCalled();
+  });
+
+  test('尚未确认的本地切换不阻断当前模型快照，取消后当前任务可继续', async () => {
+    let cancel!: (accepted: boolean) => void;
+    const harness = createHarness({ enabled: true, confirm: () => new Promise(resolve => { cancel = resolve; }) });
+    const pending = harness.service.setEnabled(false);
+    const rejected = expect(pending).rejects.toMatchObject({ code: 'MODEL_CHANGE_CANCELLED' });
+    await vi.waitFor(() => expect(harness.confirmModelChange).toHaveBeenCalledOnce());
+    try {
+      expect((await harness.service.providerSettingsSnapshot()).route.primaryProfileId).toBe(BUILTIN_LOCAL_PROFILE_ID);
+    } finally {
+      cancel(false);
+      await rejected;
+    }
+    expect(harness.resetForConfigurationChange).not.toHaveBeenCalled();
+    expect(harness.runtime.runtime.stop).not.toHaveBeenCalled();
+  });
+
+  test('本地同值重新加载不确认不新建对话，启用提交后启动失败仍新建对话', async () => {
+    const reload = createHarness({ enabled: true });
+    await reload.service.setEnabled(true);
+    expect(reload.confirmModelChange).not.toHaveBeenCalled();
+    expect(reload.onModelChanged).not.toHaveBeenCalled();
+    expect(reload.runtime.runtime.start).toHaveBeenCalledOnce();
+    const failed = createHarness({ enabled: false, start: async () => { throw new Error('START_FAILED'); } });
+    await expect(failed.service.setEnabled(true)).rejects.toThrow('START_FAILED');
+    expect(failed.onModelChanged).toHaveBeenCalledOnce();
+  });
   test('默认开启时立即使用内存本地路由，并仅在 Main 明确启动后预热 Runtime', async () => {
     const order: string[] = [];
     const harness = createHarness({ enabled: true, order });
@@ -135,6 +180,7 @@ describe('LocalModelService', () => {
     service = harness.service;
 
     const switching = service.setEnabled(true);
+    await vi.waitFor(() => expect(order).toContain('reset'));
     await expect(service.providerSettingsSnapshot()).rejects.toMatchObject({
       code: 'LOCAL_MODEL_SWITCHING'
     });
@@ -238,5 +284,35 @@ describe('LocalModelService', () => {
     expect(await start).toMatchObject({ message: 'START_ABORTED' });
     expect(harness.runtime.runtime.close).toHaveBeenCalledOnce();
     expect(order).toEqual(['close']);
+  });
+
+  test.each([true, false])('退出发生在设置保存中时，已提交路由 %s 仍完成身份收尾', async enabled => {
+    let releaseSave!: () => void;
+    const barrier = new Promise<void>(resolve => { releaseSave = resolve; });
+    const harness = createHarness({ enabled: !enabled });
+    harness.saveEnabled.mockImplementation(async () => barrier);
+    const switching = harness.service.setEnabled(enabled);
+    const rejected = expect(switching).rejects.toMatchObject({ code: 'LOCAL_MODEL_SERVICE_CLOSED' });
+    await vi.waitFor(() => expect(harness.saveEnabled).toHaveBeenCalledOnce());
+    const modelClosing = harness.modelChanges.close();
+    const localClosing = harness.service.close();
+    releaseSave();
+    await Promise.all([modelClosing, localClosing, rejected]);
+    expect(harness.service.isEnabled()).toBe(enabled);
+    expect(harness.onModelChanged).toHaveBeenCalledOnce();
+    expect(harness.runtime.runtime.start).not.toHaveBeenCalled();
+  });
+
+  test('退出并行封口切换与关闭Runtime，可取消卡住的已提交启动并完成新会话收尾', async () => {
+    let rejectStart!: (error: Error) => void;
+    const starting = new Promise<void>((_resolve, reject) => { rejectStart = reject; });
+    const harness = createHarness({ enabled: false, start: () => starting });
+    harness.runtime.runtime.close = vi.fn(async () => { rejectStart(new Error('START_ABORTED')); });
+    const switching = harness.service.setEnabled(true);
+    const rejected = expect(switching).rejects.toThrow('START_ABORTED');
+    await vi.waitFor(() => expect(harness.runtime.runtime.start).toHaveBeenCalledOnce());
+    await Promise.all([harness.modelChanges.close(), harness.service.close(), rejected]);
+    expect(harness.onModelChanged).toHaveBeenCalledOnce();
+    expect(harness.service.isEnabled()).toBe(true);
   });
 });

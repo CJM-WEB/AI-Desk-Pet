@@ -29,7 +29,7 @@ export function LocalModelSettingsCard({
       <div className="pane-heading">
         <div>
           <h2 id="local-model-heading">内置本地模型</h2>
-          <p>Qwen3.5-4B · 无需 API Key</p>
+          <p>开启期间聊天和 Agent 不调用云模型，无需API KEY</p>
         </div>
         <label className="compact-toggle">
           <input
@@ -44,9 +44,6 @@ export function LocalModelSettingsCard({
         </label>
       </div>
       <p className="local-model-status">{statusText(status)}</p>
-      {status.backend === 'cpu' && status.phase === 'ready' ? (
-        <p className="field-help">CPU 兼容模式可继续聊天和执行 Agent，但响应速度可能较慢。</p>
-      ) : null}
       {status.phase === 'faulted' ? (
         <div className="local-model-fault" role="alert">
           <p>原因：{localModelReasonText(status.reasonCode)}</p>
@@ -60,7 +57,6 @@ export function LocalModelSettingsCard({
           </button>
         </div>
       ) : null}
-      <p className="field-help">开启期间聊天和 Agent 不调用云模型，视觉暂不可用。</p>
     </section>
   );
 }

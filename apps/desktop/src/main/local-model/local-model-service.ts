@@ -1,6 +1,7 @@
 import type { LocalModelPublicStatus } from '../../shared/local-model-ipc';
 import type { ProviderSettingsSnapshot } from '../storage/settings-store';
 import { createLocalModelRoutingSnapshot } from './local-model-route';
+import type { ModelChangeCoordinator } from '../settings/model-change-coordinator';
 
 export interface LocalModelServiceRuntime {
   start(): Promise<void>;
@@ -15,7 +16,7 @@ export interface LocalModelServiceOptions {
   runtime: LocalModelServiceRuntime;
   readCloudProviderSettings(): Promise<ProviderSettingsSnapshot>;
   saveEnabled(enabled: boolean): Promise<void>;
-  resetForConfigurationChange(): Promise<void>;
+  modelChanges: Pick<ModelChangeCoordinator, 'run' | 'isChanging'>;
   publishStatus(status: LocalModelPublicStatus): void;
 }
 
@@ -64,18 +65,23 @@ export class LocalModelService {
 
   providerSettingsSnapshot(): Promise<ProviderSettingsSnapshot> {
     this.#assertOpen();
-    if (this.#pendingSwitches > 0) return Promise.reject(serviceError('LOCAL_MODEL_SWITCHING'));
+    if (this.#options.modelChanges.isChanging()) return Promise.reject(serviceError('LOCAL_MODEL_SWITCHING'));
     return this.#options.readCloudProviderSettings().then(cloud => {
       this.#assertOpen();
-      if (this.#pendingSwitches > 0) throw serviceError('LOCAL_MODEL_SWITCHING');
+      if (this.#options.modelChanges.isChanging()) throw serviceError('LOCAL_MODEL_SWITCHING');
       return createLocalModelRoutingSnapshot(cloud, this.#enabled);
     });
   }
 
+  /** 只读实际路由开关，供串行切换提交检查使用，不受新请求冻结影响。 */
+  isEnabled(): boolean { return this.#enabled; }
+
   setEnabled(enabled: boolean): Promise<void> {
     this.#assertOpen();
     this.#pendingSwitches += 1;
-    const operation = this.#switchQueue.then(() => this.#switchEnabled(enabled));
+    const operation = this.#switchQueue.then(() => this.#options.modelChanges.run(
+      { type: 'local', enabled }, () => this.#switchEnabled(enabled)
+    ));
     const tracked = operation.finally(() => {
       this.#pendingSwitches -= 1;
     });
@@ -100,21 +106,19 @@ export class LocalModelService {
 
   async #switchEnabled(enabled: boolean): Promise<void> {
     this.#assertOpen();
-    await this.#options.resetForConfigurationChange();
-    this.#assertOpen();
     if (!enabled) {
       await this.#options.runtime.stop();
       this.#assertOpen();
       await this.#options.saveEnabled(false);
-      this.#assertOpen();
       this.#enabled = false;
+      this.#assertOpen();
       return;
     }
 
     await this.#options.saveEnabled(true);
-    this.#assertOpen();
-    // 路由先切到本地；start 失败后继续暴露本地 faulted，而不是恢复云端。
+    // 持久设置成功即更新真实身份；并发退出只禁止启动，不能隐去已经提交的路由。
     this.#enabled = true;
+    this.#assertOpen();
     await this.#options.runtime.start();
   }
 

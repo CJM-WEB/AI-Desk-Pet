@@ -2,7 +2,8 @@ import type { CharacterBehaviorDirector } from './character-behavior-director';
 import { CharacterProactivityScheduler } from './character-proactivity-scheduler';
 import type { CharacterAutonomousInput } from '../conversation/conversation-chat-adapter';
 
-export type CharacterAutonomousRequest = Omit<CharacterAutonomousInput, 'behaviorContext'> & { purpose?: 'activity' | 'mood' };
+type AutonomousPurpose = 'bindings' | 'mood';
+export type CharacterAutonomousRequest = Omit<CharacterAutonomousInput, 'behaviorContext'> & { purpose?: AutonomousPurpose };
 const MINUTE = 60_000;
 
 /** 同一逻辑时钟供心情、请求与播放反馈使用；墙钟仅在真实休眠边沿参与一次有界推进。 */
@@ -51,25 +52,22 @@ type CharacterProactivityRuntimeOptions = Readonly<{
   factories?: Partial<RuntimeFactories>;
 }>;
 
-/** 运动时钟保持独立；应用本次运行的自主额度只在真正调用 Provider 前消费。 */
+/** 运动时钟保持独立；用途准备与心情分别限额，只有真正调用 Provider 才消费。 */
 export function createCharacterProactivityRuntime(options: CharacterProactivityRuntimeOptions) {
   const scheduler = (options.factories?.createScheduler ?? ((input) => (
     new CharacterProactivityScheduler(input)
   )))({ director: options.director });
   let closePromise: Promise<void> | null = null;
   const now = options.now ?? performance.now.bind(performance);
-  const starts: number[] = [];
+  const starts: Record<AutonomousPurpose, number[]> = { bindings: [], mood: [] };
   let lastInteraction = now();
-  let lastStart = -Infinity;
   let nextEvaluation = -Infinity;
-  let nextPreflight = -Infinity;
+  const nextPreflight: Record<AutonomousPurpose, number> = { bindings: -Infinity, mood: -Infinity };
   let enabled = options.autonomousMoodEnabled ?? true;
   let started = false; let closed = false; let suspended = false;
   let generation = options.requestAutonomousDecision ? options.director.getBehaviorLifecycleGeneration() : 0;
-  type Flight = { purpose: 'activity' | 'mood'; controller: AbortController; counted: boolean; timer: ReturnType<typeof setTimeout> | null };
+  type Flight = { purpose: AutonomousPurpose; controller: AbortController; counted: boolean; timer: ReturnType<typeof setTimeout> | null };
   let flight: Flight | null = null;
-  let activityAttemptGeneration = -1;
-  let activityPreflightGeneration = -1;
   const abort = () => {
     const current = flight; flight = null;
     if (!current) return;
@@ -78,31 +76,28 @@ export function createCharacterProactivityRuntime(options: CharacterProactivityR
   };
   const blocked = () => {
     const b = options.director.getActivityBlockers();
-    return b.closed || b.chatting || b.capabilityTask || b.awaitingConfirmation || b.dragging || b.movementModeTransition;
+    return b.closed || b.chatting || b.capabilityTask || b.awaitingConfirmation || b.dragging || b.movementModeTransition || b.singleEpisode;
   };
   const unsubscribe = options.requestAutonomousDecision ? options.director.subscribeActivityBlockers(() => {
     const next = options.director.getBehaviorLifecycleGeneration();
     if (next !== generation || blocked()) abort();
     generation = next;
   }) : () => undefined;
-  const hasBudget = () => {
-    while (starts.length && starts[0]! <= now() - 60 * MINUTE) starts.shift();
-    return starts.length < 4;
+  const hasBudget = (purpose: AutonomousPurpose) => {
+    const recent = starts[purpose];
+    while (recent.length && recent[0]! <= now() - 60 * MINUTE) recent.shift();
+    return recent.length < 4;
   };
-  const eligible = () => {
-    const time = now();
-    return started && !closed && !suspended && enabled && !blocked()
-      && time - lastInteraction >= 5 * MINUTE && time - lastStart >= 5 * MINUTE
-      && time >= nextEvaluation && hasBudget();
-  };
-  const activityEligible = () => started && !closed && !suspended && !blocked()
-    && activityAttemptGeneration !== generation && hasBudget() && options.director.needsActivityMatch();
+  const available = () => started && !closed && !suspended && !blocked();
+  const idleEligible = () => available() && enabled && now() - lastInteraction >= 5 * MINUTE;
+  const eligible = () => idleEligible() && now() >= nextEvaluation && hasBudget('mood');
+  const bindingsEligible = () => available() && hasBudget('bindings') && options.director.needsBehaviorBindings();
   const pollAutonomy = () => {
+    // 五分钟是宿主情境事件，不等待模型可用、小时额度或旧推理结束才表现。
+    if (idleEligible()) options.director.applyIdleBindings(Math.max(0, now() - lastInteraction));
     if (!options.requestAutonomousDecision || flight) return;
-    const purpose = activityEligible() ? 'activity' : 'mood';
-    if (purpose === 'mood' && (now() < nextPreflight || !eligible())) return;
-    if (purpose === 'activity' && activityPreflightGeneration === generation && now() < nextPreflight) return;
-    if (purpose === 'activity') activityPreflightGeneration = generation;
+    const purpose: AutonomousPurpose = now() >= nextPreflight.bindings && bindingsEligible() ? 'bindings' : 'mood';
+    if (now() < nextPreflight[purpose] || !(purpose === 'bindings' ? bindingsEligible() : eligible())) return;
     const current: Flight = { purpose, controller: new AbortController(), counted: false, timer: null };
     flight = current;
     // 预检不可无限占用在途槽；真正发起后重新给予完整六十秒。
@@ -110,14 +105,14 @@ export function createCharacterProactivityRuntime(options: CharacterProactivityR
       if (current.timer !== null) clearTimeout(current.timer);
       current.timer = setTimeout(() => { if (flight === current) abort(); }, MINUTE);
     };
-    armTimeout(); nextPreflight = now() + MINUTE;
+    armTimeout(); nextPreflight[purpose] = now() + MINUTE;
     void Promise.resolve().then(() => options.requestAutonomousDecision!({
       purpose, idleForMs: Math.max(0, now() - lastInteraction), signal: current.controller.signal,
       beforeProviderCall: () => {
-        if (flight !== current || current.counted || current.controller.signal.aborted || !(purpose === 'activity' ? activityEligible() : eligible())) return false;
-        // 模式准备绕过心情闲置门槛，但同样消费唯一小时额度；loading预检尚未到此处。
-        current.counted = true; lastStart = now(); starts.push(lastStart); nextEvaluation = lastStart + 15 * MINUTE;
-        if (purpose === 'activity') activityAttemptGeneration = generation;
+        if (flight !== current || current.counted || current.controller.signal.aborted || !(purpose === 'bindings' ? bindingsEligible() : eligible())) return false;
+        // 失败、超时和配置切换不返还额度；准备不能推迟首次五分钟心情重评。
+        current.counted = true; starts[purpose].push(now()); nextPreflight[purpose] = now() + MINUTE;
+        if (purpose === 'mood') nextEvaluation = now() + 15 * MINUTE;
         armTimeout(); return true;
       }
     })).catch(() => {
@@ -133,6 +128,7 @@ export function createCharacterProactivityRuntime(options: CharacterProactivityR
       if (closed || started) return;
       started = true;
       scheduler.start();
+      pollAutonomy();
     },
     invalidate(): void {
       abort();

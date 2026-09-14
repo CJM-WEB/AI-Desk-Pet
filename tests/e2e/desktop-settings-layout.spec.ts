@@ -6,6 +6,17 @@ import { createElectronAppFixture } from '../fixtures/electron-app';
 async function waitForSettingsPage(pages: () => Page[]): Promise<Page> {
   await expect.poll(() => pages().some(page => {
     try {
+      return new URL(page.url()).searchParams.get('view') === 'pet';
+    } catch {
+      return false;
+    }
+  })).toBe(true);
+  const pet = pages().find(page => new URL(page.url()).searchParams.get('view') === 'pet');
+  if (!pet) throw new Error('缺少 pet Renderer');
+  await expect(pet.locator('#root > *').first()).toBeAttached();
+  await pet.evaluate(() => window.myself.openSettings());
+  await expect.poll(() => pages().some(page => {
+    try {
       return new URL(page.url()).searchParams.get('view') === 'settings';
     } catch {
       return false;
@@ -31,7 +42,7 @@ async function assertMcpSettingsEntryAbsent(page: Page): Promise<void> {
 async function assertLocalModelCardVisible(page: Page): Promise<void> {
   await expect(page.getByRole('heading', { name: '内置本地模型' })).toBeVisible();
   await expect(page.getByRole('switch', { name: '启用内置本地模型' })).toHaveCount(1);
-  await expect(page.getByText('Qwen3.5-4B · 无需 API Key', { exact: true })).toBeVisible();
+  await expect(page.getByText('开启期间聊天和 Agent 不调用云模型，无需API KEY', { exact: true })).toBeVisible();
 }
 
 async function assertNoHorizontalOverflow(page: Page): Promise<void> {

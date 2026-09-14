@@ -164,7 +164,7 @@ describe('多 Provider 设置组件', () => {
     );
 
     expect((screen.getByRole('switch', { name: '启用内置本地模型' }) as HTMLInputElement).checked).toBe(true);
-    expect(screen.getByText(/无需 API Key/u)).toBeTruthy();
+    expect(screen.getByText('开启期间聊天和 Agent 不调用云模型，无需API KEY')).toBeTruthy();
     expect(screen.getByText('本地模型加载中')).toBeTruthy();
     expect(screen.getByLabelText('API Key')).toBeTruthy();
   });

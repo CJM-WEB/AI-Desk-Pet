@@ -7,6 +7,18 @@ import {
 import { ipcChannels } from '../src/shared/ipc-channels';
 import { DEFAULT_WORKSHOP_LAYOUT } from '../src/shared/workshop-layout-ipc';
 
+import { ModelChangeCoordinator } from '../src/main/settings/model-change-coordinator';
+
+function modelChanges(confirm = true) {
+  return new ModelChangeCoordinator({
+    readConfiguration: async () => ({ localModelEnabled: false, profiles: [], route: {
+      primaryProfileId: null, chatProfileId: null, agentProfileId: null, visionProfileId: null,
+      fallbackProfileIds: [], allowCrossProviderFallback: false
+    } }), confirmModelChange: async () => confirm,
+    invalidateConfiguration: async () => undefined, onModelChanged: async () => undefined
+  });
+}
+
 type Handler = (event: unknown, input?: unknown) => unknown;
 
 function createIpcMain() {
@@ -47,7 +59,7 @@ describe('设置 IPC', () => {
       clearAll: vi.fn(async () => undefined)
     };
     const lifecycle = { onProviderChanged: vi.fn(() => undefined) };
-    registerSettingsIpc(ipcMain, settings, secrets, lifecycle);
+    registerSettingsIpc(ipcMain, settings, secrets, lifecycle, undefined, modelChanges());
 
     const result = await handlers.get(ipcChannels.settingsSaveProvider)?.({}, {
       displayName: '示例服务',
@@ -64,8 +76,31 @@ describe('设置 IPC', () => {
       baseUrl: 'https://api.example.com/v1',
       model: 'example-model'
     });
-    expect(lifecycle.onProviderChanged).toHaveBeenCalledOnce();
+    expect(lifecycle.onProviderChanged).not.toHaveBeenCalled();
     expect(JSON.stringify(result)).not.toContain('sk-ipc-fixture');
+  });
+
+  test('旧保存入口也在确认取消时不写档案和密钥、不触发生命周期', async () => {
+    const { handlers, ipcMain } = createIpcMain();
+    const settings = { getPublic: vi.fn(async () => publicSettings(true)), saveProviderMetadata: vi.fn(), clearAll: vi.fn() };
+    const secrets = { save: vi.fn(), clear: vi.fn(), clearAll: vi.fn() };
+    const lifecycle = { onProviderChanged: vi.fn() };
+    registerSettingsIpc(ipcMain, settings, secrets, lifecycle, undefined, modelChanges(false));
+    await expect(handlers.get(ipcChannels.settingsSaveProvider)?.({}, { displayName: '新模型', baseUrl: 'https://example.com/v1', model: 'new-model', secret: 'private', persistSecret: true })).rejects.toMatchObject({ code: 'MODEL_CHANGE_CANCELLED' });
+    expect(settings.saveProviderMetadata).not.toHaveBeenCalled(); expect(secrets.save).not.toHaveBeenCalled();
+    expect(lifecycle.onProviderChanged).not.toHaveBeenCalled();
+  });
+
+  test.each(['conversation', 'all'])('明确清除%s等待当前会话清空后才返回', async scope => {
+    const { handlers, ipcMain } = createIpcMain();
+    const settings = { getPublic: vi.fn(async () => publicSettings(true)), saveProviderMetadata: vi.fn(), clearAll: vi.fn() };
+    const secrets = { save: vi.fn(), clear: vi.fn(), clearAll: vi.fn() };
+    let release!: () => void; let settled = false;
+    const lifecycle = { onProviderChanged: vi.fn(), onConversationCleared: vi.fn(async () => new Promise<void>(resolve => { release = resolve; })) };
+    registerSettingsIpc(ipcMain, settings, secrets, lifecycle);
+    const clearing = Promise.resolve(handlers.get(ipcChannels.settingsClearLocalData)?.({}, { scope })).then(() => { settled = true; });
+    await vi.waitFor(() => expect(lifecycle.onConversationCleared).toHaveBeenCalledOnce());
+    expect(settled).toBe(false); release(); await clearing;
   });
 
   test.each([
@@ -108,7 +143,7 @@ describe('设置 IPC', () => {
       clear: vi.fn(async () => undefined),
       clearAll: vi.fn(async () => undefined)
     };
-    registerSettingsIpc(ipcMain, settings, secrets);
+    registerSettingsIpc(ipcMain, settings, secrets, undefined, undefined, modelChanges());
 
     await expect(handlers.get(ipcChannels.settingsSaveProvider)?.({}, {
       displayName: '本地服务',

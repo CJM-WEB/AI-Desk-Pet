@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import type { ImportedWorkshopSource } from '../store/character-workshop-store';
+import { CHARACTER_RESOURCE_LIMITS } from '@myself/character-runtime';
 
 export interface AtlasImportPanelProps {
   sources: ImportedWorkshopSource[];
@@ -58,7 +59,6 @@ export function AtlasImportPanel(props: AtlasImportPanelProps) {
               <input
                 type="number"
                 min="1"
-                max="64"
                 value={rows}
                 disabled={props.disabled}
                 onChange={event => setRows(Number(event.currentTarget.value))}
@@ -69,7 +69,6 @@ export function AtlasImportPanel(props: AtlasImportPanelProps) {
               <input
                 type="number"
                 min="1"
-                max="64"
                 value={columns}
                 disabled={props.disabled}
                 onChange={event => setColumns(Number(event.currentTarget.value))}
@@ -81,7 +80,7 @@ export function AtlasImportPanel(props: AtlasImportPanelProps) {
             <input
               type="number"
               min="1"
-              max={Math.max(1, rows * columns)}
+              max={Math.min(CHARACTER_RESOURCE_LIMITS.maxFramesPerAction, Math.max(1, rows * columns))}
               value={frameCount}
               disabled={props.disabled}
               onChange={event => setFrameCount(Number(event.currentTarget.value))}

@@ -86,7 +86,9 @@ export type TaskPermissionRequiredEvent = z.infer<typeof taskPermissionRequiredE
 
 export const conversationResetEventSchema = z.object({
   type: z.literal('conversation_reset'),
-  generation: z.string().min(1).max(128)
+  generation: z.string().min(1).max(128),
+  // 配置失效撤销交互与旧授权，但只有明确新对话才清空正文。
+  preserveMessages: z.boolean().optional()
 }).strict();
 export type ConversationResetEvent = z.infer<typeof conversationResetEventSchema>;
 
@@ -190,6 +192,11 @@ export type PublicSettings = z.infer<typeof publicSettingsSchema>;
 export const ASSISTANT_STREAM_TURN_ID_MAX_CHARACTERS = 128;
 export const ASSISTANT_STREAM_TEXT_MAX_CHARACTERS = 4_000;
 
+// 与普通聊天的四千 Unicode 码点上限一致；UTF-16 代理对不额外占用正文预算。
+const assistantStreamTextSchema = z.string().max(ASSISTANT_STREAM_TEXT_MAX_CHARACTERS * 2)
+  .refine(text => text.length <= ASSISTANT_STREAM_TEXT_MAX_CHARACTERS * 2
+    && Array.from(text).length <= ASSISTANT_STREAM_TEXT_MAX_CHARACTERS);
+
 export const taskEventSchema = z.discriminatedUnion('type', [
   z.object({
     type: z.literal('phase'),
@@ -207,12 +214,12 @@ export const taskEventSchema = z.discriminatedUnion('type', [
   z.object({
     type: z.literal('assistant_message_delta'),
     turnId: z.string().min(1).max(ASSISTANT_STREAM_TURN_ID_MAX_CHARACTERS),
-    delta: z.string().min(1).max(ASSISTANT_STREAM_TEXT_MAX_CHARACTERS)
+    delta: assistantStreamTextSchema.refine(text => text.length > 0)
   }).strict(),
   z.object({
     type: z.literal('assistant_message_commit'),
     turnId: z.string().min(1).max(ASSISTANT_STREAM_TURN_ID_MAX_CHARACTERS),
-    text: z.string().max(ASSISTANT_STREAM_TEXT_MAX_CHARACTERS)
+    text: assistantStreamTextSchema
   }).strict(),
   z.object({
     type: z.literal('error'),

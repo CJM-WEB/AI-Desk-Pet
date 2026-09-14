@@ -30,7 +30,7 @@ import {
   relative,
   resolve
 } from 'node:path';
-import { Transform, Writable, type Readable } from 'node:stream';
+import { PassThrough, Writable, type Readable } from 'node:stream';
 import { finished, pipeline } from 'node:stream/promises';
 import {
   CHARACTER_PACKAGE_LIMITS,
@@ -53,6 +53,7 @@ import * as yauzl from 'yauzl';
 import { ZipFile } from 'yazl';
 import { z } from 'zod';
 import { CharacterAssetService } from './character-asset-service';
+import { optimizePngForExport } from './character-export-png';
 import {
   finalizeCharacterManifestMigration,
   migrateCharacterDocument,
@@ -66,6 +67,8 @@ const SAFE_CHARACTER_ID = /^[a-z0-9][a-z0-9_-]{0,119}$/u;
 const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
 const MAX_CREATE_ATTEMPTS = 32;
+// yazl 3 支持 compressionLevel；现有旧版类型声明只包含 compress。
+const EXPORT_ZIP_OPTIONS = { compress: true, compressionLevel: 9 } as const;
 const MAX_IMPORT_RECOVERY_ENTRIES = 256;
 const IMPORT_RECOVERY_BUDGET_MS = 2_000;
 const MAX_IMPORT_MARKER_BYTES = 4_096;
@@ -1054,31 +1057,44 @@ async function assertHandleArchiveIdentity(
   }
 }
 
-/** 校验真正送入 ZIP 的流字节，不缓存完整素材。 */
-function createVerifiedExportStream(file: ExportedDiskFile): Transform {
+/** 只从已验证句柄取得一张素材快照；优化前再次核对实际字节，拒绝同 inode 改写。 */
+async function readVerifiedExportBytes(file: ExportedDiskFile, signal: AbortSignal): Promise<Buffer> {
+  const bytes = Buffer.allocUnsafe(file.byteLength);
   const hash = createHash('sha256');
-  let byteLength = 0;
-  return new Transform({
-    transform(chunk: Buffer, _encoding, callback) {
-      byteLength += chunk.byteLength;
-      if (byteLength > file.byteLength) {
-        callback(packageError('CHARACTER_PACKAGE_EXPORT_SOURCE_CHANGED'));
-        return;
-      }
-      hash.update(chunk);
-      callback(undefined, chunk);
-    },
-    flush(callback) {
-      if (
-        byteLength !== file.byteLength
-        || hash.digest('hex') !== file.sha256
-      ) {
-        callback(packageError('CHARACTER_PACKAGE_EXPORT_SOURCE_CHANGED'));
-        return;
-      }
-      callback();
-    }
-  });
+  let offset = 0;
+  while (offset < bytes.length) {
+    signal.throwIfAborted();
+    const { bytesRead } = await file.handle.read(bytes, offset, Math.min(64 * 1024, bytes.length - offset), offset);
+    if (bytesRead === 0) throw packageError('CHARACTER_PACKAGE_EXPORT_SOURCE_CHANGED');
+    hash.update(bytes.subarray(offset, offset + bytesRead));
+    offset += bytesRead;
+  }
+  const extra = await file.handle.read(Buffer.alloc(1), 0, 1, offset);
+  if (extra.bytesRead !== 0 || hash.digest('hex') !== file.sha256) {
+    throw packageError('CHARACTER_PACKAGE_EXPORT_SOURCE_CHANGED');
+  }
+  signal.throwIfAborted();
+  return bytes;
+}
+
+/** ZIP 消费完一张后释放其字节；PassThrough 不在条目闭包中永久保留完整 Buffer。 */
+async function appendExportResource(archive: ZipFile, path: string, bytes: Buffer, signal: AbortSignal): Promise<void> {
+  signal.throwIfAborted();
+  const stream = new PassThrough({ signal });
+  const consumed = finished(stream);
+  try {
+    archive.addReadStream(stream, path, { ...EXPORT_ZIP_OPTIONS, size: bytes.length });
+    stream.end(bytes);
+    await consumed;
+    signal.throwIfAborted();
+  } catch (error) {
+    stream.destroy();
+    await consumed.catch(() => undefined);
+    if (signal.aborted) throw signal.reason;
+    throw error;
+  } finally {
+    if (!stream.destroyed) stream.destroy();
+  }
 }
 
 /** 适配 yazl 未完整声明的运行时 EventEmitter 与 Node Readable 能力。 */
@@ -1604,7 +1620,7 @@ export class CharacterPackageService {
   private async writeArchive(
     destination: string,
     archive: ZipFile,
-    startStreams?: () => void
+    startStreams?: (signal: AbortSignal) => void | Promise<void>
   ): Promise<void> {
     const stagingDirectory = await mkdtemp(
       join(dirname(destination), '.character-export-')
@@ -1630,9 +1646,20 @@ export class CharacterPackageService {
         archive.outputStream,
         archiveWriter.stream
       );
-      startStreams?.();
-      archive.end();
-      await transfer;
+      // 先接通可信输出再逐张准备资源，输出失败立即取消后续读取与流等待。
+      const controller = new AbortController();
+      void transfer.catch(error => controller.abort(error));
+      try {
+        await startStreams?.(controller.signal);
+        controller.signal.throwIfAborted();
+        archive.end();
+        await transfer;
+      } catch (error) {
+        controller.abort(error);
+        destroyArchiveOutput(archive, error instanceof Error ? error : new Error('CHARACTER_PACKAGE_EXPORT_FAILED'));
+        await transfer.catch(() => undefined);
+        throw error;
+      }
       const archiveIdentity: ArchiveIdentity = {
         ...temporaryIdentity,
         ...archiveWriter.digest()
@@ -1716,8 +1743,8 @@ export class CharacterPackageService {
 
   async exportCharacter(characterId: string, destination: string): Promise<void> {
     const draft = await this.store.getDraft(characterId);
-    const manifest = await this.store.getPublishedManifest(characterId);
-    const sources = await this.assetService.listSources(characterId);
+    const manifest = structuredClone(await this.store.getPublishedManifest(characterId));
+    const sources = structuredClone(await this.assetService.listSources(characterId));
     const draftDocument = jsonBytes(draft);
     const sourceDocument = jsonBytes({ version: 1, characterId, sources });
     const manifestDocument = jsonBytes(manifest);
@@ -1758,8 +1785,6 @@ export class CharacterPackageService {
     }
 
     const diskFiles: ExportedDiskFile[] = [];
-    const resourceStreams: Readable[] = [];
-    const startResourceStreams: Array<() => void> = [];
     const characterRoot = resolve(this.charactersDirectory, characterId);
     const sourceRoot = resolve(characterRoot, 'source');
     const compiledRoot = resolve(characterRoot, 'compiled');
@@ -1815,41 +1840,45 @@ export class CharacterPackageService {
       }
 
       const archive = this.archiveFactory();
-      archive.addBuffer(draftDocument, 'draft/draft.json');
-      archive.addBuffer(sourceDocument, 'source/catalog.json');
-      archive.addBuffer(manifestDocument, 'compiled/manifest.json');
-      for (const file of diskFiles) {
-        const sourceStream = file.handle.createReadStream({
-          start: 0,
-          autoClose: true
-        });
-        const verifiedStream = createVerifiedExportStream(file);
-        sourceStream.on('error', error => verifiedStream.destroy(error));
-        verifiedStream.on(
-          'error',
-          error => destroyArchiveOutput(archive, error)
-        );
-        resourceStreams.push(sourceStream, verifiedStream);
-        archive.addReadStream(
-          verifiedStream,
-          file.archivePath,
-          { size: file.byteLength }
-        );
-        startResourceStreams.push(() => {
-          sourceStream.pipe(verifiedStream);
-        });
-      }
-
-      await this.writeArchive(destination, archive, () => {
-        for (const startStream of startResourceStreams) startStream();
+      await this.writeArchive(destination, archive, async signal => {
+        const exported = new Map<string, ArchiveDigest>();
+        let exportedBytes = 0;
+        for (const file of diskFiles) {
+          const input = await readVerifiedExportBytes(file, signal);
+          const bytes = await optimizePngForExport(input);
+          signal.throwIfAborted();
+          exportedBytes = addPackageBytes(exportedBytes, bytes.length, this.packageLimits.maxTotalUncompressedBytes);
+          exported.set(file.archivePath, {
+            byteLength: bytes.length,
+            sha256: createHash('sha256').update(bytes).digest('hex')
+          });
+          await appendExportResource(archive, file.archivePath, bytes, signal);
+        }
+        // 素材标识和裁片不变，只在导出文档副本重绑资源摘要与几何修订。
+        for (const source of sources) {
+          Object.assign(source, exported.get(`source/${characterSourceFileName(source)}`)!);
+        }
+        for (const resource of manifest.resources) {
+          Object.assign(resource, exported.get(`compiled/${resource.fileName}`)!);
+        }
+        const revisions = new Map(manifest.resources.map(resource => [resource.assetId, resource.sha256]));
+        for (const skin of manifest.skins) {
+          for (const presentation of skin.presentations) {
+            presentation.geometry.resourceRevision = [...new Set(presentation.frames.map(frame => revisions.get(frame.assetId)!))].sort().join('.');
+          }
+        }
+        const finalDocuments = [
+          { path: 'draft/draft.json', bytes: draftDocument },
+          { path: 'source/catalog.json', bytes: jsonBytes({ version: 1, characterId, sources }) },
+          { path: 'compiled/manifest.json', bytes: jsonBytes(characterManifestV3Schema.parse(manifest)) }
+        ];
+        for (const document of finalDocuments) {
+          if (document.bytes.length > this.packageLimits.maxJsonBytes) throw packageError('CHARACTER_PACKAGE_JSON_TOO_LARGE');
+          exportedBytes = addPackageBytes(exportedBytes, document.bytes.length, this.packageLimits.maxTotalUncompressedBytes);
+          archive.addBuffer(document.bytes, document.path, EXPORT_ZIP_OPTIONS);
+        }
       });
     } finally {
-      for (const stream of resourceStreams) {
-        if (!stream.destroyed) stream.destroy();
-      }
-      await Promise.allSettled(
-        resourceStreams.map(stream => finished(stream))
-      );
       await Promise.allSettled(
         diskFiles.map(file => file.handle.close())
       );

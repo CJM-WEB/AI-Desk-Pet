@@ -50,14 +50,12 @@ vi.mock(
   })
 );
 
-const PNG_BYTES = new Uint8Array([
-  0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a
-]);
-const WEBP_BYTES = new Uint8Array([
-  0x52, 0x49, 0x46, 0x46,
-  0x04, 0x00, 0x00, 0x00,
-  0x57, 0x45, 0x42, 0x50
-]);
+const PNG_BYTES = new Uint8Array(Buffer.from(
+  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAACXBIWXMAAAPoAAAD6AG1e1JrAAAADUlEQVR4nGNgYGBgAAAABQABpfZFQAAAAABJRU5ErkJggg==', 'base64'
+));
+const WEBP_BYTES = new Uint8Array(Buffer.from(
+  'UklGRkAAAABXRUJQVlA4WAoAAAAQAAAAAAAAAAAAQUxQSAIAAAAAAFZQOCAYAAAAMAEAnQEqAQABAAFAJiWkAANwAP79NmgA', 'base64'
+));
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -612,6 +610,65 @@ describe('真实草稿预览', () => {
     vi.useRealTimers();
     vi.unstubAllGlobals();
     vi.restoreAllMocks();
+  });
+
+  test('预览 Alpha 采样显式关闭，播放帧和方向继续交给正式场景', async () => {
+    const current = sceneDouble();
+    pixiFactory.mockResolvedValue(current.scene);
+    const props = previewProps();
+    const view = render(<DraftCharacterPreview {...props} />);
+    await screen.findByText('预览已就绪');
+
+    expect(pixiFactory).toHaveBeenCalledWith(
+      expect.any(HTMLElement), undefined, { captureAlphaMask: false }
+    );
+    view.rerender(<DraftCharacterPreview {...props} preview={previewState({
+      direction: 'left', frameIndex: 1
+    })} />);
+    expect(current.scene.showAction).toHaveBeenLastCalledWith(
+      idleAction, expect.objectContaining({ direction: 'left', frameIndex: 1 })
+    );
+  });
+
+  test('分页预览的初次播放和方向切换都使用临时坐标，编辑草稿保持原样', async () => {
+    const current = sceneDouble();
+    pixiFactory.mockResolvedValue(current.scene);
+    const mappedFrames = idleAction.frames.map((frame, index) => ({
+      ...frame, assetId: `preview-page-${index}`, x: 0, y: 0
+    }));
+    const release = vi.fn();
+    const load = vi.spyOn(DraftPreviewResourceCache.prototype, 'loadFrames').mockResolvedValue({
+      urls: new Map([['preview-page-0', 'blob:page-0'], ['preview-page-1', 'blob:page-1']]),
+      frames: mappedFrames,
+      release
+    });
+    const props = previewProps();
+    const originalDraft = structuredClone(props.draft);
+    const view = render(<DraftCharacterPreview {...props} />);
+    await screen.findByText('预览已就绪');
+    expect(current.scene.showAction).toHaveBeenLastCalledWith(
+      { ...idleAction, frames: mappedFrames }, expect.anything()
+    );
+    view.rerender(<DraftCharacterPreview {...props} preview={previewState({ direction: 'left', frameIndex: 1 })} />);
+    expect(current.scene.showAction).toHaveBeenLastCalledWith(
+      { ...idleAction, frames: mappedFrames }, expect.objectContaining({ direction: 'left', frameIndex: 1 })
+    );
+    expect(load).toHaveBeenCalledOnce();
+    expect(props.draft).toEqual(originalDraft);
+    view.unmount();
+    expect(release).toHaveBeenCalledOnce();
+  });
+
+  test('整张长图尚未切帧时提示使用网格，不尝试读取并上传巨大单帧', async () => {
+    const current = sceneDouble();
+    pixiFactory.mockResolvedValue(current.scene);
+    const props = previewProps(draftWith({
+      ...idleAction, frames: [{ ...idleAction.frames[0]!, width: 8192 }]
+    }));
+    render(<DraftCharacterPreview {...props} />);
+    await screen.findByText('单帧尺寸过大，请先用精灵图网格切帧');
+    expect(props.api.readCharacterSource).not.toHaveBeenCalled();
+    expect(current.scene.showAction).not.toHaveBeenCalled();
   });
 
   test.each([

@@ -155,7 +155,7 @@ export function SettingsWorkspace(props: SettingsWorkspaceProps) {
             <div><h2 id="local-heading">本地数据</h2><p>按范围清理，不会删除授权目录中的文件。</p></div>
           </div>
           <div className="local-data-actions">
-            <button type="button" disabled={props.busy} onClick={() => props.onClear('conversation')}>清除对话摘要</button>
+            <button type="button" disabled={props.busy} onClick={() => props.onClear('conversation')}>清除当前对话</button>
             <button type="button" disabled={props.busy} onClick={() => props.onClear('audit')}>清除操作摘要</button>
             <button type="button" disabled={props.busy} onClick={() => props.onClear('secret')}>清除当前密钥</button>
             <button className="danger-button" type="button" disabled={props.busy} onClick={() => props.onClear('all')}>清除全部本地数据</button>
@@ -251,9 +251,22 @@ export function SettingsView({ api = window.myself }: { api?: MyselfApi }) {
         if (result?.dashboard) applyDashboard(result.dashboard);
         showNotice(result?.notice ?? { tone: 'success', text: success });
       }
-    } catch {
+    } catch (error) {
       if (!mounted.current) return;
-      showNotice({ tone: 'error', text: '操作未完成，请检查输入后重试。' });
+      // Electron 会包装 Main 异常；只识别固定取消码，不将其他错误正文带入界面。
+      if (error instanceof Error && /^(?:MODEL_CHANGE_CANCELLED|Error invoking remote method '[^']+': Error: MODEL_CHANGE_CANCELLED)$/u.test(error.message)) {
+        try {
+          const restored = await api.getSettingsDashboard();
+          if (!mounted.current) return;
+          applyDashboard(restored);
+          showNotice({ tone: 'info', text: '已取消模型切换。' });
+        } catch {
+          if (!mounted.current) return;
+          showNotice({ tone: 'error', text: '无法读取设置，请重新打开窗口。' });
+        }
+      } else {
+        showNotice({ tone: 'error', text: '操作未完成，请检查输入后重试。' });
+      }
     } finally {
       if (mounted.current) setBusy(false);
     }
@@ -308,7 +321,7 @@ export function SettingsView({ api = window.myself }: { api?: MyselfApi }) {
       onClear={scope => {
         if (
           scope === 'all'
-          && !window.confirm('确定清除全部本地设置和已保存密钥吗？')
+          && !window.confirm('确定清除当前对话、全部本地设置和已保存密钥吗？')
         ) return;
         void run(async () => {
           await api.clearLocalData(scope);

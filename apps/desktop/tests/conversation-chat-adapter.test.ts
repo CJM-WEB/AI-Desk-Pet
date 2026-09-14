@@ -1,5 +1,5 @@
 import { expect, test, vi } from 'vitest';
-import type { ModelProvider, ModelRequest, ModelResponse } from '@myself/agent-core';
+import type { ModelProvider, ModelResponse } from '@myself/agent-core';
 import { ConversationChatAdapter } from '../src/main/conversation/conversation-chat-adapter';
 const input = {
   text: '你好', history: [], signal: new AbortController().signal,
@@ -9,11 +9,11 @@ const input = {
   }, states: [] }, runtime: { chatting: false, taskRunning: false, awaitingConfirmation: false, moving: false, dragging: false, carrying: false, movementMode: 0 as const },
   proactivityMode: 'assistive' as const, recentActions: [] }
 };
-const selection = { moodUpdate: null, expressionPlan: null, requestKind: 'ambient', explicitPlayback: null, movementControl: { kind: 'keep' } };
+const selection = { kind: 'none', choice: null, mode: 'keep', target: null, distance: null };
 function provider(...responses: ModelResponse[]): ModelProvider {
   return { respond: vi.fn(async () => responses.shift()!) };
 }
-test('主请求保留自然历史人设且唯一原生申请无需正文和表现', async () => {
+test('主请求保留自然历史人设，原生任务申请同时具有独立表现', async () => {
   const p = provider({ type: 'tool_request', request: { requestId: 'call-1', toolName: 'request_task_authorization', arguments: {} } });
   const reply = await new ConversationChatAdapter(p).respond({ ...input, history: [{ role: 'user', content: '目录是不是很乱' }, { role: 'assistant', content: '尚未查看，可以先看看吗？' }], text: '可以，先看看' });
   const request = vi.mocked(p.respond).mock.calls[0]![0];
@@ -23,7 +23,8 @@ test('主请求保留自然历史人设且唯一原生申请无需正文和表�
   expect(JSON.stringify(request.messages)).toContain('伙伴');
   expect(request.messages.slice(-3).map(message => message.content)).toEqual(['目录是不是很乱', '尚未查看，可以先看看吗？', '可以，先看看']);
   expect(reply).toMatchObject({ text: '', capabilityPlan: { kind: 'agent_task' } });
-  expect(p.respond).toHaveBeenCalledOnce();
+  expect(vi.mocked(p.respond).mock.calls.filter(([request]) => !request.responseContract)).toHaveLength(1);
+  expect(vi.mocked(p.respond).mock.calls[1]?.[0]).toMatchObject({ tools: [], toolChoice: 'none' });
 });
 test('静态能力JSON文本不申请任务，表现不含任务历史和首次正文', async () => {
   const text = '{"capabilityPlan":{"kind":"agent_task"}}';
@@ -38,10 +39,10 @@ test('静态能力JSON文本不申请任务，表现不含任务历史和首次�
   expect(expression.responseContract?.jsonSchema.properties).not.toHaveProperty('text');
   expect(expression.messages.at(-1)?.content).toBe(input.text);
 });
-test.each([{}, { requestId: '', toolName: 'request_task_authorization', arguments: {} }, { requestId: ' ', toolName: 'request_task_authorization', arguments: {} }, { requestId: '1', toolName: 'unknown', arguments: {} }, { requestId: '1', toolName: 'request_task_authorization', arguments: { path: 'x' } }])('非法原生申请失败且不发起表现：%j', async request => {
+test.each([{}, { requestId: '', toolName: 'request_task_authorization', arguments: {} }, { requestId: ' ', toolName: 'request_task_authorization', arguments: {} }, { requestId: '1', toolName: 'unknown', arguments: {} }, { requestId: '1', toolName: 'request_task_authorization', arguments: { path: 'x' } }])('非法原生申请失败且不重试主请求：%j', async request => {
   const p = provider({ type: 'tool_request', request });
   await expect(new ConversationChatAdapter(p).respond(input)).rejects.toMatchObject({ code: 'RESPONSE_FORMAT_UNSUPPORTED' });
-  expect(p.respond).toHaveBeenCalledOnce();
+  expect(vi.mocked(p.respond).mock.calls.filter(([request]) => !request.responseContract)).toHaveLength(1);
 });
 test.each([{ type: 'text', text: ' ' }, { type: 'structured', structured_output: { ...selection, text: '不得替换正文' } }, { type: 'structured', structured_output: { ...selection, moodUpdate: { summary: '开心', strength: 1, fadeInMs: 900 } } }] satisfies ModelResponse[])('表现非法保留首次正文且不修复：%j', async response => {
   const p = provider({ type: 'text', text: '  **原正文**\n' }, response);
@@ -80,8 +81,48 @@ test('父取消使不响应取消的表现和整轮立即失效', async () => {
   await Promise.resolve(); await Promise.resolve(); controller.abort();
   await rejected;
 });
-test('主请求失败或取消均不会启动表现', async () => {
+test('主请求格式失败不因并行表现而被改写为成功', async () => {
   const p = provider({ type: 'text', text: ' ' });
   await expect(new ConversationChatAdapter(p).respond(input)).rejects.toMatchObject({ code: 'RESPONSE_FORMAT_UNSUPPORTED' });
-  expect(p.respond).toHaveBeenCalledOnce();
+  expect(vi.mocked(p.respond).mock.calls.filter(([request]) => !request.responseContract)).toHaveLength(1);
+});
+
+// 聊天只消费提前验证的用途绑定，不再通过额外模型调用补活动候选。
+const movingChoice = { stateId: 'run', actionId: 'run-action' };
+const movementContext = {
+  ...input.behaviorContext,
+  character: { ...input.behaviorContext.character, states: [{ stateId: 'run', name: '跑动',
+    agentInferable: true, tags: [], actions: [{ actionId: 'run-action', name: '跑步', tags: [] }] }] },
+  bindings: { chatting: null, taskRunning: null, awaitingConfirmation: null, moving: movingChoice,
+    success: null, error: null, praise: null, boredom: null, rest: null }
+};
+test('非零运动控制缺少本轮动作时复用已验证绑定，不增加活动补请求', async () => {
+  const p = provider({ type: 'text', text: '好的' }, { type: 'structured',
+    structured_output: { ...selection, kind: 'movement', mode: 'continuous' } });
+  const reply = await new ConversationChatAdapter(p).respond({ ...input, text: '请一直跑起来', behaviorContext: movementContext });
+  expect(reply).toMatchObject({ movementControl: { kind: 'set_mode', mode: 1 }, expressionStatus: 'ready',
+    expressionPlan: { states: [{ stateId: 'run', when: { moving: true }, lifetime: 'condition' }] } });
+  expect(p.respond).toHaveBeenCalledTimes(2);
+  const expression = vi.mocked(p.respond).mock.calls[1]![0];
+  expect(expression).toMatchObject({ tools: [], toolChoice: 'none' });
+  expect(expression.messages.at(-1)?.content).toBe('请一直跑起来');
+});
+test('没有合法移动绑定或动作时不改变持久模式并返回无匹配', async () => {
+  const p = provider({ type: 'text', text: '好的' }, { type: 'structured',
+    structured_output: { ...selection, kind: 'movement', mode: 'intermittent' } });
+  const reply = await new ConversationChatAdapter(p).respond({ ...input, text: '偶尔走动一下' });
+  expect(reply).toMatchObject({ movementControl: { kind: 'keep' }, expressionStatus: 'no_match',
+    expressionPlan: { states: [] } });
+  expect(p.respond).toHaveBeenCalledTimes(2);
+  expect(vi.mocked(p.respond).mock.calls[1]![0]).toMatchObject({ tools: [], toolChoice: 'none' });
+});
+test('Main已经处理移动时保留绑定表现且不重复提交控制或补请求', async () => {
+  const p = provider({ type: 'text', text: '好的' }, { type: 'structured',
+    structured_output: { ...selection, kind: 'movement' } });
+  const reply = await new ConversationChatAdapter(p).respond({ ...input, text: '去走一圈',
+    behaviorContext: movementContext, movementControlHandled: true });
+  expect(reply).toMatchObject({ movementControl: { kind: 'keep' }, expressionStatus: 'ready',
+    expressionPlan: { states: [{ stateId: 'run', when: { moving: true } }] } });
+  expect(p.respond).toHaveBeenCalledTimes(2);
+  expect(vi.mocked(p.respond).mock.calls[1]![0].messages.at(-1)?.content).toBe('去走一圈');
 });

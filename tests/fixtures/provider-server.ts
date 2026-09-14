@@ -10,6 +10,11 @@ export type ProviderInspectionRequest = ModelRequest & Readonly<{
 }>;
 
 export interface ProviderStep {
+  /** 仅队首连续同组步骤可乱序接纳；匹配不替代后续严格检查。 */
+  concurrent?: {
+    group: symbol;
+    match(request: ProviderInspectionRequest, rawRequest: Record<string, unknown>): boolean;
+  };
   response: ModelResponse | ProviderSseResponse | ((request: Record<string, unknown>) => ProviderSseResponse);
   inspect?: (request: ProviderInspectionRequest) => void;
   inspectRaw?: (request: Record<string, unknown>) => void;
@@ -149,11 +154,29 @@ export async function startProviderServer(
       messageRoleCounts,
       toolCount: parsed.tools.length
     });
-    const step = script.shift();
+    // 并发只发生在显式声明的当前组内；零匹配、歧义或异常均不消费脚本。
+    let step: ProviderStep | undefined;
+    const group = script[0]?.concurrent?.group;
+    if (group === undefined) {
+      step = script.shift();
+    } else {
+      const matches: number[] = [];
+      try {
+        for (let index = 0; index < script.length; index += 1) {
+          const concurrent = script[index]?.concurrent;
+          if (concurrent?.group !== group) break;
+          if (concurrent.match(parsed, rawRequest as Record<string, unknown>)) matches.push(index);
+        }
+        if (matches.length === 1) step = script.splice(matches[0]!, 1)[0];
+      } catch {
+        // 匹配函数的正文与异常不能进入诊断；由额外请求计数保留失败事实。
+      }
+    }
     if (!step) {
       unexpectedRequestCount += 1;
       response.writeHead(500, { 'content-type': 'application/json' });
-      response.end(JSON.stringify({ error: { message: '测试脚本没有更多响应' } }));
+      response.end(JSON.stringify({ error: { message: group === undefined
+        ? '测试脚本没有更多响应' : '测试脚本没有唯一匹配响应' } }));
       markResponseCompleted();
       return;
     }

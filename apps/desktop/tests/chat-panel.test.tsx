@@ -75,6 +75,7 @@ describe('聊天面板本地模型状态', () => {
     const cancel = vi.fn();
     const loop = { type: 'task_permission_required', actionId: 'loop-1', summary: '重复操作保护', request: { action: 'doom_loop', tool: 'read', repeatCount: 3 } } as const;
     render(<ConfirmationCard action={loop as never} busy={false} onConfirm={confirm} onCancel={cancel} />);
+    fireEvent.click(screen.getByRole('button', { name: '待授权操作' }));
     expect(screen.getByText('重复操作保护')).toBeDefined();
     expect(screen.getByText('read')).toBeDefined();
     expect(screen.getByText(/连续 3 次/u)).toBeDefined();
@@ -104,6 +105,7 @@ describe('聊天面板本地模型状态', () => {
     render(<ChatPanel api={api as never} />);
     await act(async () => { await Promise.resolve(); });
     act(() => taskStore.getState().apply({ type: 'capability_authorization_required', requestId: 'scope-1', capability: 'file', requestSummary: '检查项目', targetProviderName: 'DeepSeek', directory: 'D:\\project', modelId: 'model-test', actions: ['read', 'create', 'edit'], approvedCommands: ['pnpm.cmd run test'], expiresAt: new Date(Date.now() + 120000).toISOString() }));
+    fireEvent.click(screen.getByRole('button', { name: '待授权操作' }));
     expect(screen.getByText('D:\\project')).toBeDefined();
     await act(async () => fireEvent.click(screen.getByRole('button', { name: '授权并开始任务' })));
     act(() => {
@@ -111,6 +113,7 @@ describe('聊天面板本地模型状态', () => {
     });
     await act(async () => fireEvent.click(screen.getByRole('button', { name: '确认运行命令' })));
     expect(api.confirmAction).toHaveBeenCalledWith('permission-1');
+    fireEvent.click(screen.getByRole('button', { name: '待授权操作' }));
     expect(screen.getByText('运行命令 permission-2')).toBeDefined();
     await act(async () => fireEvent.click(screen.getByRole('button', { name: '拒绝本次操作' })));
     expect(api.cancelAction).toHaveBeenCalledWith('permission-2');

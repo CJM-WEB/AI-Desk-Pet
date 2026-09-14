@@ -34,9 +34,9 @@ it('明确状态经本地名称或模型描述直达，按作者时长或默认�
       if (!request.responseContract) return { type: 'text', text: '轻快地陪你一会儿。' };
       expect(request.tools).toEqual([]);
       expect(request.toolChoice).toBe('none');
-      expect(request.responseContract?.jsonSchema.properties).toHaveProperty('explicitPlayback');
+      expect(request.responseContract?.jsonSchema.properties).toHaveProperty('choice');
       return { type: 'structured', structured_output: {
-        moodUpdate: null, expressionPlan: null, requestKind: 'state', explicitPlayback: { stateId: 'joy' }, movementControl: { kind: 'keep' }
+        kind: 'state', choice: { stateId: 'joy', actionId: 'wave' }, mode: 'keep', target: null, distance: null
       } };
     } }).respond({ history: [], text, signal: new AbortController().signal, behaviorContext: f.director.getChatContext(),
       explicitPlaybackRequested: prepared.explicitDirective?.kind === 'play' && prepared.explicitPlaybackToken === undefined });
@@ -79,7 +79,7 @@ it('聊天 null 经真实 Adapter 与 Main 后保留原心情修订及后续计�
   const prepared = await f.director.prepareUserPrompt('继续聊聊');
   const context = f.director.captureExpressionContext();
   const respond = vi.fn(async (request: ModelRequest) => request.responseContract
-    ? { type: 'structured' as const, structured_output: { moodUpdate: null, expressionPlan: null, requestKind: 'ambient', explicitPlayback: null, movementControl: { kind: 'keep' } } }
+    ? { type: 'structured' as const, structured_output: { kind: 'none', choice: null, mode: 'keep', target: null, distance: null } }
     : { type: 'text' as const, text: '我在听。' });
   const reply = await new ConversationChatAdapter({ respond }).respond({ text: prepared.originalText, history: [],
     behaviorContext: f.director.getChatContext(), signal: new AbortController().signal });

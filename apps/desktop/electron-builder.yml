@@ -16,12 +16,18 @@ files:
   - '!node_modules/msgpackr/dist/test.js'
   - '!node_modules/msgpackr/test-worker.js'
 extraResources:
+  - from: resources/icon.ico
+    to: icon.ico
   - from: resources/windows/explorer-space-bridge.ps1
     to: windows/explorer-space-bridge.ps1
   - from: resources/windows/explorer-space-shell-tab-helper.cs
     to: windows/explorer-space-shell-tab-helper.cs
   - from: resources/windows/explorer-space-integrity.json
     to: windows/explorer-space-integrity.json
+  - from: resources/windows/chat-pointer-observer.ps1
+    to: windows/chat-pointer-observer.ps1
+  - from: resources/windows/chat-pointer-observer.cs
+    to: windows/chat-pointer-observer.cs
   - from: resources/local-model
     to: local-model
   - from: ../../packages/coding-task-core/dist
@@ -31,4 +37,5 @@ extraResources:
 asar: true
 win:
   icon: resources/icon.ico
-  signAndEditExecutable: false
+  # 保留图标与版本资源写入；仅关闭签名，避免安装后的 EXE 仍显示 Electron 默认图标。
+  signExecutable: false

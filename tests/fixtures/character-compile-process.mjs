@@ -85,8 +85,7 @@ process.on('message', async message => {
     }));
     process.send({
       type: 'compile_completed',
-      width: result.width,
-      height: result.height,
+      pages: result.pages.map(({ width, height }) => ({ width, height })),
       frameCount: result.frames.length
     });
   } catch (error) {

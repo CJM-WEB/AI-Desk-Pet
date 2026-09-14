@@ -21,6 +21,7 @@ import {
   type LocalModelPublicStatus
 } from '../../shared/local-model-ipc';
 import type { WorkshopLayoutSettings } from '../../shared/workshop-layout-ipc';
+import type { ModelChangeCoordinator } from './model-change-coordinator';
 
 interface SettingsAccess {
   getProviderSettings(): Promise<{
@@ -74,9 +75,11 @@ export interface DesktopSettingsServiceOptions {
   privacySessions: PrivacySessionRegistry;
   sessionId: string;
   localModel: LocalModelSettingsAccess;
+  modelChanges: Pick<ModelChangeCoordinator, 'run'>;
   applyPetAlwaysOnTop(enabled: boolean): Promise<void> | void;
   applyCharacterBehaviorSettings(snapshot: CharacterBehaviorSettingsSnapshot): void;
   applyAutonomousMoodEnabled?(enabled: boolean): void;
+  onIncognitoChanged?(enabled: boolean): void | Promise<void>;
 }
 
 export class DesktopSettingsService {
@@ -114,7 +117,12 @@ export class DesktopSettingsService {
     };
   }
 
-  async saveProviderProfile(input: SaveProviderProfileInput): Promise<SettingsDashboardDto> {
+  saveProviderProfile(input: SaveProviderProfileInput): Promise<SettingsDashboardDto> {
+    return this.options.modelChanges.run({ type: 'profile-save', profile: input.profile },
+      () => this.commitProviderProfile(input));
+  }
+
+  private async commitProviderProfile(input: SaveProviderProfileInput): Promise<SettingsDashboardDto> {
     const existing = (await this.options.settings.getProviderSettings()).profiles.find(
       profile => profile.id === input.profile.id
     );
@@ -154,7 +162,12 @@ export class DesktopSettingsService {
     return this.getDashboard();
   }
 
-  async deleteProviderProfile(profileId: string): Promise<SettingsDashboardDto> {
+  deleteProviderProfile(profileId: string): Promise<SettingsDashboardDto> {
+    return this.options.modelChanges.run({ type: 'profile-delete', profileId },
+      () => this.commitProviderDelete(profileId));
+  }
+
+  private async commitProviderDelete(profileId: string): Promise<SettingsDashboardDto> {
     const providerSettings = await this.options.settings.getProviderSettings();
     const existing = providerSettings.profiles.find(profile => profile.id === profileId);
     const secretSnapshot = await this.options.secrets.snapshot(profileId);
@@ -184,9 +197,11 @@ export class DesktopSettingsService {
     return this.getDashboard();
   }
 
-  async saveModelRoute(route: ModelRouteConfig): Promise<SettingsDashboardDto> {
-    await this.options.settings.saveModelRoute(route);
-    return this.getDashboard();
+  saveModelRoute(route: ModelRouteConfig): Promise<SettingsDashboardDto> {
+    return this.options.modelChanges.run({ type: 'route', route }, async () => {
+      await this.options.settings.saveModelRoute(route);
+      return this.getDashboard();
+    });
   }
 
   async setLocalModelEnabled(enabled: boolean): Promise<SettingsDashboardDto> {
@@ -225,7 +240,7 @@ export class DesktopSettingsService {
     }
   }
 
-  savePrivacySettings(input: PrivacySettingsDto, onConfigurationChanged: () => void = () => undefined): Promise<SettingsDashboardDto> {
+  savePrivacySettings(input: PrivacySettingsDto, onConfigurationChanged: () => void | Promise<void> = () => undefined): Promise<SettingsDashboardDto> {
     // 比较与原子保存同序执行，纯自主开关不清心情，既有披露配置变化仍使会话失效。
     const transaction = this.privacyQueue.then(async () => {
       const previous = await this.options.settings.getPrivacySettings();
@@ -234,7 +249,7 @@ export class DesktopSettingsService {
       this.options.applyCharacterBehaviorSettings(snapshot);
       this.options.applyAutonomousMoodEnabled?.(next.autonomousMoodEnabled);
       if (previous.dataCategories.memory !== next.dataCategories.memory
-        || previous.longTermMemory !== next.longTermMemory || previous.proactivityMode !== next.proactivityMode) onConfigurationChanged();
+        || previous.longTermMemory !== next.longTermMemory || previous.proactivityMode !== next.proactivityMode) await onConfigurationChanged();
       return this.getDashboard();
     });
     this.privacyQueue = transaction.then(() => undefined, () => undefined);
@@ -309,6 +324,7 @@ export class DesktopSettingsService {
 
   async setIncognitoSession(incognito: boolean): Promise<{ incognito: boolean }> {
     this.options.privacySessions.register(this.options.sessionId, { incognito });
+    await this.options.onIncognitoChanged?.(incognito);
     return { incognito };
   }
 

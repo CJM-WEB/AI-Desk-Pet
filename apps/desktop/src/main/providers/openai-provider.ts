@@ -18,6 +18,7 @@ import {
   type OpenAIToolNameCodec
 } from './openai-tool-name-codec';
 import { ProviderResponseError } from './provider-response-error';
+import { readOpenAIEventStream } from './openai-event-stream';
 
 export type FetchLike = (
   input: string | URL | Request,
@@ -254,6 +255,10 @@ export class OpenAICompatibleProvider implements ModelProvider {
 
   async respond(request: ModelRequest, signal: AbortSignal): Promise<ModelResponse> {
     assertResponseContractRequest(request);
+    const stream = request.purpose === 'conversation' && request.onTextDelta !== undefined
+      && request.responseContract === undefined && this.requestPolicy?.body.stream !== false;
+    const explicitStreamOption = this.requestPolicy?.body.stream !== undefined
+      || this.config.additionalParameters?.stream !== undefined;
     const deepSeekConversation = this.config.providerId === 'deepseek' && request.purpose === 'conversation';
     // 单次请求复用同一映射，确保定义、续传历史与响应名称处于同一 Provider 命名空间。
     const toolChoice = resolveToolChoice(request);
@@ -279,7 +284,8 @@ export class OpenAICompatibleProvider implements ModelProvider {
         : this.config.providerId === 'deepseek' && request.reasoningMode === 'disabled'
           ? { thinking: { type: 'disabled' } }
           : {}),
-      ...this.requestPolicy?.body
+      ...this.requestPolicy?.body,
+      ...(stream || explicitStreamOption ? { stream } : {})
     });
 
     let response: Response;
@@ -298,7 +304,18 @@ export class OpenAICompatibleProvider implements ModelProvider {
       normalizeFetchError(error, signal);
     }
 
-    const rawResponse = await readProviderJson(response);
+    let rawResponse: unknown;
+    if (stream && response.headers.get('content-type')?.split(';')[0]?.trim().toLowerCase() === 'text/event-stream') {
+      if (!response.ok) throw normalizeHttpError(response.status);
+      try {
+        rawResponse = await readOpenAIEventStream(response, signal, request.onTextDelta!);
+      } catch (error) {
+        if (error instanceof ProviderError || error instanceof ProviderResponseError) throw error;
+        normalizeFetchError(error, signal);
+      }
+    } else {
+      rawResponse = await readProviderJson(response);
+    }
     this.requestPolicy?.validateResponse(rawResponse);
     return normalizeResponse(
       rawResponse,

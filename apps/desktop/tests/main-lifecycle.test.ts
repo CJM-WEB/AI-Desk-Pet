@@ -11,6 +11,27 @@ import {
 } from '../src/main/lifecycle/main-lifecycle';
 
 describe('Main 通用生命周期', () => {
+  test('首屏只加载必要页面，设置按需管理并动态读取广播目标', async () => {
+    const source = await readFile(new URL('../src/main/index.ts', import.meta.url), 'utf8');
+    const startup = source.slice(source.indexOf('await Promise.all([\n    loadRenderer(pet'), source.indexOf('void localModelService.start()'));
+
+    expect(startup).toContain('ensureChatWindow()');
+    expect(startup).toContain('ensureBubbleWindow()');
+    expect(startup).not.toContain("'settings'");
+    expect(startup).not.toContain('ensureCharacterWorkshopWindow()');
+    expect(source).toContain('const settingsWindows = createLoadBeforePublishWindow<BrowserWindow>({');
+    expect(source).toContain('const ensureSettingsWindow = settingsWindows.ensure;');
+    expect(source).toContain('settingsWindows.getCurrent()');
+    expect(source).not.toContain('let settings = createSettingsWindow(');
+    expect(source).toContain('prepare: window => hideOnClose(window)');
+    expect(source).toContain('if (window && !window.isDestroyed() && !window.webContents.isDestroyed())');
+    for (const factory of ['createSettingsWindow', 'createCharacterWorkshopWindow']) {
+      expect(source).toMatch(new RegExp(
+        `const candidate = ${factory}\\(BrowserWindow, preload\\);\\s*startupCleanup\\.add\\(\\(\\) => \\{ if \\(!candidate\\.isDestroyed\\(\\)\\) candidate\\.destroy\\(\\); \\}\\);`
+      ));
+    }
+  });
+
   test('Explorer 桥错误日志明确限定为图层能力且不误导本地能力状态', async () => {
     const source = await readFile(new URL('../src/main/index.ts', import.meta.url), 'utf8');
 
@@ -65,7 +86,13 @@ describe('Main 通用生命周期', () => {
     expect(source).toMatch(
       /initialEnabled:\s*e2eBoundary\s*\?\s*e2eBoundary\.localModelFixture !== undefined\s*:\s*localModelSettings\.enabled/u
     );
-    expect(source).toContain('readProviderSettings: () => localModelService.providerSettingsSnapshot()');
+    expect(source).toMatch(/readProviderSettings:\s*\(\) => \{[\s\S]*?return localModelService\.providerSettingsSnapshot\(\)/u);
+    const shutdown = source.slice(source.indexOf('beforeExplorerClose: async'));
+    const modelClosing = shutdown.indexOf('Promise.allSettled([modelChanges.close(), localModelService.close()])');
+    const conversationClosing = shutdown.indexOf('await conversationComposition.close()');
+    expect(modelClosing).toBeGreaterThanOrEqual(0);
+    expect(conversationClosing).toBeGreaterThan(modelClosing);
+    expect(shutdown.indexOf('await conversationSession.flush()')).toBeGreaterThan(conversationClosing);
     expect(source).toContain('assertProviderReady: profile => assertProviderReady(');
     expect(windowsReady).toBeGreaterThan(-1);
     expect(backgroundStart).toBeGreaterThan(windowsReady);

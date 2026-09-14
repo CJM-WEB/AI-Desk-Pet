@@ -7,6 +7,7 @@ const __dirname = import.meta.dirname;
 import { ModelRouter } from '@myself/agent-core';
 import {
   providerCatalog,
+  taskEventSchema,
   type ProviderProfileV2,
   type TaskEvent
 } from '@myself/shared-types';
@@ -16,13 +17,13 @@ import {
   dialog,
   ipcMain,
   Menu,
-  nativeImage,
   powerMonitor,
   safeStorage,
   screen,
   shell,
   Tray,
   type MenuItemConstructorOptions,
+  type MouseInputEvent,
   type WebContents
 } from 'electron';
 
@@ -40,6 +41,8 @@ import { ConversationEventProjection } from
   './conversation/conversation-event-projection';
 import { createMainConversationComposition } from
   './conversation/main-conversation-composition';
+import { ConversationSessionStore } from './conversation/conversation-session-store';
+import { ModelChangeCoordinator, conversationModelIdentity, type ModelConfiguration } from './settings/model-change-coordinator';
 import {
   createCoalescedAsyncPublisher,
   createMainE2eExplorerBridge,
@@ -88,7 +91,7 @@ import {
 } from './lifecycle/main-lifecycle';
 import { prepareCharacterStartup } from './characters/character-startup';
 import { createE2eCharacterDialogAdapter } from './characters/e2e-character-dialogs';
-import { ensureOfficialDefaultCharacter } from './characters/official-default-character';
+import { ensureOfficialDefaultCharacter, ensureOfficialDefaultCharacterInstalled } from './characters/official-default-character';
 import { decodeNativeImageAlpha } from './characters/native-image-alpha-decoder';
 import {
   createConservativePetGeometrySnapshot,
@@ -120,9 +123,15 @@ import {
   bindPetWindowInteractionLifecycle,
   createCharacterWorkshopWindow,
   createChatWindow,
+  createBubbleWindow,
   createPetWindow,
-  createSettingsWindow
+  createSettingsWindow,
+  setPetWindowPosition
 } from './windows/window-manager';
+import { ChatPresentationBridge, registerChatPresentationIpc } from './windows/chat-presentation-bridge';
+import { waitForRendererReady } from './windows/renderer-ready';
+import { ChatPresentationWindowController } from './windows/chat-presentation-windows';
+import { createChatPointerObserver } from './windows/chat-native-pointer';
 import { PetWindowInteractionController } from
   './windows/pet-window-interaction-controller';
 import {
@@ -214,7 +223,7 @@ async function moveToE2eRecycleBin(absolutePath: string): Promise<void> {
   );
 }
 
-type RendererView = 'pet' | 'chat' | 'settings' | 'characters';
+type RendererView = 'pet' | 'chat' | 'bubble' | 'settings' | 'characters';
 
 function rendererUrl(view: RendererView): string | null {
   const developmentUrl = process.env['ELECTRON_RENDERER_URL'];
@@ -231,32 +240,11 @@ async function loadRenderer(
   const url = rendererUrl(view);
   if (url) {
     await window.loadURL(url);
-    return;
+  } else {
+    await window.loadFile(join(__dirname, '../renderer/index.html'), { query: { view } });
   }
-  await window.loadFile(join(__dirname, '../renderer/index.html'), { query: { view } });
-}
-
-function createTrayImage() {
-  const image = nativeImage.createFromDataURL(
-    'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9Z8ZkAAAAASUVORK5CYII='
-  );
-  return image.resize({ width: 16, height: 16 });
-}
-
-function positionChatNearPet(pet: BrowserWindow, chat: BrowserWindow): void {
-  const petBounds = pet.getBounds();
-  const chatBounds = chat.getBounds();
-  const display = screen.getDisplayNearestPoint({ x: petBounds.x, y: petBounds.y });
-  const workArea = display.workArea;
-  const gap = 8;
-  const left = petBounds.x - chatBounds.width - gap;
-  const right = petBounds.x + petBounds.width + gap;
-  const x = left >= workArea.x ? left : Math.min(right, workArea.x + workArea.width - chatBounds.width);
-  const y = Math.min(
-    Math.max(petBounds.y, workArea.y),
-    workArea.y + workArea.height - chatBounds.height
-  );
-  chat.setPosition(x, y);
+  // 页面导航成功后继续等待首个视图提交，按需加载完成前不显示空窗口。
+  await waitForRendererReady(window.webContents);
 }
 
 async function createApplicationWindows(
@@ -265,6 +253,9 @@ async function createApplicationWindows(
 ): Promise<void> {
   try {
   Menu.setApplicationMenu(null);
+  // 窗口与托盘共用多尺寸官方图标，开发和安装版均从固定应用资源读取。
+  const applicationIcon = join(app.isPackaged ? process.resourcesPath : join(__dirname, '../../resources'), 'icon.ico');
+  app.on('browser-window-created', (_event, window) => window.setIcon(applicationIcon));
   const preload = join(__dirname, '../preload/index.cjs');
   const pet = createPetWindow(BrowserWindow, preload, {
     enableE2eProbe: Boolean(e2eBoundary)
@@ -279,11 +270,67 @@ async function createApplicationWindows(
     if (primaryPetWindow === pet) primaryPetWindow = null;
   });
   let chat = createChatWindow(BrowserWindow, preload);
-  let settings = createSettingsWindow(BrowserWindow, preload);
+  startupCleanup.add(() => { if (!chat.isDestroyed()) chat.destroy(); });
+  // 设置首次打开才创建；加载事务复用同一候选，隐藏后保留未提交字段。
+  const settingsWindows = createLoadBeforePublishWindow<BrowserWindow>({
+    create: () => {
+      const candidate = createSettingsWindow(BrowserWindow, preload);
+      startupCleanup.add(() => { if (!candidate.isDestroyed()) candidate.destroy(); });
+      return candidate;
+    },
+    prepare: window => hideOnClose(window),
+    load: window => loadRenderer(window, 'settings')
+  });
   const getCurrentChatWebContents = (): WebContents | null => {
     if (chat.isDestroyed() || chat.webContents.isDestroyed()) return null;
     return chat.webContents;
   };
+
+  // 原聊天仍是唯一业务 owner；气泡仅展示，历史直接复用透明聊天内容层。
+  let bubble = createBubbleWindow(BrowserWindow, preload);
+  // 每个原生资源创建后立即登记，后续构造/IPC注册失败也不会遗留窗口。
+  startupCleanup.add(() => { if (!bubble.isDestroyed()) bubble.destroy(); });
+  let presentation!: ChatPresentationWindowController;
+  let presentationTimer: ReturnType<typeof setInterval> | undefined;
+  let presentationClosing = false;
+  let presentationClose: Promise<void> | null = null;
+  const presentationReleases: (() => void)[] = [];
+  const presentationBridge = new ChatPresentationBridge({
+    getChat: getCurrentChatWebContents,
+    getBubble: () => bubble.isDestroyed() || bubble.webContents.isDestroyed() ? null : bubble.webContents,
+    onReady: surface => presentation.markReady(surface),
+    onLayout: layout => presentation.setLayout(layout)
+  });
+  const pointerObserver = createChatPointerObserver({
+    resourceRoot: app.isPackaged ? process.resourcesPath : join(__dirname, '../../resources'),
+    onPointerDown: point => presentation.onPointerDown(point),
+    onFailure: () => presentation.onPointerFailure()
+  });
+  presentation = new ChatPresentationWindowController({
+    getChat: () => chat,
+    getBubble: () => bubble,
+    getPetVisible: () => !pet.isDestroyed() && pet.isVisible(),
+    getCursorScreenPoint: () => screen.getCursorScreenPoint(),
+    getDisplayNearestPoint: point => screen.getDisplayNearestPoint(point),
+    screenToDipPoint: point => screen.screenToDipPoint(point),
+    sendCommand: command => presentationBridge.sendCommand(command),
+    sendBubbleCommand: command => presentationBridge.sendCommand(command, 'bubble'),
+    onBubbleUnavailable: () => { bubbleCrashed = true; presentationBridge.invalidateBubble(); },
+    pointer: pointerObserver
+  });
+  const releasePresentationIpc = registerChatPresentationIpc(ipcMain, presentationBridge);
+  const closePresentation = (): Promise<void> => {
+    if (presentationClose) return presentationClose;
+    presentationClosing = true;
+    clearInterval(presentationTimer);
+    for (const release of presentationReleases.splice(0)) release();
+    releasePresentationIpc(); presentationBridge.dispose();
+    presentationClose = presentation.dispose().finally(() => {
+      if (!bubble.isDestroyed()) bubble.destroy();
+    });
+    return presentationClose;
+  };
+  startupCleanup.add(closePresentation);
 
   // Explorer 桥接只提供窗口事实，桌宠可见性始终由普通窗口流程管理。
   const storageDirectory = app.getPath('userData');
@@ -404,6 +451,8 @@ async function createApplicationWindows(
     }
   };
   const characterStore = new CharacterStore(charactersDirectory, { geometryMigration });
+  // 先恢复可能中断的内置安装，其他角色写入必须在旧事务恢复后才能开放。
+  await characterStore.installOfficialDefaultCharacter();
   const characterAssetService = new CharacterAssetService(charactersDirectory);
   const characterPackageService = new CharacterPackageService(charactersDirectory, {
     store: characterStore,
@@ -424,6 +473,12 @@ async function createApplicationWindows(
   const defaultResources = app.isPackaged
     ? join(app.getAppPath(), 'resources/characters/default')
     : join(__dirname, '../../resources/characters/default');
+  try {
+    await ensureOfficialDefaultCharacterInstalled(characterStore, defaultResources);
+  } catch {
+    // 默认升级失败仍允许当前健康角色启动，失败材料由安装恢复模块保留。
+    console.warn('默认角色升级未完成，保留当前可用角色。', 'CHARACTER_DEFAULT_UPGRADE_FAILED');
+  }
   const characterStartup = await prepareCharacterStartup({
     indexRecovered: recoveredCorruptCharacterIndex.recovered,
     packageRecoveryReport
@@ -458,11 +513,23 @@ async function createApplicationWindows(
   if (characterRecoverySnapshot.fallbackErrorCode) {
     console.error(`角色启动恢复：${characterRecoverySnapshot.fallbackErrorCode}`);
   }
-  const secrets = new SecretStore(join(storageDirectory, 'provider-secret.bin'), {
+  const localEncryption = {
     isEncryptionAvailable: () => safeStorage.isEncryptionAvailable(),
-    encryptString: value => safeStorage.encryptStringAsync(value),
-    decryptString: async value => (await safeStorage.decryptStringAsync(value)).result
-  });
+    encryptString: (value: string) => safeStorage.encryptStringAsync(value),
+    decryptString: async (value: Buffer) => (await safeStorage.decryptStringAsync(value)).result
+  };
+  const secrets = new SecretStore(join(storageDirectory, 'provider-secret.bin'), localEncryption);
+  const conversationSession = new ConversationSessionStore(
+    join(storageDirectory, 'current-conversation.bin'), localEncryption, {
+      onPersistenceChanged: () => {
+        // 只更新聊天快照中的保存提示，不投递任务失败、不撤销确认卡，也不把错误再写入自身。
+        const target = getCurrentChatWebContents();
+        if (target && !target.isDestroyed()) {
+          target.send(ipcChannels.conversationSnapshot, conversationSession.snapshot());
+        }
+      }
+    }
+  );
   const settingsStore = new SettingsStore(
     join(storageDirectory, 'settings.json'),
     profileId => secrets.hasStoredSecret(profileId)
@@ -479,12 +546,40 @@ async function createApplicationWindows(
       };
   const localModelRuntime = new LocalModelRuntime(localModelRuntimeOptions);
   let resetLocalModelConversation: (() => Promise<void>) | null = null;
+  let startNewConversation: (() => Promise<void>) | null = null;
+  let newConversationPromise: Promise<void> | null = null;
+  let shuttingDown = false;
+  const readModelConfiguration = async (): Promise<ModelConfiguration> => ({
+    ...await settingsStore.getProviderSettings(),
+    localModelEnabled: localModelService.isEnabled()
+  });
+  const modelChanges = new ModelChangeCoordinator({
+    readConfiguration: readModelConfiguration,
+    confirmModelChange: async signal => {
+      if (shuttingDown) return false;
+      const result = await dialog.showMessageBox(await ensureSettingsWindow(), {
+        type: 'question', title: '切换模型', message: '确定切换模型吗？',
+        detail: '切换模型会开启新对话，当前聊天内容将被清空。',
+        buttons: ['取消', '切换模型'], defaultId: 0, cancelId: 0, noLink: true, signal
+      });
+      return !shuttingDown && result.response === 1;
+    },
+    invalidateConfiguration: async () => {
+      if (shuttingDown || !resetLocalModelConversation) throw new Error('CONVERSATION_CLOSED');
+      await newConversationPromise;
+      await resetLocalModelConversation();
+    },
+    onModelChanged: async () => {
+      if (!startNewConversation) throw new Error('CONVERSATION_NOT_READY');
+      await startNewConversation();
+    }
+  });
   let localModelStatus: LocalModelPublicStatus = localModelRuntime.getStatus();
   // 状态投影在 Main 完成严格校验；Renderer 永远不接触端口、令牌、路径、PID 或原始 stderr。
   const publishLocalModelStatus = (status: LocalModelPublicStatus): void => {
     localModelStatus = localModelPublicStatusSchema.parse(status);
-    for (const window of [chat, settings]) {
-      if (!window.isDestroyed() && !window.webContents.isDestroyed()) {
+    for (const window of [chat, settingsWindows.getCurrent()]) {
+      if (window && !window.isDestroyed() && !window.webContents.isDestroyed()) {
         window.webContents.send(ipcChannels.localModelStatus, localModelStatus);
       }
     }
@@ -498,13 +593,12 @@ async function createApplicationWindows(
     runtime: localModelRuntime,
     readCloudProviderSettings: () => settingsStore.getProviderSettings(),
     saveEnabled: enabled => settingsStore.saveLocalModelEnabled(enabled),
-    resetForConfigurationChange: () => {
-      if (!resetLocalModelConversation) throw new Error('LOCAL_MODEL_CONVERSATION_NOT_READY');
-      return resetLocalModelConversation();
-    },
+    modelChanges,
     publishStatus: publishLocalModelStatus
   });
   startupCleanup.add(() => localModelService.close());
+  await conversationSession.initialize(conversationModelIdentity(await readModelConfiguration()));
+  startupCleanup.add(() => conversationSession.flush());
   const characterBehaviorSettings = await settingsStore.getCharacterBehaviorSettings();
   await restorePetLayerPreference({
     read: () => settingsStore.getPetAlwaysOnTop(),
@@ -531,6 +625,8 @@ async function createApplicationWindows(
     providers: providerRegistry,
     privacySessions,
     sessionId: 'desktop-session',
+    modelChanges,
+    onIncognitoChanged: enabled => conversationSession.setIncognito(enabled),
     localModel: {
       getStatus: () => localModelStatus,
       setEnabled: enabled => localModelService.setEnabled(enabled)
@@ -539,6 +635,7 @@ async function createApplicationWindows(
     applyCharacterBehaviorSettings: snapshot => characterBehaviorDirector.applyBehaviorSettings(snapshot),
     applyAutonomousMoodEnabled: enabled => {
       characterProactivityRuntime.noteUserInteraction();
+      characterBehaviorDirector.noteUserInteraction('control');
       characterProactivityRuntime.setAutonomousMoodEnabled(enabled);
     }
   });
@@ -547,7 +644,7 @@ async function createApplicationWindows(
   const startupPlacement = await settingsStore.getPetPlacementState(activeGeometryManifest.id);
   if (startupPlacement.kind === 'pending-legacy') {
     // pending 只在 Main 私下恢复旧窗口左上角；首次真实 viewport 成功后才 CAS 清除。
-    pet.setPosition(startupPlacement.windowPosition.x, startupPlacement.windowPosition.y);
+    setPetWindowPosition(pet, startupPlacement.windowPosition);
   }
   const petGeometryAuthority = new PetVisualGeometryAuthority(activeGeometryManifest.id);
   const getPetGeometrySnapshot = () => {
@@ -569,7 +666,10 @@ async function createApplicationWindows(
     }
   };
   const characterMotion = new CharacterMotionService({
-    window: pet,
+    window: {
+      getBounds: () => pet.getBounds(),
+      setPosition: (x, y) => setPetWindowPosition(pet, { x, y })
+    },
     getDisplays: () => screen.getAllDisplays().map(display => ({
       id: String(display.id),
       workAreaDip: display.workArea
@@ -594,6 +694,10 @@ async function createApplicationWindows(
     now: characterRuntimeClock.now,
     reportError: reportCharacterBehaviorError
   });
+  // 窗口先完成加载以接收播放事件；首次输入等待角色目录就绪，避免大素材启动时拿到空候选。
+  let finishCharacterInitialization!: () => void;
+  const characterInitialized = new Promise<void>(resolve => { finishCharacterInitialization = resolve; });
+  startupCleanup.add(() => finishCharacterInitialization());
   const petGeometry = new PetGeometryCoordinator({
     window: pet,
     authority: petGeometryAuthority,
@@ -688,6 +792,7 @@ async function createApplicationWindows(
   });
   let publishCharacterBehaviorNotice = (_notice: CharacterBehaviorNotice): void => undefined;
   const characterBehaviorDirector = new CharacterBehaviorDirector({
+    ready: characterInitialized,
     now: characterRuntimeClock.now,
     behavior: characterBehavior,
     motion: characterMotion,
@@ -721,6 +826,7 @@ async function createApplicationWindows(
   });
   characterActions.activateCharacter = (characterId, confirmIncomplete) => {
     characterProactivityRuntime.noteUserInteraction();
+    characterBehaviorDirector.noteUserInteraction('control');
     return characterSwitching.activate(characterId, confirmIncomplete);
   };
   let refreshTray = async (): Promise<void> => undefined;
@@ -767,14 +873,18 @@ async function createApplicationWindows(
     }
   }, pet.webContents);
   const releaseMotionEvents = characterMotion.subscribe(snapshot => {
-    characterBehavior.handleMovement(snapshot);
+    // 到达先让持续模式接续真实目标，避免中间的 moving=false 先把同一行走动画撤成待机。
+    // 续行可能同步发布更新快照；后续表现和广播一律读取 Motion 的最新事实。
+    if (!snapshot.moving) characterBehaviorDirector.handleMotionSnapshot(snapshot);
+    const current = characterMotion.getSnapshot();
+    characterBehavior.handleMovement(current);
     // 方向可能在 moving 布尔不变时改变；几何 binding 仍须进入 Main FIFO。
     void petGeometry.refreshBinding().catch(() => undefined);
-    characterBehaviorDirector.handleMotionSnapshot(snapshot);
+    if (current.moving) characterBehaviorDirector.handleMotionSnapshot(current);
     if (!pet.isDestroyed() && !pet.webContents.isDestroyed()) {
       pet.webContents.send(ipcChannels.characterMotionEvent, {
         type: 'snapshot',
-        snapshot
+        snapshot: current
       });
     }
   });
@@ -794,7 +904,8 @@ async function createApplicationWindows(
     },
     poll: () => characterProactivityRuntime.poll(),
     isDestroyed: () => pet.isDestroyed(),
-    tickIntervalMs: 50,
+    // 真实窗口统一按绘制级节拍推进，连续积分只在原生边界取整。
+    tickIntervalMs: 1_000 / 60,
     idleIntervalMs: 500,
     reportError: reportCharacterMotionTimerError
   });
@@ -821,15 +932,14 @@ async function createApplicationWindows(
   };
   startupCleanup.add(releaseCharacterRuntime);
   pet.once('closed', () => { void releaseCharacterRuntime(); });
-  const hideOnClose = (window: BrowserWindow): void => {
+  const hideOnClose = (window: BrowserWindow, requestHide: () => void = () => window.hide()): void => {
     window.on('close', event => {
       if (isQuitting) return;
       event.preventDefault();
-      window.hide();
+        requestHide();
     });
   };
-  hideOnClose(chat);
-  hideOnClose(settings);
+  hideOnClose(chat, () => presentation.requestClose());
 
   const reportCharacterWorkshopFlushError = (error: unknown): void => {
     console.error('角色工作室关闭前保存失败。', error);
@@ -841,7 +951,11 @@ async function createApplicationWindows(
     reportError: reportCharacterWorkshopFlushError
   });
   const characterWorkshopWindows = createLoadBeforePublishWindow({
-    create: () => createCharacterWorkshopWindow(BrowserWindow, preload),
+    create: () => {
+      const candidate = createCharacterWorkshopWindow(BrowserWindow, preload);
+      startupCleanup.add(() => { if (!candidate.isDestroyed()) candidate.destroy(); });
+      return candidate;
+    },
     prepare: window => workshopCloseHandshake.bindWindow(window, () => isQuitting),
     load: window => loadRenderer(window, 'characters')
   });
@@ -850,25 +964,85 @@ async function createApplicationWindows(
     ? createE2eCharacterDialogAdapter(e2eBoundary)
     : null;
 
-  const ensureChatWindow = async (): Promise<BrowserWindow> => {
-    if (!chat.isDestroyed()) return chat;
-    chat = createChatWindow(BrowserWindow, preload);
-    hideOnClose(chat);
-    await loadRenderer(chat, 'chat');
-    return chat;
+  let chatLoaded = false;
+  let chatCrashed = false;
+  let chatLoading: Promise<BrowserWindow> | null = null;
+  let bubbleLoaded = false;
+  let bubbleCrashed = false;
+  let bubbleLoading: Promise<BrowserWindow> | null = null;
+  const bindPresentationWindow = (window: BrowserWindow, surface: 'island' | 'bubble'): void => {
+    const mouse = (_event: Electron.Event, input: MouseInputEvent): void => {
+      if (presentationClosing || window !== (surface === 'island' ? chat : bubble)) return;
+      try { presentation.onMouseEvent(surface, input); }
+      catch { console.error('更新聊天窗口穿透失败。', 'CHAT_PRESENTATION_UNAVAILABLE'); }
+    };
+    const failed = (): void => {
+      if (presentationClosing || window !== (surface === 'island' ? chat : bubble)) return;
+      presentation.markUnavailable(surface);
+      if (surface === 'island') chatCrashed = true; else bubbleCrashed = true;
+      // 展示窗口故障仅打开原聊天回退入口，不批准、清空或取消原任务。
+      void ensureChatWindow().then(() => presentation.requestOpen()).catch(() => {
+        console.error('聊天窗口暂不可用。', 'CHAT_PRESENTATION_UNAVAILABLE');
+      });
+    };
+    const loading = (): void => {
+      if (presentationClosing || window !== (surface === 'island' ? chat : bubble)) return;
+      if (surface === 'island') { presentationBridge.clear(); presentation.clear(); }
+      presentation.markUnavailable(surface);
+    };
+    window.on('closed', failed);
+    window.webContents.on('render-process-gone', failed);
+    window.webContents.on('did-start-loading', loading);
+    window.webContents.on('before-mouse-event', mouse);
+    presentationReleases.push(() => {
+      window.removeListener('closed', failed);
+      window.webContents.removeListener('render-process-gone', failed);
+      window.webContents.removeListener('did-start-loading', loading);
+      window.webContents.removeListener('before-mouse-event', mouse);
+    });
   };
-  const ensureSettingsWindow = async (): Promise<BrowserWindow> => {
-    if (!settings.isDestroyed()) return settings;
-    settings = createSettingsWindow(BrowserWindow, preload);
-    hideOnClose(settings);
-    await loadRenderer(settings, 'settings');
-    return settings;
+  const ensureChatWindow = (): Promise<BrowserWindow> => {
+    if (chatLoading) return chatLoading;
+    if (!chat.isDestroyed() && chatLoaded && !chatCrashed) return Promise.resolve(chat);
+    if (chat.isDestroyed() || chatCrashed) {
+      const old = chat;
+      chat = createChatWindow(BrowserWindow, preload);
+      hideOnClose(chat, () => presentation.requestClose());
+      bindPresentationWindow(chat, 'island');
+      if (!old.isDestroyed()) old.destroy();
+      chatCrashed = false;
+    }
+    const candidate = chat;
+    chatLoading = loadRenderer(candidate, 'chat').then(() => {
+      if (candidate.isDestroyed() || candidate !== chat) throw new Error('CHAT_PRESENTATION_UNAVAILABLE');
+      chatLoaded = true; return candidate;
+    }).finally(() => { chatLoading = null; });
+    return chatLoading;
   };
+  const ensureBubbleWindow = (): Promise<BrowserWindow> => {
+    if (bubbleLoading) return bubbleLoading;
+    if (!bubble.isDestroyed() && bubbleLoaded && !bubbleCrashed) return Promise.resolve(bubble);
+    if (bubble.isDestroyed() || bubbleCrashed) {
+      const old = bubble;
+      bubble = createBubbleWindow(BrowserWindow, preload); bindPresentationWindow(bubble, 'bubble');
+      if (!old.isDestroyed()) old.destroy();
+      bubbleCrashed = false;
+    }
+    const candidate = bubble;
+    bubbleLoading = loadRenderer(candidate, 'bubble').then(() => {
+      if (candidate.isDestroyed() || candidate !== bubble) throw new Error('CHAT_PRESENTATION_UNAVAILABLE');
+      bubbleLoaded = true; return candidate;
+    }).finally(() => { bubbleLoading = null; });
+    return bubbleLoading;
+  };
+  bindPresentationWindow(chat, 'island'); bindPresentationWindow(bubble, 'bubble');
+  const ensureSettingsWindow = settingsWindows.ensure;
   const ensureCharacterWorkshopWindow = characterWorkshopWindows.ensure;
   const windowCommands = createWindowCommandController({
     getChatWindow: () => chat,
     ensureChatWindow,
-    positionChat: chatWindow => positionChatNearPet(pet, chatWindow),
+    openChat: () => { void ensureBubbleWindow().catch(() => presentation.markUnavailable('bubble')); presentation.requestOpen(); },
+    closeChat: () => presentation.requestClose(),
     ensureCharacterWorkshopWindow
   });
   const togglePetVisibility = createPetVisibilityCommand({
@@ -910,7 +1084,7 @@ async function createApplicationWindows(
   };
   let contextMenu = await buildContextMenu();
 
-  tray = new Tray(createTrayImage());
+  tray = new Tray(applicationIcon);
   tray.setToolTip('AI Pet 桌宠');
   tray.setContextMenu(contextMenu);
   const trayRefreshController = createTrayRefreshController({
@@ -942,7 +1116,7 @@ async function createApplicationWindows(
   );
   characterActions.subscribeCharacterEvents(event => {
     broadcastCharacterEvent(
-      [pet, chat, settings, characterWorkshopWindows.getCurrent()],
+      [pet, chat, settingsWindows.getCurrent(), characterWorkshopWindows.getCurrent()],
       ipcChannels.characterEvent,
       event
     );
@@ -1015,7 +1189,12 @@ async function createApplicationWindows(
     )
   });
   const emitConversationEvent = (event: TaskEvent): void => {
-    const validated = conversationEventProjection.publish(event);
+    const validated = taskEventSchema.parse(event);
+    // Main 先接纳同一正式事件，再投递窗口；恢复快照与实时正文始终有单一顺序。
+    conversationSession.observe(validated);
+    conversationEventProjection.publish(validated);
+    // 只订阅既有 reset 结果清理展示；不进入会话、角色或权限决策。
+    if (validated.type === 'conversation_reset') { presentationBridge.clear(); presentation.clear(); }
     if (validated.type === 'error') reportedSubmitErrorCode = validated.code;
   };
   publishCharacterBehaviorNotice = notice => emitConversationEvent({
@@ -1028,7 +1207,13 @@ async function createApplicationWindows(
     catalog: mainProviderCatalog,
     privacySessions,
     sessionId,
-    readProviderSettings: () => localModelService.providerSettingsSnapshot(),
+    history: conversationSession.history,
+    readProviderSettings: () => {
+      if (modelChanges.isChanging() || newConversationPromise || shuttingDown) {
+        throw new Error('CONVERSATION_CLOSED');
+      }
+      return localModelService.providerSettingsSnapshot();
+    },
     assertProviderReady: profile => assertProviderReady(profile, localModelStatus),
     readAuthorizedRootPath: () => settingsStore.getAuthorizedRootPath(),
     readPrivacySettings: () => settingsStore.getPrivacySettings(),
@@ -1040,7 +1225,8 @@ async function createApplicationWindows(
         error,
         correlationId
       ),
-      { inputByteBudget: isBuiltinLocalProviderProfile(profile) ? 19_200 : 64 * 1024 }
+      { inputByteBudget: isBuiltinLocalProviderProfile(profile) ? 19_200 : 64 * 1024,
+        singleSlot: isBuiltinLocalProviderProfile(profile) }
     ),
     createCodingTaskService: ({ snapshot, primaryProfile, emit, emitTrustedToolResult }) => new CodingTaskService({
       sessionOptions: async () => {
@@ -1073,8 +1259,28 @@ async function createApplicationWindows(
     characterProactivityRuntime.setAutonomousMoodEnabled((await settingsStore.getPrivacySettings()).autonomousMoodEnabled);
     await conversationComposition.resetForConfigurationChange();
   };
+  startNewConversation = () => {
+    if (newConversationPromise) return newConversationPromise;
+    // 新对话清空与模型身份写入完成之前，不接纳下一轮，避免异步保存清掉新消息。
+    const operation = Promise.resolve().then(async () => {
+      characterProactivityRuntime.invalidate();
+      const identity = conversationModelIdentity(await readModelConfiguration());
+      await conversationCoordinator.resetConversation();
+      await conversationSession.reset(identity);
+    });
+    const tracked = operation.finally(() => { if (newConversationPromise === tracked) newConversationPromise = null; });
+    newConversationPromise = tracked;
+    return tracked;
+  };
+  const requestNewConversation = () => {
+    if (modelChanges.isChanging() || shuttingDown) throw new Error('CONVERSATION_TRANSITION_PENDING');
+    return startNewConversation!();
+  };
   const conversationIpcService = {
     submit: async (text: string): Promise<void> => {
+      if (modelChanges.isChanging() || newConversationPromise || shuttingDown) {
+        throw new Error('CONVERSATION_TRANSITION_PENDING');
+      }
       reportedSubmitErrorCode = null;
       characterProactivityRuntime.noteUserInteraction();
       await conversationCoordinator.submit(text);
@@ -1085,9 +1291,14 @@ async function createApplicationWindows(
       && typeof error.code === 'string'
       && error.code === reportedSubmitErrorCode
     ),
-    cancelActive: () => { characterProactivityRuntime.noteUserInteraction(); return conversationCoordinator.cancelActive(); },
+    cancelActive: () => {
+      characterProactivityRuntime.noteUserInteraction();
+      characterBehaviorDirector.noteUserInteraction('control');
+      return conversationCoordinator.cancelActive();
+    },
     resolveFileAction: (actionId: string, decision: 'confirm' | 'cancel') => {
       characterProactivityRuntime.noteUserInteraction();
+      characterBehaviorDirector.noteUserInteraction('control');
       return conversationCoordinator.resolveFileAction(actionId, decision);
     },
     resolveHistoryDisclosure: (
@@ -1095,6 +1306,7 @@ async function createApplicationWindows(
       decision: 'share_once' | 'current_message_only'
     ) => {
       characterProactivityRuntime.noteUserInteraction();
+      characterBehaviorDirector.noteUserInteraction('control');
       return conversationCoordinator.resolveHistoryDisclosure(requestId, decision);
     },
     resolveCapabilityAuthorization: (
@@ -1102,22 +1314,34 @@ async function createApplicationWindows(
       decision: 'confirm' | 'cancel'
     ) => {
       characterProactivityRuntime.noteUserInteraction();
+      characterBehaviorDirector.noteUserInteraction('control');
       return conversationCoordinator.resolveCapabilityAuthorization(requestId, decision);
     },
+    getConversationSnapshot: () => conversationSession.snapshot(),
     resetConversation: () => {
       characterProactivityRuntime.noteUserInteraction();
-      characterProactivityRuntime.invalidate();
-      return conversationCoordinator.resetConversation();
+      characterBehaviorDirector.noteUserInteraction('control');
+      return requestNewConversation();
     }
   };
   registerAgentIpc(ipcMain, conversationIpcService, getCurrentChatWebContents);
 
   const shutdownApplication = createMainShutdownTransaction({
     beforeExplorerClose: async () => {
+      shuttingDown = true;
       const failures: unknown[] = [];
-      // 会话必须最先封闭；失败时仍继续冲刷既有设置，避免阻断后续关闭事务。
+      // 待确认切换按取消关闭；已接纳提交先结算。Runtime 同时关闭，解除可能仍在等待的模型启动。
+      const modelResults = await Promise.allSettled([modelChanges.close(), localModelService.close()]);
+      for (const result of modelResults) if (result.status === 'rejected') failures.push(result.reason);
+      try { await newConversationPromise; } catch (error) { failures.push(error); }
+      // 切换收尾后封闭会话；失败时仍继续冲刷存储与设置，避免阻断后续关闭事务。
       try {
         await conversationComposition.close();
+      } catch (error) {
+        failures.push(error);
+      }
+      try {
+        await conversationSession.flush();
       } catch (error) {
         failures.push(error);
       }
@@ -1134,6 +1358,7 @@ async function createApplicationWindows(
     bridge: explorerPort,
     position: petGeometry,
     services: [
+      closePresentation,
       async () => { await workshopCloseHandshake.flush(characterWorkshopWindows.getCurrent()); },
       () => desktopSettingsService.close(),
       () => localModelService.close(),
@@ -1156,25 +1381,20 @@ async function createApplicationWindows(
       return result.canceled ? null : (result.filePaths[0] ?? null);
     }
   });
-  const resetForConfigurationChange = (): void => {
-    void resetLocalModelConversation?.().catch(error => {
-      const code = error instanceof Error && 'code' in error ? error.code : 'UNKNOWN';
-      console.error('配置变更后的会话清理失败。', code);
-    });
-  };
+  const resetForConfigurationChange = () => resetLocalModelConversation!();
   registerSettingsIpc(ipcMain, settingsStore, secrets, {
     onProviderChanged: resetForConfigurationChange,
-    onAuthorizedRootChanged: resetForConfigurationChange
-  }, settingsActions);
+    onAuthorizedRootChanged: resetForConfigurationChange,
+    onConversationCleared: requestNewConversation
+  }, settingsActions, modelChanges);
   registerAdvancedSettingsIpc(ipcMain, desktopSettingsService, {
     onConfigurationChanged: resetForConfigurationChange
   });
 
   await Promise.all([
     loadRenderer(pet, 'pet'),
-    loadRenderer(chat, 'chat'),
-    loadRenderer(settings, 'settings'),
-    ensureCharacterWorkshopWindow()
+    ensureChatWindow(),
+    ensureBubbleWindow().catch(() => { presentation.markUnavailable('bubble'); presentation.requestOpen(); })
   ]);
   void localModelService.start().catch(error => {
     const code = error instanceof Error && 'code' in error && typeof error.code === 'string'
@@ -1183,7 +1403,33 @@ async function createApplicationWindows(
     console.error('内置本地模型后台启动失败。', code);
   });
   await characterBehavior.initialize();
+  finishCharacterInitialization();
   await petGeometry.initialize();
+  // 只读现有视觉权威的相对包围框与当前原生位置，不回写宠物几何或移动状态。
+  const updatePresentationGeometry = (): void => {
+    if (presentationClosing) return;
+    const snapshot = getPetGeometrySnapshot();
+    if (pet.isDestroyed() || !snapshot) { presentation.updatePetGeometry(null); return; }
+    const bounds = pet.getBounds(), visual = snapshot.visualBoundsInWindowDip;
+    presentation.updatePetGeometry({ x: bounds.x + visual.x, y: bounds.y + visual.y, width: visual.width, height: visual.height });
+  };
+  const pollPresentation = (): void => {
+    try { updatePresentationGeometry(); presentation.poll(); }
+    catch { console.error('更新聊天窗口表现失败。', 'CHAT_PRESENTATION_UNAVAILABLE'); }
+  };
+  pet.on('move', pollPresentation); pet.on('show', pollPresentation);
+  pet.on('hide', pollPresentation); pet.on('closed', pollPresentation);
+  screen.on('display-metrics-changed', pollPresentation);
+  screen.on('display-added', pollPresentation);
+  screen.on('display-removed', pollPresentation);
+  presentationReleases.push(() => {
+    pet.removeListener('move', pollPresentation); pet.removeListener('show', pollPresentation);
+    pet.removeListener('hide', pollPresentation); pet.removeListener('closed', pollPresentation);
+    screen.removeListener('display-metrics-changed', pollPresentation);
+    screen.removeListener('display-added', pollPresentation);
+    screen.removeListener('display-removed', pollPresentation);
+  });
+  presentationTimer = setInterval(pollPresentation, 50); presentationTimer.unref(); pollPresentation();
   characterProactivityRuntime.start();
   await explorerComposition.start();
   if (!applicationQuit.activateNormal(shutdownApplication)) return;

@@ -1,0 +1,121 @@
+/* 顶部与头顶共用玻璃视觉；样式全部限于展示层，设置与角色播放器保持原样。 */
+.chat-island-stage, .chat-bubble-stage {
+  color: #293342;
+  font: 14px/1.6 "Microsoft YaHei UI", "Segoe UI", sans-serif;
+  --glass-border: rgba(255, 255, 255, .84);
+  --glass-shadow: 0 7px 14px -5px rgba(27, 39, 65, .25), 0 2px 4px rgba(27, 39, 65, .10), inset 0 1px 1px rgba(255, 255, 255, .98);
+  --island-ease: cubic-bezier(.2, .8, .2, 1);
+}
+.chat-island-stage [hidden], .chat-bubble-stage [hidden] { display: none !important; }
+.chat-island-stage button, .chat-bubble-stage button { color: inherit; }
+.chat-island-stage button:focus-visible, .chat-bubble-stage button:focus-visible {
+  outline: 2px solid #527ce0; outline-offset: -3px;
+}
+.glass-surface {
+  border: 1px solid var(--glass-border);
+  background: linear-gradient(135deg, rgba(255,255,255,.91), rgba(233,239,250,.83));
+  box-shadow: var(--glass-shadow);
+}
+/* 左侧留出菜单和阴影；常规屏幕左右对称，保留原输入框与按钮的宽度及屏幕中心。 */
+.chat-island-stage { position: relative; width: min(712px, 100vw); padding: 18px clamp(24px, calc(100vw - 596px), 116px) 158px 116px; }
+.chat-island-stage[data-island-mode="hidden"], .chat-island-stage[data-island-mode="peek"] { height: 46px; padding: 0; }
+.island-peek, .island-collapse {
+  display: grid; place-items: center; margin: 0 auto; border: 1px solid rgba(255,255,255,.88);
+  background: rgba(239,244,255,.93); box-shadow: 0 3px 10px rgba(45,63,93,.12);
+}
+.island-peek { width: 72px; height: 28px; border-radius: 0 0 36px 36px; animation: peek-arrive 160ms ease-out; }
+.island-collapse { width: 68px; height: 23px; border-radius: 0 0 40px 40px; position: relative; top: -2px; z-index: -1; }
+.island-row { position: relative; z-index: 2; display: flex; align-items: flex-start; justify-content: center; gap: 12px; height: 48px; }
+.island-menu, .island-send { flex: 0 0 48px; position: relative; }
+/* 输入组透明托底不截获菜单点击；输入框与收起按钮仍保持原层级和命中区域。 */
+.island-input-group { position: relative; width: calc(100% - 120px); max-width: 360px; isolation: isolate; pointer-events: none; }
+.island-input, .island-collapse { pointer-events: auto; }
+.island-input { width: 100%; height: 48px; border-radius: 24px; overflow: hidden; position: relative; }
+.island-input:focus-within { border-color: rgba(111,154,231,.65); box-shadow: var(--glass-shadow), 0 0 0 2px rgba(96,163,238,.13); }
+.island-input textarea {
+  display: block; width: 100%; height: 48px; min-height: 0; resize: none; padding: 12px 20px;
+  border: 0; background: transparent; color: #293342; line-height: 24px; outline: 0; font-size: 14px;
+  scrollbar-width: thin; scrollbar-color: #bcc8d8 transparent;
+}
+.island-input textarea::placeholder { color: #798595; }
+.island-orb, .island-send > button {
+  width: 48px; height: 48px; display: grid; place-items: center; position: relative;
+  border: 1px solid rgba(255,255,255,.9); border-radius: 50%;
+  background: radial-gradient(ellipse at 30% 12%, #fff 0%, rgba(255,255,255,.96) 39%, rgba(242,249,255,.86) 57%, transparent 70%),
+    conic-gradient(from 160deg, #f0a1b5, #9a7be8, #5e9bf4, #59d9e8, #e6fafd, #f0a1b5);
+  background-clip: padding-box;
+  box-shadow: var(--glass-shadow), inset 0 -3px 7px rgba(88,124,216,.17), inset 0 0 0 1px rgba(255,255,255,.42);
+  transition: filter 160ms, box-shadow 160ms;
+}
+.island-orb:hover, .island-send > button:hover { filter: brightness(1.035); box-shadow: var(--glass-shadow), inset 0 -3px 7px rgba(88,124,216,.12); }
+.island-orb:active, .island-send > button:active { filter: brightness(.96); }
+.island-orb { z-index: 2; }
+.island-menu-items { position: absolute; right: 0; top: 0; width: 140px; padding: 50px 6px 7px; border-radius: 24px; transform-origin: calc(100% - 24px) 24px; animation: menu-unfold 220ms var(--island-ease); }
+.island-menu-items button { display: flex; align-items: center; gap: 12px; width: 100%; min-height: 40px; padding: 7px 12px; border: 0; border-radius: 13px; background: transparent; text-align: left; }
+.island-menu-items button:hover, .island-menu-items button[aria-pressed="true"] { background: rgba(148,177,229,.18); }
+.island-history-wrap { height: 0; opacity: 0; overflow: hidden; transition: height 300ms var(--island-ease), opacity 220ms; }
+.island-history-wrap[data-open="true"] { height: calc(var(--history-height) + 18px); opacity: 1; }
+/* 历史容器完全透明，只给消息自身投影；内边距为投影保留滚动裁剪空间。 */
+.island-history { height: var(--history-height); overflow-y: auto; overscroll-behavior: contain; border: 0; border-radius: 8px; padding: 18px; background: transparent; box-shadow: none; scrollbar-width: thin; scrollbar-color: rgba(90,108,136,.3) transparent; }
+.island-history .messages { display: flex; flex-direction: column; gap: 14px; padding: 0; overflow: visible; min-height: 0; }
+.island-history .message { align-self: flex-start; max-width: 89%; padding: 10px 14px; border-radius: 16px 16px 16px 5px; background: rgba(255,255,255,.65); border: 1px solid rgba(255,255,255,.58); box-shadow: 0 4px 9px -3px rgba(27,39,65,.22); color: #293342; }
+.island-history .message-user { align-self: flex-end; border-radius: 16px 16px 5px 16px; background: rgba(220,233,252,.8); }
+.island-history .message > span { font-size: 10px; color: #7b899d; letter-spacing: .04em; }
+.island-history .message p { margin: 3px 0 0; line-height: 1.7; white-space: pre-wrap; overflow-wrap: anywhere; }
+.island-history .message small { display: block; margin-top: 7px; }
+.island-history .message-error { background: rgba(255,237,232,.84); }
+.island-history .history-empty { padding: 70px 20px; text-align: center; color: #748196; }
+.island-history .history-empty span { display: block; font-size: 11px; letter-spacing: .18em; color: #93a0b2; }
+.island-notice { margin: 36px 0 0 60px; max-width: 360px; border-radius: 16px; position: relative; }
+.island-notice:empty { display: none; }
+.island-notice:not(:empty) { padding: 10px 14px; border: 1px solid rgba(255,255,255,.8); background: rgba(249,251,255,.96); box-shadow: var(--glass-shadow); }
+.island-notice p { margin: 4px 0; overflow-wrap: anywhere; font-size: 12px; }
+.island-notice .quiet-button { color: #42659f; background: transparent; border: 0; padding: 3px 0; }
+.island-status { position: absolute; left: 24px; right: 24px; bottom: 3px; font-size: 9px; line-height: 10px; text-align: right; color: #7b8799; pointer-events: none; }
+.island-input:has(.island-status) textarea { padding-top: 6px; padding-bottom: 18px; }
+.chat-visually-hidden { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; border: 0; }
+.chat-island-stage[data-island-mode="opening"] .island-row { animation: balls-arrive 480ms var(--island-ease) both; }
+.chat-island-stage[data-island-mode="opening"] .island-input-group { animation: input-unfold 480ms var(--island-ease) both; }
+.chat-island-stage[data-island-mode="opening"] .island-input > *, .chat-island-stage[data-island-mode="opening"] .island-orb > *, .chat-island-stage[data-island-mode="opening"] .island-send svg, .chat-island-stage[data-island-mode="opening"] .island-collapse { animation: controls-arrive 480ms ease both; }
+.chat-island-stage[data-island-mode="closing"] .island-row { animation: balls-leave 480ms var(--island-ease) both; }
+.chat-island-stage[data-island-mode="closing"] .island-input-group { animation: input-fold 480ms var(--island-ease) both; }
+.chat-island-stage[data-island-mode="closing"] .island-input > *, .chat-island-stage[data-island-mode="closing"] .island-collapse, .chat-island-stage[data-island-mode="closing"] .island-notice { opacity: 0; }
+@keyframes peek-arrive { from { transform: translateY(-28px); } to { transform: translateY(0); } }
+@keyframes balls-arrive { 0% { transform: translateY(-74px); } 38% { transform: translateY(3px); } 100% { transform: translateY(0); } }
+@keyframes input-unfold { 0%, 37% { width: 48px; } 100% { width: calc(100% - 120px); } }
+@keyframes controls-arrive { 0%, 45% { opacity: 0; } 100% { opacity: 1; } }
+@keyframes input-fold { 0% { width: calc(100% - 120px); } 60%, 100% { width: 48px; } }
+@keyframes balls-leave { 0%, 60% { transform: translateY(0); } 100% { transform: translateY(-88px); } }
+@keyframes menu-unfold { from { opacity: 0; transform: scale(.4, .25); } to { opacity: 1; transform: scale(1); } }
+.chat-bubble-stage { width: 100vw; min-width: 1px; padding: 12px 12px 22px; display: flex; justify-content: flex-start; }
+.pet-speech { flex: none; width: max-content; max-width: min(440px, calc(100vw - 24px)); border-radius: 22px; padding: 16px 19px; position: relative; animation: speech-arrive 180ms var(--island-ease); }
+/* 百分比取正文自身宽度；换成长回复或缩窄窗口时，旧偏移也不能把正文挤出画布。 */
+.pet-speech { translate: clamp(0px, var(--bubble-offset, 0px), calc(100vw - 24px - 100%)) 0; }
+.speech-tail { width: 12px; height: 12px; background: #eaf0fa; position: absolute; bottom: -6px; left: calc(50% - 6px); transform: rotate(45deg); border-radius: 0 0 3px 0; }
+.speech-tail[data-side="top"] { top: -6px; bottom: auto; border-radius: 3px 0 0 0; }
+/* 四行只限制可视高度，完整流式正文保留在滚动区；顶部留白不占正文行数。 */
+.speech-text { max-width: 400px; max-height: calc(4lh + 10px); padding-top: 10px; overflow: auto; overscroll-behavior: contain; white-space: pre-wrap; overflow-wrap: anywhere; scrollbar-width: thin; }
+.speech-close { opacity: 0; position: absolute; z-index: 2; top: 5px; left: 5px; display: grid; place-items: center; width: 22px; height: 22px; border: 1px solid #fff; border-radius: 50%; background: #e6ebf4; font-size: 18px; line-height: 1; transition: opacity 120ms; }
+.pet-speech:hover .speech-close, .pet-speech:focus-within .speech-close { opacity: 1; }
+.confirmation-bubble { min-width: 0; max-width: 400px; }
+.confirmation-bubble-row { display: flex; align-items: center; gap: 10px; }
+.bubble-summary { flex: 1; background: transparent; border: 0; font-weight: 600; padding: 7px 0; white-space: nowrap; font-size: 14px; }
+.bubble-summary span { display: inline-block; margin-left: 5px; opacity: .45; }
+.bubble-summary[aria-expanded="true"] span { transform: rotate(180deg); }
+.bubble-decision { border: 1px solid rgba(255,255,255,.9); border-radius: 20px; padding: 7px 13px; min-height: 36px; white-space: nowrap; font-size: 12px; }
+.bubble-reject { background: rgba(217,224,237,.6); }
+.bubble-approve { background: linear-gradient(130deg,#e0f7fb,#d5e5fb 45%,#e9def9); box-shadow: inset 0 1px 0 #fff; }
+.bubble-details { margin-top: 10px; border-top: 1px solid rgba(107,127,155,.15); padding-top: 8px; max-height: calc(var(--bubble-max-height, 340px) - 70px); overflow: auto; font-size: 12px; scrollbar-width: thin; }
+.bubble-details p { margin: 5px 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.bubble-error { margin: 8px 0 0; color: #9a4848; font-size: 12px; }
+.bubble-busy { margin: 6px 0 0; color: #7b8799; font-size: 11px; }
+@media (max-width: 380px) {
+  .chat-bubble-stage .pet-speech { padding: 13px 10px; }
+  .chat-bubble-stage .confirmation-bubble-row { gap: 6px; }
+  .chat-bubble-stage .bubble-summary { font-size: 12px; }
+  .chat-bubble-stage .bubble-decision { padding: 7px 10px; }
+}
+@keyframes speech-arrive { from { opacity: 0; transform: translateY(5px) scale(.97); } to { opacity: 1; transform: none; } }
+@media (prefers-reduced-motion: reduce) {
+  .chat-island-stage *, .chat-bubble-stage * { animation-duration: 1ms !important; transition-duration: 1ms !important; }
+}

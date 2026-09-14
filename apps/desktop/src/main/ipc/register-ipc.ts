@@ -10,6 +10,7 @@ import {
 import { privacySettingsSchema } from '../storage/settings-store';
 import { z } from 'zod';
 import { ipcChannels } from '../../shared/ipc-channels';
+import { conversationTranscriptSnapshotSchema, type ConversationTranscriptSnapshot } from '../../shared/conversation-transcript';
 import { workshopLayoutSettingsSchema } from '../../shared/workshop-layout-ipc';
 import {
   characterBytesResultSchema,
@@ -55,6 +56,7 @@ import {
   type CharacterMotionSnapshot
 } from '../../shared/character-motion-ipc';
 import type { IpcMainEvent } from 'electron';
+import type { ModelChangeCoordinator } from '../settings/model-change-coordinator';
 
 export type WindowIpcActions = {
   openChat(): unknown;
@@ -127,6 +129,7 @@ export interface AgentIpcService {
     decision: 'confirm' | 'cancel'
   ): Promise<void>;
   resetConversation(): Promise<void>;
+  getConversationSnapshot(): ConversationTranscriptSnapshot;
 }
 
 function replaceListener(
@@ -192,6 +195,14 @@ export function registerAgentIpc(
     emptyArgumentsSchema.parse(args);
     await service.resetConversation();
   });
+  // 快照与后续消息共用 Main 的同步投递顺序，正文不经 invoke 的异步结果返回。
+  replaceHandler(ipcMain, ipcChannels.conversationRestore, (event, ...args) => {
+    assertCurrentChatSender(event, getCurrentChatWebContents);
+    emptyArgumentsSchema.parse(args);
+    const snapshot = conversationTranscriptSnapshotSchema.safeParse(service.getConversationSnapshot());
+    if (!snapshot.success) throw new Error('CONVERSATION_SNAPSHOT_INVALID');
+    event.sender.send(ipcChannels.conversationSnapshot, snapshot.data);
+  });
 }
 
 export interface SettingsIpcStore {
@@ -212,8 +223,9 @@ export interface SettingsIpcSecrets {
 }
 
 export interface SettingsIpcLifecycle {
-  onProviderChanged(): void;
-  onAuthorizedRootChanged?(): void;
+  onProviderChanged(): void | Promise<void>;
+  onAuthorizedRootChanged?(): void | Promise<void>;
+  onConversationCleared?(): void | Promise<void>;
 }
 
 export interface SettingsIpcActions {
@@ -226,7 +238,8 @@ export function registerSettingsIpc(
   settings: SettingsIpcStore,
   secrets: SettingsIpcSecrets,
   lifecycle?: SettingsIpcLifecycle,
-  actions?: SettingsIpcActions
+  actions?: SettingsIpcActions,
+  modelChanges?: Pick<ModelChangeCoordinator, 'run'>
 ): void {
   replaceHandler(ipcMain, ipcChannels.settingsGet, () => settings.getPublic());
   replaceHandler(ipcMain, ipcChannels.settingsTestProvider, async () => {
@@ -236,35 +249,36 @@ export function registerSettingsIpc(
   replaceHandler(ipcMain, ipcChannels.settingsChooseRoot, async () => {
     if (!actions) throw new Error('SETTINGS_ACTION_UNAVAILABLE');
     await actions.chooseAuthorizedRoot();
-    lifecycle?.onAuthorizedRootChanged?.();
+    await lifecycle?.onAuthorizedRootChanged?.();
     return settings.getPublic();
   });
   replaceHandler(ipcMain, ipcChannels.settingsSaveProvider, async (_event, raw) => {
     const input = saveProviderSchema.parse(raw);
     const profileId = input.profileId ?? 'default';
-    await secrets.save(profileId, input.secret, input.persistSecret);
-    await settings.saveProviderMetadata({
-      id: profileId,
-      displayName: input.displayName,
-      baseUrl: input.baseUrl,
-      model: input.model
+    if (!modelChanges) throw new Error('MODEL_CHANGE_COORDINATOR_REQUIRED');
+    return modelChanges.run({ type: 'profile-save', activatePrimary: true, profile: {
+      id: profileId, displayName: input.displayName, mode: 'custom', protocol: 'openai-compatible',
+      baseUrl: input.baseUrl, modelId: input.model, additionalParameters: {}
+    } }, async () => {
+      await secrets.save(profileId, input.secret, input.persistSecret);
+      await settings.saveProviderMetadata({ id: profileId, displayName: input.displayName, baseUrl: input.baseUrl, model: input.model });
+      return settings.getPublic();
     });
-    lifecycle?.onProviderChanged();
-    return settings.getPublic();
   });
   replaceHandler(ipcMain, ipcChannels.settingsClearLocalData, async (_event, raw) => {
     const { scope, profileId } = clearLocalDataSchema.parse(raw);
+    if (scope === 'conversation' || scope === 'all') await lifecycle?.onConversationCleared?.();
     if (scope === 'all') {
       await settings.clearAll();
-      lifecycle?.onAuthorizedRootChanged?.();
+      await lifecycle?.onAuthorizedRootChanged?.();
     }
     if (scope === 'secret') {
       await secrets.clear(profileId ?? 'default');
-      lifecycle?.onProviderChanged();
+      await lifecycle?.onProviderChanged();
     }
     if (scope === 'all') {
       await secrets.clearAll();
-      lifecycle?.onProviderChanged();
+      await lifecycle?.onProviderChanged();
     }
     return settings.getPublic();
   });
@@ -289,7 +303,7 @@ export interface AdvancedSettingsIpcService {
   deleteProviderProfile(profileId: string): Promise<unknown>;
   saveModelRoute(route: z.infer<typeof modelRouteConfigSchema>): Promise<unknown>;
   testProviderProfile(profileId: string): Promise<unknown>;
-  savePrivacySettings(input: z.infer<typeof privacySettingsSchema>, onConfigurationChanged?: () => void): Promise<unknown>;
+  savePrivacySettings(input: z.infer<typeof privacySettingsSchema>, onConfigurationChanged?: () => void | Promise<void>): Promise<unknown>;
   getWorkshopLayout(): Promise<unknown>;
   saveWorkshopLayout(input: z.infer<typeof workshopLayoutSettingsSchema>): Promise<unknown>;
   savePetAlwaysOnTop(enabled: boolean): Promise<unknown>;
@@ -299,7 +313,7 @@ export interface AdvancedSettingsIpcService {
 }
 
 export interface AdvancedSettingsLifecycle {
-  onConfigurationChanged(): void;
+  onConfigurationChanged(): void | Promise<void>;
 }
 
 function inputError(): Error & { code: string } {
@@ -321,18 +335,18 @@ export function registerAdvancedSettingsIpc(
 ): void {
   const changed = async <T>(operation: () => Promise<T>): Promise<T> => {
     const result = await operation();
-    lifecycle?.onConfigurationChanged();
+    await lifecycle?.onConfigurationChanged();
     return result;
   };
 
   replaceHandler(ipcMain, ipcChannels.settingsDashboardGet, async () => service.getDashboard());
   replaceHandler(ipcMain, ipcChannels.settingsProfileSave, async (_event, raw) => {
     const input = parseInput(profileSaveSchema, raw);
-    return changed(() => service.saveProviderProfile(input));
+    return service.saveProviderProfile(input);
   });
   replaceHandler(ipcMain, ipcChannels.settingsProfileDelete, async (_event, raw) => {
     const { profileId } = parseInput(profileIdSchema, raw);
-    return changed(() => service.deleteProviderProfile(profileId));
+    return service.deleteProviderProfile(profileId);
   });
   replaceHandler(ipcMain, ipcChannels.settingsProfileTest, async (_event, raw) => {
     const { profileId } = parseInput(profileIdSchema, raw);
@@ -340,7 +354,7 @@ export function registerAdvancedSettingsIpc(
   });
   replaceHandler(ipcMain, ipcChannels.settingsRouteSave, async (_event, raw) => {
     const { route } = parseInput(routeSaveSchema, raw);
-    return changed(() => service.saveModelRoute(route));
+    return service.saveModelRoute(route);
   });
   replaceHandler(ipcMain, ipcChannels.settingsPrivacySave, async (_event, raw) => {
     const input = parseInput(privacySettingsSchema, raw);

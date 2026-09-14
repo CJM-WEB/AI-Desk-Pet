@@ -2,6 +2,8 @@
 
 > 当前角色规格为 [V3 自定义状态与持续心情](../superpowers/specs/2026-09-05-ai-pet-custom-state-autonomy-design.md)，最新实施证据见[本轮开发记录](2026-09-06-custom-state-autonomy.md)。下文是各日期的历史验收；旧核心／扩展状态、固定语义及旧 Agent 链路的通过结果不代表 V3 已验收，也不再作为新行为的要求。
 
+> 2026-09-11 本地源图大小与分页图集改动见[规格](../superpowers/specs/2026-09-11-large-character-source-design.md)和[独立验收](2026-09-11-large-character-source-acceptance.md)。原源图 4096 边长、32 MiB 单文件、512 MiB 总量和单表现单页面积预算已由该规格替代；压缩角色包导入／导出预算不在此替代范围。
+
 本文记录任务 13 的自动验证范围和必须由人工完成的性能观察。自动项只有在对应测试实际通过后才能勾选；人工项不得用单元测试结果替代。
 
 ## 自动验收

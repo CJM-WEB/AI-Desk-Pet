@@ -3,7 +3,8 @@ import { afterEach, describe, expect, test, vi } from 'vitest';
 import {
   compileAtlas,
   type AtlasCanvasLike,
-  type AtlasDrawContextLike
+  type AtlasDrawContextLike,
+  type AtlasSourceFrame
 } from '../src/renderer/src/characters/import/atlas-compiler';
 import { decodeSource } from '../src/renderer/src/characters/import/image-decoder';
 
@@ -62,8 +63,21 @@ function createCanvasHarness(
 }
 
 afterEach(() => {
+  vi.restoreAllMocks();
   vi.unstubAllGlobals();
 });
+
+// 细长的两帧因 shelf 换行分成两页，但实际只分配 8192 像素。
+function pagedSourceFrames(): AtlasSourceFrame[] {
+  return [{
+    frameId: 'tall', sourceAssetId: 'source', bytes: PNG_BYTES, mimeType: 'image/png',
+    sourceRect: { x: 0, y: 0, width: 1, height: 4096 }, durationMs: 50
+  }, {
+    frameId: 'wide', sourceAssetId: 'source', bytes: PNG_BYTES, mimeType: 'image/png',
+    sourceRect: { x: 1, y: 0, width: 4096, height: 1 },
+    anchors: { ground: { x: 0.25, y: 0.5 } }
+  }];
+}
 
 describe('浏览器图片解码', () => {
   test('只允许 PNG 和 WebP MIME，并把白名单 MIME 写入 Blob', async () => {
@@ -88,6 +102,91 @@ describe('浏览器图片解码', () => {
 });
 
 describe('浏览器图集编译', () => {
+  test('长源图分页保持帧身份和统一几何，逐页释放画布并复用源摘要', async () => {
+    const source = bitmap(4097, 4096);
+    const decode = vi.fn(async () => source);
+    vi.stubGlobal('createImageBitmap', decode);
+    const digest = vi.spyOn(crypto.subtle, 'digest');
+    const first = createCanvasHarness();
+    const second = createCanvasHarness();
+    const factory = vi.fn((width: number, height: number) => {
+      if (factory.mock.calls.length === 1) return first.factory(width, height);
+      expect(first.canvas.width).toBe(0);
+      expect(first.canvas.height).toBe(0);
+      return second.factory(width, height);
+    });
+    const result = await compileAtlas({
+      atlasAssetId: 'paged', mimeType: 'image/png', groundAnchor: { x: 0, y: 0 }, frames: pagedSourceFrames()
+    }, factory);
+
+    expect(result.pages).toEqual([
+      { assetId: 'paged', mimeType: 'image/png', bytes: PNG_BYTES, width: 1, height: 4096 },
+      { assetId: 'paged-page-2', mimeType: 'image/png', bytes: PNG_BYTES, width: 4096, height: 1 }
+    ]);
+    expect(result.frames).toEqual([
+      { id: 'tall', assetId: 'paged', x: 0, y: 0, width: 1, height: 4096, durationMs: 50, anchors: { ground: { x: 0.5, y: 1 } } },
+      { id: 'wide', assetId: 'paged-page-2', x: 0, y: 0, width: 4096, height: 1, anchors: { ground: { x: 0.25, y: 0.5 } } }
+    ]);
+    expect(second.context.drawImage).toHaveBeenCalledWith(source, 1, 0, 4096, 1, 0, 0, 4096, 1);
+    expect(result.geometry).toEqual({ visualBounds: { x: 0, y: 0, width: 1, height: 1 }, groundAnchor: { x: 0, y: 0 } });
+    expect(digest).toHaveBeenCalledOnce();
+    expect(decode).toHaveBeenCalledOnce();
+    expect(source.close).toHaveBeenCalledOnce();
+    expect(second.canvas.width).toBe(0);
+    expect(second.canvas.height).toBe(0);
+  });
+
+  test('分页标识截短后仍唯一且符合120字符资源契约', async () => {
+    vi.stubGlobal('createImageBitmap', vi.fn(async () => bitmap(4097, 4096)));
+    const base = `${'a'.repeat(113)}-page-2`;
+    const result = await compileAtlas({
+      atlasAssetId: base, mimeType: 'image/png', frames: pagedSourceFrames()
+    }, (width, height) => createCanvasHarness().factory(width, height));
+    expect(result.pages[0]!.assetId).toBe(base);
+    expect(new Set(result.pages.map(page => page.assetId)).size).toBe(2);
+    expect(result.pages.every(page => page.assetId.length <= 120)).toBe(true);
+    expect(result.frames[1]!.assetId).toBe(result.pages[1]!.assetId);
+  });
+
+  test.each(['failure', 'cancel'] as const)('第二页%s时释放全部临时资源且不返回部分结果', async mode => {
+    const source = bitmap(4097, 4096);
+    vi.stubGlobal('createImageBitmap', vi.fn(async () => source));
+    const first = createCanvasHarness();
+    const second = createCanvasHarness(mode === 'failure' ? null : undefined);
+    const abort = new AbortController();
+    if (mode === 'cancel') second.canvas.toBlob = callback => {
+      abort.abort();
+      callback(new Blob([PNG_BYTES], { type: 'image/png' }));
+    };
+    const factory = vi.fn((width: number, height: number) => (
+      factory.mock.calls.length === 1 ? first.factory(width, height) : second.factory(width, height)
+    ));
+    const pending = compileAtlas({
+      atlasAssetId: 'failure', mimeType: 'image/png', frames: pagedSourceFrames(), signal: abort.signal
+    }, factory);
+    if (mode === 'failure') await expect(pending).rejects.toThrow('CHARACTER_ATLAS_EXPORT_FAILED');
+    else await expect(pending).rejects.toMatchObject({ name: 'AbortError' });
+    expect(first.canvas.toBlob).toHaveBeenCalledOnce();
+    expect(factory).toHaveBeenCalledTimes(2);
+    expect(source.close).toHaveBeenCalledOnce();
+    for (const harness of [first, second]) {
+      expect(harness.canvas.width).toBe(0);
+      expect(harness.canvas.height).toBe(0);
+    }
+  });
+
+  test('相同源标识使用不同字节对象仍校验内容冲突并释放位图', async () => {
+    const source = bitmap(32, 32);
+    vi.stubGlobal('createImageBitmap', vi.fn(async () => source));
+    const frames = pagedSourceFrames().map(frame => ({ ...frame, sourceRect: { x: 0, y: 0, width: 1, height: 1 } }));
+    frames[1]!.bytes = WEBP_BYTES;
+    const harness = createCanvasHarness();
+    await expect(compileAtlas({ atlasAssetId: 'conflict', mimeType: 'image/png', frames }, harness.factory))
+      .rejects.toThrow('CHARACTER_SOURCE_ASSET_CONFLICT');
+    expect(source.close).toHaveBeenCalledOnce();
+    expect(harness.factory).not.toHaveBeenCalled();
+  });
+
   test('按源矩形裁切精灵图，输出帧坐标和默认 ground 锚点', async () => {
     const sourceBitmap = bitmap(64, 32);
     vi.stubGlobal('createImageBitmap', vi.fn(async () => sourceBitmap));
@@ -223,9 +322,7 @@ describe('浏览器图集编译', () => {
       20, 0, 40, 10
     );
     expect(result).toMatchObject({
-      mimeType: 'image/webp',
-      width: 60,
-      height: 30,
+      pages: [{ mimeType: 'image/webp', width: 60, height: 30 }],
       frames: [{
         width: 20,
         height: 30
@@ -240,7 +337,7 @@ describe('浏览器图集编译', () => {
         'wide-source': checksum(WEBP_BYTES)
       }
     });
-    expect(result.bytes).toEqual(WEBP_BYTES);
+    expect(result.pages[0]!.bytes).toEqual(WEBP_BYTES);
     expect(firstBitmap.close).toHaveBeenCalledOnce();
     expect(secondBitmap.close).toHaveBeenCalledOnce();
   });

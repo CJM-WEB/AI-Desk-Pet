@@ -88,8 +88,7 @@ function securityProfile() {
 }
 
 function completeSecurityExpression(response: ModelResponse): ModelResponse {
-  return { type: 'structured', structured_output: { moodUpdate: null, expressionPlan: null,
-    requestKind: 'ambient', explicitPlayback: null, movementControl: { kind: 'keep' },
+  return { type: 'structured', structured_output: { kind: 'none', choice: null, mode: 'keep', target: null, distance: null,
     ...(response.type === 'text' ? response.structured_output : {}) } };
 }
 
@@ -176,7 +175,7 @@ function securityBehaviorDouble(
           languageStyle: '简洁', formsOfAddress: [], likes: [], dislikes: [],
           behavioralTendencies: [], boundaries: [], exampleLines: []
         },
-        states: []
+       states: []
       },
       runtime: {
         moving: false, dragging: false, carrying: false, movementMode: 2
@@ -214,7 +213,8 @@ function movementLockDirector() {
         languageStyle: '简洁', formsOfAddress: [], likes: [], dislikes: [],
         behavioralTendencies: [], boundaries: [], exampleLines: []
       },
-      states: []
+       states: [{ stateId: 'moving-state', name: '移动', description: '会让桌宠在屏幕上移动', agentInferable: true,
+         tags: ['移动'], actions: [{ actionId: 'moving-action', name: '行走', description: '在屏幕上行走', tags: ['行走'] }] }]
     })),
     getRecentPublicActions: vi.fn(() => []),
     resolveBehaviorTarget: vi.fn(() => { throw new Error('CHARACTER_ACTION_UNAVAILABLE'); }),
@@ -228,6 +228,11 @@ function movementLockDirector() {
     cancelStateLifecycle: vi.fn(),
     releasePreparedActivity: vi.fn(),
     releaseExplicitPlayback: vi.fn(),
+    // 本夹具没有播放器；只验证模式持久化，不能假装具备可运动的合法首帧。
+    releaseBackgroundSelection: vi.fn(),
+    cancelSingleEpisode: vi.fn(),
+    hasActiveSingleEpisode: vi.fn(() => false),
+    hasStartedPlayback: vi.fn(() => false),
     handleActiveCharacterChanged: vi.fn(async () => undefined),
     close: vi.fn()
   };
@@ -582,26 +587,26 @@ describe('权限边界安全回归', () => {
   });
 
   test.each([
-    [{ kind: 'set_mode', mode: 0 } as const, 0],
-    [{ kind: 'set_mode', mode: 2 } as const, 2]
+    ['still', 0],
+    ['intermittent', 2]
   ] as const)(
-    'Provider 严格 MovementControl %j 只能持久化为运动模式 %i',
-    async (movementControl, expectedMode) => {
+    'Provider 平铺模式 %s 只能持久化为运动模式 %i',
+    async (mode, expectedMode) => {
       const chatLock = movementLockDirector();
       const chat = conversationSecurityHarness({
         chatText: '保留的普通回复',
         chatResponse: {
           type: 'text',
           text: '保留的普通回复',
-          structured_output: { movementControl }
+          structured_output: { kind: 'movement', mode, choice: { stateId: 'moving-state', actionId: 'moving-action' } }
         },
         behavior: chatLock.director
       });
       await chat.composition.coordinator.submit('讨论桌宠活动状态');
 
-      expect(chatLock.saveMovementMode).toHaveBeenCalledExactlyOnceWith(
+      await vi.waitFor(() => expect(chatLock.saveMovementMode).toHaveBeenCalledExactlyOnceWith(
         expectedMode, expect.any(Function)
-      );
+      ));
       await chat.composition.close();
     }
   );
@@ -619,7 +624,12 @@ describe('权限边界安全回归', () => {
     expect(harness.readPrivacySettings).toHaveBeenCalledOnce();
     expect(harness.createCodingTaskService).not.toHaveBeenCalled();
     expect(harness.createPathPolicy).not.toHaveBeenCalled();
-    expect(harness.modelRequests).toHaveLength(1);
+    expect(harness.modelRequests).toEqual([{
+      tools: [expect.objectContaining({ function: expect.objectContaining({ name: 'request_task_authorization' }) })],
+      toolChoice: 'auto', responseContract: undefined
+    }, {
+      tools: [], toolChoice: 'none', responseContract: expect.objectContaining({ name: 'character_expression' })
+    }]);
     expect(harness.events).toContainEqual(expect.objectContaining({
       type: 'error',
       code: 'FILE_AUTHORIZATION_REQUIRED'

@@ -53,6 +53,7 @@ export interface MainConversationCodingTaskFactoryInput<TPrivacy> {
 }
 
 export interface MainConversationCompositionOptions<TPrivacy> {
+  history?: ConversationHistory;
   catalog: readonly ProviderCatalogEntry[];
   privacySessions: PrivacySessionRegistry;
   sessionId: string;
@@ -65,7 +66,7 @@ export interface MainConversationCompositionOptions<TPrivacy> {
     input: MainConversationCodingTaskFactoryInput<TPrivacy>
   ): CapabilityTaskServicePort;
   behavior: ConversationBehaviorPort;
-  autonomy?: Pick<CharacterBehaviorDirector, 'getActivityBlockers' | 'getBehaviorLifecycleGeneration' | 'applyAutonomousDecision' | 'applyActivityDecision'>;
+  autonomy?: Pick<CharacterBehaviorDirector, 'getActivityBlockers' | 'getBehaviorLifecycleGeneration' | 'applyAutonomousDecision' | 'applyBehaviorBindings'>;
   emit(event: TaskEvent): void;
 }
 
@@ -244,7 +245,7 @@ export function createMainConversationComposition<TPrivacy>(
     createCodingTaskTarget
   });
   const coordinator = new ConversationCoordinator({
-    history: new ConversationHistory(),
+    history: options.history ?? new ConversationHistory(),
     chatTurnFactory: { create: createChatTurn },
     disclosureAdapter: new ConversationDisclosureAdapter({
       sessionId: options.sessionId,
@@ -280,13 +281,12 @@ export function createMainConversationComposition<TPrivacy>(
         const turn = await createChatTurn();
         if (!isCurrent()) return;
         const request = { behaviorContext, signal: current.signal, beforeProviderCall: () => isCurrent() && input.beforeProviderCall() };
-        const decision = input.purpose === 'activity'
-          ? await turn.adapter.respondActivity(request)
-          : await turn.adapter.respondAutonomous({ ...request, idleForMs: input.idleForMs });
-        if (decision && isCurrent()) {
-          const accepted = { ...decision, context, lifecycle, eventId: randomUUID() };
-          if (input.purpose === 'activity') autonomy.applyActivityDecision(accepted);
-          else autonomy.applyAutonomousDecision(accepted);
+        if (input.purpose === 'bindings') {
+          const bindings = await turn.adapter.respondBindings(request);
+          if (bindings && isCurrent()) autonomy.applyBehaviorBindings({ bindings, context, lifecycle });
+        } else {
+          const decision = await turn.adapter.respondAutonomous({ ...request, idleForMs: input.idleForMs });
+          if (decision && isCurrent()) autonomy.applyAutonomousDecision({ ...decision, context, lifecycle, eventId: randomUUID() });
         }
       } finally {
         if (autonomousFlight === current) autonomousFlight = null;
@@ -297,7 +297,7 @@ export function createMainConversationComposition<TPrivacy>(
       preparedCodingTaskSnapshot = null;
       preparedCodingTaskTarget = null;
       activeCodingTaskRootPath = null;
-      await coordinator.resetConversation();
+      await coordinator.resetConversation({ preserveMessages: true });
     },
     close(): Promise<void> {
       if (closePromise) return closePromise;

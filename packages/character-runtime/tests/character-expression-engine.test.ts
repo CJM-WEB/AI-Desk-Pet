@@ -26,6 +26,262 @@ const movingPlan = { states: [{ ...plan.states[0]!, minStrength: 0,
   ] }] };
 
 describe('通用情境条件与有限表现', () => {
+  it.each(['soft', 'bright'])('明确退出长期%s同时撤销旧明确播放，跨循环不再回流', stateId => {
+    let now = 0;
+    const engine = new runtime.CharacterExpressionEngine({ manifest: fixture(), now: () => now });
+    const previous = engine.applyDecision({ context: engine.context(), eventId: 'hold', source: 'chat',
+      backgroundSelection: { stateId, actions: [] }, explicitPlayback: { stateId } }).snapshot.schedule.current!;
+    engine.applyFeedback({ playbackToken: previous.playbackToken, actionId: previous.actionId, status: 'started', occurredAtMs: now });
+    const result = engine.applyDecision({ context: engine.context(), eventId: 'leave', source: 'chat',
+      backgroundSelection: null, preserveExplicitPlaybackToken: previous.playbackToken });
+    expect(result.snapshot).toMatchObject({ background: null, stateId: 'rest' });
+    expect(result.effects.filter(effect => effect.type === 'play').map(effect => effect.action.stateId)).toEqual(['rest']);
+    now = 30_000;
+    expect(engine.advance().snapshot).toMatchObject({ background: null, stateId: 'rest' });
+  });
+  it('明确退出背景不抢占真实任务，任务结束后也不恢复旧背景', () => {
+    const engine = new runtime.CharacterExpressionEngine({ manifest: fixture(), now: () => 0 });
+    engine.applyDecision({ context: engine.context(), eventId: 'hold', source: 'chat', backgroundSelection: { stateId: 'soft', actions: [] },
+      expressionPlan: { states: [{ stateId: 'bright', score: 1, minStrength: 0, maxStrength: 1, lifetime: 'condition', when: { taskRunning: true }, actions: [] }] } });
+    const working = engine.updateRuntimeFacts({ taskRunning: true }).snapshot.schedule.current!;
+    const result = engine.applyDecision({ context: engine.context(), eventId: 'leave', source: 'chat', backgroundSelection: null });
+    expect(result.snapshot).toMatchObject({ background: null, stateId: 'bright' });
+    expect(result.snapshot.schedule.current?.playbackToken).toBe(working.playbackToken);
+    expect(result.effects).toEqual([]);
+    expect(engine.updateRuntimeFacts({ taskRunning: false }).snapshot.stateId).toBe('rest');
+  });
+  it('新的长期选择立即替换仍在循环的旧背景，不遗留脱离所有权的候选', () => {
+    const engine = new runtime.CharacterExpressionEngine({ manifest: fixture(), now: () => 0 });
+    const previous = engine.applyDecision({ context: engine.context(), eventId: 'old', source: 'chat', backgroundSelection: { stateId: 'soft', actions: [] } }).snapshot.schedule.current!;
+    engine.applyFeedback({ playbackToken: previous.playbackToken, actionId: previous.actionId, status: 'started', occurredAtMs: 0 });
+    expect(engine.applyDecision({ context: engine.context(), eventId: 'new', source: 'chat',
+      backgroundSelection: { stateId: 'bright', actions: [] } }).snapshot).toMatchObject({ stateId: 'bright', background: { stateId: 'bright' } });
+  });
+  it('自主空配对和迟到的明确退出均不能清空已接纳背景', () => {
+    const engine = new runtime.CharacterExpressionEngine({ manifest: fixture(), now: () => 0 });
+    engine.applyDecision({ context: engine.context(), eventId: 'hold', source: 'chat', backgroundSelection: { stateId: 'soft', actions: [] } });
+    engine.applyDecision({ context: engine.context(), eventId: 'autonomous', source: 'autonomous', backgroundSelection: null });
+    const stale = engine.context(); engine.invalidateContext();
+    engine.applyDecision({ context: stale, eventId: 'stale', source: 'chat', backgroundSelection: null });
+    expect(engine.snapshot()).toMatchObject({ stateId: 'soft', background: { stateId: 'soft' } });
+  });
+  it.each(['soft-a', 'soft-b'])('长期状态持续十秒后转为同状态短时动作 %s，从本次接纳计时且恢复不插待机', actionId => {
+    let now = 0;
+    const engine = new runtime.CharacterExpressionEngine({ manifest: fixture(), now: () => now });
+    const initial = engine.applyDecision({ context: engine.context(), eventId: 'background', source: 'chat',
+      backgroundSelection: { stateId: 'soft', actions: [{ actionId: 'soft-a', score: 1 }] } });
+    const background = initial.snapshot.schedule.current!;
+    engine.applyFeedback({ playbackToken: background.playbackToken, actionId: background.actionId, status: 'started', occurredAtMs: now });
+    now = 10_000;
+    const reaction = engine.applyDecision({ context: engine.context(), eventId: 'reaction', source: 'chat',
+      moodUpdate: { summary: '回应', strength: .8 }, expressionPlan: { states: [
+        { stateId: 'soft', score: 1, minStrength: 0, maxStrength: 1, actions: [{ actionId, score: 1 }] }
+      ] } });
+    expect(reaction.snapshot.schedule.current?.actionId).toBe(actionId);
+    expect(reaction.effects.filter(effect => effect.type === 'play').every(effect => effect.action.stateId === 'soft')).toBe(true);
+    const current = reaction.snapshot.schedule.current!;
+    if (current.startedAtMs === null) engine.applyFeedback({ playbackToken: current.playbackToken, actionId, status: 'started', occurredAtMs: now });
+    now = 12_999;
+    expect(engine.advance().snapshot.schedule.current?.playbackToken).toBe(current.playbackToken);
+    now = 13_000;
+    const restored = engine.advance();
+    expect(restored.snapshot.schedule.current?.actionId).toBe('soft-a');
+    expect(restored.snapshot).toMatchObject({ stateId: 'soft', stateEnteredAtMs: 0, background: { stateId: 'soft', enteredAtMs: 0 } });
+    expect(restored.effects.filter(effect => effect.type === 'play').every(effect => effect.action.stateId === 'soft')).toBe(true);
+  });
+  it('背景与活动共用状态时退出事件同时撤销两种播放资格', () => {
+    let now = 0;
+    const manifest = fixture();
+    manifest.states[1]!.exitConditions = [{ mode: 'any', clauses: [{ kind: 'event', event: 'drag-end' }] }];
+    const engine = new runtime.CharacterExpressionEngine({ manifest, now: () => now });
+    engine.applyDecision({ context: engine.context(), eventId: 'both', source: 'chat',
+      backgroundSelection: { stateId: 'bright', actions: [] }, expressionPlan: movingPlan });
+    engine.updateRuntimeFacts({ moving: true });
+    now = 3000;
+    const result = engine.recordEvent({ id: 'exit', type: 'drag-end', occurredAtMs: now });
+    expect(result.snapshot).toMatchObject({ stateId: 'rest', background: null });
+  });
+  it('有限背景动画在十分钟内每次完成都续播本状态，不插入待机', () => {
+    let now = 0;
+    const manifest = fixture();
+    manifest.actions.find(action => action.id === 'soft-a')!.loopPolicy = 'presentation';
+    const engine = new runtime.CharacterExpressionEngine({ manifest, now: () => now });
+    let result = engine.applyDecision({ context: engine.context(), eventId: 'background', source: 'chat',
+      backgroundSelection: { stateId: 'soft', actions: [{ actionId: 'soft-a', score: 1 }] } });
+    for (let cycle = 0; cycle < 20; cycle++) {
+      const current = result.snapshot.schedule.current!;
+      engine.applyFeedback({ playbackToken: current.playbackToken, actionId: current.actionId, status: 'started', occurredAtMs: now });
+      now += 30_000;
+      result = engine.applyFeedback({ playbackToken: current.playbackToken, actionId: current.actionId, status: 'completed', occurredAtMs: now });
+      expect(result.effects.filter(effect => effect.type === 'play').map(effect => effect.action.stateId)).toEqual(['soft']);
+    }
+    expect(result.snapshot).toMatchObject({ stateId: 'soft', stateEnteredAtMs: 0, background: { stateId: 'soft', enteredAtMs: 0 } });
+  });
+  it('未知状态、错配动作、关闭推断和无资源选择都不能替换有效背景', () => {
+    const manifest = fixture();
+    manifest.skins[0]!.presentations = manifest.skins[0]!.presentations.filter(item => !item.actionId.startsWith('bright'));
+    const engine = new runtime.CharacterExpressionEngine({ manifest, now: () => 0 });
+    engine.applyDecision({ context: engine.context(), eventId: 'valid', source: 'chat',
+      backgroundSelection: { stateId: 'soft', actions: [] } });
+    for (const [index, backgroundSelection] of [
+      { stateId: 'missing', actions: [] }, { stateId: 'soft', actions: [{ actionId: 'bright-a', score: 1 }] },
+      { stateId: 'rest', actions: [] }, { stateId: 'bright', actions: [{ actionId: 'bright-a', score: 1 }] }
+    ].entries()) {
+      expect(engine.applyDecision({ context: engine.context(), eventId: String(index), source: 'chat', backgroundSelection })
+        .snapshot.background?.stateId).toBe('soft');
+    }
+  });
+  it('短时心情结束后恢复背景，同状态短时所有权不会删除背景', () => {
+    let now = 0;
+    const engine = new runtime.CharacterExpressionEngine({ manifest: fixture(), now: () => now });
+    engine.applyDecision({ context: engine.context(), eventId: 'bg', source: 'chat', backgroundSelection: { stateId: 'soft', actions: [] } });
+    now = 2500;
+    const reaction = engine.applyDecision({ context: engine.context(), eventId: 'mood', source: 'chat',
+      moodUpdate: { summary: '愉快', strength: 1 }, expressionPlan: { states: [plan.states[0]!] } });
+    expect(reaction.snapshot.stateId).toBe('bright');
+    now = 5500;
+    expect(engine.advance().snapshot.stateId).toBe('soft');
+    engine.applyDecision({ context: engine.context(), eventId: 'same-state', source: 'chat', expressionPlan: {
+      states: [{ stateId: 'soft', score: 1, minStrength: 0, maxStrength: 1, actions: [] }]
+    } });
+    now = 9000;
+    expect(engine.advance().snapshot).toMatchObject({ stateId: 'soft', background: { stateId: 'soft', enteredAtMs: 0 } });
+  });
+  it.each(['normal', 'resistant'] as const)('背景动作中断策略 %s 在静态首帧确认后仍能结束冷却并续播', interrupt => {
+    let now = 0;
+    const manifest = fixture();
+    const action = manifest.actions.find(action => action.id === 'soft-a')!;
+    action.loopPolicy = 'never'; action.cooldownMs = 5000; action.durationMs = 750; action.interrupt = interrupt;
+    const engine = new runtime.CharacterExpressionEngine({ manifest, now: () => now });
+    const initial = engine.applyDecision({ context: engine.context(), eventId: 'bg', source: 'chat',
+      backgroundSelection: { stateId: 'soft', actions: [{ actionId: 'soft-a', score: 1 }] } });
+    expect(initial.effects.find(effect => effect.type === 'play')).toMatchObject({ playback: { mode: 'once', durationMs: 750 } });
+    const current = initial.snapshot.schedule.current!;
+    engine.applyFeedback({ playbackToken: current.playbackToken, actionId: current.actionId, status: 'started', occurredAtMs: now });
+    now = 750;
+    const ended = engine.applyFeedback({ playbackToken: current.playbackToken, actionId: current.actionId, status: 'completed', occurredAtMs: now });
+    expect(ended.snapshot.stateId).toBe('soft');
+    expect(ended.effects.find(effect => effect.type === 'play')).toMatchObject({ action: { actionId: 'soft-a' }, playback: { mode: 'static' } });
+    const still = ended.snapshot.schedule.current!;
+    engine.applyFeedback({ playbackToken: still.playbackToken, actionId: still.actionId, status: 'started', occurredAtMs: now });
+    expect(engine.advance().effects).toEqual([]);
+    now = 5750;
+    const resumed = engine.advance();
+    expect(resumed.effects.find(effect => effect.type === 'play')).toMatchObject({ action: { actionId: 'soft-a' }, playback: { mode: 'once', durationMs: 750 } });
+    const playing = resumed.snapshot.schedule.current!;
+    engine.applyFeedback({ playbackToken: playing.playbackToken, actionId: playing.actionId, status: 'started', occurredAtMs: now });
+    if (interrupt === 'resistant') {
+      now = 6000;
+      expect(engine.applyDecision({ context: engine.context(), eventId: 'temporary', source: 'chat',
+        moodUpdate: { summary: '愉快', strength: 1 }, expressionPlan: { states: [plan.states[0]!] } })
+        .snapshot.schedule.current?.playbackToken).toBe(playing.playbackToken);
+    }
+  });
+  it('退出条件或全部选中素材失败永久清除背景，reset 与换皮肤同样清理', () => {
+    let now = 0;
+    const manifest = fixture();
+    manifest.states[2]!.exitConditions = [{ mode: 'any', clauses: [{ kind: 'event', event: 'drag-end' }] }];
+    const engine = new runtime.CharacterExpressionEngine({ manifest, now: () => now });
+    const select = (id: string) => engine.applyDecision({ context: engine.context(), eventId: id, source: 'chat',
+      backgroundSelection: { stateId: 'soft', actions: [{ actionId: 'soft-a', score: 1 }] } });
+    select('first');
+    now = 100;
+    expect(engine.recordEvent({ id: 'exit', type: 'drag-end', occurredAtMs: now }).snapshot.background).toBeNull();
+    now = 3000;
+    expect(engine.advance().snapshot.stateId).toBe('rest');
+    const current = select('second').snapshot.schedule.current!;
+    expect(engine.applyFeedback({ playbackToken: current.playbackToken, actionId: current.actionId,
+      status: 'failed', occurredAtMs: now }).snapshot.background).toBeNull();
+    engine.reset();
+    select('third');
+    expect(engine.replaceCharacter(manifest, 'base').snapshot.background).toBeNull();
+    select('fourth');
+    expect(engine.reset().snapshot.background).toBeNull();
+  });
+  it('具有进入条件的背景恢复不重复消费边沿，暂停期间退出事件仍可令其失效', () => {
+    let now = 0;
+    const manifest = fixture();
+    manifest.states[2]!.enterConditions = [{ mode: 'any', clauses: [{ kind: 'event', event: 'user-interaction' }] }];
+    manifest.states[2]!.exitConditions = [{ mode: 'any', clauses: [{ kind: 'event', event: 'drag-end' }] }];
+    const engine = new runtime.CharacterExpressionEngine({ manifest, now: () => now });
+    const select = (id: string) => engine.applyDecision({ context: engine.context(), eventId: id, source: 'chat',
+      backgroundSelection: { stateId: 'soft', actions: [] }, expressionPlan: movingPlan });
+    expect(select('missing-enter').snapshot.background).toBeNull();
+    engine.recordEvent({ id: 'enter', type: 'user-interaction', occurredAtMs: now });
+    select('entered');
+    now = 100;
+    engine.updateRuntimeFacts({ moving: true });
+    expect(engine.updateRuntimeFacts({ moving: false }).snapshot.stateId).toBe('soft');
+    engine.updateRuntimeFacts({ moving: true });
+    now = 200;
+    engine.recordEvent({ id: 'exit', type: 'drag-end', occurredAtMs: now });
+    expect(engine.updateRuntimeFacts({ moving: false }).snapshot).toMatchObject({ stateId: 'rest', background: null });
+  });
+  it('同一状态的活动与背景具有独立动作候选，任务结束只恢复背景动作', () => {
+    let now = 0;
+    const engine = new runtime.CharacterExpressionEngine({ manifest: fixture(), now: () => now });
+    engine.applyDecision({ context: engine.context(), eventId: 'same-state', source: 'chat',
+      backgroundSelection: { stateId: 'bright', actions: [{ actionId: 'bright-a', score: 1 }] }, expressionPlan: {
+        states: [{ stateId: 'bright', score: 1, minStrength: 0, maxStrength: 1, lifetime: 'condition',
+          when: { taskRunning: true }, actions: [{ actionId: 'bright-b', score: 1 }] }]
+      } });
+    expect(engine.updateRuntimeFacts({ taskRunning: true }).snapshot.schedule.current?.actionId).toBe('bright-b');
+    now = 100;
+    expect(engine.updateRuntimeFacts({ taskRunning: false }).snapshot.schedule.current?.actionId).toBe('bright-a');
+  });
+  it('新的明确长期选择立即替换旧背景，单动作仍一遍并恢复独立背景', () => {
+    let now = 0;
+    const engine = new runtime.CharacterExpressionEngine({ manifest: fixture(), now: () => now });
+    engine.applyDecision({ context: engine.context(), eventId: 'old', source: 'chat', backgroundSelection: { stateId: 'soft', actions: [] } });
+    now = 100;
+    const explicit = engine.applyDecision({ context: engine.context(), eventId: 'new', source: 'chat',
+      backgroundSelection: { stateId: 'bright', actions: [] }, explicitPlayback: { stateId: 'bright', actionId: 'bright-a' } });
+    expect(explicit.effects.find(effect => effect.type === 'play')).toMatchObject({ playback: { mode: 'once' } });
+    const current = explicit.snapshot.schedule.current!;
+    engine.applyFeedback({ playbackToken: current.playbackToken, actionId: current.actionId, status: 'started', occurredAtMs: now });
+    now = 200;
+    const ended = engine.applyFeedback({ playbackToken: current.playbackToken, actionId: current.actionId, status: 'completed', occurredAtMs: now });
+    expect(ended.snapshot).toMatchObject({ stateId: 'bright', background: { stateId: 'bright' } });
+    expect(ended.effects.find(effect => effect.type === 'play')).toMatchObject({ playback: { mode: 'loop' } });
+  });
+  it('独立长期选择持续十分钟且心情归零、空结果和失效响应都不驱逐', () => {
+    let now = 0;
+    const engine = new runtime.CharacterExpressionEngine({ manifest: fixture(), now: () => now });
+    const result = engine.applyDecision({ context: engine.context(), eventId: 'background', source: 'chat',
+      backgroundSelection: { stateId: 'soft', actions: [{ actionId: 'soft-a', score: 1 }] } });
+    expect(result.snapshot.stateId).toBe('soft');
+    const current = result.snapshot.schedule.current!;
+    engine.applyFeedback({ playbackToken: current.playbackToken, actionId: current.actionId, status: 'started', occurredAtMs: now });
+    for (const time of [30_000, 600_000]) {
+      now = time;
+      const advanced = engine.advance();
+      expect(advanced.snapshot.stateId).toBe('soft');
+      expect(advanced.effects.filter(effect => effect.type === 'play').every(effect => effect.action.stateId === 'soft')).toBe(true);
+    }
+    engine.applyDecision({ context: engine.context(), eventId: 'empty', source: 'chat',
+      moodUpdate: { summary: '平静', strength: 0 }, expressionPlan: { states: [] } });
+    const stale = engine.context();
+    engine.invalidateContext();
+    engine.applyDecision({ context: stale, eventId: 'stale', source: 'chat',
+      backgroundSelection: { stateId: 'bright', actions: [] } });
+    expect(engine.advance().snapshot).toMatchObject({ stateId: 'soft', stateEnteredAtMs: 0,
+      background: { stateId: 'soft', enteredAtMs: 0 } });
+  });
+  it('活动结束恢复独立背景，活动候选自身不会成为背景', () => {
+    let now = 0;
+    const engine = new runtime.CharacterExpressionEngine({ manifest: fixture(), now: () => now });
+    engine.applyDecision({ context: engine.context(), eventId: 'both', source: 'chat',
+      backgroundSelection: { stateId: 'soft', actions: [] }, expressionPlan: movingPlan });
+    now = 100;
+    expect(engine.updateRuntimeFacts({ moving: true }).snapshot.stateId).toBe('bright');
+    now = 200;
+    expect(engine.updateRuntimeFacts({ moving: false }).snapshot).toMatchObject({ stateId: 'soft',
+      stateEnteredAtMs: 200, background: { stateId: 'soft', enteredAtMs: 0 } });
+    engine.reset();
+    engine.applyDecision({ context: engine.context(), eventId: 'activity-only', source: 'chat', expressionPlan: movingPlan });
+    engine.updateRuntimeFacts({ moving: true });
+    expect(engine.updateRuntimeFacts({ moving: false }).snapshot).toMatchObject({ stateId: 'rest', background: null });
+  });
   it.each(['实际移动', '准备移动'] as const)('%s 优先于高分聊天活动，结束后恢复正常选择', mode => {
     let now = 0;
     const engine = new runtime.CharacterExpressionEngine({ manifest: fixture(), now: () => now, random: () => 0 });

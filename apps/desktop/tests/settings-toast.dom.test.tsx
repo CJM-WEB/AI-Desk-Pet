@@ -79,6 +79,66 @@ afterEach(() => {
 });
 
 describe('设置页瞬时提示', () => {
+  test.each([
+    'MODEL_CHANGE_CANCELLED',
+    "Error invoking remote method 'settings:route-save': Error: MODEL_CHANGE_CANCELLED"
+  ])('模型切换取消以普通提示结束并恢复已保存路由：%s', async message => {
+    const saved: SettingsDashboardDto = {
+      ...dashboard,
+      profiles: ['old', 'next'].map(id => ({ id, displayName: id, mode: 'preset', providerId: 'provider', modelId: id, hasStoredSecret: false })),
+      route: { ...dashboard.route, primaryProfileId: 'old' }
+    };
+    const api = {
+      getSettingsDashboard: vi.fn(async () => structuredClone(saved)),
+      saveModelRoute: vi.fn(async () => { throw new Error(message); })
+    };
+    render(<SettingsView api={api as never} />);
+    await act(async () => { await Promise.resolve(); });
+    const primary = screen.getByRole('combobox', { name: '主模型' }) as HTMLSelectElement;
+    fireEvent.change(primary, { target: { value: 'next' } });
+    fireEvent.click(screen.getByRole('button', { name: '保存路由' }));
+    await act(async () => { await Promise.resolve(); });
+    expect(api.getSettingsDashboard).toHaveBeenCalledTimes(2);
+    expect(primary.value).toBe('old');
+    expect(screen.getByRole('status').textContent).toContain('已取消模型切换。');
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(screen.queryByText('模型路由已保存。')).toBeNull();
+    expect((screen.getByRole('button', { name: '保存路由' }) as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  test('普通设置异常仍只显示脱敏错误，不误报取消或重新读取', async () => {
+    const api = {
+      getSettingsDashboard: vi.fn(async () => dashboard),
+      saveProviderProfile: vi.fn(async () => { throw new Error('PRIVATE_TOKEN_MODEL_CHANGE_CANCELLED_PRIVATE_PATH'); })
+    };
+    render(<SettingsView api={api as never} />);
+    await act(async () => { await Promise.resolve(); });
+    fireEvent.click(screen.getByRole('button', { name: '保存档案' }));
+    await act(async () => { await Promise.resolve(); });
+    expect(screen.getByRole('alert').textContent).toContain('操作未完成，请检查输入后重试。');
+    expect(document.body.textContent).not.toContain('PRIVATE_TOKEN');
+    expect(api.getSettingsDashboard).toHaveBeenCalledOnce();
+  });
+
+  test('模型切换取消后等待恢复期间卸载，迟到快照不更新页面', async () => {
+    let resolveRestore: ((value: SettingsDashboardDto) => void) | undefined;
+    const api = {
+      getSettingsDashboard: vi.fn().mockResolvedValueOnce(dashboard).mockImplementationOnce(() => new Promise<SettingsDashboardDto>(resolve => { resolveRestore = resolve; })),
+      saveProviderProfile: vi.fn(async () => { throw new Error('MODEL_CHANGE_CANCELLED'); })
+    };
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const view = render(<SettingsView api={api as never} />);
+    await act(async () => { await Promise.resolve(); });
+    fireEvent.click(screen.getByRole('button', { name: '保存档案' }));
+    await act(async () => { await Promise.resolve(); });
+    expect(api.getSettingsDashboard).toHaveBeenCalledTimes(2);
+    view.unmount();
+    await act(async () => { resolveRestore?.(dashboard); await Promise.resolve(); });
+    expect(consoleError).not.toHaveBeenCalled();
+    expect(screen.queryByRole('status')).toBeNull();
+    consoleError.mockRestore();
+  });
+
   test('组件卸载后 resolve 不会继续应用 dashboard、提示或 busy 状态', async () => {
     let resolveSave: ((result: SettingsDashboardDto) => void) | undefined;
     const api = {
@@ -131,7 +191,7 @@ describe('设置页瞬时提示', () => {
       settingsViewSource.indexOf('return (\n    <SettingsWorkspace')
     );
 
-    expect(runSource).toMatch(/catch \{\s*if \(!mounted\.current\) return;\s*showNotice/s);
+    expect(runSource).toMatch(/catch \(error\) \{\s*if \(!mounted\.current\) return;/s);
     expect(runSource).toMatch(/finally \{\s*if \(mounted\.current\) setBusy\(false\);\s*\}/s);
   });
 

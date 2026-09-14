@@ -11,6 +11,15 @@ export const PET_WINDOW_SIZE: Readonly<WindowSize> = Object.freeze({
   width: 180,
   height: 220
 });
+
+/** Electron setPosition 会回读 DPI 取整后的宽高；一次定位仅提交既定尺寸，切断移动中的尺寸累积。 */
+export function setPetWindowPosition(
+  window: Pick<BrowserWindow, 'setBounds'>,
+  position: Readonly<Point>
+): void {
+  window.setBounds({ x: position.x, y: position.y, ...PET_WINDOW_SIZE });
+}
+
 export type VisualAnchorConstraintInput = Readonly<{
   anchorDip: Point;
   visualBoundsFromAnchorDip: Rectangle;
@@ -65,14 +74,16 @@ export function petWindowOptions(
 
 export function chatWindowOptions(preload: string): BrowserWindowConstructorOptions {
   return {
-    width: 420,
-    height: 520,
-    minWidth: 360,
-    minHeight: 420,
+    width: 712,
+    height: 46,
+    transparent: true,
     frame: false,
+    thickFrame: false,
+    alwaysOnTop: true,
+    resizable: false,
     show: false,
     skipTaskbar: true,
-    backgroundColor: '#fffaf2',
+    backgroundColor: '#00000000',
     webPreferences: secureWebPreferences(preload)
   };
 }
@@ -225,6 +236,16 @@ type AxisRange = Readonly<{ minimum: number; maximum: number }>;
 
 function finitePoint(point: Point): boolean {
   return Number.isFinite(point.x) && Number.isFinite(point.y);
+}
+
+/** 气泡复用固定 preload 构建，只公开展示 API，不取得普通聊天业务入口。 */
+export function bubbleWindowOptions(preload: string): BrowserWindowConstructorOptions {
+  return { ...chatWindowOptions(preload), width: 464, height: 120,
+    webPreferences: { ...secureWebPreferences(preload), additionalArguments: ['--myself-chat-bubble'] } };
+}
+
+export function createBubbleWindow(BrowserWindowClass: BrowserWindowConstructor, preload: string): BrowserWindow {
+  const window = new BrowserWindowClass(bubbleWindowOptions(preload)); lockNavigation(window); return window;
 }
 
 function validRectangle(rectangle: Rectangle): boolean {

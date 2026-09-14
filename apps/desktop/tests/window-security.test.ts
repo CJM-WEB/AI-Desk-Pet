@@ -4,6 +4,7 @@ import {
   chatWindowOptions,
   bindPetWindowInteractionLifecycle,
   petWindowOptions,
+  setPetWindowPosition,
   secureWebPreferences,
   settingsWindowOptions
 } from '../src/main/windows/window-manager';
@@ -24,6 +25,22 @@ describe('secureWebPreferences', () => {
 });
 
 describe('窗口安全配置', () => {
+  it('连续定位不回灌系统膨胀宽高，每次只提交一次固定尺寸', () => {
+    const submissions: Array<{ x: number; y: number; width: number; height: number }> = [];
+    const window = {
+      getBounds: () => { throw new Error('移动不能回读尺寸'); },
+      setBounds: (bounds: typeof submissions[number]) => submissions.push(bounds)
+    };
+    for (let step = 0; step < 80; step++) {
+      // 模拟传入 OS 实际 bounds；即使带有增长宽高，定位也只能消费坐标。
+      const position = { x: step, y: -step, width: 181 + step, height: 221 + step };
+      setPetWindowPosition(window, position);
+    }
+    expect(submissions).toHaveLength(80);
+    expect(submissions.every(bounds => bounds.width === 180 && bounds.height === 220)).toBe(true);
+    expect(submissions.at(-1)).toEqual({ x: 79, y: -79, width: 180, height: 220 });
+  });
+
   it('创建透明、普通层级且不进入任务栏的固定尺寸桌宠窗口', () => {
     expect(petWindowOptions('preload.js')).toMatchObject({
       width: 180,
@@ -51,8 +68,13 @@ describe('窗口安全配置', () => {
 
   it('聊天与设置使用互相独立的隐藏窗口', () => {
     expect(chatWindowOptions('preload.js')).toMatchObject({
-      width: 420,
-      height: 520,
+      width: 712,
+      height: 46,
+      transparent: true,
+      frame: false,
+      thickFrame: false,
+      alwaysOnTop: true,
+      resizable: false,
       show: false
     });
     expect(settingsWindowOptions('preload.js')).toMatchObject({
@@ -203,13 +225,22 @@ describe('桌宠交互控制器生命周期', () => {
     expect(controller.endDrag).toHaveBeenCalledOnce();
     expect(controller.dispose).toHaveBeenCalledOnce();
   });
+
+  it('气泡固定只展示preload参数，历史不再创建独立背板窗口', () => {
+    expect(windowManager.bubbleWindowOptions).toBeTypeOf('function');
+    expect(windowManager).not.toHaveProperty('historyBackdropWindowOptions');
+    expect(windowManager).not.toHaveProperty('createHistoryBackdropWindow');
+    expect(windowManager.bubbleWindowOptions('preload.js').webPreferences).toMatchObject({
+      ...secureWebPreferences('preload.js'), additionalArguments: ['--myself-chat-bubble']
+    });
+  });
 });
 
 describe('preload 白名单', () => {
   it('只暴露固定 myself API，不暴露 ipcRenderer 或通用 invoke', async () => {
     const source = await readFile(new URL('../src/preload/index.ts', import.meta.url), 'utf8');
 
-    expect(source).toContain("contextBridge.exposeInMainWorld('myself', api)");
+    expect(source).toContain("contextBridge.exposeInMainWorld('myself', isChatBubble ? { chatPresentation: api.chatPresentation } : api)");
     expect(source).not.toMatch(/exposeInMainWorld\([^,]+,\s*ipcRenderer/u);
     expect(source).not.toMatch(/\binvoke\s*:\s*/u);
     expect(source).not.toMatch(/\(channel(?:Name)?\s*:/u);
@@ -232,13 +263,30 @@ describe('preload 白名单', () => {
     );
   });
 
+  it('同一chat页面reload也撤销展示代次；辅助窗在下一次创建前已登记启动清理', async () => {
+    const main = await readFile(new URL('../src/main/index.ts', import.meta.url), 'utf8');
+    const loading = main.slice(main.indexOf('const loading = (): void =>'), main.indexOf("window.on('closed', failed)"));
+    expect(loading).toContain("if (surface === 'island') { presentationBridge.clear(); presentation.clear(); }");
+    const bubbleCreation = main.indexOf('let bubble = createBubbleWindow(');
+    const presentationCreation = main.indexOf('let presentation!: ChatPresentationWindowController');
+    expect(main.slice(bubbleCreation, presentationCreation)).toContain('startupCleanup.add(');
+    expect(main).not.toContain('createHistoryBackdropWindow');
+    expect(main).not.toContain("setBackgroundMaterial('acrylic')");
+  });
+
   it('Main 由会话投影器独占 taskEvent 窗口投递', async () => {
     const main = await readFile(new URL('../src/main/index.ts', import.meta.url), 'utf8');
 
     expect(main).toContain(
       'const conversationEventProjection = new ConversationEventProjection({'
     );
-    expect(main).toContain('const validated = conversationEventProjection.publish(event);');
+    // 持久化先接纳已验证事件；所有 taskEvent 窗口投递仍只由投影器完成。
+    const validated = main.indexOf('const validated = taskEventSchema.parse(event);');
+    const persisted = main.indexOf('conversationSession.observe(validated);');
+    const projected = main.indexOf('conversationEventProjection.publish(validated);');
+    expect(validated).toBeGreaterThanOrEqual(0);
+    expect(persisted).toBeGreaterThan(validated);
+    expect(projected).toBeGreaterThan(persisted);
     expect(main).toContain('behavior: characterBehaviorDirector');
     expect(main).not.toContain('characterBehavior.handleTaskEvent(event)');
     expect(main).not.toContain(

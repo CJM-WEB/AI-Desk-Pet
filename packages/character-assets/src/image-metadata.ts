@@ -41,14 +41,17 @@ function crc32(bytes: Uint8Array): number {
   return (crc ^ 0xffffffff) >>> 0;
 }
 
-function withinLimit(width: number, height: number): boolean {
+function withinLimit(width: number, height: number, maxDimension: number): boolean {
   return width > 0
     && height > 0
-    && width <= CHARACTER_RESOURCE_LIMITS.maxFrameDimension
-    && height <= CHARACTER_RESOURCE_LIMITS.maxFrameDimension;
+    && width <= maxDimension
+    && height <= maxDimension;
 }
 
-function parsePng(bytes: Uint8Array): Omit<CharacterImageMetadata, 'mimeType'> | undefined {
+function parsePng(
+  bytes: Uint8Array,
+  maxDimension: number
+): Omit<CharacterImageMetadata, 'mimeType'> | undefined {
   if (
     bytes.byteLength < 45
     || !PNG_SIGNATURE.every((value, index) => bytes[index] === value)
@@ -73,7 +76,7 @@ function parsePng(bytes: Uint8Array): Omit<CharacterImageMetadata, 'mimeType'> |
       if (type !== 'IHDR' || dataLength !== 13) return undefined;
       const width = readUint32BigEndian(bytes, dataOffset);
       const height = readUint32BigEndian(bytes, dataOffset + 4);
-      if (!withinLimit(width, height)) return undefined;
+      if (!withinLimit(width, height, maxDimension)) return undefined;
       dimensions = { width, height };
     } else if (type === 'IHDR') {
       return undefined;
@@ -93,7 +96,8 @@ function webpDimensions(
   bytes: Uint8Array,
   type: string,
   dataOffset: number,
-  dataLength: number
+  dataLength: number,
+  maxDimension: number
 ): Readonly<{ width: number; height: number }> | undefined {
   let width: number;
   let height: number;
@@ -114,10 +118,13 @@ function webpDimensions(
     height = bytes[dataOffset + 7]! + bytes[dataOffset + 8]! * 0x100
       + bytes[dataOffset + 9]! * 0x10000 + 1;
   } else return undefined;
-  return withinLimit(width, height) ? { width, height } : undefined;
+  return withinLimit(width, height, maxDimension) ? { width, height } : undefined;
 }
 
-function parseWebp(bytes: Uint8Array): Omit<CharacterImageMetadata, 'mimeType'> | undefined {
+function parseWebp(
+  bytes: Uint8Array,
+  maxDimension: number
+): Omit<CharacterImageMetadata, 'mimeType'> | undefined {
   if (bytes.byteLength < 20 || ascii(bytes, 0, 4) !== 'RIFF'
     || ascii(bytes, 8, 4) !== 'WEBP'
     || readUint32LittleEndian(bytes, 4) + 8 !== bytes.byteLength) return undefined;
@@ -131,13 +138,14 @@ function parseWebp(bytes: Uint8Array): Omit<CharacterImageMetadata, 'mimeType'> 
     const dataEnd = dataOffset + dataLength;
     if (dataEnd < dataOffset || dataEnd > bytes.byteLength) return undefined;
     if (type === 'VP8X') {
-      if (sawExtendedHeader || offset !== 12 || !webpDimensions(bytes, type, dataOffset, dataLength)) {
+      if (sawExtendedHeader || offset !== 12
+        || !webpDimensions(bytes, type, dataOffset, dataLength, maxDimension)) {
         return undefined;
       }
       sawExtendedHeader = true;
     } else if (type === 'VP8 ' || type === 'VP8L') {
       if (imageDimensions) return undefined;
-      imageDimensions = webpDimensions(bytes, type, dataOffset, dataLength);
+      imageDimensions = webpDimensions(bytes, type, dataOffset, dataLength, maxDimension);
       if (!imageDimensions) return undefined;
     }
     offset = dataEnd + (dataLength % 2 === 1 && dataEnd < bytes.byteLength ? 1 : 0);
@@ -145,12 +153,18 @@ function parseWebp(bytes: Uint8Array): Omit<CharacterImageMetadata, 'mimeType'> 
   return imageDimensions && offset === bytes.byteLength ? imageDimensions : undefined;
 }
 
-/** 在进入系统图片解码器前完成格式、结构和尺寸上限验证。 */
+/** 源图仅受格式尺寸边界约束；默认运行资源仍在解码前校验图集上限。 */
 export function parseCharacterImageMetadata(
   bytes: Uint8Array,
-  mimeType: CharacterImageMimeType
+  mimeType: CharacterImageMimeType,
+  options: { purpose: 'source' | 'compiled' } = { purpose: 'compiled' }
 ): CharacterImageMetadata {
-  const dimensions = mimeType === 'image/png' ? parsePng(bytes) : parseWebp(bytes);
+  const maxDimension = options.purpose === 'source'
+    ? 0x7fffffff
+    : CHARACTER_RESOURCE_LIMITS.maxFrameDimension;
+  const dimensions = mimeType === 'image/png'
+    ? parsePng(bytes, maxDimension)
+    : parseWebp(bytes, maxDimension);
   if (!dimensions) throw new Error('CHARACTER_IMAGE_STRUCTURE_INVALID');
   return { mimeType, ...dimensions };
 }

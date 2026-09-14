@@ -268,10 +268,11 @@ function throwIfAborted(signal?: AbortSignal): void {
 
 function validImageStructure(
   bytes: Uint8Array,
-  mimeType: CharacterImageMimeType
+  mimeType: CharacterImageMimeType,
+  purpose: 'source' | 'compiled' = 'compiled'
 ): boolean {
   try {
-    parseCharacterImageMetadata(bytes, mimeType);
+    parseCharacterImageMetadata(bytes, mimeType, { purpose });
     return true;
   } catch {
     return false;
@@ -280,7 +281,7 @@ function validImageStructure(
 
 function detectedImageMime(bytes: Uint8Array): CharacterImageMimeType | undefined {
   for (const mimeType of ['image/png', 'image/webp'] as const) {
-    if (validImageStructure(bytes, mimeType)) return mimeType;
+    if (validImageStructure(bytes, mimeType, 'source')) return mimeType;
   }
   return undefined;
 }
@@ -325,7 +326,6 @@ function parseSourceEntry(value: unknown): SourceCatalogEntry | undefined {
     || (value.mimeType !== 'image/png' && value.mimeType !== 'image/webp')
     || !Number.isSafeInteger(value.byteLength)
     || (value.byteLength as number) < 1
-    || (value.byteLength as number) > CHARACTER_RESOURCE_LIMITS.maxSourceBytesPerFile
     || !validateSha(value.sha256)
   ) {
     return undefined;
@@ -625,7 +625,7 @@ export class CharacterAssetService {
         if (
           bytes.byteLength !== entry.byteLength
           || sha256(bytes) !== entry.sha256
-          || !validImageStructure(bytes, entry.mimeType)
+          || !validImageStructure(bytes, entry.mimeType, 'source')
         ) {
           throw characterError('CHARACTER_SOURCE_INTEGRITY_FAILED');
         }
@@ -697,14 +697,12 @@ export class CharacterAssetService {
       await this.assertNoLinks(selectedPath, 'CHARACTER_SOURCE_PATH_UNSAFE');
       const identity = await this.captureIdentity(selectedPath, 'file');
       const bytes = await this.readStableFile(selectedPath, identity);
-      if (bytes.byteLength > CHARACTER_RESOURCE_LIMITS.maxSourceBytesPerFile) {
-        throw characterError('CHARACTER_SOURCE_FILE_TOO_LARGE');
-      }
       const extension = extname(selectedPath).toLocaleLowerCase('en-US') as
         | '.png'
         | '.webp';
       const mimeType = mimeForExtension(extension)!;
-      if (!validImageStructure(bytes, mimeType)) {
+      // 源图可包含长序列；保留内容与路径校验，不借用编译图集的尺寸和字节预算。
+      if (!validImageStructure(bytes, mimeType, 'source')) {
         const signatureMime = detectedImageMime(bytes);
         throw characterError(signatureMime && signatureMime !== mimeType
           ? 'CHARACTER_SOURCE_SIGNATURE_INVALID'
@@ -722,14 +720,6 @@ export class CharacterAssetService {
       });
     }
 
-    const existingBytes = await this.storageByteLength(paths.sourceDirectory);
-    const incomingBytes = prepared.reduce((total, entry) => total + entry.byteLength, 0);
-    if (
-      existingBytes + incomingBytes
-      > CHARACTER_RESOURCE_LIMITS.maxTotalSourceBytesPerCharacter
-    ) {
-      throw characterError('CHARACTER_SOURCE_TOTAL_BYTES_EXCEEDED');
-    }
     if (prepared.length === 0) return [];
 
     const transactionId = randomUUID();
@@ -912,7 +902,7 @@ export class CharacterAssetService {
       if (
         sourceBytes.byteLength !== source.byteLength
         || sha256(sourceBytes) !== source.sha256
-        || !validImageStructure(sourceBytes, source.mimeType)
+        || !validImageStructure(sourceBytes, source.mimeType, 'source')
       ) {
         throw characterError('CHARACTER_COMPILED_SOURCE_MISMATCH');
       }

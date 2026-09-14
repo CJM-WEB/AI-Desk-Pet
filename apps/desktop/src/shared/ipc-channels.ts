@@ -21,6 +21,8 @@ export const ipcChannels = {
   chatSubmit: 'chat:submit',
   chatCancel: 'chat:cancel',
   conversationReset: 'conversation:reset',
+  conversationRestore: 'conversation:restore',
+  conversationSnapshot: 'conversation:snapshot',
   conversationDisclosureResolve: 'conversation:disclosure-resolve',
   capabilityAuthorizationResolve: 'capability:authorization-resolve',
   actionConfirm: 'action:confirm',

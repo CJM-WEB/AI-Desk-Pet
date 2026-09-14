@@ -35,6 +35,8 @@ import type {
 import type { PetGeometryRenderView } from './character-motion-ipc';
 import type { LocalModelPublicStatus } from './local-model-ipc';
 import type { WorkshopLayoutSettings } from './workshop-layout-ipc';
+import type { ConversationTranscriptSnapshot } from './conversation-transcript';
+import type { ChatPresentationApi } from './chat-presentation';
 
 export type LocalDataScope = 'conversation' | 'audit' | 'secret' | 'all';
 export type CharacterWorkshopCloseReason = 'window_close' | 'app_quit';
@@ -86,6 +88,8 @@ export interface SaveProviderProfileInput {
 /** 单一文本提交不携带或保存本地操作授权。 */
 
 export interface MyselfApi extends PetWindowInteractionApi {
+  /** 可选展示桥兼容旧注入客户端，正式 preload 始终提供。 */
+  chatPresentation?: ChatPresentationApi;
   commitPetViewport(input: PetViewportCommitInput): Promise<void>;
   onPetGeometryRender(listener: (view: PetGeometryRenderView) => void): () => void;
   getStatus(): Promise<{ version: string; ready: boolean }>;
@@ -111,6 +115,8 @@ export interface MyselfApi extends PetWindowInteractionApi {
   confirmAction(actionId: string): Promise<void>;
   cancelAction(actionId: string): Promise<void>;
   resetConversation(): Promise<void>;
+  restoreConversation(): Promise<void>;
+  onConversationSnapshot(listener: (snapshot: ConversationTranscriptSnapshot) => void): () => void;
   resolveHistoryDisclosure(
     requestId: string,
     decision: HistoryDisclosureDecision

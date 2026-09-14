@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { crc32, deflateSync, inflateSync } from 'node:zlib';
 import {
   access,
   mkdtemp,
@@ -94,6 +95,44 @@ class AbsentRollbackStore extends CharacterStore {
 
 function checksum(bytes: Uint8Array): string {
   return createHash('sha256').update(bytes).digest('hex');
+}
+
+// 用有效低压缩 PNG 验证导出行为，过滤行包含透明像素的非零颜色。
+function exportPngFixture(): { png: Buffer; filtered: Buffer } {
+  const chunk = (type: string, bytes: Buffer): Buffer => {
+    const result = Buffer.alloc(bytes.length + 12);
+    result.writeUInt32BE(bytes.length);
+    result.write(type, 4, 'ascii');
+    bytes.copy(result, 8);
+    result.writeUInt32BE(crc32(result.subarray(4, -4)), result.length - 4);
+    return result;
+  };
+  const header = Buffer.alloc(13);
+  header.writeUInt32BE(32, 0); header.writeUInt32BE(32, 4);
+  header[8] = 8; header[9] = 6;
+  const filtered = Buffer.alloc((32 * 4 + 1) * 32);
+  for (let y = 0; y < 32; y++) {
+    for (let x = 0; x < 32; x++) {
+      filtered.set([91, 172, 233, x % 2 ? 255 : 0], y * 129 + 1 + x * 4);
+    }
+  }
+  return { filtered, png: Buffer.concat([
+    PNG_BYTES.subarray(0, 8), chunk('IHDR', header),
+    chunk('tEXt', Buffer.from('作者\0完整素材', 'utf8')),
+    chunk('IDAT', deflateSync(filtered, { level: 0 })), chunk('IEND', Buffer.alloc(0))
+  ]) };
+}
+
+function pngFilteredBytes(png: Buffer): Buffer {
+  const idat: Buffer[] = [];
+  for (let offset = 8; offset < png.length;) {
+    const length = png.readUInt32BE(offset);
+    if (png.toString('ascii', offset + 4, offset + 8) === 'IDAT') {
+      idat.push(png.subarray(offset + 8, offset + 8 + length));
+    }
+    offset += length + 12;
+  }
+  return inflateSync(Buffer.concat(idat));
 }
 
 function legacyRuntime(characterId: string): {
@@ -858,6 +897,83 @@ describe('角色包 Main 服务', () => {
     await expect(service.exportCharacter('demo', destination))
       .rejects.toThrow('CHARACTER_PACKAGE_TOTAL_BYTES_EXCEEDED');
     await expect(access(destination)).rejects.toThrow();
+  });
+
+  test('完整导出无损缩小源图和图集，更新校验后回导且不改本地项目', async () => {
+    const { store, sourceAssetId } = await createPublishedCharacter();
+    const fixture = exportPngFixture();
+    const sourceDirectory = join(charactersDirectory, 'demo', 'source');
+    const sourcePath = join(sourceDirectory, `${sourceAssetId}.png`);
+    const catalogPath = join(sourceDirectory, 'catalog.json');
+    const catalog = JSON.parse(await readFile(catalogPath, 'utf8'));
+    catalog.sources[0].byteLength = fixture.png.length;
+    catalog.sources[0].sha256 = checksum(fixture.png);
+    await writeFile(sourcePath, fixture.png);
+    await writeFile(catalogPath, JSON.stringify(catalog));
+    const published = runtime('demo');
+    published.manifest.resources[0]!.byteLength = fixture.png.length;
+    published.manifest.resources[0]!.sha256 = checksum(fixture.png);
+    published.manifest.skins[0]!.presentations[0]!.geometry.resourceRevision = checksum(fixture.png);
+    await store.publishCompiled('demo', published.manifest, { 'atlas.png': fixture.png });
+    const draft = await store.getDraft('demo');
+    draft.name = '尚未发布的编辑名称';
+    await store.saveDraft('demo', draft);
+    const beforeDraft = await store.getDraft('demo');
+    const beforeManifest = await store.getPublishedManifest('demo');
+    const beforeCatalog = await readFile(catalogPath);
+
+    const destination = await exportDemoPackage('compressed.zip');
+    const files = await readZip(destination);
+    expect(files.size).toBe(5);
+    for (const path of [`source/${sourceAssetId}.png`, 'compiled/atlas.png']) {
+      expect(files.get(path)!.length).toBeLessThan(fixture.png.length);
+      expect(pngFilteredBytes(files.get(path)!)).toEqual(fixture.filtered);
+    }
+    const exportedCatalog = JSON.parse(files.get('source/catalog.json')!.toString('utf8'));
+    expect(exportedCatalog.sources[0]).toMatchObject({ assetId: sourceAssetId,
+      byteLength: files.get(`source/${sourceAssetId}.png`)!.length,
+      sha256: checksum(files.get(`source/${sourceAssetId}.png`)!) });
+    const manifest = characterManifestV3Schema.parse(JSON.parse(files.get('compiled/manifest.json')!.toString('utf8')));
+    expect(manifest.resources[0]).toMatchObject({ byteLength: files.get('compiled/atlas.png')!.length,
+      sha256: checksum(files.get('compiled/atlas.png')!) });
+    expect(manifest.skins[0]!.presentations[0]!.geometry).toEqual({
+      ...beforeManifest.skins[0]!.presentations[0]!.geometry,
+      resourceRevision: manifest.resources[0]!.sha256
+    });
+    const importedRoot = join(testDirectory, 'compressed-import');
+    const importedId = await new CharacterPackageService(importedRoot).importCharacter(destination);
+    const importedStore = new CharacterStore(importedRoot);
+    await expect(importedStore.getDraft(importedId)).resolves.toEqual({ ...beforeDraft, id: importedId });
+    await expect(importedStore.getPublishedManifest(importedId)).resolves.toEqual({ ...manifest, id: importedId });
+    expect(pngFilteredBytes(await readFile(join(importedRoot, importedId, 'source', `${sourceAssetId}.png`))))
+      .toEqual(fixture.filtered);
+    await expect(store.getDraft('demo')).resolves.toEqual(beforeDraft);
+    await expect(store.getPublishedManifest('demo')).resolves.toEqual(beforeManifest);
+    await expect(readFile(sourcePath)).resolves.toEqual(fixture.png);
+    await expect(readFile(join(charactersDirectory, 'demo', 'compiled', 'atlas.png'))).resolves.toEqual(fixture.png);
+    await expect(readFile(catalogPath)).resolves.toEqual(beforeCatalog);
+  });
+
+  test('逐张归档途中失败时停止后续资源并清理临时包', async () => {
+    await createPublishedCharacter();
+    const destination = join(testDirectory, 'early-stream-error.zip');
+    const streamedPaths: string[] = [];
+    const service = new CharacterPackageService(charactersDirectory, {
+      archiveFactory() {
+        const archive = new ZipFile();
+        const add = archive.addReadStream.bind(archive);
+        archive.addReadStream = (stream, path, options) => {
+          streamedPaths.push(path);
+          add(stream, path, options);
+          (archive.outputStream as import('node:stream').Readable).destroy(new Error('EARLY_ARCHIVE_FAILURE'));
+        };
+        return archive;
+      }
+    });
+    await expect(service.exportCharacter('demo', destination)).rejects.toThrow('EARLY_ARCHIVE_FAILURE');
+    expect(streamedPaths).toHaveLength(1);
+    await expect(access(destination)).rejects.toThrow();
+    expect((await readdir(testDirectory)).some(name => name.startsWith('.character-export-'))).toBe(false);
   });
 
   test('导出磁盘资源通过 yazl 流式写入', async () => {

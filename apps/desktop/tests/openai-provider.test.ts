@@ -1,6 +1,6 @@
 import { describe, expect, test, vi } from 'vitest';
 import type { ModelRequest, ToolDefinition } from '@myself/agent-core';
-import { characterExpressionSelectionJsonSchema, characterExpressionSelectionSchema } from '@myself/character-runtime';
+import { characterExpressionResponseContract } from '../src/main/conversation/character-expression-adapter';
 import {
   OpenAICompatibleProvider,
   ProviderError
@@ -39,6 +39,9 @@ const request: ModelRequest = {
   toolChoice: 'auto',
   reasoningMode: 'provider_default'
 };
+
+// 所有表现夹具复用正式扁平协议，测试仍独立验证各 Provider 的传输与权限边界。
+const emptyExpression = { kind: 'none', choice: null, mode: 'keep', target: null, distance: null };
 
 function jsonResponse(value: unknown, status = 200): Response {
   return new Response(JSON.stringify(value), {
@@ -138,7 +141,7 @@ describe('OpenAICompatibleProvider', () => {
     const fetchMock = vi.fn<FetchLike>(async () => jsonResponse({
       choices: [{
         message: {
-          content: JSON.stringify({"moodUpdate":null,"expressionPlan":null,"requestKind":"ambient","explicitPlayback":null,"movementControl":{"kind":"keep"}}),
+          content: JSON.stringify(emptyExpression),
           metadata: {
             behaviorIntent: {
               stateIntent: { semantic: 'move' },
@@ -157,14 +160,9 @@ describe('OpenAICompatibleProvider', () => {
       tools: [],
       toolChoice: 'none',
       reasoningMode: 'provider_default',
-      responseContract: {
-        type: 'json_object',
-        name: 'character_expression',
-        jsonSchema: characterExpressionSelectionJsonSchema,
-        validateStructuredOutput: value => characterExpressionSelectionSchema.safeParse(value).success
-      }
+      responseContract: characterExpressionResponseContract
     }, new AbortController().signal)).resolves.toEqual({
-      type: 'structured', structured_output: {"moodUpdate":null,"expressionPlan":null,"requestKind":"ambient","explicitPlayback":null,"movementControl":{"kind":"keep"}}
+      type: 'structured', structured_output: emptyExpression
     });
   });
 
@@ -175,7 +173,7 @@ describe('OpenAICompatibleProvider', () => {
     const fetchMock = vi.fn<FetchLike>(async () => jsonResponse({
       choices: [{
         message: {
-          content: JSON.stringify({"moodUpdate":null,"expressionPlan":null,"requestKind":"ambient","explicitPlayback":null,"movementControl":{"kind":"keep"}}),
+          content: JSON.stringify(emptyExpression),
           metadata: { emotion: metadataEmotion }
         }
       }]
@@ -187,14 +185,9 @@ describe('OpenAICompatibleProvider', () => {
       tools: [],
       toolChoice: 'none',
       reasoningMode: 'provider_default',
-      responseContract: {
-        type: 'json_object',
-        name: 'character_expression',
-        jsonSchema: characterExpressionSelectionJsonSchema,
-        validateStructuredOutput: value => characterExpressionSelectionSchema.safeParse(value).success
-      }
+      responseContract: characterExpressionResponseContract
     }, new AbortController().signal)).resolves.toEqual({
-      type: 'structured', structured_output: {"moodUpdate":null,"expressionPlan":null,"requestKind":"ambient","explicitPlayback":null,"movementControl":{"kind":"keep"}}
+      type: 'structured', structured_output: emptyExpression
     });
   });
 
@@ -497,4 +490,148 @@ test.each([
   const provider = new OpenAICompatibleProvider(profile, async () => 'fixture', fetchMock);
   await expect(provider.respond(natural, new AbortController().signal)).rejects.toBeInstanceOf(Error);
   expect(fetchMock).toHaveBeenCalledOnce();
+});
+
+/** 由测试逐段推进真实字节流，首段断言发生时尚未发送终止事件。 */
+function controlledSse() {
+  let controller!: ReadableStreamDefaultController<Uint8Array>;
+  let cancelled = false;
+  const response = new Response(new ReadableStream<Uint8Array>({
+    start(value) { controller = value; },
+    cancel() { cancelled = true; }
+  }), { headers: { 'content-type': 'text/event-stream' } });
+  const encode = (text: string) => new TextEncoder().encode(text);
+  return {
+    response,
+    get cancelled() { return cancelled; },
+    bytes: (value: Uint8Array) => controller.enqueue(value),
+    delta: (delta: Record<string, unknown>) => controller.enqueue(encode(`data: ${JSON.stringify({ choices: [{ index: 0, delta, finish_reason: null }] })}\r\n\r\n`)),
+    finish: () => controller.enqueue(encode('data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n')),
+    close: () => controller.close()
+  };
+}
+
+describe('OpenAI SSE 正文传输', () => {
+  const conversation: ModelRequest = { ...request, purpose: 'conversation' };
+
+  test('DeepSeek 在流结束前逐段交付正文并发送 stream:true', async () => {
+    const sse = controlledSse();
+    const fetchMock = vi.fn<FetchLike>(async () => sse.response);
+    const provider = new OpenAICompatibleProvider({ baseUrl: profile.baseUrl, modelId: 'deepseek-chat', providerId: 'deepseek' }, async () => 'fixture', fetchMock);
+    const deltas: string[] = [];
+    let settled = false;
+    const result = provider.respond({ ...conversation, onTextDelta: delta => deltas.push(delta) }, new AbortController().signal);
+    void result.then(() => { settled = true; }, () => { settled = true; });
+    try {
+      sse.delta({ content: '第一段' });
+      await vi.waitFor(() => expect(deltas).toEqual(['第一段']), { timeout: 300 });
+      sse.delta({ content: '第二段' });
+      await vi.waitFor(() => expect(deltas).toEqual(['第一段', '第二段']), { timeout: 300 });
+      expect(settled).toBe(false);
+      expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toMatchObject({ stream: true, thinking: { type: 'disabled' }, max_tokens: 4096 });
+    } finally { sse.finish(); sse.close(); await result.catch(() => undefined); }
+    await expect(result).resolves.toEqual({ type: 'text', text: '第一段第二段' });
+  });
+
+  test('UTF8 字符和 SSE 行跨字节分片时不丢失正文', async () => {
+    const sse = controlledSse();
+    const provider = new OpenAICompatibleProvider(profile, async () => 'fixture', async () => sse.response);
+    const deltas: string[] = [];
+    const result = provider.respond({ ...conversation, onTextDelta: delta => deltas.push(delta) }, new AbortController().signal);
+    const bytes = new TextEncoder().encode('data: {"choices":[{"index":0,"delta":{"content":"你好😀"},"finish_reason":null}]}\r\n\r\n');
+    for (const byte of bytes) sse.bytes(Uint8Array.of(byte));
+    sse.finish(); sse.close();
+    await expect(result).resolves.toEqual({ type: 'text', text: '你好😀' });
+    expect(deltas).toEqual(['你好😀']);
+  });
+
+  test('正文后缺少 DONE 时拒绝完整成功', async () => {
+    const sse = controlledSse();
+    const provider = new OpenAICompatibleProvider(profile, async () => 'fixture', async () => sse.response);
+    const result = provider.respond({ ...conversation, onTextDelta: () => undefined }, new AbortController().signal);
+    sse.delta({ content: '不完整正文' }); sse.close();
+    await expect(result).rejects.toMatchObject({ code: 'STREAM_TERMINAL_MISSING', stage: 'stream' });
+  });
+
+  test('等待后续分片时取消会终止读取且不发布迟到正文', async () => {
+    const sse = controlledSse();
+    const abort = new AbortController();
+    const provider = new OpenAICompatibleProvider(profile, async () => 'fixture', async () => sse.response);
+    const deltas: string[] = [];
+    const result = provider.respond({ ...conversation, onTextDelta: delta => deltas.push(delta) }, abort.signal);
+    void result.catch(() => undefined);
+    try {
+      sse.delta({ content: '已收到' });
+      await vi.waitFor(() => expect(deltas).toEqual(['已收到']), { timeout: 300 });
+      abort.abort();
+      await expect(result).rejects.toMatchObject({ name: 'AbortError' });
+      expect(sse.cancelled).toBe(true);
+      expect(deltas).toEqual(['已收到']);
+    } finally { if (!sse.cancelled) sse.close(); await result.catch(() => undefined); }
+  });
+
+  test('工具与推理碎片只供最终校验并在工具出现后停止正文回调', async () => {
+    const sse = controlledSse();
+    const provider = new OpenAICompatibleProvider(profile, async () => 'fixture', async () => sse.response);
+    const deltas: string[] = [];
+    const result = provider.respond({ ...conversation, onTextDelta: delta => deltas.push(delta) }, new AbortController().signal);
+    sse.delta({ reasoning_content: 'reasoning-canary' });
+    sse.delta({ content: '准备查看' });
+    sse.delta({ content: '不发布', tool_calls: [{ index: 0, id: 'call-1', type: 'function', function: { name: 'read_text_', arguments: '{"relative' } }] });
+    sse.delta({ tool_calls: [{ index: 0, function: { name: 'file', arguments: 'Path":"notes.txt"}' } }] });
+    sse.delta({ content: '后续不发布' });
+    sse.finish(); sse.close();
+    await expect(result).resolves.toEqual({ type: 'tool_request', request: { requestId: 'call-1', toolName: 'read_text_file', arguments: { relativePath: 'notes.txt' } } });
+    expect(deltas).toEqual(['准备查看']);
+  });
+
+  test('正文事件带空工具数组时继续交付后续正文', async () => {
+    const sse = controlledSse();
+    const provider = new OpenAICompatibleProvider(profile, async () => 'fixture', async () => sse.response);
+    const deltas: string[] = [];
+    const result = provider.respond({ ...conversation, onTextDelta: delta => deltas.push(delta) }, new AbortController().signal);
+    sse.delta({ tool_calls: [], content: '第一段' });
+    sse.delta({ content: '第二段' }); sse.finish(); sse.close();
+    await expect(result).resolves.toEqual({ type: 'text', text: '第一段第二段' });
+    expect(deltas).toEqual(['第一段', '第二段']);
+  });
+
+  test('原始推理字段保留给本地响应策略而不进入正文回调', async () => {
+    const sse = controlledSse();
+    let observed: unknown;
+    const provider = new OpenAICompatibleProvider(profile, async () => 'fixture', async () => sse.response, {
+      body: { stream: true }, validateResponse(raw) { observed = raw; }
+    });
+    const deltas: string[] = [];
+    const result = provider.respond({ ...conversation, onTextDelta: delta => deltas.push(delta) }, new AbortController().signal);
+    sse.delta({ reasoning_content: 'reasoning-canary', content: '正文' }); sse.finish(); sse.close();
+    await expect(result).resolves.toEqual({ type: 'text', text: '正文' });
+    expect(observed).toMatchObject({ choices: [{ message: { reasoning_content: 'reasoning-canary', content: '正文' } }] });
+    expect(deltas).toEqual(['正文']);
+  });
+
+  test('策略显式关闭流式时保持完整 JSON 请求', async () => {
+    const fetchMock = vi.fn<FetchLike>(async () => jsonResponse({ choices: [{ message: { content: '完整正文' } }] }));
+    const onTextDelta = vi.fn();
+    const provider = new OpenAICompatibleProvider(profile, async () => 'fixture', fetchMock, { body: { stream: false }, validateResponse() {} });
+    await expect(provider.respond({ ...conversation, onTextDelta }, new AbortController().signal)).resolves.toEqual({ type: 'text', text: '完整正文' });
+    expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toMatchObject({ stream: false });
+    expect(onTextDelta).not.toHaveBeenCalled();
+  });
+
+  test('非 conversation 请求不会因存在增量回调而改为流式', async () => {
+    const fetchMock = vi.fn<FetchLike>(async () => jsonResponse({ choices: [{ message: { content: '完整正文' } }] }));
+    const onTextDelta = vi.fn();
+    const provider = new OpenAICompatibleProvider(profile, async () => 'fixture', fetchMock);
+    await expect(provider.respond({ ...request, onTextDelta }, new AbortController().signal)).resolves.toEqual({ type: 'text', text: '完整正文' });
+    expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body)).stream).not.toBe(true);
+    expect(onTextDelta).not.toHaveBeenCalled();
+  });
+
+  test('策略不能让非 conversation 请求绕过流式启用范围', async () => {
+    const fetchMock = vi.fn<FetchLike>(async () => jsonResponse({ choices: [{ message: { content: '完整正文' } }] }));
+    const provider = new OpenAICompatibleProvider(profile, async () => 'fixture', fetchMock, { body: { stream: true }, validateResponse() {} });
+    await expect(provider.respond(request, new AbortController().signal)).resolves.toEqual({ type: 'text', text: '完整正文' });
+    expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body)).stream).toBe(false);
+  });
 });

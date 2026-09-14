@@ -52,7 +52,7 @@ async function createBoundaryFixture() {
 }
 
 describe('Explorer 动态图层最终生产边界', () => {
-  test('设置、托盘与打包资源只保留正式入口和固定 Explorer 资源', async () => {
+  test('设置、托盘与打包资源只保留正式入口和固定 Windows 资源', async () => {
     expect(availableSettingsTabs()).toEqual(['models', 'privacy', 'local']);
     const trayLabels = buildApplicationTrayMenu({
       togglePetVisibility: vi.fn(),
@@ -67,9 +67,12 @@ describe('Explorer 动态图层最终生产边界', () => {
     ]);
     await expect(readdir(new URL('../resources/windows/', import.meta.url)))
       .resolves.toEqual([
+        'chat-pointer-observer.cs',
+        'chat-pointer-observer.ps1',
         'explorer-space-bridge.ps1',
         'explorer-space-integrity.json',
-        'explorer-space-shell-tab-helper.cs'
+        'explorer-space-shell-tab-helper.cs',
+        'installer.iss'
       ]);
   });
 

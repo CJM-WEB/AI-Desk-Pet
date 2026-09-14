@@ -168,6 +168,8 @@ export class CharacterMotionService {
   private readonly now: () => number;
   private readonly maxDeltaMs: number;
   private readonly listeners = new Set<(snapshot: CharacterMotionSnapshot) => void>();
+  /** 连续位置只由 Main 积分；原生整数及 DPI 往返误差不能成为下一帧的运动起点。 */
+  private position: CharacterMotionPoint;
   private target: CharacterMotionPoint;
   private speed = DEFAULT_SPEED;
   private arrivalToleranceDip = 0;
@@ -184,6 +186,7 @@ export class CharacterMotionService {
     this.now = options.now ?? performance.now.bind(performance);
     this.maxDeltaMs = options.maxDeltaMs ?? 100;
     const bounds = options.window.getBounds();
+    this.position = { x: bounds.x, y: bounds.y };
     this.target = { x: bounds.x, y: bounds.y };
     this.lastTickMs = this.now();
     this.latestSnapshot = {
@@ -211,6 +214,7 @@ export class CharacterMotionService {
     const bounds = this.options.window.getBounds();
     const geometry = this.options.getGeometrySnapshot();
     const constrained = geometry ? this.constrainTarget(target, geometry) : null;
+    this.position = { x: bounds.x, y: bounds.y };
     this.target = constrained ?? { x: bounds.x, y: bounds.y };
     if (this.target.x !== bounds.x) {
       this.direction = this.target.x < bounds.x ? 'left' : 'right';
@@ -224,6 +228,7 @@ export class CharacterMotionService {
     const bounds = this.options.window.getBounds();
     if (this.userMoveOwners.size > 0) {
       const position = { x: bounds.x, y: bounds.y };
+      this.position = position;
       this.target = position;
       this.lastTickMs = now;
       this.latestSnapshot = {
@@ -242,6 +247,7 @@ export class CharacterMotionService {
     const constrainedTarget = geometry ? this.constrainTarget(this.target, geometry) : null;
     if (!geometry || !constrainedTarget) {
       const position = { x: bounds.x, y: bounds.y };
+      this.position = position;
       this.target = position;
       this.lastTickMs = now;
       this.latestSnapshot = {
@@ -258,7 +264,7 @@ export class CharacterMotionService {
     }
     this.target = constrainedTarget;
     const next = advanceMotion({
-      current: { x: bounds.x, y: bounds.y },
+      current: this.position,
       target: this.target,
       speed: this.speed,
       deltaMs: Math.max(0, now - this.lastTickMs),
@@ -266,20 +272,35 @@ export class CharacterMotionService {
       arrivalToleranceDip: this.arrivalToleranceDip
     });
     const position = integerPosition(next.position);
+    const previousPosition = this.position;
+    this.position = next.position;
     if (position.x !== bounds.x || position.y !== bounds.y) {
       const native = nativePosition(position);
-      if (!native.ok) throw new Error(native.code);
+      if (!native.ok) {
+        this.position = previousPosition;
+        throw new Error(native.code);
+      }
       this.expectedProgrammaticPositions.push(position);
       if (this.expectedProgrammaticPositions.length > 64) {
         this.expectedProgrammaticPositions.shift();
       }
-      this.options.window.setPosition(native.position.x, native.position.y);
+      try {
+        // setPosition 可同步触发 move；先提交连续进度，让回执重基不会被本轮覆盖。
+        this.options.window.setPosition(native.position.x, native.position.y);
+      } catch (error) {
+        const expectedIndex = this.expectedProgrammaticPositions.indexOf(position);
+        if (expectedIndex >= 0) {
+          this.expectedProgrammaticPositions.splice(expectedIndex, 1);
+          if (this.position === next.position) this.position = previousPosition;
+        }
+        throw error;
+      }
     }
     this.lastTickMs = now;
     this.latestSnapshot = {
       revision: ++this.revision,
       timestampMs: now,
-      position,
+      position: integerPosition(this.position),
       target: { ...this.target },
       direction: this.direction,
       moving: !next.arrived,
@@ -306,6 +327,7 @@ export class CharacterMotionService {
         return;
       }
     }
+    this.position = position;
     this.target = position;
     this.lastTickMs = Math.max(this.lastTickMs, this.now());
     this.latestSnapshot = {
@@ -341,6 +363,7 @@ export class CharacterMotionService {
     this.userMoveOwners.add(source);
     this.expectedProgrammaticPositions.splice(0);
     const bounds = this.options.window.getBounds();
+    this.position = { x: bounds.x, y: bounds.y };
     this.target = { x: bounds.x, y: bounds.y };
     this.lastTickMs = Math.max(this.lastTickMs, this.now());
   }
@@ -407,6 +430,10 @@ export class CharacterMotionService {
     const consumedIndex = expectedIndex >= 0 ? expectedIndex : 0;
     const [expected] = this.expectedProgrammaticPositions.splice(consumedIndex, 1);
     if (expected && !sameProgrammaticPosition(position, expected)) {
+      this.position = {
+        x: this.position.x + position.x - expected.x,
+        y: this.position.y + position.y - expected.y
+      };
       this.target = {
         x: this.target.x + position.x - expected.x,
         y: this.target.y + position.y - expected.y
@@ -422,11 +449,14 @@ export class CharacterMotionService {
     const position = integerPosition(point);
     const bounds = this.options.window.getBounds();
     const previousTarget = { ...this.target };
+    const previousPosition = this.position;
     const delta = { x: position.x - bounds.x, y: position.y - bounds.y };
     // 布局改变窗口原点时，静止目标跟随新原点，活动目标以同一差值重基。
     this.target = this.target.x === bounds.x && this.target.y === bounds.y
       ? position
       : { x: this.target.x + delta.x, y: this.target.y + delta.y };
+    this.position = { x: this.position.x + delta.x, y: this.position.y + delta.y };
+    const rebasedPosition = this.position;
     const rebasedTarget = { ...this.target };
     this.expectedProgrammaticPositions.push(position);
     if (this.expectedProgrammaticPositions.length > 64) {
@@ -442,6 +472,7 @@ export class CharacterMotionService {
         && this.target.y === rebasedTarget.y
       ) {
         this.target = previousTarget;
+        if (this.position === rebasedPosition) this.position = previousPosition;
       }
     };
   }
@@ -451,6 +482,7 @@ export class CharacterMotionService {
     const bounds = this.options.window.getBounds();
     const geometry = this.options.getGeometrySnapshot();
     if (!geometry) {
+      this.position = { x: bounds.x, y: bounds.y };
       this.target = { x: bounds.x, y: bounds.y };
       return null;
     }
@@ -537,6 +569,7 @@ export class CharacterMotionService {
   /** 停止只撤销当前空间目标，不重置窗口、角色状态或播放调度。 */
   stop(): void {
     const bounds = this.options.window.getBounds();
+    this.position = { x: bounds.x, y: bounds.y };
     this.target = { x: bounds.x, y: bounds.y };
     this.speed = DEFAULT_SPEED;
     this.arrivalToleranceDip = 0;

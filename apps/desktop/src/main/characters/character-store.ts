@@ -34,6 +34,7 @@ import { z } from 'zod';
 import { characterMigrationReviewSchema, characterMigrationResolutionSchema, type CharacterMigrationReview, type CharacterMigrationResolution } from '../../shared/character-ipc';
 import { atomicWriteText } from '../storage/atomic-file-coordinator';
 import { characterError } from './character-errors';
+import { installOfficialDefaultBundle, recoverOfficialDefaultInstallation, type OfficialDefaultBundle } from './official-default-character-installation';
 import {
   finalizeCharacterManifestMigration,
   requirePublishedCharacterMigration,
@@ -387,6 +388,43 @@ export class CharacterStore {
   /** 返回最近一次有效索引加载产生的脱敏事务恢复裁决。 */
   getTransactionRecoveryReport(): CharacterTransactionRecoveryReport {
     return structuredClone(this.transactionRecoveryReport);
+  }
+
+  /** 仅供 Main 启动使用；未提供快照时只恢复上次中断，再由调用方校验随包内容。 */
+  installOfficialDefaultCharacter(bundle?: OfficialDefaultBundle): Promise<void> {
+    return this.enqueue(async () => {
+      let index = await this.requireWritableIndex();
+      await installOfficialDefaultBundle(bundle, {
+        directory: this.directory,
+        get index() { return index; },
+        assertPath: path => this.assertSafePath(path),
+        writeText: (path, text) => this.safeWriteText(path, text),
+        restoreIndex: async restored => {
+          index = characterIndexSchema.parse(restored);
+          await this.writeIndex(index);
+        },
+        runtimeReady: async () => {
+          if (!index.characters.some(entry => entry.id === DEFAULT_CHARACTER_ID)) return false;
+          await this.readRuntimeFrom(this.compiledDirectory(DEFAULT_CHARACTER_ID), DEFAULT_CHARACTER_ID);
+          return true;
+        },
+        installDocuments: async () => {
+          if (!bundle) return;
+          const id = DEFAULT_CHARACTER_ID;
+          await mkdir(this.draftDirectory(id), { recursive: true });
+          await mkdir(this.compiledDirectory(id), { recursive: true });
+          if (!index.characters.some(entry => entry.id === id)) {
+            index.characters.push(indexEntry(id, bundle.draft.name, bundle.draft.thumbnailAssetId ?? null));
+            await this.writeIndex(index);
+          }
+          if (!(await exists(this.draftFile(id)))) {
+            await this.safeWriteText(this.draftFile(id), json(bundle.draft));
+          }
+          await this.installDraftTransaction(id, index, bundle.draft);
+          await this.installPublishedTransaction(id, index, bundle.manifest, bundle.assets);
+        }
+      });
+    });
   }
 
   list(): Promise<CharacterSummary[]> {
@@ -1086,6 +1124,12 @@ export class CharacterStore {
 
   private async loadIndex(): Promise<LoadedIndex> {
     await this.ensureSafeRoot();
+    await recoverOfficialDefaultInstallation({
+      directory: this.directory,
+      assertPath: path => this.assertSafePath(path),
+      // 直接原子写入已校验快照，不能递归调用 loadIndex 或进入同一个队列。
+      restoreIndex: restored => this.writeIndex(characterIndexSchema.parse(restored))
+    });
     const file = this.indexFile();
     await this.assertSafePath(file);
     let source: string;

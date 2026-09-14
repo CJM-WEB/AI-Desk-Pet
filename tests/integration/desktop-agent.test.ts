@@ -15,6 +15,7 @@ import { afterEach,describe,expect,test,vi } from 'vitest';
 import { PrivacySessionRegistry } from '../../apps/desktop/src/main/agent/disclosure-policy';
 import type { ConversationBehaviorPort } from '../../apps/desktop/src/main/characters/character-behavior-director';
 import { CharacterBehaviorDirector } from '../../apps/desktop/src/main/characters/character-behavior-director';
+import { characterBehaviorRoles, type CharacterBehaviorBindings } from '../../apps/desktop/src/main/characters/character-behavior-bindings';
 import { CharacterBehaviorService } from '../../apps/desktop/src/main/characters/character-behavior-service';
 import { CharacterMotionService } from '../../apps/desktop/src/main/characters/character-motion-service';
 import { CharacterProactivityScheduler } from '../../apps/desktop/src/main/characters/character-proactivity-scheduler';
@@ -272,10 +273,12 @@ const conversationCross = conversationProfile(
 );
 
 function completeIntegrationExpression(response: ModelResponse): ModelResponse {
-  return { type: 'structured', structured_output: { moodUpdate: null, expressionPlan: null,
-    requestKind: 'ambient', explicitPlayback: null, movementControl: { kind: 'keep' },
+  return { type: 'structured', structured_output: { kind: 'none', choice: null, mode: 'keep', target: null, distance: null,
     ...(response.type === 'text' ? response.structured_output : {}) } };
 }
+
+// 用途准备与本轮表现是不同的正式请求；空绑定是完整的九键无匹配结果。
+const emptyBindings = () => Object.fromEntries(characterBehaviorRoles.map(role => [role, null])) as CharacterBehaviorBindings;
 
 function conversationIntegrationHarness(input: {
   responses: Array<string | ModelResponse>;
@@ -285,6 +288,7 @@ function conversationIntegrationHarness(input: {
   assertProviderReady?: (profile: ProviderProfileV2) => void;
   incognito?: boolean;
   behavior?: ConversationBehaviorPort;
+  bindings?: CharacterBehaviorBindings;
   createChatAdapter?: () => ConversationChatAdapter;
   createCodingTaskService?: (
     factoryInput: MainConversationCodingTaskFactoryInput<{ dataCategories: { memory: boolean } }>
@@ -310,6 +314,7 @@ function conversationIntegrationHarness(input: {
   const events: TaskEvent[] = [];
   const chatRequests: Array<{ profileId: string; request: Parameters<ModelProvider['respond']>[0] }> = [];
   const expressionRequests: Array<Parameters<ModelProvider['respond']>[0]> = [];
+  const bindingRequests: Array<Parameters<ModelProvider['respond']>[0]> = [];
   let pendingExpression: ModelResponse = { type: 'text', text: '' };
   const fileSubmissions: Array<{
     text: string;
@@ -343,6 +348,10 @@ function conversationIntegrationHarness(input: {
     createChatAdapter: profile => input.createChatAdapter?.() ?? new ConversationChatAdapter({
       async respond(request) {
         if (request.responseContract) {
+          if (request.responseContract.jsonSchema.properties && 'chatting' in request.responseContract.jsonSchema.properties) {
+            bindingRequests.push(request);
+            return { type: 'structured', structured_output: input.bindings ?? emptyBindings() };
+          }
           expressionRequests.push(request);
           return completeIntegrationExpression(pendingExpression);
         }
@@ -362,7 +371,7 @@ function conversationIntegrationHarness(input: {
   });
   return {
     codingTaskFactoryInputs,
-    chatRequests, expressionRequests,
+    chatRequests, expressionRequests, bindingRequests,
     composition,
     createCodingTaskService,
     events,
@@ -427,7 +436,7 @@ async function behaviorDirectorIntegrationFixture(now = performance.now.bind(per
     saveMovementMode, publishNotice: notice => notices.push(notice)
   });
   saveMovementMode.mockImplementation(async movementMode => {
-    director.applyBehaviorSettings({ movementMode, proactivityMode: 'assistive' });
+    director.applyBehaviorSettings({ movementMode, proactivityMode: director.getChatContext().proactivityMode });
   });
   return { behavior, director, motion, notices, saveMovementMode };
 }
@@ -719,15 +728,13 @@ describe('桌面会话分流纵向集成', () => {
   });
 
   test.each(['focus-action', 'celebrate-action'])(
-    '普通聊天顺序两请求按自定义状态与动作 ID %s 提交正文和表现', async actionId => {
+    '用途准备后按自定义状态与动作 ID %s 提交正文和独立表现', async actionId => {
       const behaviorFixture = await behaviorDirectorIntegrationFixture();
       const fixture = conversationIntegrationHarness({
         responses: [{
           type: 'text', text: '正文与动作来自独立响应',
           structured_output: {
-            moodUpdate: { summary: '认真而欣喜', strength: 0.8 },
-            expressionPlan: { states: [{ stateId: 'agent-focus', score: 1,
-              activity: null, actions: [{ actionId, score: 1 }] }] }
+            kind: 'reaction', choice: { stateId: 'agent-focus', actionId }
           }
         }],
         behavior: behaviorFixture.director
@@ -741,15 +748,17 @@ describe('桌面会话分流纵向集成', () => {
       });
       expect(fixture.chatRequests[0]?.request.responseContract).toBeUndefined();
       expect(fixture.expressionRequests).toHaveLength(1);
+      expect(fixture.bindingRequests).toHaveLength(1);
+      expect(fixture.bindingRequests[0]).toMatchObject({ tools: [], toolChoice: 'none' });
       expect(fixture.expressionRequests[0]).toMatchObject({
         tools: [], toolChoice: 'none', responseContract: { name: 'character_expression' }
       });
       expect(fixture.events).toContainEqual({
         type: 'message', role: 'assistant', text: '正文与动作来自独立响应'
       });
-      expect(behaviorFixture.behavior.snapshot()).toMatchObject({
+      await vi.waitFor(() => expect(behaviorFixture.behavior.snapshot()).toMatchObject({
         stateId: 'agent-focus', schedule: { current: { actionId } }
-      });
+      }));
       await fixture.composition.close();
     }
   );
@@ -762,7 +771,9 @@ describe('桌面会话分流纵向集成', () => {
     expect(behaviorFixture.motion.requestIntent).not.toHaveBeenCalled();
     now = 8000; behaviorFixture.director.advance();
     expect(behaviorFixture.motion.requestIntent).not.toHaveBeenCalled();
-    expect(behaviorFixture.notices).toContainEqual({ code: 'CHARACTER_ACTION_UNAVAILABLE', message: '请先配置对应状态和动作。' });
+    await expect.poll(() => behaviorFixture.notices).toEqual(expect.arrayContaining([
+      { code: 'CHARACTER_ACTION_UNAVAILABLE', message: '请先配置对应状态和动作。' }
+    ]));
     await fixture.composition.close();
   });
 
@@ -773,8 +784,7 @@ describe('桌面会话分流纵向集成', () => {
         type: 'text',
         text: '仍然保留的自然正文',
         structured_output: {
-          expressionPlan: { states: [{ stateId: 'agent-focus', score: 1,
-            activity: null, actions: [{ actionId: 'missing-action', score: 1 }] }] }
+          kind: 'reaction', choice: { stateId: 'agent-focus', actionId: 'missing-action' }
         }
       }],
       behavior: behaviorFixture.director
@@ -787,6 +797,8 @@ describe('桌面会话分流纵向集成', () => {
     });
     expect(fixture.chatRequests).toHaveLength(1);
     expect(fixture.expressionRequests).toHaveLength(1);
+    expect(fixture.bindingRequests).toHaveLength(1);
+    expect(fixture.bindingRequests[0]).toMatchObject({ tools: [], toolChoice: 'none' });
     expect(behaviorFixture.behavior.snapshot()?.schedule.current?.actionId).toBe('breathe');
     await fixture.composition.close();
   });
@@ -817,18 +829,24 @@ describe('桌面会话分流纵向集成', () => {
 
   test('普通聊天 set_mode(1) 经唯一控制入口持久化，并由 Scheduler 请求持续运动', async () => {
     const behaviorFixture = await behaviorDirectorIntegrationFixture();
+    // 已显示角色先确认待机首帧，后续移动仍须确认它自己的准备 token。
+    acknowledgePreparedPlayback(behaviorFixture);
     const fixture = conversationIntegrationHarness({
+      bindings: { ...emptyBindings(), moving: { stateId: 'agent-focus', actionId: 'focus-action' } },
       responses: [{
         type: 'text',
         text: '我会继续活动。',
         structured_output: {
-          movementControl: { kind: 'set_mode', mode: 1 }, expressionPlan: { states: [{ stateId: 'agent-focus', score: 1, activity: 'moving', actions: [{ actionId: 'focus-action', score: 1 }] }] }
+          kind: 'movement', mode: 'continuous', choice: { stateId: 'agent-focus', actionId: 'focus-action' }
         }
       }],
       behavior: behaviorFixture.director
     });
 
     await fixture.composition.coordinator.submit('请陪我一直活动');
+    await vi.waitFor(() => expect(behaviorFixture.director.getActivityBlockers()).toMatchObject({
+      movementMode: 1, movementModeTransition: false
+    }));
     behaviorFixture.director.requestPersistentMovement();
     expect(behaviorFixture.motion.requestIntent).not.toHaveBeenCalled();
     acknowledgePreparedPlayback(behaviorFixture);
@@ -859,23 +877,29 @@ describe('桌面会话分流纵向集成', () => {
   test('Provider 的 mode=2 在 passive 主动性下仍由 10 秒时钟请求真实运动', async () => {
     vi.useFakeTimers();
     const behaviorFixture = await behaviorDirectorIntegrationFixture();
+    acknowledgePreparedPlayback(behaviorFixture);
+    const completeExpression = vi.spyOn(behaviorFixture.director, 'completeUserPrompt');
     behaviorFixture.director.applyBehaviorSettings({ movementMode: 2, proactivityMode: 'passive' });
     const scheduler = new CharacterProactivityScheduler({
       director: behaviorFixture.director,
       random: () => 0
     });
     const fixture = conversationIntegrationHarness({
+      bindings: { ...emptyBindings(), moving: { stateId: 'agent-focus', actionId: 'focus-action' } },
       responses: [{
         type: 'text',
         text: '我会偶尔走动。',
         structured_output: {
-          movementControl: { kind: 'set_mode', mode: 2 }, expressionPlan: { states: [{ stateId: 'agent-focus', score: 1, activity: 'moving', actions: [{ actionId: 'focus-action', score: 1 }] }] }
+          kind: 'movement', mode: 'intermittent', choice: { stateId: 'agent-focus', actionId: 'focus-action' }
         }
       }],
       behavior: behaviorFixture.director
     });
     try {
       await fixture.composition.coordinator.submit('请自行安排休闲节奏');
+      // 正文完成不等于独立表现已接纳；从模式提交结算后开始测量十秒时钟。
+      await vi.waitFor(() => expect(completeExpression).toHaveBeenCalledOnce());
+      await completeExpression.mock.results[0]!.value;
       scheduler.start();
       await vi.advanceTimersByTimeAsync(9_999);
       expect(behaviorFixture.motion.requestIntent).not.toHaveBeenCalled();
@@ -923,13 +947,14 @@ describe('桌面会话分流纵向集成', () => {
     await fixture.composition.close();
   });
 
-  test('真实 HTTP Provider 顺序发送正文与独立表现', async () => {
+  test('真实 HTTP Provider 完成用途准备后分别接纳正文与独立表现', async () => {
     const providerServer = await startProviderServer([
+      { response: { type: 'structured', structured_output: emptyBindings() }, inspect: request => {
+        expect(request.tools).toEqual([]); expect(request.toolChoice).toBe('none');
+      } },
       { response: { type: 'text', text: 'fixture 独立正文' } },
       { response: { type: 'structured', structured_output: {
-        moodUpdate: { summary: '认真而欣喜', strength: 0.8 }, movementControl: { kind: 'keep' },
-        requestKind: 'ambient', explicitPlayback: null,
-        expressionPlan: { states: [{ stateId: 'agent-focus', score: 1, activity: null, actions: [{ actionId: 'celebrate-action', score: 1 }] }] }
+        kind: 'reaction', choice: { stateId: 'agent-focus', actionId: 'celebrate-action' }, mode: 'keep', target: null, distance: null
       } } }
     ]);
     servers.push(providerServer);
@@ -950,9 +975,11 @@ describe('桌面会话分流纵向集成', () => {
     expect(fixture.events).toContainEqual({
       type: 'message', role: 'assistant', text: 'fixture 独立正文'
     });
-    expect(behaviorFixture.behavior.snapshot()).toMatchObject({
+    await vi.waitFor(() => expect(behaviorFixture.behavior.snapshot()).toMatchObject({
       stateId: 'agent-focus', schedule: { current: { actionId: 'celebrate-action' } }
-    });
+    }));
+    providerServer.assertComplete();
+    expect(providerServer.inspectionErrors).toEqual([]);
     await fixture.composition.close();
   });
 });
@@ -1031,10 +1058,12 @@ describe('桌面 Agent 真实服务集成', () => {
       expect(behavior.snapshot()).toMatchObject({
         stateId: 'agent-focus', mood: { summary: '安心陪伴' }
       });
+      const beforeLateFeedback = behavior.snapshot();
       expect(() => behavior.applyPlaybackFeedback({
         playbackToken: initialIdle.playbackToken, actionId: initialIdle.actionId,
         status: 'started', occurredAtMs: now
-      })).toThrow('CHARACTER_PLAYBACK_UNAUTHORIZED');
+      })).not.toThrow();
+      expect(behavior.snapshot()).toEqual(beforeLateFeedback);
       const beforeLateCompletion = behavior.snapshot();
       expect(() => behavior.applyPlaybackFeedback({
         playbackToken: initialIdle.playbackToken, actionId: initialIdle.actionId,
@@ -1092,8 +1121,7 @@ describe('桌面 Agent 真实服务集成', () => {
 
       child.send({ type: 'release_decode' });
       await expect(compileResult).resolves.toMatchObject({
-        width: 2,
-        height: 2,
+        pages: [{ width: 2, height: 2 }],
         frameCount: 1
       });
     } finally {

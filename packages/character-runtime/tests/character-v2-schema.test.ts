@@ -364,12 +364,11 @@ describe('角色包 V2 严格契约', () => {
       }
     },
     {
-      name: '累计帧面积超过画布预算',
+      name: '帧矩形超出单页边界',
       mutate(manifest: ReturnType<typeof createCharacterManifestV2Fixture>) {
         const frame = manifest.skins[0]!.presentations[0]!.frames[0]!;
         manifest.skins[0]!.presentations[0]!.frames = [
-          { ...frame, id: 'frame-a', width: 4096, height: 4096 },
-          { ...frame, id: 'frame-b', width: 1, height: 1 }
+          { ...frame, id: 'frame-a', x: 4096, width: 1, height: 1 }
         ];
       }
     },

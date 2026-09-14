@@ -2,7 +2,8 @@ import { request as httpRequest } from 'node:http';
 import { describe, expect, test, vi } from 'vitest';
 import {
   createProviderResponseGate,
-  startProviderServer
+  startProviderServer,
+  type ProviderStep
 } from '../fixtures/provider-server';
 
 /** 保持正文流未结束，证明边界响应不依赖正文读取完成。 */
@@ -32,6 +33,101 @@ function requestStatusBeforeBodyEnds(
 }
 
 describe('脚本化 Provider 生命周期', () => {
+  // 通过真实 HTTP 交错验证脚本消费，不依赖网络调度的偶然顺序。
+  const postScriptRequest = (provider: Awaited<ReturnType<typeof startProviderServer>>, kind: string) => fetch(`${provider.baseUrl}/chat/completions`, {
+    method: 'POST',
+    headers: { authorization: `Bearer ${provider.apiKey}`, 'content-type': 'application/json' },
+    body: JSON.stringify({ messages: [{ role: 'user', content: kind }], tools: kind === 'main' ? [{}] : [],
+      ...(kind === 'expression' ? { response_format: { type: 'json_object' } } : {}) })
+  });
+  const matchedStep = (group: symbol, kind: string): ProviderStep => ({
+    concurrent: { group, match: request => request.messages[0]?.content === kind },
+    response: { type: 'text', text: `${kind}-reply` }
+  });
+
+  test.each(['main', 'expression'])('同一并发组以 %s 先到时主请求和表现各消费一次并保留 gate 与检查器', async first => {
+    const group = Symbol('同一轮');
+    const gate = createProviderResponseGate();
+    const inspected: string[] = [];
+    const provider = await startProviderServer(['main', 'expression'].map(kind => ({
+      ...matchedStep(group, kind), gate,
+      inspect: request => {
+        expect(request.tools).toHaveLength(kind === 'main' ? 1 : 0);
+        expect(request.responseFormatWasJsonObject).toBe(kind === 'expression');
+        inspected.push(kind);
+      },
+      inspectRaw: request => { expect(request.messages).toEqual([{ role: 'user', content: kind }]); }
+    })));
+    const firstResponse = postScriptRequest(provider, first);
+    let secondResponse: Promise<Response> | undefined;
+    try {
+      await vi.waitFor(() => expect(gate.isWaiting()).toBe(true));
+      const second = first === 'main' ? 'expression' : 'main';
+      secondResponse = postScriptRequest(provider, second);
+      await vi.waitFor(() => expect(provider.requests).toHaveLength(2));
+      gate.release();
+      const replies = await Promise.all([firstResponse, secondResponse].map(async pending => (await (await pending).json()).choices[0].message.content));
+      expect(replies).toEqual([`${first}-reply`, `${second}-reply`]);
+      expect(inspected).toEqual([first, second]);
+      expect(provider.inspectionErrors).toEqual([]);
+      expect(provider.remainingSteps()).toBe(0);
+      provider.assertComplete();
+      expect((await postScriptRequest(provider, first)).status).toBe(500);
+      expect(() => provider.assertComplete()).toThrow('1 个额外请求');
+    } finally {
+      gate.release();
+      await Promise.allSettled([firstResponse, ...(secondResponse ? [secondResponse] : [])]);
+      await provider.close();
+    }
+  });
+
+  test.each(['unknown', 'future'])('并发组拒绝 %s 请求且不消费当前组或跨越后续组', async unexpected => {
+    const group = Symbol('当前轮');
+    const provider = await startProviderServer([
+      matchedStep(group, 'main'), matchedStep(group, 'expression'), matchedStep(Symbol('后续轮'), 'future')
+    ]);
+    try {
+      expect((await postScriptRequest(provider, unexpected)).status).toBe(500);
+      expect(provider.remainingSteps()).toBe(3);
+      for (const kind of ['expression', 'main', 'future']) expect((await postScriptRequest(provider, kind)).status).toBe(200);
+      expect(provider.remainingSteps()).toBe(0);
+      expect(() => provider.assertComplete()).toThrow('1 个额外请求');
+    } finally { await provider.close(); }
+  });
+
+  test.each(['ambiguous', 'throws'])('并发匹配 %s 时拒绝请求且不泄露检查内容', async mode => {
+    const group = Symbol('同一轮');
+    const provider = await startProviderServer([
+      { ...matchedStep(group, 'main'), concurrent: { group, match: () => {
+        if (mode === 'throws') throw new Error('私密匹配正文');
+        return true;
+      } } },
+      matchedStep(group, 'main')
+    ]);
+    try {
+      const response = await postScriptRequest(provider, 'main');
+      expect(response.status).toBe(500);
+      expect(provider.remainingSteps()).toBe(2);
+      expect(await response.text()).not.toContain('私密匹配正文');
+      expect(JSON.stringify(provider.inspectionErrors)).not.toContain('私密匹配正文');
+      expect(() => provider.assertComplete()).toThrow();
+    } finally { await provider.close(); }
+  });
+
+  test('无并发组仍按 FIFO 消费并保留 inspection 失败', async () => {
+    const provider = await startProviderServer([
+      { response: { type: 'text', text: '第一步' }, inspect: () => { throw new Error('检查失败'); } },
+      { response: { type: 'text', text: '第二步' } }
+    ]);
+    try {
+      const first = await (await postScriptRequest(provider, 'expression')).json();
+      const second = await (await postScriptRequest(provider, 'main')).json();
+      expect([first.choices[0].message.content, second.choices[0].message.content]).toEqual(['第一步', '第二步']);
+      expect(provider.inspectionErrors).toEqual(['脚本化 Provider 请求检查失败']);
+      provider.assertComplete();
+    } finally { await provider.close(); }
+  });
+
   test('Core SSE 保留参数分片、多调用标识与工具结果关联', async () => {
     const frames = [
       { choices: [{ index: 0, delta: { tool_calls: [{ index: 0, id: 'read-a', type: 'function', function: { name: 'read', arguments: '{"path":' } }, { index: 1, id: 'read-b', type: 'function', function: { name: 'read', arguments: '{"path":' } }] }, finish_reason: null }] },
@@ -128,13 +224,9 @@ describe('脚本化 Provider 生命周期', () => {
   test('结构化响应按真实 JSON Output 线格式返回且请求仍为零工具', async () => {
     const provider = await startProviderServer([{
       response: {
-        type: 'text',
-        text: '向左移动',
+        type: 'structured',
         structured_output: {
-          text: '向左移动',
-          moodUpdate: null,
-          expressionPlan: null,
-          movementControl: { kind: 'move_once', target: 'left', distance: 'near' }
+          kind: 'movement', choice: null, mode: 'once', target: 'left', distance: 'near'
         }
       },
       inspect: request => {
@@ -159,10 +251,7 @@ describe('脚本化 Provider 生命周期', () => {
         choices: Array<{ message: { content: string; metadata?: unknown } }>;
       };
       expect(JSON.parse(payload.choices[0]!.message.content)).toEqual({
-        text: '向左移动',
-        moodUpdate: null,
-        expressionPlan: null,
-        movementControl: { kind: 'move_once', target: 'left', distance: 'near' }
+        kind: 'movement', choice: null, mode: 'once', target: 'left', distance: 'near'
       });
       expect(payload.choices[0]!.message).not.toHaveProperty('metadata');
       provider.assertComplete();

@@ -35,7 +35,7 @@ const WEBP_BYTES = new Uint8Array(Buffer.from(
 const OVERSIZED_WEBP_FIXTURES = [
   [
     'VP8',
-    'UklGRsQAAABXRUJQVlA4ILgAAABwEQCdASoBEAEAPm02mUmkIyKhICgAgA2JaW7hd2Ee3AfgAAAT2Ae+2TkPfbJyHvtk5D32ych77ZOQ99snIe+2TkPfbJyHvtk5D32ych77ZOQ99snIe+2TkPfbJyHvtk5D32ych77ZOQ99snIe+2TkPfbJyHvtk5D32ych77ZOQ99snIe+2TkPfbJyHvtk5D32ych77ZOQ99snH8AD+/uB7///yC5YXXI1///ID/kB/yA//j4pqtOBAAAAAAAAAA'
+    'UklGRsQAAABXRUJQVlA4ILgAAABwEQCdASoBEAEAPm02mUmkIyKhICgAgA2JaW7hd2Ee3AfgAAAT2Ae+2TkPfbJyHvtk5D32ych77ZOQ99snIe+2TkPfbJyHvtk5D32ych77ZOQ99snIe+2TkPfbJyHvtk5D32ych77ZOQ99snIe+2TkPfbJyHvtk5D32ych77ZOQ99snIe+2TkPfbJyHvtk5D32ycfwAP7/uB7///yC5YXXI1///ID/kB/yA//j4pqtOBAAAAAAAAAA'
   ],
   [
     'VP8L',
@@ -49,6 +49,17 @@ const OVERSIZED_WEBP_FIXTURES = [
 
 function sha256(bytes: Uint8Array): string {
   return createHash('sha256').update(bytes).digest('hex');
+}
+
+/** WebP 允许未知块；保留完整 1×1 图像，以 JUNK 验证压缩文件字节而不解码大位图。 */
+function webpBeyondPreviousByteLimit(): Uint8Array {
+  const junkSize = 32 * 1024 * 1024;
+  const bytes = Buffer.alloc(WEBP_BYTES.byteLength + 8 + junkSize);
+  bytes.set(WEBP_BYTES);
+  bytes.writeUInt32LE(bytes.byteLength - 8, 4);
+  bytes.write('JUNK', WEBP_BYTES.byteLength);
+  bytes.writeUInt32LE(junkSize, WEBP_BYTES.byteLength + 4);
+  return bytes;
 }
 
 async function writeSparseImage(
@@ -189,17 +200,32 @@ describe('角色素材 Main 安全边界', () => {
   });
 
   test.each(OVERSIZED_WEBP_FIXTURES)(
-    '%s 分支拒绝超过 maxFrameDimension 的真实可解码 WebP',
+    '%s 源图接受真实 4097×1 WebP，重建服务后仍可读取和校验编译来源',
     async (branch, base64) => {
       const oversized = join(selectedDirectory, `${branch}.webp`);
-      await writeFile(oversized, Buffer.from(base64, 'base64'));
+      const bytes = Buffer.from(base64, 'base64');
+      await writeFile(oversized, bytes);
 
-      await expect(new CharacterAssetService(charactersDirectory).importSources(
-        'demo',
-        [oversized]
-      )).rejects.toThrow('CHARACTER_SOURCE_STRUCTURE_INVALID');
-      await expect(readdir(join(characterDirectory, 'source'))).resolves.toEqual([]);
-    }
+      const [source] = await new CharacterAssetService(charactersDirectory)
+        .importSources('demo', [oversized]);
+      const reopened = new CharacterAssetService(charactersDirectory);
+      expect(await reopened.listSources('demo')).toEqual([source]);
+      expect(await reopened.readSource('demo', source!.assetId)).toEqual(new Uint8Array(bytes));
+      await expect(reopened.saveCompiled('demo', {
+        assetId: 'wide-source-atlas',
+        mimeType: 'image/png',
+        bytes: PNG_BYTES,
+        sourceChecksums: { [source!.assetId]: source!.sha256 }
+      })).resolves.toBeUndefined();
+      await expect(reopened.saveCompiled('demo', {
+        assetId: 'oversized-atlas',
+        mimeType: 'image/webp',
+        bytes,
+        sourceChecksums: { [source!.assetId]: source!.sha256 }
+      })).rejects.toThrow('CHARACTER_COMPILED_STRUCTURE_INVALID');
+    },
+    // 包含导入、重建读取与两次落盘校验；给 Windows 全量并行回归保留有限 I/O 余量。
+    15_000
   );
 
   test('超过单批总数上限时在读取文件前拒绝', async () => {
@@ -214,34 +240,40 @@ describe('角色素材 Main 安全边界', () => {
     )).rejects.toThrow('CHARACTER_SOURCE_COUNT_EXCEEDED');
   });
 
-  test('超过单文件大小上限时拒绝且不复制', async () => {
-    const oversized = join(selectedDirectory, 'oversized.png');
-    await writeSparseImage(
-      oversized,
-      CHARACTER_RESOURCE_LIMITS.maxSourceBytesPerFile + 1,
-      PNG_BYTES.subarray(0, 8)
-    );
+  test('超过旧 32 MiB 的完整 WebP 可导入并在重建服务后校验读取', async () => {
+    const oversized = join(selectedDirectory, 'oversized.webp');
+    const bytes = webpBeyondPreviousByteLimit();
+    await writeFile(oversized, bytes);
 
-    await expect(new CharacterAssetService(charactersDirectory).importSources(
-      'demo',
-      [oversized]
-    )).rejects.toThrow('CHARACTER_SOURCE_FILE_TOO_LARGE');
-    await expect(readdir(join(characterDirectory, 'source'))).resolves.toEqual([]);
+    const [source] = await new CharacterAssetService(charactersDirectory)
+      .importSources('demo', [oversized]);
+    expect(source!.byteLength).toBeGreaterThan(32 * 1024 * 1024);
+    const reopened = new CharacterAssetService(charactersDirectory);
+    expect(await reopened.listSources('demo')).toEqual([source]);
+    const restored = await reopened.readSource('demo', source!.assetId);
+    expect(restored.byteLength).toBe(bytes.byteLength);
+    expect(sha256(restored)).toBe(sha256(bytes));
+    await expect(reopened.saveCompiled('demo', {
+      assetId: 'oversized-bytes-atlas',
+      mimeType: 'image/webp',
+      bytes,
+      sourceChecksums: { [source!.assetId]: source!.sha256 }
+    })).rejects.toThrow('CHARACTER_COMPILED_FILE_TOO_LARGE');
   });
 
-  test('已有素材与新素材超过角色总字节上限时拒绝', async () => {
+  test('已有源目录超过旧 512 MiB 总量时仍可导入新素材', async () => {
     await writeSparseImage(
       join(characterDirectory, 'source', `${randomUUID()}.png`),
-      CHARACTER_RESOURCE_LIMITS.maxTotalSourceBytesPerCharacter - 4,
+      512 * 1024 * 1024 + 1,
       PNG_BYTES.subarray(0, 8)
     );
     const selected = join(selectedDirectory, 'next.png');
     await writeFile(selected, PNG_BYTES);
 
-    await expect(new CharacterAssetService(charactersDirectory).importSources(
-      'demo',
-      [selected]
-    )).rejects.toThrow('CHARACTER_SOURCE_TOTAL_BYTES_EXCEEDED');
+    const [source] = await new CharacterAssetService(charactersDirectory)
+      .importSources('demo', [selected]);
+    expect(await new CharacterAssetService(charactersDirectory)
+      .readSource('demo', source!.assetId)).toEqual(PNG_BYTES);
   });
 
   test('非法角色标识和不存在的角色均不能生成存储路径', async () => {

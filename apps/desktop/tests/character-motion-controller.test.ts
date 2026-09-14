@@ -1,6 +1,5 @@
 import { describe, expect, test, vi } from 'vitest';
 import {
-  CharacterMotionController,
   advanceMotion,
   resolveDesktopAnchor
 } from '../src/renderer/src/characters/player/character-motion-controller';
@@ -195,149 +194,123 @@ describe('Renderer 角色运动控制器', () => {
       .toEqual({ x: 130, y: 280 });
   });
 
-  test('忽略乱序和重复快照并限制插值时间差', () => {
-    const controller = new CharacterMotionController({
-      position: { x: 0, y: 0 },
-      speed: 100,
-      maxDeltaMs: 100
+});
+
+describe('Main 高频连续积分', () => {
+  /** 窗口只保存整数，独立时钟与同步 move 回执用于复现真实原生边界的量化。 */
+  function fixture(options: { offsetX?: number; failFirst?: boolean } = {}) {
+    let now = 0;
+    let bounds = { x: 100, y: 100, width: 180, height: 220 };
+    let geometryReady = true;
+    let failNext = options.failFirst ?? false;
+    const service = createMotionService({
+      now: () => now,
+      window: {
+        getBounds: () => bounds,
+        setPosition: (x, y) => {
+          if (failNext) { failNext = false; throw new Error('原生窗口拒绝定位'); }
+          bounds = { ...bounds, x: x + (options.offsetX ?? 0), y };
+          service.acknowledgeProgrammaticWindowMove();
+        }
+      },
+      getWorkAreas: () => [{ x: 0, y: 0, width: 3000, height: 2000 }],
+      getGeometrySnapshot: () => geometryReady ? {
+        revision: 1, characterId: 'demo', scale: 1,
+        footAnchorDip: { x: bounds.x + 90, y: bounds.y + 220 },
+        visualBoundsInWindowDip: { x: 0, y: 0, width: 180, height: 220 },
+        windowBoundsDip: bounds, displayId: 'legacy-display-0'
+      } : null
     });
-    expect(controller.accept({
-      revision: 1,
-      timestampMs: 0,
-      position: { x: 0, y: 0 },
-      target: { x: 100, y: 0 },
-      direction: 'right',
-      moving: true,
-      carrying: false
-    })).toBe(true);
-    expect(controller.accept({
-      revision: 2,
-      timestampMs: 9_000_000,
-      position: { x: 20, y: 0 },
-      target: { x: 100, y: 0 },
-      direction: 'right',
-      moving: true,
-      carrying: false
-    })).toBe(true);
-    expect(controller.accept({
-      revision: 2,
-      timestampMs: 101,
-      position: { x: 99, y: 0 },
-      target: { x: 99, y: 0 },
-      direction: 'left',
-      moving: false,
-      carrying: false
-    })).toBe(false);
-    expect(controller.advance(1_000).position.x).toBe(0);
-    expect(controller.advance(1_050).position.x).toBe(5);
-    expect(controller.advance(10_000).position.x).toBe(15);
+    return { service, bounds: () => bounds,
+      tick: (elapsedMs = 16) => { now += elapsedMs; return service.tick(); },
+      setGeometryReady: (ready: boolean) => { geometryReady = ready; },
+      place: (x: number, y: number) => { bounds = { ...bounds, x, y }; }
+    };
+  }
+
+  test.each([0, 150])('16 ms 连续运动不改变速度，斜向短轴 %s 不被每步取整丢失', deltaY => {
+    const f = fixture();
+    f.service.moveTo({ x: 1100, y: 100 + deltaY });
+    for (let step = 0; step < 62; step++) f.tick();
+    const distance = 160 * 0.992;
+    const length = Math.hypot(1000, deltaY);
+    expect(Math.abs(f.bounds().x - 100 - distance * 1000 / length)).toBeLessThanOrEqual(0.5);
+    expect(Math.abs(f.bounds().y - 100 - distance * deltaY / length)).toBeLessThanOrEqual(0.5);
   });
 
-  test('Main 时间戳远大于或小于 RAF 时间原点时仍只使用本地 delta', () => {
-    for (const mainTimestamp of [1, 9_000_000_000]) {
-      const controller = new CharacterMotionController({
-        position: { x: 0, y: 0 },
-        speed: 100,
-        maxDeltaMs: 100
-      });
-      controller.accept({
-        revision: 1,
-        timestampMs: mainTimestamp,
-        position: { x: 0, y: 0 },
-        target: { x: 0, y: 0 },
-        direction: 'right',
-        moving: false,
-        carrying: false
-      });
-      controller.accept({
-        revision: 2,
-        timestampMs: mainTimestamp + 10,
-        position: { x: 20, y: 0 },
-        target: { x: 100, y: 0 },
-        direction: 'right',
-        moving: true,
-        carrying: false
-      });
-      expect(controller.advance(500).position.x).toBe(0);
-      expect(controller.advance(550).position.x).toBe(5);
-    }
+  test.each([-2, 2])('同步原生回执存在 %s DIP 往返误差时不将误差反复积分', offsetX => {
+    const f = fixture({ offsetX });
+    f.service.moveTo({ x: 1100, y: 100 });
+    for (let step = 0; step < 62; step++) f.tick();
+    expect(Math.abs(f.bounds().x - 100 - 160 * 0.992)).toBeLessThanOrEqual(2.5);
+    expect(f.service.getSnapshot().target).toEqual({ x: 1100, y: 100 });
   });
 
-  test('连续接收 Main 160px/s 长距离快照时视觉残差有界并最终收敛', () => {
-    const controller = new CharacterMotionController({
-      position: { x: 0, y: 0 },
-      maxDeltaMs: 100
-    });
-    controller.accept({
-      revision: 1,
-      timestampMs: 0,
-      position: { x: 0, y: 0 },
-      target: { x: 320, y: 0 },
-      direction: 'right',
-      moving: true,
-      carrying: false
-    });
-    controller.advance(0);
-
-    for (let index = 1; index <= 20; index += 1) {
-      const mainX = index * 8;
-      controller.accept({
-        revision: index + 1,
-        timestampMs: index * 50,
-        position: { x: mainX, y: 0 },
-        target: { x: 320, y: 0 },
-        direction: 'right',
-        moving: true,
-        carrying: false
-      });
-      const visual = controller.advance(index * 50);
-      expect(Math.abs(visual.position.x - mainX)).toBeLessThanOrEqual(48);
+  test.each(['stop', 'moveTo', 'drag'] as const)('%s 后从实际窗口位置开始新段，不沿用旧小数位置', boundary => {
+    const f = fixture();
+    f.service.moveTo({ x: 1100, y: 100 });
+    f.tick();
+    if (boundary === 'stop') f.service.stop();
+    if (boundary === 'drag') {
+      f.service.beginUserMove(undefined, 'controller');
+      f.place(300, 200);
+      f.service.endUserMove('controller');
     }
-
-    controller.accept({
-      revision: 22,
-      timestampMs: 1_050,
-      position: { x: 160, y: 0 },
-      target: { x: 160, y: 0 },
-      direction: 'right',
-      moving: false,
-      carrying: false
-    });
-    for (let frame = 1; frame <= 10; frame += 1) {
-      controller.advance(1_050 + frame * 50);
-    }
-    expect(controller.advance(1_600).position.x).toBe(160);
+    const origin = f.bounds();
+    f.service.moveTo({ x: origin.x + 1000, y: origin.y });
+    f.tick();
+    expect(f.bounds().x).toBe(origin.x + 3);
+    expect(f.bounds().y).toBe(origin.y);
   });
 
-  test('用户拖拽的非运动权威快照立即清零表现残差', () => {
-    const controller = new CharacterMotionController({
-      position: { x: 0, y: 0 },
-      speed: 100,
-      maxResidualPx: 48
-    });
-    controller.accept({
-      revision: 1,
-      timestampMs: 0,
-      position: { x: 0, y: 0 },
-      target: { x: 300, y: 0 },
-      direction: 'right',
-      moving: true,
-      carrying: false
-    });
-    controller.advance(0);
-    controller.accept({
-      revision: 2,
-      timestampMs: 50,
-      position: { x: 180, y: 90 },
-      target: { x: 180, y: 90 },
-      direction: 'right',
-      moving: false,
-      carrying: false
-    });
+  test.each(['confirm', 'hidden', 'cancel'] as const)('几何重基 %s 保留小数进度，失败仅撤销尚未发生的布局', outcome => {
+    const f = fixture();
+    f.service.moveTo({ x: 1100, y: 100 });
+    f.tick();
+    const cancel = f.service.expectProgrammaticPosition({ x: 113, y: 100 });
+    if (outcome === 'cancel') cancel();
+    else {
+      f.place(113, 100);
+      if (outcome === 'confirm') { f.service.acknowledgeProgrammaticWindowMove(); cancel(); }
+    }
+    f.tick();
+    expect(f.bounds().x).toBe(outcome === 'cancel' ? 105 : 115);
+    expect(f.service.getSnapshot().target.x).toBe(outcome === 'cancel' ? 1100 : 1110);
+  });
 
-    expect(controller.advance(16).position).toEqual({ x: 180, y: 90 });
+  test('未发生的原生定位失败撤销小数进度和预期回执，重试不多走一步', () => {
+    const f = fixture({ failFirst: true });
+    f.service.moveTo({ x: 1100, y: 100 });
+    expect(() => f.tick()).toThrow('原生窗口拒绝定位');
+    expect(f.service.hasPendingProgrammaticPosition()).toBe(false);
+    f.tick(0);
+    expect(f.bounds().x).toBe(103);
+  });
+
+  test('超出 DPI 容差的同步原生偏移同时重基目标与连续位置，不被 tick 覆盖', () => {
+    const f = fixture({ offsetX: 12 });
+    f.service.moveTo({ x: 1100, y: 100 });
+    f.tick();
+    f.tick();
+    expect(f.bounds().x).toBe(129);
+    expect(f.service.getSnapshot().target.x).toBe(1124);
+  });
+
+  test.each(['tick', 'intent'] as const)('几何丢失经 %s 撤销目标后，恢复不回放旧连续位置', boundary => {
+    const f = fixture();
+    f.service.moveTo({ x: 1100, y: 100 });
+    f.tick();
+    f.setGeometryReady(false);
+    f.place(300, 200);
+    if (boundary === 'tick') f.tick();
+    else expect(f.service.requestIntent({ kind: 'relative', direction: 'right', distance: 'near' })).toBeNull();
+    f.setGeometryReady(true);
+    expect(f.tick()).toMatchObject({ position: { x: 300, y: 200 }, moving: false });
+    f.service.moveTo({ x: 1300, y: 200 });
+    expect(f.tick()).toMatchObject({ position: { x: 303, y: 200 }, moving: true });
   });
 });
+
 describe('Main 角色运动服务', () => {
   const geometrySnapshot = (input: {
     scale?: number;

@@ -1,5 +1,41 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { createServer } from 'node:http';
+import { isDeepStrictEqual } from 'node:util';
+
+const decisionSchema = { anyOf: [
+  { type: 'object', additionalProperties: false, properties: {
+    kind: { type: 'string', enum: ['task'] }, text: { type: 'string', enum: [''] }
+  }, required: ['kind', 'text'] },
+  { type: 'object', additionalProperties: false, properties: {
+    kind: { type: 'string', enum: ['chat'] },
+    text: { type: 'string', minLength: 1, maxLength: 4000 }
+  }, required: ['kind', 'text'] }
+] };
+
+const strictObject = properties => ({ type: 'object', additionalProperties: false, required: Object.keys(properties), properties });
+const expressionSchema = strictObject({
+  kind: { enum: ['none', 'reaction', 'state', 'action', 'background', 'movement'] },
+  choice: { anyOf: [strictObject({ stateId: { type: 'string' }, actionId: { type: 'string' } }), { type: 'null' }] },
+  mode: { enum: ['keep', 'still', 'continuous', 'intermittent', 'once'] },
+  target: { anyOf: [{ enum: ['random_work_area', 'left', 'right', 'top', 'bottom', 'top_left', 'top_right', 'bottom_left', 'bottom_right'] }, { type: 'null' }] },
+  distance: { anyOf: [{ enum: ['near', 'medium', 'far'] }, { type: 'null' }] }
+});
+const autonomySchema = { ...expressionSchema, properties: { ...expressionSchema.properties,
+  kind: { enum: ['none', 'reaction', 'background'] }, mode: { const: 'keep' }, target: { type: 'null' }, distance: { type: 'null' }
+} };
+const behaviorRoles = ['chatting', 'taskRunning', 'awaitingConfirmation', 'moving', 'success', 'error', 'praise', 'boredom', 'rest'];
+
+/** 作者配对随角色变化；重建完整严格结构，不能只靠九个字段放行任意 Schema。 */
+function isBindingsSchema(schema) {
+  const choices = schema?.$defs?.choice?.anyOf;
+  if (!Array.isArray(choices) || choices.length < 2 || !isDeepStrictEqual(choices.at(-1), { type: 'null' })) return false;
+  const pairs = choices.slice(0, -1).map(choice => ({ stateId: choice?.properties?.stateId?.const,
+    actionId: choice?.properties?.actionId?.const }));
+  if (pairs.some(pair => typeof pair.stateId !== 'string' || !pair.stateId || typeof pair.actionId !== 'string' || !pair.actionId)) return false;
+  return isDeepStrictEqual(schema, { ...strictObject(Object.fromEntries(behaviorRoles.map(role => [role, { $ref: '#/$defs/choice' }]))),
+    $defs: { choice: { anyOf: [...pairs.map(pair => strictObject({ stateId: { const: pair.stateId }, actionId: { const: pair.actionId } })), { type: 'null' }] } }
+  });
+}
 
 const options = Object.fromEntries(process.argv.slice(2).map(argument => {
   const separator = argument.indexOf('=');
@@ -59,46 +95,26 @@ const server = createServer(async (request, response) => {
   }
   const body = JSON.parse(Buffer.concat(chunks).toString('utf8'));
   const latestUser = [...body.messages].reverse().find(message => message.role === 'user');
-  const wantsStaleFile = Array.isArray(body.tools)
-    && body.tools.length > 0
-    && typeof latestUser?.content === 'string'
-    && latestUser.content.includes('switch-stale.txt');
-  const message = wantsStaleFile
-    ? {
-        content: null,
-        tool_calls: [{
-          id: 'local-e2e-stale-action',
-          type: 'function',
-          function: {
-            name: 'builtin__files__create_file',
-            arguments: JSON.stringify({ relativePath: 'switch-stale.txt', content: '' })
-          }
-        }]
-      }
-    : {
-        content: JSON.stringify({
-          text: '本地模型 fixture 回复',
-          moodUpdate: null,
-          expressionPlan: null,
-          movementControl: { kind: 'keep' },
-          capabilityPlan: { kind: 'chat' }
-        })
-      };
-  if (body.stream === true && !wantsStaleFile) {
-    response.writeHead(200, {
-      'content-type': 'text/event-stream',
-      'cache-control': 'no-cache'
-    });
-    const midpoint = Math.floor(message.content.length / 2);
-    for (const content of [message.content.slice(0, midpoint), message.content.slice(midpoint)]) {
-      response.write(`data: ${JSON.stringify({ choices: [{ delta: { content } }] })}\n\n`);
-    }
-    response.end('data: [DONE]\n\n');
+  const schema = body.response_format?.type === 'json_object' ? body.response_format.schema : undefined;
+  let output;
+  if (isDeepStrictEqual(schema, decisionSchema)) {
+    // 仅为当前生命周期样例提供固定结果，任务只能申请原范围卡。
+    output = latestUser?.content === '请创建 switch-stale.txt'
+      ? { kind: 'task', text: '' }
+      : { kind: 'chat', text: '本地模型 fixture 回复' };
+  } else if (isDeepStrictEqual(schema, expressionSchema) || isDeepStrictEqual(schema, autonomySchema)) {
+    output = { kind: 'none', choice: null, mode: 'keep', target: null, distance: null };
+  } else if (isBindingsSchema(schema)) {
+    // 协议夹具不模拟作者语义理解；完整返回明确未匹配的九项用途。
+    output = Object.fromEntries(behaviorRoles.map(role => [role, null]));
+  } else {
+    response.writeHead(400, { 'content-type': 'application/json' });
+    response.end(JSON.stringify({ error: { message: 'LOCAL_MODEL_E2E_SCHEMA_UNSUPPORTED' } }));
     return;
   }
   response.writeHead(200, { 'content-type': 'application/json' });
   response.end(JSON.stringify({
-    choices: [{ message }],
+    choices: [{ message: { content: JSON.stringify(output) } }],
     fixture_canary: 'body-canary-local-electron'
   }));
 });

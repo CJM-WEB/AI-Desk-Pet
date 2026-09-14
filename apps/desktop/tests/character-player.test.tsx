@@ -1315,10 +1315,22 @@ describe('角色播放器组件', () => {
       carrying: false,
       direction: 'left'
     });
+    onMotionChange.mockClear();
+    for (const revision of [1, 2]) act(() => motionListener?.({
+      type: 'snapshot', snapshot: {
+        revision, timestampMs: 500, position: { x: 200, y: 0 },
+        target: { x: 200, y: 0 }, direction: 'right', moving: false, carrying: false
+      }
+    }));
+    expect(onMotionChange).not.toHaveBeenCalled();
+    expect(player.setDirection).toHaveBeenLastCalledWith('left');
     rendered.unmount();
   });
 
-  test('RAF 在快照之间持续推进视觉残差并在卸载时清理', async () => {
+  test.each([
+    { delay: 0, direction: 1 }, { delay: 8, direction: 1 },
+    { delay: 20, direction: 1 }, { delay: 8, direction: -1 }
+  ])('窗口先移动、快照晚到 $delay ms 时固定帧不会被二次位移拉回（方向 $direction）', async ({ delay, direction }) => {
     const callbacks: FrameRequestCallback[] = [];
     const cancel = vi.fn();
     vi.stubGlobal('requestAnimationFrame', vi.fn(callback => {
@@ -1387,19 +1399,36 @@ describe('角色播放器组件', () => {
     });
     await waitFor(() => expect(callbacks.length).toBeGreaterThan(0));
     act(() => callbacks.shift()?.(0));
-    act(() => listener?.({
-      type: 'snapshot',
-      snapshot: {
-        revision: 2, timestampMs: 100,
-        position: { x: 120, y: 100 }, target: { x: 200, y: 100 },
-        direction: 'right', moving: true
-      }
-    }));
-    act(() => callbacks.shift()?.(50));
-    expect(rendered.container.querySelector<HTMLElement>('.character-player-host')?.style.transform)
-      .toBe('translate(-8px, 0px)');
+    // 原生窗口移动和 IPC 到达是两个独立事件；只看控制器内部坐标会漏掉屏幕回跳。
+    let nativeX = 100;
+    const painted: number[] = [];
+    const events: { at: number; run(): void }[] = [];
+    for (let index = 0; index < 6; index += 1) {
+      const at = 45 + index * 50;
+      const x = 100 + (index + 1) * 8 * direction;
+      events.push({ at, run: () => { nativeX = x; } });
+      events.push({ at: at + delay, run: () => listener?.({
+        type: 'snapshot', snapshot: {
+          revision: index + 2, timestampMs: at,
+          position: { x, y: 100 }, target: { x: 100 + 300 * direction, y: 100 },
+          direction: direction === 1 ? 'right' : 'left', moving: true
+        }
+      }) });
+    }
+    for (let frame = 1; frame <= 21; frame += 1) {
+      const at = frame * 1000 / 60;
+      events.push({ at, run: () => {
+        callbacks.shift()?.(at);
+        painted.push(nativeX + Number.parseFloat(
+          host.style.transform.match(/translate\(([-\d.]+)px/u)?.[1] ?? '0'
+        ));
+      } });
+    }
+    for (const event of events.sort((left, right) => left.at - right.at)) act(event.run);
+    const backsteps = painted.slice(1).filter((x, index) => (x - painted[index]!) * direction < -0.01);
+    expect(backsteps, '相同单帧在单向窗口移动途中不能被 Renderer 拉回').toEqual([]);
     expect(onDesktopAnchors).toHaveBeenLastCalledWith({
-      carry: { x: 187, y: 177 },
+      carry: { x: 175 + 48 * direction, y: 177 },
       seat: null,
       focus: null
     });

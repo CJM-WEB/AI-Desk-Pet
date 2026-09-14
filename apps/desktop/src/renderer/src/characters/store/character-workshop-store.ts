@@ -84,6 +84,18 @@ export type CharacterReferenceImpact = {
 
 type WorkshopPresentationPatch = Partial<DraftActionClip>;
 
+/** 每页独立去重；帧资源引用与统一表现几何随同一次发布提交。 */
+type CompiledWorkshopAction = {
+  pages: Array<{
+    assetId: string;
+    fileName: string;
+    sha256: string;
+    bytes: Uint8Array;
+  }>;
+  frames: ActionFrame[];
+  geometry: Omit<PresentationGeometryV2, 'resourceRevision'>;
+};
+
 export interface CharacterWorkshopDependencies {
   /** 测试可注入稳定 ID；生产默认使用加密安全的 UUID。 */
   createToastId?(): string;
@@ -95,14 +107,7 @@ export interface CharacterWorkshopDependencies {
     atlasAssetId: string;
     frames: AtlasSourceFrame[];
     groundAnchor: { x: number; y: number };
-  }): Promise<{
-    assetId: string;
-    fileName: string;
-    sha256: string;
-    bytes: Uint8Array;
-    frames: ActionFrame[];
-    geometry: Omit<PresentationGeometryV2, 'resourceRevision'>;
-  }>;
+  }): Promise<CompiledWorkshopAction>;
 }
 
 export interface CharacterWorkshopState {
@@ -262,14 +267,7 @@ async function compileBrowserAction(input: {
   atlasAssetId: string;
   frames: AtlasSourceFrame[];
   groundAnchor: { x: number; y: number };
-}): Promise<{
-  assetId: string;
-  fileName: string;
-  sha256: string;
-  bytes: Uint8Array;
-  frames: ActionFrame[];
-  geometry: Omit<PresentationGeometryV2, 'resourceRevision'>;
-}> {
+}): Promise<CompiledWorkshopAction> {
   const compiled = await compileAtlas({
     atlasAssetId: input.atlasAssetId,
     mimeType: 'image/png',
@@ -281,18 +279,20 @@ async function compileBrowserAction(input: {
     canvas.height = height;
     return canvas;
   });
-  const digest = await crypto.subtle.digest(
-    'SHA-256',
-    Uint8Array.from(compiled.bytes).buffer
-  );
-  const sha256 = [...new Uint8Array(digest)]
-    .map(value => value.toString(16).padStart(2, '0'))
-    .join('');
+  const pages: CompiledWorkshopAction['pages'] = [];
+  for (const page of compiled.pages) {
+    const digest = await crypto.subtle.digest('SHA-256', Uint8Array.from(page.bytes).buffer);
+    const sha256 = [...new Uint8Array(digest)]
+      .map(value => value.toString(16).padStart(2, '0')).join('');
+    pages.push({
+      assetId: page.assetId,
+      fileName: `${page.assetId}.png`,
+      sha256,
+      bytes: page.bytes
+    });
+  }
   return {
-    assetId: input.atlasAssetId,
-    fileName: `${input.atlasAssetId}.png`,
-    sha256,
-    bytes: compiled.bytes,
+    pages,
     frames: compiled.frames,
     geometry: compiled.geometry
   };
@@ -1120,7 +1120,7 @@ export function createCharacterWorkshopStore(
             intensity: 50,
             enterConditions: [],
             exitConditions: [],
-            agentInferable: false,
+            agentInferable: true,
             actionIds: []
           });
         }, { kind: 'state', stateId: id });
@@ -1556,21 +1556,28 @@ export function createCharacterWorkshopStore(
                 compilationByFrames.set(compilationKey, compilation);
               }
               const compiled = await awaitCurrent(compilation);
-              const existingResource = resourceByHash.get(compiled.sha256);
-              const resourceAssetId = existingResource?.assetId ?? compiled.assetId;
-              if (!existingResource) {
-                resourceByHash.set(compiled.sha256, { assetId: compiled.assetId });
-                resources.push({
-                  assetId: compiled.assetId,
-                  bytes: Uint8Array.from(compiled.bytes)
-                });
-                manifestResources.push({
-                  assetId: compiled.assetId,
-                  fileName: compiled.fileName,
-                  sha256: compiled.sha256,
-                  byteLength: compiled.bytes.byteLength
-                });
+              const pageById = new Map(compiled.pages.map(page => [page.assetId, page]));
+              const mappedAssetIds = new Map<string, string>();
+              for (const page of compiled.pages) {
+                const existingResource = resourceByHash.get(page.sha256);
+                mappedAssetIds.set(page.assetId, existingResource?.assetId ?? page.assetId);
+                if (!existingResource) {
+                  resourceByHash.set(page.sha256, { assetId: page.assetId });
+                  resources.push({ assetId: page.assetId, bytes: Uint8Array.from(page.bytes) });
+                  manifestResources.push({
+                    assetId: page.assetId, fileName: page.fileName,
+                    sha256: page.sha256, byteLength: page.bytes.byteLength
+                  });
+                }
               }
+              const frames = compiled.frames.map(frame => {
+                const assetId = mappedAssetIds.get(frame.assetId);
+                if (!assetId) throw new Error('CHARACTER_ATLAS_FRAME_INVALID');
+                return { ...frame, assetId };
+              });
+              const resourceRevision = [...new Set(compiled.frames.map(frame => (
+                pageById.get(frame.assetId)!.sha256
+              )))].sort().join('.');
               presentations.push({
                 actionId: presentation.actionId,
                 fps: presentation.fps,
@@ -1589,12 +1596,9 @@ export function createCharacterWorkshopStore(
                   : { regions: presentation.regions }),
                 geometry: {
                   ...compiled.geometry,
-                  resourceRevision: compiled.sha256
+                  resourceRevision
                 },
-                frames: compiled.frames.map(frame => ({
-                  ...frame,
-                  assetId: resourceAssetId
-                }))
+                frames
               });
             }
             compiledSkins.push({

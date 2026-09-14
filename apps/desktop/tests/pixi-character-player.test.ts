@@ -16,6 +16,7 @@ import {
 } from '../src/renderer/src/characters/player/pixi-character-player';
 import {
   hitTestCharacterAlpha,
+  readAlphaMask,
   type CharacterHitSnapshot
 } from '../src/renderer/src/characters/player/character-alpha-hit-tester';
 
@@ -1006,8 +1007,12 @@ describe('共享 Pixi 角色动作场景', () => {
       scene.showAction(action, { direction: 'right', motionMode: 'static', speed: 1, loop: false });
 
       const hitScene = scene as PixiCharacterScene & { getHitSnapshot(): CharacterHitSnapshot | null };
+      // Alpha 已复制，临时采样画布必须释放像素存储，正式纹理和命中快照继续可用。
+      expect(getContext.mock.contexts.at(-1)).toMatchObject({ width: 0, height: 0 });
       expect(hitScene.getHitSnapshot()?.mask).toMatchObject({ width: 72, height: 32 });
-      expect(hitScene.getHitSnapshot()?.mask.bytes[0]).toBe(0);
+      const sampledMask = hitScene.getHitSnapshot()!.mask;
+      expect(readAlphaMask(sampledMask, 0, 0)).toBe(0);
+      expect('bytes' in sampledMask ? sampledMask.bytes.byteLength : sampledMask.byteLength).toBeLessThan(72 * 32);
       expect(hitScene.getHitSnapshot()?.sourceRect).toEqual({ x: 0, y: 0, width: 32, height: 32 });
       expect(hitScene.getHitSnapshot()?.frameBounds).toEqual({ x: 10, y: 20, width: 80, height: 80 });
       scene.showAction(action, {
@@ -1024,6 +1029,7 @@ describe('共享 Pixi 角色动作场景', () => {
       expect(getImageData).toHaveBeenCalledTimes(1);
       getContext.mockReturnValueOnce(null);
       await scene.loadAssets(new Map([['atlas', 'blob:no-context']]));
+      expect(getContext.mock.contexts.at(-1)).toMatchObject({ width: 0, height: 0 });
       scene.showAction(action, { direction: 'right', motionMode: 'static', speed: 1, loop: false });
       expect(hitScene.getHitSnapshot()).toBeNull();
       expect(sprites[0]?.destroy).toHaveBeenCalled();
@@ -1034,6 +1040,7 @@ describe('共享 Pixi 角色动作场景', () => {
         getImageData: vi.fn(() => { throw new Error('CANVAS_READ_FAILED'); })
       } as never);
       await scene.loadAssets(new Map([['atlas', 'blob:read-error']]));
+      expect(getContext.mock.contexts.at(-1)).toMatchObject({ width: 0, height: 0 });
       scene.showAction(action, { direction: 'right', motionMode: 'static', speed: 1, loop: false });
       expect(hitScene.getHitSnapshot()).toBeNull();
       scene.destroy();
@@ -1095,7 +1102,7 @@ describe('共享 Pixi 角色动作场景', () => {
       scene.showAction(action, { direction: 'right', motionMode: 'static', speed: 1, loop: false });
 
       const hitScene = scene as PixiCharacterScene & { getHitSnapshot(): CharacterHitSnapshot | null };
-      expect(hitScene.getHitSnapshot()?.mask.bytes[0]).toBe(255);
+      expect(readAlphaMask(hitScene.getHitSnapshot()?.mask, 0, 0)).toBe(255);
       expect(textures.find(texture => (texture.source as TestImage).src === 'blob:old')?.destroy)
         .toHaveBeenCalledWith(true);
       scene.destroy();

@@ -1,5 +1,5 @@
 import {
-  computePresentationAlphaGeometry,
+  createPresentationAlphaGeometryAccumulator,
   planAtlas,
   type PresentationAlphaGeometry
 } from '@myself/character-assets';
@@ -71,11 +71,16 @@ export type CompileAtlasInput = {
   signal?: AbortSignal;
 };
 
-export type CompiledAtlas = {
+export type CompiledAtlasPage = {
+  assetId: string;
   mimeType: CharacterImageMimeType;
   bytes: Uint8Array;
   width: number;
   height: number;
+};
+
+export type CompiledAtlas = {
+  pages: CompiledAtlasPage[];
   frames: ActionFrame[];
   sourceChecksums: Record<string, string>;
   geometry: PresentationAlphaGeometry;
@@ -176,7 +181,6 @@ function exportCanvas(
 
 function parseActionFrames(
   atlasAssetId: string,
-  _mimeType: CharacterImageMimeType,
   frames: ActionFrame[]
 ): ActionFrame[] {
   const parsed = actionFrameSchema.array().min(1).safeParse(frames);
@@ -193,7 +197,7 @@ export async function compileAtlas(
 ): Promise<CompiledAtlas> {
   throwIfAborted(input.signal);
   // 先用共享角色结构验证图集资源标识，非法标识不触发任何图片解码。
-  parseActionFrames(input.atlasAssetId, input.mimeType, [{
+  parseActionFrames(input.atlasAssetId, [{
     assetId: input.atlasAssetId,
     x: 0,
     y: 0,
@@ -205,14 +209,20 @@ export async function compileAtlas(
   const bitmaps = new Map<string, ImageBitmapLike>();
   const sourceChecksums: Record<string, string> = {};
   const sourceFingerprints = new Map<string, string>();
+  const checksumsByBytes = new WeakMap<Uint8Array, Promise<string>>();
   const decodedFrames: DecodedFrame[] = [];
-  let canvas: AtlasCanvasLike | undefined;
 
   try {
     // 先完成全部解码与裁切校验，避免失败时留下半成品画布。
     for (const frame of input.frames) {
       throwIfAborted(input.signal);
-      const fingerprint = `${frame.mimeType}:${await checksum(frame.bytes)}`;
+      // 相同字节对象只计算一次摘要；同一资源标识换字节对象仍须校验冲突。
+      let pendingChecksum = checksumsByBytes.get(frame.bytes);
+      if (!pendingChecksum) {
+        pendingChecksum = checksum(frame.bytes);
+        checksumsByBytes.set(frame.bytes, pendingChecksum);
+      }
+      const fingerprint = `${frame.mimeType}:${await pendingChecksum}`;
       const knownFingerprint = sourceFingerprints.get(frame.sourceAssetId);
       if (knownFingerprint && knownFingerprint !== fingerprint) {
         throw new Error('CHARACTER_SOURCE_ASSET_CONFLICT');
@@ -239,98 +249,84 @@ export async function compileAtlas(
       decodedFrames.push({ input: frame, bitmap: sourceBitmap, sourceRect });
     }
 
-    const layout = planAtlas({
+    const layouts = planAtlas({
       frames: decodedFrames.map(frame => ({
         frameId: frame.input.frameId,
         width: frame.sourceRect.width,
         height: frame.sourceRect.height
       }))
     });
-    canvas = canvasFactory(layout.width, layout.height);
-    const context = canvas.getContext('2d');
-    if (!context) throw new Error('CHARACTER_ATLAS_CONTEXT_UNAVAILABLE');
-
-    const candidateFrames: ActionFrame[] = decodedFrames.map((decoded, index) => {
-      const placement = layout.placements[index]!;
-      const source = decoded.sourceRect;
-      const destination = placement.rect;
-      return {
-        id: decoded.input.frameId,
-        assetId: input.atlasAssetId,
-        x: destination.x,
-        y: destination.y,
-        width: source.width,
-        height: source.height,
-        ...(decoded.input.durationMs === undefined
-          ? {}
-          : { durationMs: decoded.input.durationMs }),
-        anchors: {
-          ground: { x: 0.5, y: 1 },
-          ...decoded.input.anchors
+    const decodedById = new Map(decodedFrames.map(frame => [frame.input.frameId, frame]));
+    const usedAssetIds = new Set([input.atlasAssetId]);
+    const plans = layouts.map((layout, pageIndex) => {
+      let assetId = input.atlasAssetId;
+      if (pageIndex > 0) {
+        let suffix = `-page-${pageIndex + 1}`;
+        assetId = `${input.atlasAssetId.slice(0, 120 - suffix.length)}${suffix}`;
+        // 截短后的页名不得与作者传入的首图集标识碰撞。
+        if (usedAssetIds.has(assetId)) {
+          suffix += '-2';
+          assetId = `${input.atlasAssetId.slice(0, 120 - suffix.length)}${suffix}`;
         }
-      };
+        usedAssetIds.add(assetId);
+      }
+      const frames = parseActionFrames(assetId, layout.placements.map(placement => {
+        const decoded = decodedById.get(placement.frameId)!;
+        return {
+          id: decoded.input.frameId,
+          assetId,
+          ...placement.rect,
+          ...(decoded.input.durationMs === undefined ? {} : { durationMs: decoded.input.durationMs }),
+          anchors: { ground: { x: 0.5, y: 1 }, ...decoded.input.anchors }
+        };
+      }));
+      return { assetId, layout, frames };
     });
-    // 最终帧尺寸、时长和锚点统一通过共享 ActionFrame 所属结构解析。
-    const frames = parseActionFrames(
-      input.atlasAssetId,
-      input.mimeType,
-      candidateFrames
-    );
-
-    // 布局由共享包统一规划；源矩形和目标矩形保持同尺寸，禁止隐式拉伸。
-    for (const [index, decoded] of decodedFrames.entries()) {
-      throwIfAborted(input.signal);
-      const source = decoded.sourceRect;
-      const destination = layout.placements[index]!.rect;
-      context.drawImage(
-        decoded.bitmap,
-        source.x,
-        source.y,
-        source.width,
-        source.height,
-        destination.x,
-        destination.y,
-        source.width,
-        source.height
-      );
-    }
-
-    const rgba = context.getImageData(0, 0, layout.width, layout.height).data;
-    if (rgba.length !== layout.width * layout.height * 4) {
-      throw new Error('CHARACTER_ATLAS_ALPHA_INVALID');
-    }
-    const geometry = computePresentationAlphaGeometry({
+    const frames = plans.flatMap(plan => plan.frames);
+    const geometry = createPresentationAlphaGeometryAccumulator({
       groundAnchor: input.groundAnchor ?? { x: 0.5, y: 1 },
-      frames: layout.placements.map(placement => {
-        const alpha = new Uint8Array(placement.rect.width * placement.rect.height);
-        for (let y = 0; y < placement.rect.height; y += 1) {
-          for (let x = 0; x < placement.rect.width; x += 1) {
-            const atlasPixel = (placement.rect.y + y) * layout.width + placement.rect.x + x;
-            alpha[y * placement.rect.width + x] = rgba[atlasPixel * 4 + 3]!;
-          }
-        }
-        return { width: placement.rect.width, height: placement.rect.height, alpha };
-      })
+      frames
     });
-
-    throwIfAborted(input.signal);
-    const bytes = await exportCanvas(canvas, input.mimeType);
-    throwIfAborted(input.signal);
-    return {
-      mimeType: input.mimeType,
-      bytes,
-      width: layout.width,
-      height: layout.height,
-      frames,
-      sourceChecksums,
-      geometry
-    };
-  } finally {
-    // 成功、取消和异常都释放浏览器原生位图与临时画布内存。
-    for (const bitmap of new Set(bitmaps.values())) bitmap.close();
-    if (canvas) {
-      canvas.width = 0;
-      canvas.height = 0;
+    const pages: CompiledAtlasPage[] = [];
+    let frameIndex = 0;
+    for (const { assetId, layout } of plans) {
+      throwIfAborted(input.signal);
+      const canvas = canvasFactory(layout.width, layout.height);
+      try {
+        const context = canvas.getContext('2d');
+        if (!context) throw new Error('CHARACTER_ATLAS_CONTEXT_UNAVAILABLE');
+        // 每页独立绘制和扫描；源矩形与目标矩形同尺寸，禁止隐式缩放。
+        for (const placement of layout.placements) {
+          throwIfAborted(input.signal);
+          const decoded = decodedById.get(placement.frameId)!;
+          const source = decoded.sourceRect;
+          context.drawImage(decoded.bitmap, source.x, source.y, source.width, source.height,
+            placement.rect.x, placement.rect.y, source.width, source.height);
+        }
+        const rgba = context.getImageData(0, 0, layout.width, layout.height).data;
+        if (rgba.length !== layout.width * layout.height * 4) {
+          throw new Error('CHARACTER_ATLAS_ALPHA_INVALID');
+        }
+        const alpha = new Uint8Array(layout.width * layout.height);
+        for (let pixel = 0; pixel < alpha.length; pixel += 1) alpha[pixel] = rgba[pixel * 4 + 3]!;
+        for (const placement of layout.placements) {
+          throwIfAborted(input.signal);
+          geometry.addFrame({ frameIndex: frameIndex++, sourceWidth: layout.width,
+            sourceHeight: layout.height, sourceAlpha: alpha, sourceRect: placement.rect });
+        }
+        throwIfAborted(input.signal);
+        const bytes = await exportCanvas(canvas, input.mimeType);
+        throwIfAborted(input.signal);
+        pages.push({ assetId, mimeType: input.mimeType, bytes, width: layout.width, height: layout.height });
+      } finally {
+        // 成功、取消和失败都在进入下一页之前释放当前画布。
+        canvas.width = 0;
+        canvas.height = 0;
+      }
     }
+    return { pages, frames, sourceChecksums, geometry: geometry.finish() };
+  } finally {
+    // 所有页完成或失败后统一关闭共享源位图。
+    for (const bitmap of new Set(bitmaps.values())) bitmap.close();
   }
 }

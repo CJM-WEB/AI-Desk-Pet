@@ -159,7 +159,7 @@ function validatePublishedFrameBudget(
   frames: readonly z.output<typeof actionFrameSchema>[],
   context: z.RefinementCtx
 ): void {
-  let area = 0;
+  // 表现可以跨多页；约束每个页内矩形，不把重复帧或多页面积累加到一张画布。
   frames.forEach((frame, frameIndex) => {
     if (
       frame.width > CHARACTER_RESOURCE_LIMITS.maxFrameDimension
@@ -167,11 +167,13 @@ function validatePublishedFrameBudget(
     ) {
       addReferenceIssue(context, '正式表现帧尺寸超过资源上限。', [frameIndex]);
     }
-    area += frame.width * frame.height;
+    if (
+      frame.x + frame.width > CHARACTER_RESOURCE_LIMITS.maxFrameDimension
+      || frame.y + frame.height > CHARACTER_RESOURCE_LIMITS.maxFrameDimension
+    ) {
+      addReferenceIssue(context, '正式表现帧矩形超出图集页边界。', [frameIndex]);
+    }
   });
-  if (area > CHARACTER_RESOURCE_LIMITS.maxFrameDimension ** 2) {
-    addReferenceIssue(context, '正式表现累计帧面积超过资源预算。', []);
-  }
 }
 
 const publishedPresentationFramesSchema = z.array(actionFrameSchema)

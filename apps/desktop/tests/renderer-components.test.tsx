@@ -20,12 +20,6 @@ import {
 import { PrivacySettings } from '../src/renderer/src/settings/PrivacySettings';
 import { mountTaskEventsIfAvailable } from '../src/renderer/src/App';
 
-type ClickableElement = {
-  props: {
-    onClick(): void;
-  };
-};
-
 function deferred<T>() {
   let resolvePromise!: (value: T | PromiseLike<T>) => void;
   let rejectPromise!: (reason?: unknown) => void;
@@ -63,17 +57,6 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-async function loadRendererCommandButtons(): Promise<{
-  ChatCloseButton: (() => ClickableElement) | undefined;
-}> {
-  const chat = await import('../src/renderer/src/chat/ChatPanel');
-  return {
-    ChatCloseButton: 'ChatCloseButton' in chat
-      ? chat.ChatCloseButton as () => ClickableElement
-      : undefined
-  };
-}
-
 describe('Renderer 可见组件', () => {
   test('历史披露卡只展示最小摘要并提交两种固定决策', () => {
     const onShareOnce = vi.fn();
@@ -93,7 +76,8 @@ describe('Renderer 可见组件', () => {
       />
     );
 
-    expect(screen.getByRole('heading', { name: '是否共享当前会话历史？' })).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: '待授权操作' }));
+    expect(screen.getByText('是否共享当前会话历史？')).toBeTruthy();
     expect(screen.getByText('OpenAI')).toBeTruthy();
     expect(screen.getByText('4 条消息')).toBeTruthy();
     expect(screen.getByText('120 个字符')).toBeTruthy();
@@ -122,7 +106,7 @@ describe('Renderer 可见组件', () => {
       />
     );
 
-    expect((screen.getByRole('button', { name: '正在共享历史…' }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole('button', { name: '仅本次共享历史' }) as HTMLButtonElement).disabled).toBe(true);
     expect((screen.getByRole('button', { name: '仅发送当前消息' }) as HTMLButtonElement).disabled).toBe(true);
     expect(screen.getByRole('status').textContent).toContain('正在处理你的选择');
     cleanup();
@@ -186,10 +170,10 @@ describe('Renderer 可见组件', () => {
     fireEvent.change(screen.getByLabelText('和我说点什么'), { target: { value: '你好' } });
 
     fireEvent.click(screen.getByRole('button', { name: '仅本次共享历史' }));
-    expect((screen.getByRole('button', { name: '正在共享历史…' }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole('button', { name: '仅本次共享历史' }) as HTMLButtonElement).disabled).toBe(true);
     expect((screen.getByRole('button', { name: '仅发送当前消息' }) as HTMLButtonElement).disabled).toBe(true);
     expect((screen.getByRole('button', { name: '发送给 AI Pet' }) as HTMLButtonElement).disabled).toBe(true);
-    fireEvent.click(screen.getByRole('button', { name: '正在共享历史…' }));
+    fireEvent.click(screen.getByRole('button', { name: '仅本次共享历史' }));
     expect(api.resolveHistoryDisclosure).toHaveBeenCalledOnce();
 
     await act(async () => {
@@ -236,6 +220,7 @@ describe('Renderer 可见组件', () => {
         else oldDisclosure.reject(new Error('旧会话披露失败'));
         await oldDisclosure.promise.catch(() => undefined);
       });
+      fireEvent.click(screen.getByRole('button', { name: '待授权操作' }));
       expect(screen.getByText('新 Provider')).toBeTruthy();
       expect(screen.queryByRole('alert')).toBeNull();
       expect((screen.getByRole('button', { name: '仅本次共享历史' }) as HTMLButtonElement).disabled).toBe(false);
@@ -337,12 +322,14 @@ describe('Renderer 可见组件', () => {
     const oldReset = deferred<void>();
     installMyselfApi({ resetConversation: vi.fn().mockReturnValue(oldReset.promise) });
     render(<ChatPanel />);
-    fireEvent.click(screen.getByRole('button', { name: '新对话' }));
+    fireEvent.click(screen.getByRole('button', { name: '选项' }));
+    fireEvent.click(screen.getByRole('menuitem', { name: '新对话' }));
 
     act(() => {
       taskStore.getState().apply({ type: 'conversation_reset', generation: 'generation-new' });
     });
-    expect((screen.getByRole('button', { name: '新对话' }) as HTMLButtonElement).disabled).toBe(false);
+    fireEvent.click(screen.getByRole('button', { name: '选项' }));
+    expect((screen.getByRole('menuitem', { name: '新对话' }) as HTMLButtonElement).disabled).toBe(false);
     await act(async () => {
       oldReset.reject(new Error('旧重置失败'));
       await oldReset.promise.catch(() => undefined);
@@ -363,11 +350,13 @@ describe('Renderer 可见组件', () => {
     });
     render(<ChatPanel />);
 
-    fireEvent.click(screen.getByRole('button', { name: '新对话' }));
+    fireEvent.click(screen.getByRole('button', { name: '选项' }));
+    fireEvent.click(screen.getByRole('menuitem', { name: '新对话' }));
     expect(api.resetConversation).toHaveBeenCalledOnce();
-    expect((screen.getByRole('button', { name: '正在新建…' }) as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(screen.getByRole('button', { name: '选项' }));
+    expect((screen.getByRole('menuitem', { name: '新对话' }) as HTMLButtonElement).disabled).toBe(true);
     expect((screen.getByRole('textbox', { name: '和我说点什么' }) as HTMLTextAreaElement).disabled).toBe(true);
-    expect((screen.getByRole('button', { name: '正在处理…' }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole('button', { name: '确认覆盖文件' }) as HTMLButtonElement).disabled).toBe(true);
     expect(screen.getByText('保留到广播')).toBeTruthy();
 
     await act(async () => {
@@ -391,7 +380,8 @@ describe('Renderer 可见组件', () => {
     });
     render(<ChatPanel />);
 
-    fireEvent.click(screen.getByRole('button', { name: '新对话' }));
+    fireEvent.click(screen.getByRole('button', { name: '选项' }));
+    fireEvent.click(screen.getByRole('menuitem', { name: '新对话' }));
     expect((await screen.findByRole('alert')).textContent).toContain('未能新建对话，请稍后重试。');
     expect(screen.getByText('原会话仍在')).toBeTruthy();
     expect(document.body.textContent).not.toContain('内部重置失败');
@@ -418,11 +408,11 @@ describe('Renderer 可见组件', () => {
 
   test('超长 Provider 名称在摘要行内可换行而不撑破小窗口', () => {
     const styles = readFileSync(
-      resolve(import.meta.dirname, '../src/renderer/src/styles.css'),
+      resolve(import.meta.dirname, '../src/renderer/src/chat/chat-presentation.css'),
       'utf8'
     );
     expect(styles).toMatch(
-      /\.path-row\s+strong\s*\{[^}]*min-width:\s*0[^}]*overflow-wrap:\s*anywhere/s
+      /\.bubble-details\s+p\s*\{[^}]*overflow-wrap:\s*anywhere/s
     );
   });
 
@@ -441,26 +431,13 @@ describe('Renderer 可见组件', () => {
     expect(markup).toContain('AI Pet');
   });
 
-  test('聊天关闭按钮调用正式 window.myself.hideChat', async () => {
-    const buttons = await loadRendererCommandButtons();
-    expect(typeof buttons.ChatCloseButton).toBe('function');
-    if (!buttons.ChatCloseButton) return;
-
-    const hideChat = vi.fn().mockResolvedValue(undefined);
-    vi.stubGlobal('window', { myself: { hideChat } });
-    try {
-      buttons.ChatCloseButton().props.onClick();
-      expect(hideChat).toHaveBeenCalledTimes(1);
-    } finally {
-      vi.unstubAllGlobals();
-    }
-  });
-
   test.each(['delete', 'overwrite', 'external_directory'] as const)('具体 %s 许可显示准确路径和固定操作含义', action => {
-    const markup = renderToStaticMarkup(<ConfirmationCard action={{ type: 'task_permission_required', actionId: 'permission-1', summary: '核对目标', request: { action, resources: ['D:\\project\\note.txt'] } }} busy={false} onConfirm={vi.fn()} onCancel={vi.fn()} />);
-    expect(markup).toContain('D:\\project\\note.txt');
-    expect(markup).toContain(action === 'delete' ? 'Windows 回收站' : action === 'overwrite' ? '覆盖已有文件' : '超出原授权目录');
-    expect(markup).toContain('拒绝本次操作');
+    render(<ConfirmationCard action={{ type: 'task_permission_required', actionId: 'permission-1', summary: '核对目标', request: { action, resources: ['D:\\project\\note.txt'] } }} busy={false} onConfirm={vi.fn()} onCancel={vi.fn()} />);
+    expect(screen.queryByText('D:\\project\\note.txt')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: action === 'overwrite' ? '明确文件编辑操作' : '待授权操作' }));
+    expect(screen.getByText('D:\\project\\note.txt')).toBeTruthy();
+    expect(document.body.textContent).toContain(action === 'delete' ? 'Windows 回收站' : action === 'overwrite' ? '覆盖已有文件' : '超出原授权目录');
+    expect(screen.getByRole('button', { name: '拒绝本次操作' })).toBeTruthy();
   });
 
   test('设置工作区仅提供模型、隐私和本地数据导航', () => {
