@@ -22,7 +22,7 @@ describe('下载模块', () => {
     expect(screen.getByRole('button', { name: '当前平台为 Windows' })
       .getAttribute('aria-pressed')).toBe('true');
     expect(screen.getByRole('link', { name: '下载 Windows' }).getAttribute('href')).toBe(
-      'https://ai-pet-scanner-dev-d0cpbc8094826-1391054083.tcloudbaseapp.com/releases/0.1.0-alpha.1/AI-Pet-0.1.0-alpha.1-windows-x64.exe'
+      'https://cjmwebsite.cn/releases/0.1.0-alpha.1/AI-Pet-0.1.0-alpha.1-windows-x64.exe'
     );
     expect(container.querySelectorAll('[class*="typingChar"]').length).toBeGreaterThan(20);
     expect(screen.queryByText('AI PET')).toBeNull();
@@ -122,7 +122,7 @@ describe('下载模块', () => {
     expect(screen.getByRole('heading', { name: 'Choose Your Platform' })).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Current platform: Windows' })).toBeTruthy();
     expect(screen.getByRole('link', { name: 'Download Windows' }).getAttribute('href')).toBe(
-      'https://ai-pet-scanner-dev-d0cpbc8094826-1391054083.tcloudbaseapp.com/releases/0.1.0-alpha.1/AI-Pet-0.1.0-alpha.1-windows-x64.exe'
+      'https://cjmwebsite.cn/releases/0.1.0-alpha.1/AI-Pet-0.1.0-alpha.1-windows-x64.exe'
     );
   });
 });

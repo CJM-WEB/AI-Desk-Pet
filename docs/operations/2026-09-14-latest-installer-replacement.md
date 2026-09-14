@@ -1,5 +1,7 @@
 # 最新 main 安装包重建与官网下载替换验收
 
+> 后续修正：本记录证明安装包替换、完整传输和链接呈现，不证明默认域首次浏览器点击直接下载。按钮地址已在[直接下载修复验收](2026-09-14-direct-installer-download.md)中改为现有正式域 `cjmwebsite.cn`；安装包身份不变，当前下载入口状态以该后续记录为准。
+
 ## 范围与环境
 
 日期：2026-09-14。Windows、Node 24.18.0、pnpm 11.9.0、Electron 43.5.0、electron-builder 26.15.3、Inno Setup 7.1.0 x64。

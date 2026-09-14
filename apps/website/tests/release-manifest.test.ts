@@ -12,7 +12,7 @@ describe('官网版本清单', () => {
     expect(release.fileName).toBe('AI-Pet-0.1.0-alpha.1-windows-x64.exe');
     if (release.status !== 'published') throw new Error('Windows Alpha 安装包尚未发布');
     expect(release.downloadUrl).toBe(
-      'https://ai-pet-scanner-dev-d0cpbc8094826-1391054083.tcloudbaseapp.com/releases/0.1.0-alpha.1/AI-Pet-0.1.0-alpha.1-windows-x64.exe'
+      'https://cjmwebsite.cn/releases/0.1.0-alpha.1/AI-Pet-0.1.0-alpha.1-windows-x64.exe'
     );
     expect(release.sizeBytes).toBe(2982126566);
     expect(release.sha256).toBe(

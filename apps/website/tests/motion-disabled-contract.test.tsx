@@ -91,7 +91,7 @@ describe('章节静态回退禁用内部动效', () => {
     );
     expect(downloadCss.match(/\.platformWord\s*\{([^}]*)\}/s)?.[1]).not.toContain('rotate(');
     expect(screen.getByRole('link', { name: '下载 Windows' }).getAttribute('href')).toBe(
-      'https://ai-pet-scanner-dev-d0cpbc8094826-1391054083.tcloudbaseapp.com/releases/0.1.0-alpha.1/AI-Pet-0.1.0-alpha.1-windows-x64.exe'
+      'https://cjmwebsite.cn/releases/0.1.0-alpha.1/AI-Pet-0.1.0-alpha.1-windows-x64.exe'
     );
   });
 
@@ -112,7 +112,7 @@ describe('章节静态回退禁用内部动效', () => {
     expect(setTimeout).not.toHaveBeenCalledWith(expect.any(Function), 120);
     expect(getContext.mock.calls.some(([type]) => type === 'webgl')).toBe(false);
     expect(screen.getByRole('link', { name: '下载 Windows' }).getAttribute('href')).toBe(
-      'https://ai-pet-scanner-dev-d0cpbc8094826-1391054083.tcloudbaseapp.com/releases/0.1.0-alpha.1/AI-Pet-0.1.0-alpha.1-windows-x64.exe'
+      'https://cjmwebsite.cn/releases/0.1.0-alpha.1/AI-Pet-0.1.0-alpha.1-windows-x64.exe'
     );
   });
 

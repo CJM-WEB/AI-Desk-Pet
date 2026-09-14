@@ -49,7 +49,7 @@ describe('AI Pet 官网首页', () => {
     expect(html).toContain('aria-label="下一章节"');
     expect(html).toContain('AI-Pet-0.1.0-alpha.1-windows-x64.exe');
     expect(html).toContain(
-      'href="https://ai-pet-scanner-dev-d0cpbc8094826-1391054083.tcloudbaseapp.com/releases/0.1.0-alpha.1/AI-Pet-0.1.0-alpha.1-windows-x64.exe"'
+      'href="https://cjmwebsite.cn/releases/0.1.0-alpha.1/AI-Pet-0.1.0-alpha.1-windows-x64.exe"'
     );
     expect(html).toContain('aria-label="选择 macOS"');
     expect(html).toContain('下载 Windows');

@@ -281,7 +281,7 @@ describe('官网章节降级模式', () => {
     );
     expect(downloadSection?.dataset.interactive).toBe('true');
     expect(screen.getByRole('link', { name: '下载 Windows' }).getAttribute('href')).toBe(
-      'https://ai-pet-scanner-dev-d0cpbc8094826-1391054083.tcloudbaseapp.com/releases/0.1.0-alpha.1/AI-Pet-0.1.0-alpha.1-windows-x64.exe'
+      'https://cjmwebsite.cn/releases/0.1.0-alpha.1/AI-Pet-0.1.0-alpha.1-windows-x64.exe'
     );
 
     fireEvent.click(screen.getByRole('button', { name: '选择 macOS' }));
@@ -420,7 +420,7 @@ describe('官网章节降级模式', () => {
       expect(experience.dataset.activeChapter).toBe('download');
     });
     expect(screen.getByRole('link', { name: '下载 Windows' }).getAttribute('href')).toBe(
-      'https://ai-pet-scanner-dev-d0cpbc8094826-1391054083.tcloudbaseapp.com/releases/0.1.0-alpha.1/AI-Pet-0.1.0-alpha.1-windows-x64.exe'
+      'https://cjmwebsite.cn/releases/0.1.0-alpha.1/AI-Pet-0.1.0-alpha.1-windows-x64.exe'
     );
 
     fireEvent.click(screen.getByRole('button', { name: '选择 macOS' }));
@@ -525,7 +525,7 @@ describe('官网章节降级模式', () => {
     expect(document.querySelector('[data-chapter-id="download"]')?.getAttribute('aria-hidden'))
       .toBe('false');
     expect(screen.getByRole('link', { name: '下载 Windows' }).getAttribute('href')).toBe(
-      'https://ai-pet-scanner-dev-d0cpbc8094826-1391054083.tcloudbaseapp.com/releases/0.1.0-alpha.1/AI-Pet-0.1.0-alpha.1-windows-x64.exe'
+      'https://cjmwebsite.cn/releases/0.1.0-alpha.1/AI-Pet-0.1.0-alpha.1-windows-x64.exe'
     );
     fireEvent.click(next);
     expect(document.querySelector('[data-chapter-id="community"]')?.getAttribute('aria-hidden'))
